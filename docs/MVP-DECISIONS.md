@@ -8,10 +8,10 @@ Scope: December 2026 MVP, a working vertical slice. It is not the full V1.0 rele
 | # | Topic | Decision |
 |---|---|---|
 | 1 | MVP scope | Accepted as proposed: sign-in, meeting notes (paste/upload), AI extraction with source links, review screen, monthly AI spend cap, local Compose install. Deferred to January: SharePoint/OneDrive, email, reminders, updater, full restore drill, full accessibility audit, newcomer test, 200-user load test, Safari/Firefox. |
-| 2 | OpenAI model | "GPT 6.1 Luna" for now. Can switch to "Sol" later. **Pending check:** the exact API model ID must be confirmed against OpenAI's model list on the Product Owner's machine before pinning (R09). |
-| 3 | AI spend cap | Applies to the finished product's runtime AI use only, not to development. Amount: $5. **Pending confirmation:** currency (USD assumed) and reset boundary (calendar month, UTC+8 assumed). |
+| 2 | OpenAI model | Primary: `gpt-6-luna`. Alternate, to switch to later if needed: `gpt-6.1-sol`. **Pending check:** confirm both IDs against OpenAI's model list on the Product Owner's machine before pinning (R09). |
+| 3 | AI spend cap | Applies to the finished product's runtime AI use only, not to development. Amount: MYR 20 per month. Reset boundary: calendar month, UTC+8 (assumed; confirm if different). |
 | 4 | Sign-in | Passwordless. Named user for the Product Owner: ngoh.ch@help.edu.my. More users to be supplied. |
-| 5 | Roles | Project Manager and his delegates. **Pending:** confirm whether an Enterprise Administrator role is needed for the MVP (the register defines one). |
+| 5 | Roles | Enterprise Administrator for the MVP. Project Manager and delegates as described in the handover (to be mapped to the register's role matrix under R03). |
 | 6 | Data retention | As per the handover documents (R07): no purge feature, logical deletion only, history kept. |
 | 7 | Languages | English and Bahasa Melayu, including mixed-language notes. |
 | 8 | Quality thresholds | Accepted: 95% supported proposals, 90% expected items captured. |
@@ -32,7 +32,7 @@ These are proposals to be approved or changed. Per the handover rules, they do n
 - **R05 Sessions:** the accepted defaults: one-time codes valid 10 minutes, 5 attempts, 30-minute lockout, 12-hour sessions.
 - **R07 Retention:** no purge in the MVP. Deleted items are hidden, not removed, and version history is kept.
 - **R09 Provider data:** the provider model ID is pinned in configuration. Each call records input and output token counts. The system does not assume the provider can cancel or delete data.
-- **R10 Spend enforcement:** a monthly cap. Each call reserves its estimated cost before it runs and stops when the cap would be exceeded. Charges that cannot be confirmed count against the cap until reconciled.
+- **R10 Spend enforcement:** a monthly cap of MYR 20. Each call reserves its estimated cost before it runs and stops when the cap would be exceeded. Charges that cannot be confirmed count against the cap until reconciled.
 
 ## Deferred (not in MVP)
 
@@ -40,7 +40,6 @@ R02–R20 remain open for the full V1.0 release, except where listed above. R14,
 
 ## Open items for the Product Owner
 
-1. Confirm the spend cap currency and reset boundary (item 3).
-2. Confirm the exact OpenAI model ID after checking the provider list.
-3. Confirm whether an Enterprise Administrator role is needed for the MVP (item 5).
-4. Approve or change each proposed default above.
+1. Confirm the reset boundary for the spend cap (item 3), or confirm the calendar-month default.
+2. Confirm `gpt-6-luna` and `gpt-6.1-sol` exist on the provider list before pinning (item 2).
+3. Approve or change each proposed default above.
