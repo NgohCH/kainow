@@ -1,0 +1,30 @@
+{
+  "name": "kainow-technical-baseline",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Technical baseline spike for Kainow V1.0: verifies pinned NestJS, pg-boss and PostgreSQL integration. Not product code.",
+  "license": "AGPL-3.0-only",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "smoke": "node dist/smoke.js",
+    "start": "node dist/main.js"
+  },
+  "dependencies": {
+    "@nestjs/common": "12.4.0",
+    "@nestjs/core": "12.4.0",
+    "@nestjs/platform-express": "12.4.0",
+    "pg": "8.23.1",
+    "pg-boss": "12.38.1",
+    "react": "19.3.1",
+    "reflect-metadata": "0.2.2",
+    "rxjs": "7.8.2"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "@types/pg": "8.15.5",
+    "typescript": "5.9.3"
+  }
+}
