@@ -22,16 +22,16 @@ Scope: December 2026 MVP, a working vertical slice. It is not the full V1.0 rele
 - **OpenAI access:** the sandbox cannot reach `api.openai.com`. Real extraction tests run on the Product Owner's computer, using an environment variable for the key. The test runner skips cleanly without it.
 - **Meeting notes:** provided by the Product Owner, produced by another note-taking tool. Format to be checked before the extraction tests are written.
 
-## Proposed defaults for design items (NOT APPROVED)
+## Design defaults (Product Owner answers recorded)
 
-These are proposals to be approved or changed. Per the handover rules, they do not count as product decisions until approved.
+The Product Owner answered these proposed defaults. Items marked with a note were changed from the original proposal.
 
 - **R01 Architecture:** single NestJS application plus a pg-boss worker process in one repository, one PostgreSQL database, one tenant per installation, row-level security on project-scoped tables.
 - **R02 Data contracts:** UUIDv7 identifiers; timestamps stored in UTC and displayed in UTC+8; text stored as UTF-8 (NFC); source quotes located by character offset in normalised text, with repeated quotes disambiguated by offset plus occurrence index.
-- **R03 Permissions:** default deny. MVP roles: Project Manager (full control of their project and its users) and Delegate (create meetings, review extractions). Each action in the MVP is tested for both allowed and denied cases.
+- **R03 Permissions:** default deny. MVP role: Enterprise Administrator with full control of the application. Each action in the MVP is tested for both allowed and denied cases. Project Manager and delegate roles are not part of the MVP.
 - **R05 Sessions:** the accepted defaults: one-time codes valid 10 minutes, 5 attempts, 30-minute lockout, 12-hour sessions.
-- **R07 Retention:** no purge in the MVP. Deleted items are hidden, not removed, and version history is kept.
-- **R09 Provider data:** the provider model ID is pinned in configuration. Each call records input and output token counts. The system does not assume the provider can cancel or delete data.
+- **R07 Retention:** MVP test data may be purged. In the deployed product, deletion is logical only: items are hidden, not removed, and version history is kept. The product must not include a purge feature, per the handover register.
+- **R09 Provider data:** the provider model ID is pinned in configuration and can be changed by the Enterprise Administrator. Each call records input and output token counts. The system does not assume the provider can cancel or delete data.
 - **R10 Spend enforcement:** a monthly cap of MYR 20. Each call reserves its estimated cost before it runs and stops when the cap would be exceeded. Charges that cannot be confirmed count against the cap until reconciled.
 
 ## Deferred (not in MVP)
