@@ -1,4 +1,4 @@
-import { Controller, Get, HttpCode, NotFoundException, Param, Post, Req } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Req } from '@nestjs/common';
 import { RequireAction } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import { ExtractionService } from './extraction.service';
@@ -35,5 +35,20 @@ export class ExtractionController {
   @RequireAction('note.view')
   get(@Param('runId') runId: string) {
     return this.extraction.getRun(uuid(runId));
+  }
+
+  /** Approve or reject one proposal: { decision, sourceVersionId, acknowledgeRepeatedQuote? }. */
+  @Post('extractions/:runId/items/:itemId/review')
+  @RequireAction('proposal.review')
+  @HttpCode(200)
+  review(@Param('runId') runId: string, @Param('itemId') itemId: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    const userId = req.auth?.user.id;
+    if (!userId) throw new NotFoundException();
+    const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+    return this.extraction.review(uuid(runId), uuid(itemId), {
+      decision: b.decision,
+      sourceVersionId: b.sourceVersionId,
+      acknowledgeRepeatedQuote: b.acknowledgeRepeatedQuote,
+    }, userId);
   }
 }

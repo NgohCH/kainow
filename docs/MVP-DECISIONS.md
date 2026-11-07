@@ -65,6 +65,7 @@ R02–R20 remain open for the full V1.0 release, except where listed above. R14,
 - **Price column:** the `gpt-6.1-sol` column is used (cached input $0.10). The screenshot also has a "GPT-6 Sol" column at $0.20 cached input, which is not used because the model chosen is `gpt-6.1-sol`.
 - **`gpt-6-luna` is dropped.** "Drop gpt-6.1-luna" was read as `gpt-6-luna`, and the Product Owner confirmed.
 - **The monthly cap resets at the start of the calendar month in UTC+8.** Confirmed.
+- **A 4xx answer from the AI provider counts as not charged.** An error answer (bad key, bad request, "slow down") before any work is treated as proof of no charge, and the reservation is given back. A timeout, lost connection, 5xx answer or an answer without usage is an unknown outcome and the full estimate stays counted. Confirmed by the Product Owner.
 
 ### How "no daily cap" is represented
 

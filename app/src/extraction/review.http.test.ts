@@ -1,0 +1,145 @@
+import 'reflect-metadata';
+import assert from 'node:assert/strict';
+import { afterEach, beforeEach, describe, test } from 'node:test';
+import type { INestApplication } from '@nestjs/common';
+import { Pool } from 'pg';
+import { createApp } from '../bootstrap';
+import { loadConfig } from '../config';
+import { runMigrations } from '../db/migrate';
+import { uuidv7 } from '../common/uuid7';
+import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
+import { CaptureSender, FakeClock, testEnv } from '../testing/fakes';
+import { UsersService } from '../users/users.service';
+
+const EMAIL = 'admin@example.org';
+const TEXT = 'We agreed to ship on Friday.\nok. ok.\nRisk: vendor late.';
+
+describe('reviewing proposals', { skip: SKIP_NO_DB }, () => {
+  let app: INestApplication;
+  let pool: Pool;
+  let base: string;
+  let cookie: string;
+  let runId: string;
+  let versionId: string;
+  const item: Record<string, string> = {};
+
+  async function api(method: string, path: string, body?: unknown, signedIn = true): Promise<{ status: number; body: any }> {
+    const res = await fetch(`${base}${path}`, {
+      method,
+      headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(signedIn ? { Cookie: cookie } : {}) },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    });
+    const text = await res.text();
+    return { status: res.status, body: text ? JSON.parse(text) : undefined };
+  }
+  const review = (key: string, body: object, rId = runId) => api('POST', `/extractions/${rId}/items/${item[key]}/review`, { sourceVersionId: versionId, ...body });
+
+  beforeEach(async () => {
+    const sender = new CaptureSender();
+    const clock = new FakeClock(Date.UTC(2026, 10, 9, 2, 0, 0));
+    const config = loadConfig(testEnv(testDatabaseUrl() as string));
+    pool = new Pool({ connectionString: config.databaseUrl });
+    await resetPublicSchema(pool);
+    await runMigrations(pool, config.migrationsDir);
+    await new UsersService(pool, clock.now).create({ email: EMAIL, displayName: 'Admin' });
+    app = await createApp(config, { codeSender: sender, clock: clock.now, logger: false, extractionQueue: { enqueue: async () => undefined } });
+    await app.listen(0);
+    base = await app.getUrl();
+    await fetch(`${base}/auth/request-code`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: EMAIL }) });
+    const verify = await fetch(`${base}/auth/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: EMAIL, code: sender.lastCode(EMAIL) }) });
+    cookie = (verify.headers.getSetCookie()[0] ?? '').split(';')[0];
+
+    const created = (await api('POST', '/notes', { title: 'T', text: TEXT })).body;
+    versionId = created.version.id;
+    const userId = (await pool.query('SELECT id FROM users')).rows[0].id;
+    runId = uuidv7();
+    await pool.query(`INSERT INTO extraction_runs (id, source_version_id, requested_by, status, item_count, unlocated_count, created_at, finished_at)
+                      VALUES ($1,$2,$3,'succeeded',3,1,now(),now())`, [runId, versionId, userId]);
+    const rows: Array<[string, string, string, number | null, number | null, number]> = [
+      ['ok', 'We agreed to ship on Friday.', 'We agreed to ship on Friday.', 0, 28, 1],
+      ['repeated', 'ok.', 'ok.', 29, 32, 2],
+      ['invented', 'Not in the notes', 'Not in the notes', null, null, 0],
+    ];
+    for (const [i, [key, text, quote, s, e, m]] of rows.entries()) {
+      item[key] = uuidv7();
+      await pool.query(`INSERT INTO extraction_items (id, run_id, source_version_id, position, kind, text, quote, quote_start, quote_end, quote_matches, created_at)
+                        VALUES ($1,$2,$3,$4,'decision',$5,$6,$7,$8,$9,now())`, [item[key], runId, versionId, i, text, quote, s, e, m]);
+    }
+  });
+  afterEach(async () => {
+    await app?.close();
+    await pool?.end();
+  });
+
+  test('needs a signed-in person', async () => {
+    const r = await api('POST', `/extractions/${runId}/items/${item.ok}/review`, { decision: 'approved', sourceVersionId: versionId }, false);
+    assert.equal(r.status, 401);
+  });
+
+  test('approving records who and when, and is audited', async () => {
+    const r = await review('ok', { decision: 'approved' });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.item.reviewStatus, 'approved');
+    assert.ok(r.body.item.reviewedBy && r.body.item.reviewedAt);
+    const { rows } = await pool.query("SELECT action, detail FROM audit_events WHERE action LIKE 'proposal.%'");
+    assert.deepEqual(rows.map((x) => x.action), ['proposal.approved']);
+    assert.equal(rows[0].detail.previousStatus, 'pending');
+    assert.equal(rows[0].detail.sourceVersionId, versionId);
+  });
+
+  test('a decision can be changed, and the audit trail keeps both', async () => {
+    await review('ok', { decision: 'approved' });
+    assert.equal((await review('ok', { decision: 'rejected' })).body.item.reviewStatus, 'rejected');
+    const { rows } = await pool.query("SELECT action, detail FROM audit_events WHERE action LIKE 'proposal.%' ORDER BY occurred_at, id");
+    assert.deepEqual(rows.map((x) => [x.action, x.detail.previousStatus]), [['proposal.approved', 'pending'], ['proposal.rejected', 'approved']]);
+  });
+
+  test('a decision is refused if it names a different version than the proposal belongs to', async () => {
+    const other = (await api('POST', '/notes', { title: 'Other', text: 'Different notes' })).body.version.id;
+    const r = await api('POST', `/extractions/${runId}/items/${item.ok}/review`, { decision: 'approved', sourceVersionId: other });
+    assert.equal(r.status, 409);
+    assert.match(JSON.stringify(r.body), /different version/);
+    assert.equal((await pool.query("SELECT review_status FROM extraction_items WHERE id = $1", [item.ok])).rows[0].review_status, 'pending');
+  });
+
+  test('the version being reviewed must be stated, and the decision must be valid', async () => {
+    assert.equal((await api('POST', `/extractions/${runId}/items/${item.ok}/review`, { decision: 'approved' })).status, 400);
+    assert.equal((await review('ok', { decision: 'maybe' })).status, 400);
+    assert.equal((await review('ok', { decision: 'pending' })).status, 400);
+    assert.equal((await api('POST', `/extractions/${runId}/items/${item.ok}/review`, {})).status, 400);
+  });
+
+  test('a quote that is not in the notes can be rejected but never approved', async () => {
+    assert.equal((await review('invented', { decision: 'approved' })).status, 409);
+    assert.equal((await review('invented', { decision: 'approved', acknowledgeRepeatedQuote: true })).status, 409);
+    assert.equal((await review('invented', { decision: 'rejected' })).status, 200);
+  });
+
+  test('a quote that appears more than once needs an explicit acknowledgement to approve', async () => {
+    assert.equal((await review('repeated', { decision: 'approved' })).status, 409);
+    assert.equal((await review('repeated', { decision: 'approved', acknowledgeRepeatedQuote: 'yes' })).status, 409);
+    assert.equal((await review('repeated', { decision: 'approved', acknowledgeRepeatedQuote: true })).status, 200);
+  });
+
+  test('a proposal from an unfinished run cannot be reviewed, and ids must match', async () => {
+    await pool.query("UPDATE extraction_runs SET status = 'running'");
+    assert.equal((await review('ok', { decision: 'approved' })).status, 409);
+    await pool.query("UPDATE extraction_runs SET status = 'succeeded'");
+    assert.equal((await review('ok', { decision: 'approved' }, '0197c3a0-0000-7000-8000-000000000000')).status, 404);
+    assert.equal((await api('POST', `/extractions/${runId}/items/nope/review`, { decision: 'approved', sourceVersionId: versionId })).status, 404);
+  });
+
+  test('the content of a proposal cannot change, even by direct database access', async () => {
+    await assert.rejects(pool.query("UPDATE extraction_items SET text = 'edited'"), /only the review decision/);
+    await assert.rejects(pool.query("UPDATE extraction_items SET quote_start = 1 WHERE id = $1", [item.ok]), /only the review decision/);
+    await assert.rejects(pool.query('DELETE FROM extraction_items'), /never deleted/);
+    await assert.rejects(pool.query("UPDATE extraction_items SET review_status = 'approved' WHERE id = $1", [item.invented]), /violates check constraint/);
+  });
+
+  test('run details show each proposal and its review state', async () => {
+    await review('ok', { decision: 'approved' });
+    const view = (await api('GET', `/extractions/${runId}`)).body;
+    assert.deepEqual(view.items.map((i: any) => i.reviewStatus), ['approved', 'pending', 'pending']);
+    assert.equal(view.run.sourceVersionId, versionId);
+  });
+});

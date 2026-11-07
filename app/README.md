@@ -111,7 +111,7 @@ Code in `src/extraction/` and `src/worker/`. `POST /notes/:id/versions/:n/extrac
 
 **Retries and limits.** Each request is tried at most 3 times in all, 30 seconds apart and growing. Every attempt is reserved and recorded separately, so retries cost money and count against the cap. At most 2 AI requests run at once (A05), counted per worker process: run one worker.
 
-**Decision for the Product Owner to confirm.** I treat an HTTP 4xx answer from OpenAI (a refused key, a bad request, "slow down") as proof nothing was charged and give the reservation back, because the provider answered with an error before doing any work. A timeout, a lost connection, a 5xx answer or an answer without usage is an unknown outcome and the full estimate stays counted. Say if you want 4xx treated as unknown too; the cost is that a run of rate-limit errors would use up the allowance quickly.
+**Rejected versus unknown (confirmed by the Product Owner, 7 November 2026).** An HTTP 4xx answer from OpenAI (a refused key, a bad request, "slow down") is treated as proof nothing was charged, and the reservation is given back, because the provider answered with an error before doing any work. A timeout, a lost connection, a 5xx answer or an answer without usage is an unknown outcome and the full estimate stays counted.
 
 **An unusable answer is still paid for.** If the model answers with broken JSON, a malformed item, a refusal, or is cut off at the 8,000-token limit, the usage it reported is charged and the attempt counts as failed.
 
