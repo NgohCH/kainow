@@ -1,8 +1,8 @@
-import { loadConfig } from '../config';
+import { loadDatabaseConfig } from '../config';
 import { startQueues } from './queues';
 
 async function main(): Promise<void> {
-  const config = loadConfig();
+  const config = loadDatabaseConfig();
   const boss = await startQueues(config.databaseUrl);
   console.log('kainow worker started');
 

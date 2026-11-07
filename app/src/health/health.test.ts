@@ -6,9 +6,10 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from '../app.module';
 import { loadConfig } from '../config';
 import { SKIP_NO_DB, testDatabaseUrl } from '../testing/db';
+import { testEnv } from '../testing/fakes';
 
 async function startApp(databaseUrl: string): Promise<{ app: INestApplication; base: string }> {
-  const app = await NestFactory.create(AppModule.register(loadConfig({ DATABASE_URL: databaseUrl })), { logger: false });
+  const app = await NestFactory.create(AppModule.register(loadConfig(testEnv(databaseUrl))), { logger: false });
   await app.listen(0);
   return { app, base: await app.getUrl() };
 }

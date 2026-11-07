@@ -4,12 +4,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, beforeEach, describe, test } from 'node:test';
 import { Pool } from 'pg';
-import { loadConfig } from '../config';
+import { loadDatabaseConfig } from '../config';
 import { uuidv7 } from '../common/uuid7';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { runMigrations } from './migrate';
 
-const realMigrations = loadConfig({ DATABASE_URL: 'x' }).migrationsDir;
+const realMigrations = loadDatabaseConfig({ DATABASE_URL: 'x' }).migrationsDir;
+const REAL_FILES = ['0001_identity_and_audit.sql', '0002_sign_in_throttle.sql'];
 
 describe('migrations', { skip: SKIP_NO_DB }, () => {
   let pool: Pool;
@@ -25,10 +26,10 @@ describe('migrations', { skip: SKIP_NO_DB }, () => {
 
   test('applies the real migrations once and skips them the second time', async () => {
     const first = await runMigrations(pool, realMigrations);
-    assert.deepEqual(first.applied, ['0001_identity_and_audit.sql']);
+    assert.deepEqual(first.applied, REAL_FILES);
     const second = await runMigrations(pool, realMigrations);
     assert.deepEqual(second.applied, []);
-    assert.deepEqual(second.skipped, ['0001_identity_and_audit.sql']);
+    assert.deepEqual(second.skipped, REAL_FILES);
   });
 
   test('stops when an applied migration has changed', async () => {
@@ -68,10 +69,12 @@ describe('migrations', { skip: SKIP_NO_DB }, () => {
 
   test('migration file is the one that was applied (checksum matches disk)', async () => {
     await runMigrations(pool, realMigrations);
-    const { rows } = await pool.query('SELECT checksum FROM schema_migrations');
-    assert.equal(rows.length, 1);
-    assert.match(rows[0].checksum, /^[0-9a-f]{64}$/);
-    assert.ok(readFileSync(join(realMigrations, '0001_identity_and_audit.sql'), 'utf8').length > 0);
+    const { rows } = await pool.query('SELECT name, checksum FROM schema_migrations ORDER BY name');
+    assert.deepEqual(rows.map((r) => r.name), REAL_FILES);
+    for (const row of rows) {
+      assert.match(row.checksum, /^[0-9a-f]{64}$/);
+      assert.ok(readFileSync(join(realMigrations, row.name), 'utf8').length > 0);
+    }
   });
 });
 

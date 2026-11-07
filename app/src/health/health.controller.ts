@@ -1,5 +1,6 @@
 import { Controller, Get, Inject, ServiceUnavailableException } from '@nestjs/common';
 import type { Pool } from 'pg';
+import { Public } from '../auth/access';
 import { PG_POOL } from '../db/database.module';
 
 @Controller('health')
@@ -8,6 +9,7 @@ export class HealthController {
 
   /** Reports healthy only when the database answers. No error detail is exposed. */
   @Get()
+  @Public()
   async check(): Promise<{ status: 'ok'; database: 'up' }> {
     try {
       await this.pool.query('SELECT 1');

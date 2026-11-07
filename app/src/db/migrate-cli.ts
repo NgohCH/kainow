@@ -1,9 +1,9 @@
 import { Pool } from 'pg';
-import { loadConfig } from '../config';
+import { loadDatabaseConfig } from '../config';
 import { runMigrations } from './migrate';
 
 async function main(): Promise<void> {
-  const config = loadConfig();
+  const config = loadDatabaseConfig();
   const pool = new Pool({ connectionString: config.databaseUrl });
   try {
     const result = await runMigrations(pool, config.migrationsDir);
