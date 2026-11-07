@@ -70,7 +70,7 @@ describe('spend settings over HTTP', { skip: SKIP_NO_DB }, () => {
   test('before approval it reports that nothing is configured', async () => {
     const view = await call('GET', '/ai/spend');
     assert.equal(view.status, 200);
-    assert.deepEqual(view.body, { configured: false, settings: null, month: null, day: null });
+    assert.deepEqual(view.body, { configured: false, settings: null, month: null, day: null, mine: null });
   });
 
   test('saves the approved MVP settings and shows the allowance', async () => {
@@ -105,6 +105,15 @@ describe('spend settings over HTTP', { skip: SKIP_NO_DB }, () => {
     const view = (await call('GET', '/ai/spend')).body;
     assert.equal(view.day.limitMyr, '0.500000');
     assert.equal(view.day.start, '2026-11-08T16:00:00.000Z');
+  });
+
+  test('a personal limit round-trips and the caller sees their own figures', async () => {
+    assert.equal((await call('PUT', '/ai/spend-settings', { ...MVP_BODY, userMonthly: { mode: 'limit', limitMyr: '2.5' } })).status, 200);
+    const view = (await call('GET', '/ai/spend')).body;
+    assert.deepEqual(view.settings.userMonthly, { mode: 'limit', limitMyr: '2.500000' });
+    assert.equal(view.mine.limitMyr, '2.500000');
+    assert.equal(view.mine.usedMyr, '0.000000');
+    assert.equal((await call('PUT', '/ai/spend-settings', { ...MVP_BODY, userMonthly: { mode: 'unlimited' } })).status, 400);
   });
 
   test('nothing is defaulted: a missing or malformed field is a 400 and saves nothing', async () => {

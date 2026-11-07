@@ -11,7 +11,7 @@ import { readSettings } from './spend.settings';
 /** Serialises reservations so parallel requests cannot each see the same headroom. */
 const SPEND_LOCK_KEY = 7201108;
 
-export type Scope = 'monthly' | 'daily';
+export type Scope = 'monthly' | 'daily' | 'user_monthly';
 export type BlockReason = 'not_configured' | 'no_allowance' | 'cap_would_be_exceeded';
 
 export type ReserveResult =
@@ -55,6 +55,8 @@ export interface SpendSummary {
   monthly: PeriodSummary | null;
   /** null when no daily limit applies (mode not_applied) or nothing is configured. */
   daily: PeriodSummary | null;
+  /** The caller's own monthly figures, only when a per-person limit applies and a person is given. */
+  mine: PeriodSummary | null;
 }
 
 export class SpendStateError extends Error {}
@@ -126,6 +128,19 @@ export class SpendService {
         const remaining = limit - used;
         if (input.estimateMicroMyr > remaining) {
           return this.block(c, now, input, 'cap_would_be_exceeded', scope, remaining > 0n ? remaining : 0n);
+        }
+      }
+
+      // The optional per-person limit applies to requests made on behalf of a person. The most restrictive limit wins.
+      if (settings.userMonthly.mode === 'limit' && input.actorUserId) {
+        const limit = settings.userMonthly.limitMicroMyr;
+        if (limit === null || limit === 0n) {
+          return this.block(c, now, input, 'no_allowance', 'user_monthly', 0n);
+        }
+        const { used } = await this.totals(c, monthPeriod(now), input.actorUserId);
+        const remaining = limit - used;
+        if (input.estimateMicroMyr > remaining) {
+          return this.block(c, now, input, 'cap_would_be_exceeded', 'user_monthly', remaining > 0n ? remaining : 0n);
         }
       }
 
@@ -236,14 +251,14 @@ export class SpendService {
   }
 
   /** Where the allowance stands now, for the administrator's view and for display. */
-  async summary(): Promise<SpendSummary> {
+  async summary(forUserId?: string): Promise<SpendSummary> {
     const now = this.clock();
     const settings = await readSettings(this.pool);
     if (!settings) {
-      return { configured: false, monthly: null, daily: null };
+      return { configured: false, monthly: null, daily: null, mine: null };
     }
-    const build = async (limit: bigint | null, period: Period): Promise<PeriodSummary> => {
-      const totals = await this.totals(this.pool, period);
+    const build = async (limit: bigint | null, period: Period, actor?: string): Promise<PeriodSummary> => {
+      const totals = await this.totals(this.pool, period, actor);
       const remaining = limit === null ? 0n : limit - totals.used;
       return {
         period,
@@ -258,17 +273,22 @@ export class SpendService {
       configured: true,
       monthly: await build(settings.monthlyLimitMicroMyr, monthPeriod(now)),
       daily: settings.daily.mode === 'limit' ? await build(settings.daily.limitMicroMyr, dayPeriod(now)) : null,
+      mine:
+        settings.userMonthly.mode === 'limit' && forUserId
+          ? await build(settings.userMonthly.limitMicroMyr, monthPeriod(now), forUserId)
+          : null,
     };
   }
 
-  private async totals(db: Pool | PoolClient, period: Period): Promise<{ used: bigint; reserved: bigint; uncertain: bigint }> {
+  private async totals(db: Pool | PoolClient, period: Period, actorUserId?: string): Promise<{ used: bigint; reserved: bigint; uncertain: bigint }> {
     const { rows } = await db.query<{ used: string; reserved: string; uncertain: string }>(
       `SELECT COALESCE(SUM(amount_micro_myr), 0)::text AS used,
               COALESCE(SUM(amount_micro_myr) FILTER (WHERE status = 'reserved'), 0)::text AS reserved,
               COALESCE(SUM(amount_micro_myr) FILTER (WHERE status = 'uncertain'), 0)::text AS uncertain
          FROM ai_spend_entries
-        WHERE status <> 'released' AND created_at >= $1 AND created_at < $2`,
-      [period.start, period.end],
+        WHERE status <> 'released' AND created_at >= $1 AND created_at < $2
+          AND ($3::uuid IS NULL OR actor_user_id = $3::uuid)`,
+      [period.start, period.end, actorUserId ?? null],
     );
     return { used: BigInt(rows[0].used), reserved: BigInt(rows[0].reserved), uncertain: BigInt(rows[0].uncertain) };
   }

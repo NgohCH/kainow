@@ -108,12 +108,15 @@ export class ExtractionRunner {
       actorUserId: run.requested_by,
     });
     if (reserved.status === 'blocked') {
+      const personal = reserved.scope === 'user_monthly';
       const why: Record<string, string> = {
-        no_allowance: 'There is no AI allowance (the limit is blank or zero).',
-        cap_would_be_exceeded: 'This request could cost more than the AI allowance that is left.',
+        no_allowance: personal ? 'This person has no personal AI allowance (the personal limit is blank or zero).' : 'There is no AI allowance (the limit is blank or zero).',
+        cap_would_be_exceeded: personal
+          ? 'This request could cost more than the personal monthly AI allowance that is left.'
+          : 'This request could cost more than the AI allowance that is left.',
         not_configured: 'The AI spend settings have not been approved yet.',
       };
-      return this.finish(run, 'blocked', `spend_${reserved.reason}`, why[reserved.reason] ?? 'Blocked by the AI spend cap.');
+      return this.finish(run, 'blocked', `spend_${personal ? 'user_' : ''}${reserved.reason}`, why[reserved.reason] ?? 'Blocked by the AI spend cap.');
     }
     const entryId = reserved.entryId;
 

@@ -71,7 +71,7 @@ Every attempt, including a retry or a fallback, is its own entry and counts. Ent
 
 **Reservations are deliberately larger than the likely cost.** A 50,000-byte note with up to 8,000 output tokens reserves MYR 0.74, but the example extraction of 10,000 input and 2,000 output tokens costs MYR 0.164. The extra is held only while the request runs. Near the end of the month a long note may be refused even though its real cost would have fit; that is the price of never overspending.
 
-The extraction job (below) calls all of this. Not covered yet: the per-user limit.
+The extraction job (below) calls all of this. An optional monthly limit for each person (`userMonthly`) is checked in the same locked step; leaving it out means no personal limit, while a blank or zero value means no allowance. It is monthly only; there is no per-person daily cap.
 
 ## Notes intake
 

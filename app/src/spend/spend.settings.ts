@@ -8,21 +8,28 @@ import { formatMicro, parseMicro } from './money';
 
 export type DailyRule = { mode: 'not_applied' } | { mode: 'limit'; limitMicroMyr: bigint | null };
 
+/** The optional per-person monthly limit. 'not_applied' is a deliberate choice; with 'limit', null means no allowance. */
+export type UserRule = DailyRule;
+
 /** The approved settings. A null limit is a blank: zero allowance, the same as an explicit 0. */
 export interface SpendSettingsInput {
   modelId: string;
   prices: Prices;
   monthlyLimitMicroMyr: bigint | null;
   daily: DailyRule;
+  /** Left out means no per-person limit. */
+  userMonthly?: UserRule;
 }
 
 export interface SpendSettings extends SpendSettingsInput {
+  userMonthly: UserRule;
   updatedAt: Date;
 }
 
 const COLUMNS = `model_id, input_usd_per_million_micro::text AS p_in, cached_input_usd_per_million_micro::text AS p_cached,
   output_usd_per_million_micro::text AS p_out, myr_per_usd_micro::text AS fx,
-  monthly_limit_micro_myr::text AS monthly, daily_mode, daily_limit_micro_myr::text AS daily_limit, updated_at`;
+  monthly_limit_micro_myr::text AS monthly, daily_mode, daily_limit_micro_myr::text AS daily_limit,
+  user_monthly_mode, user_monthly_limit_micro_myr::text AS user_limit, updated_at`;
 
 interface SettingsRow {
   model_id: string;
@@ -33,6 +40,8 @@ interface SettingsRow {
   monthly: string | null;
   daily_mode: 'limit' | 'not_applied';
   daily_limit: string | null;
+  user_monthly_mode: 'limit' | 'not_applied';
+  user_limit: string | null;
   updated_at: Date;
 }
 
@@ -56,6 +65,10 @@ export async function readSettings(db: Pool | PoolClient): Promise<SpendSettings
       row.daily_mode === 'not_applied'
         ? { mode: 'not_applied' }
         : { mode: 'limit', limitMicroMyr: row.daily_limit === null ? null : BigInt(row.daily_limit) },
+    userMonthly:
+      row.user_monthly_mode === 'not_applied'
+        ? { mode: 'not_applied' }
+        : { mode: 'limit', limitMicroMyr: row.user_limit === null ? null : BigInt(row.user_limit) },
     updatedAt: row.updated_at,
   };
 }
@@ -73,6 +86,10 @@ export function describeSettings(s: SpendSettingsInput) {
       s.daily.mode === 'not_applied'
         ? { mode: 'not_applied' as const }
         : { mode: 'limit' as const, limitMyr: s.daily.limitMicroMyr === null ? null : formatMicro(s.daily.limitMicroMyr) },
+    userMonthly:
+      !s.userMonthly || s.userMonthly.mode === 'not_applied'
+        ? { mode: 'not_applied' as const }
+        : { mode: 'limit' as const, limitMyr: s.userMonthly.limitMicroMyr === null ? null : formatMicro(s.userMonthly.limitMicroMyr) },
   };
 }
 
@@ -121,6 +138,25 @@ export function parseSettingsBody(body: unknown): SpendSettingsInput {
   } else {
     throw new BadRequestException('daily.mode must be "limit" or "not_applied"');
   }
+  // Optional: leaving it out means no per-person limit (it is not a blank required limit).
+  let userRule: UserRule = { mode: 'not_applied' };
+  if (has(b, 'userMonthly')) {
+    const u = b.userMonthly;
+    if (!u || typeof u !== 'object' || Array.isArray(u)) {
+      throw new BadRequestException('userMonthly must be { "mode": "not_applied" } or { "mode": "limit", "limitMyr": ... }');
+    }
+    const ur = u as Record<string, unknown>;
+    if (ur.mode === 'not_applied') {
+      if (has(ur, 'limitMyr')) throw new BadRequestException('userMonthly.limitMyr must not be given when userMonthly.mode is not_applied');
+    } else if (ur.mode === 'limit') {
+      if (!has(ur, 'limitMyr')) {
+        throw new BadRequestException('userMonthly.limitMyr is required when userMonthly.mode is limit (send null for no allowance)');
+      }
+      userRule = { mode: 'limit', limitMicroMyr: parseLimit(ur.limitMyr, 'userMonthly.limitMyr') };
+    } else {
+      throw new BadRequestException('userMonthly.mode must be "limit" or "not_applied"');
+    }
+  }
   return {
     modelId,
     prices: {
@@ -131,6 +167,7 @@ export function parseSettingsBody(body: unknown): SpendSettingsInput {
     },
     monthlyLimitMicroMyr: parseLimit(b.monthlyLimitMyr, 'monthlyLimitMyr'),
     daily: dailyRule,
+    userMonthly: userRule,
   };
 }
 
@@ -157,8 +194,9 @@ export class SpendSettingsService {
       await client.query(
         `INSERT INTO ai_spend_settings
            (id, model_id, input_usd_per_million_micro, cached_input_usd_per_million_micro, output_usd_per_million_micro,
-            myr_per_usd_micro, monthly_limit_micro_myr, daily_mode, daily_limit_micro_myr, updated_at, updated_by)
-         VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+            myr_per_usd_micro, monthly_limit_micro_myr, daily_mode, daily_limit_micro_myr,
+            user_monthly_mode, user_monthly_limit_micro_myr, updated_at, updated_by)
+         VALUES (1, $1, $2, $3, $4, $5, $6, $7, $8, $11, $12, $9, $10)
          ON CONFLICT (id) DO UPDATE SET
            model_id = EXCLUDED.model_id,
            input_usd_per_million_micro = EXCLUDED.input_usd_per_million_micro,
@@ -168,6 +206,8 @@ export class SpendSettingsService {
            monthly_limit_micro_myr = EXCLUDED.monthly_limit_micro_myr,
            daily_mode = EXCLUDED.daily_mode,
            daily_limit_micro_myr = EXCLUDED.daily_limit_micro_myr,
+           user_monthly_mode = EXCLUDED.user_monthly_mode,
+           user_monthly_limit_micro_myr = EXCLUDED.user_monthly_limit_micro_myr,
            updated_at = EXCLUDED.updated_at,
            updated_by = EXCLUDED.updated_by`,
         [
@@ -181,6 +221,8 @@ export class SpendSettingsService {
           input.daily.mode === 'limit' && input.daily.limitMicroMyr !== null ? input.daily.limitMicroMyr.toString() : null,
           now,
           actorUserId,
+          input.userMonthly?.mode ?? 'not_applied',
+          input.userMonthly?.mode === 'limit' && input.userMonthly.limitMicroMyr !== null ? input.userMonthly.limitMicroMyr.toString() : null,
         ],
       );
       await writeAudit(client, {

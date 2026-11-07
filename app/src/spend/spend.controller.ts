@@ -28,13 +28,14 @@ export class SpendController {
   /** Where the allowance stands. Amounts are decimal MYR strings with six places. */
   @Get('spend')
   @RequireAction('spend.view')
-  async view() {
-    const [summary, settings] = await Promise.all([this.spend.summary(), this.settings.get()]);
+  async view(@Req() req: HttpRequest) {
+    const [summary, settings] = await Promise.all([this.spend.summary(req.auth?.user.id), this.settings.get()]);
     return {
       configured: summary.configured,
       settings: settings ? describeSettings(settings) : null,
       month: describePeriod(summary.monthly),
       day: describePeriod(summary.daily),
+      mine: describePeriod(summary.mine),
     };
   }
 

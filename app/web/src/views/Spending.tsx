@@ -20,6 +20,7 @@ interface Settings {
   myrPerUsd: string;
   monthlyLimitMyr: string | null;
   daily: { mode: 'not_applied' } | { mode: 'limit'; limitMyr: string | null };
+  userMonthly: { mode: 'not_applied' } | { mode: 'limit'; limitMyr: string | null };
 }
 
 interface View {
@@ -27,6 +28,7 @@ interface View {
   settings: Settings | null;
   month: Period | null;
   day: Period | null;
+  mine: Period | null;
 }
 
 const myr = (v: string): string => `MYR ${Number(v).toFixed(2)}`;
@@ -53,7 +55,7 @@ export function Spending() {
   const [error, setError] = useState<string | null>(null);
   const [saved, setSaved] = useState(false);
   const [busy, setBusy] = useState(false);
-  const [f, setF] = useState({ modelId: '', input: '', cached: '', output: '', rate: '', monthly: '', dailyMode: 'not_applied', daily: '' });
+  const [f, setF] = useState({ modelId: '', input: '', cached: '', output: '', rate: '', monthly: '', dailyMode: 'not_applied', daily: '', userMode: 'not_applied', user: '' });
 
   const load = useCallback(async () => {
     try {
@@ -70,6 +72,8 @@ export function Spending() {
           monthly: s.monthlyLimitMyr === null ? '' : trim(s.monthlyLimitMyr),
           dailyMode: s.daily.mode,
           daily: s.daily.mode === 'limit' && s.daily.limitMyr !== null ? trim(s.daily.limitMyr) : '',
+          userMode: s.userMonthly.mode,
+          user: s.userMonthly.mode === 'limit' && s.userMonthly.limitMyr !== null ? trim(s.userMonthly.limitMyr) : '',
         });
       }
     } catch (e) {
@@ -93,6 +97,7 @@ export function Spending() {
         // Blank is sent as null, which means no allowance. It is never turned into "unlimited".
         monthlyLimitMyr: f.monthly.trim() === '' ? null : f.monthly.trim(),
         daily: f.dailyMode === 'not_applied' ? { mode: 'not_applied' } : { mode: 'limit', limitMyr: f.daily.trim() === '' ? null : f.daily.trim() },
+        userMonthly: f.userMode === 'not_applied' ? { mode: 'not_applied' } : { mode: 'limit', limitMyr: f.user.trim() === '' ? null : f.user.trim() },
       });
       setSaved(true);
       await load();
@@ -113,6 +118,7 @@ export function Spending() {
       {!view.configured && <p className="warn">No spend settings are saved yet, so every AI request is refused. Fill in and save the form below.</p>}
       {view.month && <Figures title="This month" p={view.month} />}
       {view.day && <Figures title="Today" p={view.day} />}
+      {view.mine && <Figures title="Your use this month" p={view.mine} />}
 
       <form className="panel stack" onSubmit={save} aria-label="Spend settings">
         <h2>Settings</h2>
@@ -140,6 +146,18 @@ export function Spending() {
               Limit in MYR
               <input inputMode="decimal" value={f.daily} onChange={set('daily')} />
               <span className="hint">Blank means no allowance on any day.</span>
+            </label>
+          )}
+        </fieldset>
+        <fieldset>
+          <legend>Limit for each person, per month</legend>
+          <label className="choice"><input type="radio" name="user" checked={f.userMode === 'not_applied'} onChange={() => setF((s) => ({ ...s, userMode: 'not_applied' }))} />No limit per person, only the organisation limits apply</label>
+          <label className="choice"><input type="radio" name="user" checked={f.userMode === 'limit'} onChange={() => setF((s) => ({ ...s, userMode: 'limit' }))} />Monthly limit for each person in MYR</label>
+          {f.userMode === 'limit' && (
+            <label>
+              Limit in MYR
+              <input inputMode="decimal" value={f.user} onChange={set('user')} />
+              <span className="hint">Each person has this amount every month, counted separately. Blank means no personal allowance: nobody can run an extraction.</span>
             </label>
           )}
         </fieldset>
