@@ -73,18 +73,19 @@ for (const file of readdirSync(inputsDir).filter((f) => f.endsWith(".md")).sort(
   const text = readFileSync(join(inputsDir, file), "utf8");
   const items = await extract(text);
   const supported = scoreSupported(items, text);
-  let captured = { total: 0, captured: 0, rate: 1, missed: [] };
+  let captured = null;
   try {
     const exp = JSON.parse(readFileSync(expectedPath, "utf8"));
     captured = scoreCaptured(exp.items, items);
   } catch {
-    captured.note = "no expected file for this input";
+    captured = { total: 0, captured: 0, rate: 0, missed: [], note: "no expected file: NOT SCORED" };
   }
-  const ok = passes(supported, captured, config.thresholds);
+  // A missing expected file must fail, never pass by default.
+  const ok = captured.total > 0 && passes(supported, captured, config.thresholds);
   results.push({ file, model, supported, captured, pass: ok, items });
   console.log(
     `${ok ? "PASS" : "FAIL"} ${file}: supported ${(supported.rate * 100).toFixed(0)}%, ` +
-      `expected captured ${(captured.rate * 100).toFixed(0)}%` +
+      `expected captured ${captured.total ? (captured.rate * 100).toFixed(0) + "%" : "NOT SCORED"}` +
       (captured.missed?.length ? `, missed ${captured.missed.join(",")}` : ""),
   );
 }
