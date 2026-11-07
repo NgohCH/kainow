@@ -33,6 +33,16 @@ test("expected item is captured when a quote contains its key phrase", () => {
   assert.deepEqual(r.missed, ["A2"]);
 });
 
+test("an expected item is also captured by any of its alternative phrases, and not by none of them", () => {
+  const expected = [{ id: "A2", key: "Orang C akan menghubungi", alsoKeys: ["Sahkan senarai pelajar"] }];
+  const viaAlternative = scoreCaptured(expected, [{ source_quote: "Orang C: Sahkan senarai pelajar yang membayar yuran lewat." }]);
+  assert.equal(viaAlternative.captured, 1);
+  const viaKey = scoreCaptured(expected, [{ source_quote: "Orang C akan menghubungi bahagian kewangan." }]);
+  assert.equal(viaKey.captured, 1);
+  const neither = scoreCaptured(expected, [{ source_quote: "Orang B akan menyemak senarai pelajar." }]);
+  assert.deepEqual(neither.missed, ["A2"]);
+});
+
 test("passes only when both thresholds are met", () => {
   const t = { supportedProposals: 0.95, expectedItemsCaptured: 0.9 };
   assert.equal(passes({ rate: 1 }, { rate: 0.9 }, t), true);

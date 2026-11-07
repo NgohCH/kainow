@@ -34,6 +34,7 @@ The prompt also requires one contiguous passage per quote. Quotes built from sep
 
 ## What the score means
 
+- An expected item may list `alsoKeys`: other phrases that count as capturing it, for an item the notes state in more than one place (in the discussion and again in the action list). Add one only after a person has confirmed the model's output captured the item by meaning.
 - The key-phrase match is an automated proxy. It doesn't judge meaning. A human reviewer must still adjudicate the expected items (R19) before a pass counts.
 - `expected/*.json` files are DRAFTS and are not adjudicated.
 - Real meeting notes must stay outside the repo. Point `KAINOW_TEST_INPUTS` at a folder on your computer. `out/` is git-ignored.

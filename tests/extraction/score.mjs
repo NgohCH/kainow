@@ -18,12 +18,13 @@ export function scoreSupported(proposals, inputText) {
   };
 }
 
-// An expected item is captured if some proposal's quote contains its key phrase.
+// An expected item is captured if some proposal's quote contains its key phrase, or one of its
+// alternative phrases (`alsoKeys`, for an item the notes state in more than one place).
 // Automated proxy only: human adjudication (R19) still decides the final reference.
 export function scoreCaptured(expected, proposals) {
   const quotes = proposals.map((p) => normalise(p.source_quote ?? ""));
   const missed = expected.filter(
-    (e) => !quotes.some((q) => q.includes(normalise(e.key))),
+    (e) => !quotes.some((q) => [e.key, ...(e.alsoKeys ?? [])].some((k) => q.includes(normalise(k)))),
   );
   const captured = expected.length - missed.length;
   return {

@@ -2,7 +2,7 @@
   { "id": "D1", "kind": "decision", "key": "The meeting agreed to this approach." },
   { "id": "D2", "kind": "decision", "key": "The decision is conditional" },
   { "id": "A1", "kind": "action", "key": "Fix folder permission errors", "owner": "IT Lead", "due": "19 Dec 2026" },
-  { "id": "A2", "kind": "action", "key": "permission exceptions process", "owner": "Records Officer", "due": "15 Jan 2027" },
+  { "id": "A2", "kind": "action", "key": "permission exceptions process", "alsoKeys": ["document the exceptions process"], "owner": "Records Officer", "due": "15 Jan 2027" },
   { "id": "A3", "kind": "action", "key": "Forecast full rollout cost", "owner": "Finance Lead", "due": "22 Dec 2026" },
   { "id": "A4", "kind": "action", "key": "Confirm archive search requirement", "owner": "Programme Manager", "due": "18 Dec 2026" },
   { "id": "Q1", "kind": "question", "key": "searchable after seven years" },
