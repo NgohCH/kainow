@@ -1,7 +1,7 @@
 {
   "model": "gpt-6.1-sol",
   "modelVerified": true,
-  "note": "gpt-6.1-sol was confirmed by the Product Owner on 7 November 2026 as available on the provider list. It has not yet been confirmed by a real API call from this runner.",
+  "note": "gpt-6.1-sol was confirmed by the Product Owner on 7 November 2026 as available on the provider list. The runner called it successfully from the Product Owner's computer on 7 November 2026.",
   "thresholds": {
     "supportedProposals": 0.95,
     "expectedItemsCaptured": 0.9

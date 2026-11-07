@@ -82,6 +82,10 @@ The product rules say a blank spending limit means zero allowance and that no se
 
 At 1 USD = 4.1 MYR, MYR 20 a month is about USD 4.88. At the Standard rates above, a meeting extraction of 10,000 input tokens and 2,000 output tokens (the example in the Product Owner's screenshot) costs about USD 0.04, or MYR 0.164, so the cap allows roughly 120 such extractions a month. Longer notes cost more. Reservations are deliberately larger than the likely cost (see `app/README.md`).
 
+## Extraction check (7 November 2026)
+
+The extraction check ran against the real `gpt-6.1-sol` on the Product Owner's computer, with the three synthetic notes. All quotes were verbatim (33 of 33). The human review is recorded in [`MVP-EXTRACTION-REVIEW-2026-11-07.md`](MVP-EXTRACTION-REVIEW-2026-11-07.md): classification and owner OK on 30 of 33 items, two duplicates marked, and the conditional-wording marks and the by-meaning marking of expected items still to be done. It is not a sign-off.
+
 ## Open items for the Product Owner
 
 1. Approve or change each proposed default above.

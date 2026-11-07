@@ -41,7 +41,7 @@ The prompt also requires one contiguous passage per quote. Quotes built from sep
 
 ## Model
 
-`config.json` names `gpt-6.1-sol`, which the Product Owner confirmed on 7 November 2026 is on the provider list (`modelVerified` is `true`). The first real run from your computer is the first test that the runner can actually call it. `gpt-6-luna` was dropped.
+`config.json` names `gpt-6.1-sol`, which the Product Owner confirmed on 7 November 2026 is on the provider list (`modelVerified` is `true`). The runner has called it from the Product Owner's computer on 7 November 2026 (see `docs/MVP-EXTRACTION-REVIEW-2026-11-07.md`). `gpt-6-luna` was dropped.
 
 ## Tests for the scoring code
 

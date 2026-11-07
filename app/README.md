@@ -42,7 +42,7 @@ The test database is throwaway: the suite drops and recreates its `public` schem
 | M2 | Passwordless sign-in and permissions: one-time codes (10 min, 5 attempts, 30 min lockout), 12-hour sessions, Enterprise Administrator, default-deny permission checks with allowed and denied tests for every action | Done, tested on PostgreSQL 16 |
 | M3 | Notes intake: paste, TXT, Markdown, DOCX, selectable-text PDF; NFC normalisation; source versions and character offsets | Done, tested on PostgreSQL 16 |
 | M4a | AI spend cap: MYR 20 monthly cap, reserve before each call, settle from reported usage, uncertain charges stay counted, UTC+8 periods, administrator settings and view | Done, tested on PostgreSQL 16 |
-| M4b | AI extraction: pg-boss job, OpenAI adapter with the pinned model ID, quote-to-offset location, token usage records, credential pattern check before sending. It calls the spend cap above before every request | Built and tested with a stand-in model. **Not yet run against the real API** (the sandbox cannot reach it) |
+| M4b | AI extraction: pg-boss job, OpenAI adapter with the pinned model ID, quote-to-offset location, token usage records, credential pattern check before sending. It calls the spend cap above before every request | Built and tested with a stand-in model. The extraction check script has run against the real `gpt-6.1-sol` on the Product Owner's computer (see the review record in `docs/`). **The app's own adapter has not**: the sandbox cannot reach the API |
 | M5 | Review screen (React): source-linked proposals, approve and reject bound to the exact source version | Built and checked in a real browser; not yet tested by a person on the Product Owner's machine |
 | M6 | Docker Compose package and local install, built and tested on the Product Owner's computer (Docker Hub is unreachable from the sandbox) | Written and checked as far as the sandbox allows (see `../INSTALL.md`). **Never built with Docker.** |
 
@@ -116,7 +116,7 @@ Code in `src/extraction/` and `src/worker/`. `POST /notes/:id/versions/:n/extrac
 
 **An unusable answer is still paid for.** If the model answers with broken JSON, a malformed item, a refusal, or is cut off at the 8,000-token limit, the usage it reported is charged and the attempt counts as failed.
 
-**Not yet verified against the real API.** The adapter follows the same call as `tests/extraction/run.mjs`, but with `max_completion_tokens` added so cost can be bounded. Neither has run against `gpt-6.1-sol` from here. Run `tests/extraction` on your computer with `OPENAI_API_KEY` set, then start the worker with the same key, before relying on it. The worker needs `OPENAI_API_KEY`; without it runs fail with `model_not_configured` and nothing is sent or charged.
+**The adapter is not yet verified against the real API.** The standalone check `tests/extraction/run.mjs` has run against `gpt-6.1-sol` on the Product Owner's computer (7 November 2026): the model answered, and all quotes were verbatim. The adapter makes the same call but adds `max_completion_tokens` so cost can be bounded, and it has not run against `gpt-6.1-sol`. Run `tests/extraction` on your computer with `OPENAI_API_KEY` set, then start the worker with the same key, before relying on it. The worker needs `OPENAI_API_KEY`; without it runs fail with `model_not_configured` and nothing is sent or charged.
 
 ## Review screen
 
