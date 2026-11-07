@@ -21,6 +21,7 @@ describe('reviewing proposals', { skip: SKIP_NO_DB }, () => {
   let cookie: string;
   let runId: string;
   let versionId: string;
+  let clock: FakeClock;
   const item: Record<string, string> = {};
 
   async function api(method: string, path: string, body?: unknown, signedIn = true): Promise<{ status: number; body: any }> {
@@ -36,7 +37,7 @@ describe('reviewing proposals', { skip: SKIP_NO_DB }, () => {
 
   beforeEach(async () => {
     const sender = new CaptureSender();
-    const clock = new FakeClock(Date.UTC(2026, 10, 9, 2, 0, 0));
+    clock = new FakeClock(Date.UTC(2026, 10, 9, 2, 0, 0));
     const config = loadConfig(testEnv(testDatabaseUrl() as string));
     pool = new Pool({ connectionString: config.databaseUrl });
     await resetPublicSchema(pool);
@@ -89,6 +90,7 @@ describe('reviewing proposals', { skip: SKIP_NO_DB }, () => {
 
   test('a decision can be changed, and the audit trail keeps both', async () => {
     await review('ok', { decision: 'approved' });
+    clock.advanceSeconds(1); // two events at the same instant would have no defined order
     assert.equal((await review('ok', { decision: 'rejected' })).body.item.reviewStatus, 'rejected');
     const { rows } = await pool.query("SELECT action, detail FROM audit_events WHERE action LIKE 'proposal.%' ORDER BY occurred_at, id");
     assert.deepEqual(rows.map((x) => [x.action, x.detail.previousStatus]), [['proposal.approved', 'pending'], ['proposal.rejected', 'approved']]);

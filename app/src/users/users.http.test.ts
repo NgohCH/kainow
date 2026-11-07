@@ -18,6 +18,7 @@ describe('people over HTTP', { skip: SKIP_NO_DB }, () => {
   let base: string;
   let cookie: string;
   let adminId: string;
+  let clock: FakeClock;
 
   async function api(method: string, path: string, body?: unknown, signedIn = true): Promise<{ status: number; body: any }> {
     const res = await fetch(`${base}${path}`, {
@@ -31,7 +32,7 @@ describe('people over HTTP', { skip: SKIP_NO_DB }, () => {
 
   beforeEach(async () => {
     const sender = new CaptureSender();
-    const clock = new FakeClock(Date.UTC(2026, 10, 9, 2, 0, 0));
+    clock = new FakeClock(Date.UTC(2026, 10, 9, 2, 0, 0));
     const config = loadConfig(testEnv(testDatabaseUrl() as string));
     pool = new Pool({ connectionString: config.databaseUrl });
     await resetPublicSchema(pool);
@@ -54,6 +55,7 @@ describe('people over HTTP', { skip: SKIP_NO_DB }, () => {
   });
 
   test('lists everyone with their status, oldest first', async () => {
+    clock.advanceSeconds(1); // people added at the same instant would have no defined order
     await api('POST', '/users', { email: 'second@example.org', displayName: 'Second' });
     const { users } = (await api('GET', '/users')).body;
     assert.deepEqual(users.map((u: any) => [u.email, u.status, u.role]), [[EMAIL, 'active', 'enterprise_administrator'], ['second@example.org', 'active', 'enterprise_administrator']]);
