@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { buildSegments } from './segments.ts';
+import { buildSegments, contextAround, markedSpan } from './segments.ts';
 
 const TEXT = 'We agreed to ship on Friday. Ali emails Sam.';
 
@@ -43,4 +43,20 @@ test('offsets count UTF-16 units, so text after an emoji lines up', () => {
   const text = '\u{1F600} done now';
   const segs = buildSegments(text, [{ id: 'a', quoteStart: 3, quoteEnd: 7 }]);
   assert.equal(segs.find((s) => s.ids.length)?.text, 'done');
+});
+
+const REPEATED = { quoteStart: 29, quoteEnd: 32, occurrences: [{ start: 29, end: 32 }, { start: 33, end: 36 }], chosenOccurrence: null };
+
+test('a repeated quote is marked at the place being looked at, the approved place, or else the first', () => {
+  assert.deepEqual(markedSpan(REPEATED, undefined), { quoteStart: 29, quoteEnd: 32 });
+  assert.deepEqual(markedSpan(REPEATED, 1), { quoteStart: 33, quoteEnd: 36 });
+  assert.deepEqual(markedSpan({ ...REPEATED, chosenOccurrence: 1 }, 0), { quoteStart: 33, quoteEnd: 36 });
+  assert.deepEqual(markedSpan(REPEATED, 7), { quoteStart: 29, quoteEnd: 32 });
+  assert.deepEqual(markedSpan({ quoteStart: null, quoteEnd: null, chosenOccurrence: null }, 1), { quoteStart: null, quoteEnd: null });
+});
+
+test('context around a place trims, flattens line breaks and marks where the notes continue', () => {
+  const t = 'Alpha beta.\nok. gamma delta epsilon';
+  assert.deepEqual(contextAround(t, 12, 15, 5), { before: '…eta. ', match: 'ok.', after: ' gamm…' });
+  assert.deepEqual(contextAround('ok.', 0, 3), { before: '', match: 'ok.', after: '' });
 });

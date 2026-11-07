@@ -106,5 +106,9 @@ export interface Item {
   quoteStart: number | null;
   quoteEnd: number | null;
   quoteMatches: number;
+  /** Where a repeated quote occurs (the first places only, if it repeats very often). Absent unless it repeats. */
+  occurrences?: Array<{ start: number; end: number }>;
+  /** Which of the occurrences the reviewer approved, 0-based. null unless approved and repeated. */
+  chosenOccurrence: number | null;
   reviewStatus: ReviewStatus;
 }

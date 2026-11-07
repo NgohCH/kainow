@@ -4,7 +4,11 @@ import { writeAudit } from '../audit/audit';
 import { CLOCK, type Clock } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
+import { locateQuote } from '../notes/text';
 import { EXTRACTION_QUEUE, type ExtractionQueue } from './queue';
+
+/** A quote that repeats more often than this lists only its first places for choosing. */
+export const MAX_OCCURRENCE_CHOICES = 100;
 
 const RUN_COLUMNS = `id, source_version_id AS "sourceVersionId", status, failure_code AS "failureCode", failure_detail AS "failureDetail",
   attempts, item_count AS "itemCount", unlocated_count AS "unlocatedCount", model_id AS "modelId",
@@ -75,6 +79,7 @@ export class ExtractionService {
     const items = await this.pool.query(
       `SELECT id, position, kind, text, owner, due, quote, quote_start AS "quoteStart", quote_end AS "quoteEnd",
               quote_matches AS "quoteMatches", review_status AS "reviewStatus",
+              chosen_occurrence AS "chosenOccurrence",
               reviewed_by AS "reviewedBy", reviewed_at AS "reviewedAt"
          FROM extraction_items WHERE run_id = $1 ORDER BY position`,
       [runId],
@@ -85,7 +90,22 @@ export class ExtractionService {
         WHERE r.id = $1`,
       [runId],
     );
-    return { run: run.rows[0], source: src.rows[0], items: items.rows };
+    return { run: run.rows[0], source: src.rows[0], items: await this.withOccurrences(run.rows[0].sourceVersionId, items.rows) };
+  }
+
+  /**
+   * For a quote that appears more than once, lists the places (at most MAX_OCCURRENCE_CHOICES) so the
+   * reviewer can say which one is meant. Quotes found once or not at all carry no list.
+   */
+  private async withOccurrences<T extends { quote: string; quoteMatches: number }>(sourceVersionId: string, items: T[]) {
+    if (!items.some((i) => i.quoteMatches > 1)) return items;
+    const { rows } = await this.pool.query<{ text: string }>('SELECT text_content AS text FROM source_versions WHERE id = $1', [sourceVersionId]);
+    const text = rows[0]?.text ?? '';
+    return items.map((i) =>
+      i.quoteMatches > 1
+        ? { ...i, occurrences: locateQuote(text, i.quote).slice(0, MAX_OCCURRENCE_CHOICES).map(({ start, end }) => ({ start, end })) }
+        : i,
+    );
   }
 
   async listForVersion(sourceId: string, versionNo: number) {
@@ -109,7 +129,7 @@ export class ExtractionService {
   async review(
     runId: string,
     itemId: string,
-    input: { decision: unknown; sourceVersionId: unknown; acknowledgeRepeatedQuote?: unknown },
+    input: { decision: unknown; sourceVersionId: unknown; occurrence?: unknown },
     actorUserId: string,
   ) {
     if (input.decision !== 'approved' && input.decision !== 'rejected') {
@@ -134,17 +154,27 @@ export class ExtractionService {
       if (item.source_version_id !== input.sourceVersionId) {
         throw new ConflictException('This proposal is for a different version of the notes than the one you reviewed');
       }
+      let chosen: number | null = null;
       if (input.decision === 'approved') {
         if (item.quote_matches === 0) {
           throw new ConflictException('This proposal quotes text that is not in the notes, so it cannot be approved');
         }
-        if (item.quote_matches > 1 && input.acknowledgeRepeatedQuote !== true) {
-          throw new ConflictException('The quote appears more than once in the notes. Confirm you checked which passage is meant (acknowledgeRepeatedQuote: true)');
+        if (item.quote_matches > 1) {
+          if (input.occurrence === undefined) {
+            throw new ConflictException('The quote appears more than once in the notes. Choose which place is meant (occurrence: 0 for the first)');
+          }
+          const places = Math.min(item.quote_matches, MAX_OCCURRENCE_CHOICES);
+          if (!Number.isInteger(input.occurrence) || (input.occurrence as number) < 0 || (input.occurrence as number) >= places) {
+            throw new BadRequestException(`occurrence must be a whole number from 0 to ${places - 1}`);
+          }
+          chosen = input.occurrence as number;
+        } else if (input.occurrence !== undefined && input.occurrence !== 0) {
+          throw new BadRequestException('This quote appears once, so occurrence can only be 0 or left out');
         }
       }
       await client.query(
-        `UPDATE extraction_items SET review_status = $2, reviewed_by = $3, reviewed_at = $4 WHERE id = $1`,
-        [itemId, input.decision, actorUserId, at],
+        `UPDATE extraction_items SET review_status = $2, chosen_occurrence = $3, reviewed_by = $4, reviewed_at = $5 WHERE id = $1`,
+        [itemId, input.decision, chosen, actorUserId, at],
       );
       await writeAudit(client, {
         at,
@@ -152,7 +182,7 @@ export class ExtractionService {
         actorUserId,
         subjectType: 'extraction_item',
         subjectId: itemId,
-        detail: { runId, sourceVersionId: item.source_version_id, previousStatus: item.review_status },
+        detail: { runId, sourceVersionId: item.source_version_id, previousStatus: item.review_status, ...(chosen !== null ? { occurrence: chosen } : {}) },
       });
       await client.query('COMMIT');
     } catch (err) {

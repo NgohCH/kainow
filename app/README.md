@@ -108,7 +108,7 @@ Code in `src/extraction/` and `src/worker/`. `POST /notes/:id/versions/:n/extrac
 4. Sends the request to `gpt-6.1-sol` (the model saved in the spend settings) and settles from the reported usage.
 5. Saves the proposals. For each one it looks for the model's quote in the stored text and keeps the character offsets of the first match, plus how many places it matches.
 
-**Quotes are never trusted.** A quote that is found nowhere is still kept and shown as unlocated (`quoteMatches: 0`, no offsets), so a reviewer sees the model made it up and can reject it; the run reports `unlocatedCount`. A quote that occurs more than once is flagged (`quoteMatches > 1`) because we cannot know which place the model meant. Review screen (M5) must show both clearly.
+**Quotes are never trusted.** A quote that is found nowhere is still kept and shown as unlocated (`quoteMatches: 0`, no offsets), so a reviewer sees the model made it up and can reject it; the run reports `unlocatedCount`. A quote that occurs more than once is flagged (`quoteMatches > 1`) because we cannot know which place the model meant. The reviewer says which place (`chosenOccurrence`), and `GET /extractions/:runId` lists the places (`occurrences`) for such quotes. Review screen (M5) must show both clearly.
 
 **Retries and limits.** Each request is tried at most 3 times in all, 30 seconds apart and growing. Every attempt is reserved and recorded separately, so retries cost money and count against the cap. At most 2 AI requests run at once (A05), counted per worker process: run one worker.
 
@@ -124,11 +124,11 @@ Code in `web/` (React and Vite, bundled fonts, nothing loaded from the internet)
 
 **On the review screen** the notes sit on the left with every proposed passage highlighted, and the proposals on the right. Selecting a proposal (click, or j and k) scrolls to and strongly marks its passage; clicking a passage selects its proposal. Approved passages turn teal, rejected ones fade. `a` approves and `r` rejects the proposal in focus.
 
-**Rules the screen and the API both enforce:** a decision is bound to the exact version the reviewer was looking at (the screen sends it, the API refuses a mismatch). A quote that is not in the notes is shown with a warning and cannot be approved. A quote that appears more than once shows how many times, highlights the first, and needs a tick ("I checked this is the passage meant") before Approve is enabled. Every decision is audited, including a change of mind.
+**Rules the screen and the API both enforce:** a decision is bound to the exact version the reviewer was looking at (the screen sends it, the API refuses a mismatch). A quote that is not in the notes is shown with a warning and cannot be approved. A quote that appears more than once lists every place it occurs (with a few words of the notes around each), and Approve stays off until the reviewer chooses one; the chosen place is the one highlighted, and it is saved with the approval (`occurrence`, 0-based, in the approval's audit entry too). Only the first 100 places of a quote that repeats very often are listed. Approving again with another choice moves it. Rejecting forgets the choice. Every decision is audited, including a change of mind.
 
 **Administrator screens.** *People* lists everyone, adds an administrator, disables one and enables a disabled one again (`POST /users/:id/enable`; their old sessions and codes stay revoked, so they sign in afresh, and the change is audited as `user.enabled`); it warns while fewer than two are active, and the last active administrator cannot be disabled (the API refuses). *AI spending* shows this month's and today's figures (used, held for requests in progress, counted while an outcome is unknown, left) and edits the model, prices, exchange rate and limits. A blank monthly limit is saved as no allowance and the form says so; "no daily cap" is an explicit choice. Every change is audited.
 
-**Not in the MVP screens:** editing a proposal's wording, and choosing which of several repeated passages was meant. The responsive layout stacks the notes above the proposals on a phone, which works but is not tuned. Safari and Firefox are deferred to January.
+**Not in the MVP screens:** editing a proposal's wording. The responsive layout stacks the notes above the proposals on a phone, which works but is not tuned. Safari and Firefox are deferred to January.
 
 ## Sign-in design notes
 

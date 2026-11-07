@@ -42,3 +42,28 @@ export function buildSegments(text: string, items: Located[]): Segment[] {
   }
   return out;
 }
+
+/**
+ * The stretch of text to mark for a proposal. For a quote that repeats it is the place the reviewer
+ * approved, else the place they are looking at, else the first. `picked` is an index into `occurrences`.
+ */
+export function markedSpan(
+  item: { quoteStart: number | null; quoteEnd: number | null; occurrences?: Array<{ start: number; end: number }>; chosenOccurrence: number | null },
+  picked: number | undefined,
+): { quoteStart: number | null; quoteEnd: number | null } {
+  const at = item.chosenOccurrence ?? picked;
+  const place = at === undefined ? undefined : item.occurrences?.[at];
+  return place ? { quoteStart: place.start, quoteEnd: place.end } : { quoteStart: item.quoteStart, quoteEnd: item.quoteEnd };
+}
+
+/** A few words of the notes before and after a place, so the reviewer can tell repeated places apart. */
+export function contextAround(text: string, start: number, end: number, width = 40): { before: string; match: string; after: string } {
+  const flat = (t: string) => t.replace(/\s+/g, ' ');
+  const lead = Math.max(0, start - width);
+  const tail = Math.min(text.length, end + width);
+  return {
+    before: (lead > 0 ? '…' : '') + flat(text.slice(lead, start)),
+    match: flat(text.slice(start, end)),
+    after: flat(text.slice(end, tail)) + (tail < text.length ? '…' : ''),
+  };
+}
