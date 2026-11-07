@@ -2,7 +2,7 @@
   { "id": "D1", "kind": "decision", "key": "akan dialih ke slot Selasa pagi" },
   { "id": "D2", "kind": "decision", "key": "kelulusan bertulis daripada Pendaftar" },
   { "id": "A1", "kind": "action", "key": "Orang B akan menyemak", "owner": "Orang B", "due": "10 Dec" },
-  { "id": "A2", "kind": "action", "key": "Orang C akan menghubungi", "owner": "Orang C", "due": "9 Dec" },
+  { "id": "A2", "kind": "action", "key": "Orang C akan menghubungi", "alsoKeys": ["Sahkan senarai pelajar"], "owner": "Orang C", "due": "9 Dec" },
   { "id": "A3", "kind": "action", "key": "Pejabat Antarabangsa", "owner": "Orang D", "due": "6 Dec" },
   { "id": "A4", "kind": "action", "key": "Orang A akan menyediakan draf", "owner": "Orang A", "due": "5 Dec" },
   { "id": "A5", "kind": "action", "key": "Ketua Jabatan sebelum 8 Disember", "owner": "Ketua Jabatan", "due": "8 Dec" }

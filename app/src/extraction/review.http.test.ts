@@ -115,14 +115,61 @@ describe('reviewing proposals', { skip: SKIP_NO_DB }, () => {
 
   test('a quote that is not in the notes can be rejected but never approved', async () => {
     assert.equal((await review('invented', { decision: 'approved' })).status, 409);
-    assert.equal((await review('invented', { decision: 'approved', acknowledgeRepeatedQuote: true })).status, 409);
+    assert.equal((await review('invented', { decision: 'approved', occurrence: 0 })).status, 409);
     assert.equal((await review('invented', { decision: 'rejected' })).status, 200);
   });
 
-  test('a quote that appears more than once needs an explicit acknowledgement to approve', async () => {
+  test('a quote that appears more than once needs the reviewer to choose which place is meant', async () => {
     assert.equal((await review('repeated', { decision: 'approved' })).status, 409);
-    assert.equal((await review('repeated', { decision: 'approved', acknowledgeRepeatedQuote: 'yes' })).status, 409);
-    assert.equal((await review('repeated', { decision: 'approved', acknowledgeRepeatedQuote: true })).status, 200);
+    for (const bad of ['1', true, -1, 2, 1.5, null]) {
+      assert.equal((await review('repeated', { decision: 'approved', occurrence: bad })).status, 400, `occurrence ${String(bad)}`);
+    }
+    assert.equal((await pool.query('SELECT review_status FROM extraction_items WHERE id = $1', [item.repeated])).rows[0].review_status, 'pending');
+    const r = await review('repeated', { decision: 'approved', occurrence: 1 });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.item.chosenOccurrence, 1);
+    const { rows } = await pool.query("SELECT detail FROM audit_events WHERE action = 'proposal.approved'");
+    assert.equal(rows[0].detail.occurrence, 1);
+  });
+
+  test('every place a repeated quote occurs is listed, so the reviewer can choose', async () => {
+    const run = (await api('GET', `/extractions/${runId}`)).body;
+    const by = (key: string) => run.items.find((i: { id: string }) => i.id === item[key]);
+    assert.deepEqual(by('repeated').occurrences, [{ start: 29, end: 32 }, { start: 33, end: 36 }]);
+    assert.equal(by('ok').occurrences, undefined);
+    assert.equal(by('repeated').chosenOccurrence, null);
+  });
+
+  test('a quote that appears once needs no choice, and a choice other than the only place is refused', async () => {
+    const r = await review('ok', { decision: 'approved' });
+    assert.equal(r.status, 200);
+    assert.equal(r.body.item.chosenOccurrence, null);
+    assert.equal((await review('ok', { decision: 'approved', occurrence: 1 })).status, 400);
+    assert.equal((await review('ok', { decision: 'approved', occurrence: 0 })).status, 200);
+  });
+
+  test('changing a repeated quote to rejected forgets the chosen place; approving again needs a new choice', async () => {
+    await review('repeated', { decision: 'approved', occurrence: 0 });
+    clock.advanceSeconds(1);
+    const rejected = await review('repeated', { decision: 'rejected', occurrence: 1 });
+    assert.equal(rejected.body.item.reviewStatus, 'rejected');
+    assert.equal(rejected.body.item.chosenOccurrence, null);
+    assert.equal((await review('repeated', { decision: 'approved' })).status, 409);
+  });
+
+  test('the database allows a chosen place only on an approved proposal whose quote repeats', async () => {
+    const set = (id: string, status: string, chosen: number | null) =>
+      pool.query(
+        `UPDATE extraction_items SET review_status = $2, chosen_occurrence = $3,
+                reviewed_by = CASE WHEN $2 = 'pending' THEN NULL ELSE (SELECT id FROM users LIMIT 1) END,
+                reviewed_at = CASE WHEN $2 = 'pending' THEN NULL ELSE now() END WHERE id = $1`,
+        [id, status, chosen],
+      );
+    await assert.rejects(set(item.repeated, 'approved', null), /chosen_occurrence/);
+    await assert.rejects(set(item.repeated, 'approved', 2), /chosen_occurrence/);
+    await assert.rejects(set(item.repeated, 'rejected', 0), /chosen_occurrence/);
+    await assert.rejects(set(item.ok, 'approved', 0), /chosen_occurrence/);
+    await set(item.repeated, 'approved', 1);
   });
 
   test('a proposal from an unfinished run cannot be reviewed, and ids must match', async () => {

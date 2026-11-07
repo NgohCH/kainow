@@ -10,7 +10,7 @@ Scope: December 2026 MVP, a working vertical slice. It is not the full V1.0 rele
 | 1 | MVP scope | Accepted as proposed: sign-in, meeting notes (paste/upload), AI extraction with source links, review screen, monthly AI spend cap, local Compose install. Deferred to January: SharePoint/OneDrive, email, reminders, updater, full restore drill, full accessibility audit, newcomer test, 200-user load test, Safari/Firefox. |
 | 2 | OpenAI model | **Changed 7 November 2026:** `gpt-6.1-sol` is the model. `gpt-6-luna` is dropped and there is no alternate for now. See "Updates of 7 November 2026" below. |
 | 3 | AI spend cap | Applies to the finished product's runtime AI use only, not to development. Amount: MYR 20 per month. Reset boundary: calendar month, UTC+8 (assumed; confirm if different). |
-| 4 | Sign-in | Passwordless. Named user for the Product Owner: ngoh.ch@help.edu.my. More users to be supplied. |
+| 4 | Sign-in | Passwordless. Named users: ngoh.ch@help.edu.my (Product Owner) and ngohch@gmail.com (second Enterprise Administrator, added 7 November 2026). More users to be supplied. |
 | 5 | Roles | Enterprise Administrator for the MVP. Project Manager and delegates as described in the handover (to be mapped to the register's role matrix under R03). |
 | 6 | Data retention | As per the handover documents (R07): no purge feature, logical deletion only, history kept. |
 | 7 | Languages | English and Bahasa Melayu, including mixed-language notes. |
@@ -39,6 +39,7 @@ The Product Owner answered these proposed defaults. Items marked with a note wer
 1. **Input and output formats:** accept all formats in O03. Input: pasted text, TXT, Markdown, DOCX, selectable-text PDF. Output: Markdown, DOCX, PDF, CSV for tabular reports. This replaces the earlier text-and-DOCX-only scope.
 2. **Spend cap:** the monthly cap of MYR 20 is sufficient. No separate daily cap for the MVP. **Note:** O04 requires daily and monthly periods with a blank limit meaning no allowance. Confirm the implementation treats the daily period as unlimited when no daily cap is set, rather than blocking all calls.
 3. **Administrators and recovery:** one Enterprise Administrator for the MVP, who is also the recovery custodian. **Risk:** with one administrator, a lockout has no second person to restore access. O07 expects two or more named administrators and a separate custodian before go-live. This is acceptable for the MVP only, and must be fixed before production.
+   **Updated 7 November 2026:** a second Enterprise Administrator is named: ngohch@gmail.com. The MVP now has two named administrators, so a lockout of one can be recovered by the other. O07's separate recovery custodian is still not named and remains to be fixed before production.
 4. **Credential detection (O01):** accepted. A basic pattern check runs before AI transmission. Detection is best-effort, as O01 states.
 
 ## Deferred (not in MVP)
@@ -80,6 +81,10 @@ The product rules say a blank spending limit means zero allowance and that no se
 ### Spend cap figures (for reference)
 
 At 1 USD = 4.1 MYR, MYR 20 a month is about USD 4.88. At the Standard rates above, a meeting extraction of 10,000 input tokens and 2,000 output tokens (the example in the Product Owner's screenshot) costs about USD 0.04, or MYR 0.164, so the cap allows roughly 120 such extractions a month. Longer notes cost more. Reservations are deliberately larger than the likely cost (see `app/README.md`).
+
+## Extraction check (7 November 2026)
+
+The extraction check ran against the real `gpt-6.1-sol` on the Product Owner's computer, with the three synthetic notes. All quotes were verbatim (33 of 33). The human review is recorded in [`MVP-EXTRACTION-REVIEW-2026-11-07.md`](MVP-EXTRACTION-REVIEW-2026-11-07.md): classification and owner OK on 30 of 33 items, two duplicates marked, and the conditional-wording marks and the by-meaning marking of expected items still to be done. It is not a sign-off.
 
 ## Open items for the Product Owner
 

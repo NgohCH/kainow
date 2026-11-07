@@ -37,7 +37,7 @@ export class ExtractionController {
     return this.extraction.getRun(uuid(runId));
   }
 
-  /** Approve or reject one proposal: { decision, sourceVersionId, acknowledgeRepeatedQuote? }. */
+  /** Approve or reject one proposal: { decision, sourceVersionId, occurrence? } (occurrence is needed to approve a quote that repeats). */
   @Post('extractions/:runId/items/:itemId/review')
   @RequireAction('proposal.review')
   @HttpCode(200)
@@ -48,7 +48,18 @@ export class ExtractionController {
     return this.extraction.review(uuid(runId), uuid(itemId), {
       decision: b.decision,
       sourceVersionId: b.sourceVersionId,
-      acknowledgeRepeatedQuote: b.acknowledgeRepeatedQuote,
+      occurrence: b.occurrence,
     }, userId);
+  }
+
+  /** Replace a proposal's wording: { sourceVersionId, text, owner?, due? }. Sends it back to review. */
+  @Post('extractions/:runId/items/:itemId/edit')
+  @RequireAction('proposal.review')
+  @HttpCode(200)
+  edit(@Param('runId') runId: string, @Param('itemId') itemId: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    const userId = req.auth?.user.id;
+    if (!userId) throw new NotFoundException();
+    const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+    return this.extraction.edit(uuid(runId), uuid(itemId), { sourceVersionId: b.sourceVersionId, text: b.text, owner: b.owner, due: b.due }, userId);
   }
 }

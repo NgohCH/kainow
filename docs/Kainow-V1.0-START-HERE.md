@@ -34,7 +34,7 @@ After the first six, read the specialist rules relevant to the feature being des
 - “Product Owner” in handover decisions means the person accepting the product scope; “Project Owner” is an application role. An Enterprise Administrator can configure supported policy but is not automatically an authorised project approver or source reader.
 - A real contradiction requires a recorded clarification/change, not a guess or a silent preference for an older document. Preserve the accepted defaults until an authorised change is effective. The six handover questions are now resolved in Q01–Q06; remaining technical contracts, numerical validation bounds, setup and verification remain expressly visible.
 - New product requirements need a recorded decision and consistent updates to affected files. Accepted policy may be changed after go-live through bounded, versioned settings; this cannot silently rewrite old commitments, approval bases, access grants or evidence.
-- The name is Kainow. The actual existing repository address remains `https://github.com/NgohCH/katempor`; this package does not assert a repository rename or source change.
+- The name is Kainow. The repository address is `https://github.com/NgohCH/kainow` (renamed from `https://github.com/NgohCH/katempor`, as confirmed on 7 November 2026).
 
 ## 4. Complete current document index
 
