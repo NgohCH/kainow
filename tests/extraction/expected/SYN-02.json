@@ -1,0 +1,9 @@
+{ "input": "SYN-02-mixed-bm-english-timetable-results.md", "status": "DRAFT, not adjudicated", "items": [
+  { "id": "D1", "kind": "decision", "key": "ditangguh satu minggu" },
+  { "id": "D2", "kind": "decision", "key": "No one should announce the new date" },
+  { "id": "A1", "kind": "action", "key": "resolve the eight timetable clashes", "owner": "Coordinator B", "due": "11 Dec" },
+  { "id": "A2", "kind": "action", "key": "alternative lab slots", "owner": "Officer C", "due": "10 Dec" },
+  { "id": "A3", "kind": "action", "key": "announce the new results date", "owner": "Admin D", "due": "8 Dec" },
+  { "id": "A4", "kind": "action", "key": "complaint reply template", "owner": "Admin D", "due": "11 Dec" },
+  { "id": "R1", "kind": "risk", "key": "cannot plan their travel" }
+] }
