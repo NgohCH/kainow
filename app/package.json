@@ -1,0 +1,18 @@
+{
+  "name": "kainow-app",
+  "private": true,
+  "version": "0.0.0",
+  "description": "Kainow MVP application code. Slice 1: pure domain rules (source-quote location, monthly AI spend ledger).",
+  "license": "AGPL-3.0-only",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "npm run build && node --test dist/domain/*.test.js"
+  },
+  "devDependencies": {
+    "@types/node": "22.20.5",
+    "typescript": "5.9.3"
+  }
+}
