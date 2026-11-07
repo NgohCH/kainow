@@ -40,7 +40,8 @@ The test database is throwaway: the suite drops and recreates its `public` schem
 | M1 | Foundation: API and worker entry points, config, SQL migrations with checksums, identity and append-only audit schema, health check, durable AI/email/document queues | Done, tested on PostgreSQL 16 |
 | M2 | Passwordless sign-in and permissions: one-time codes (10 min, 5 attempts, 30 min lockout), 12-hour sessions, Enterprise Administrator, default-deny permission checks with allowed and denied tests for every action | Done, tested on PostgreSQL 16 |
 | M3 | Notes intake: paste, TXT, Markdown, DOCX, selectable-text PDF; NFC normalisation; source versions and character offsets | Not started |
-| M4 | AI extraction: pg-boss job, OpenAI adapter with pinned model ID, quote-to-offset location, token usage records, credential pattern check before sending, MYR 20 monthly cap with reserve-before-call | Needs open questions 2 and 3 |
+| M4a | AI spend cap: MYR 20 monthly cap, reserve before each call, settle from reported usage, uncertain charges stay counted, UTC+8 periods, administrator settings and view | Done, tested on PostgreSQL 16 |
+| M4b | AI extraction: pg-boss job, OpenAI adapter with the pinned model ID, quote-to-offset location, token usage records, credential pattern check before sending. It calls the spend cap above before every request | Not started |
 | M5 | Review screen (React): source-linked proposals, approve and reject bound to the exact source version | Not started |
 | M6 | Docker Compose package and local install, built and tested on the Product Owner's computer (Docker Hub is unreachable from the sandbox) | Not started |
 
@@ -48,12 +49,28 @@ The test database is throwaway: the suite drops and recreates its `public` schem
 
 Recorded in [`docs/MVP-DECISIONS.md`](../docs/MVP-DECISIONS.md): sign-in codes go out by a small email sender, the model is `gpt-6.1-sol`, prices are $2.00 input, $0.10 cached input and $10.00 output in USD at 4.1 MYR to the dollar, and originals are stored in PostgreSQL.
 
+The four follow-up points were confirmed the same day: prices are per 1 million tokens, the `gpt-6.1-sol` column is the one used, `gpt-6-luna` is dropped, and the monthly cap resets at the start of the calendar month in UTC+8.
+
 ## Open questions for the Product Owner
 
-1. Are the quoted prices per 1 million tokens? Only the Batch/Flex rates gave a unit.
-2. The `gpt-6.1-sol` column of the price table was used, not the "GPT-6 Sol" column. Correct?
-3. "Drop gpt-6.1-luna" was read as dropping `gpt-6-luna`. Correct?
-4. Is the monthly cap reset boundary the calendar month in UTC+8?
+None at the moment.
+
+## AI spend cap
+
+Run `npm run apply-mvp-spend-settings` once after `npm run migrate` to save the values approved in [`docs/MVP-DECISIONS.md`](../docs/MVP-DECISIONS.md): `gpt-6.1-sol`, USD 2.00 / 0.10 / 10.00 per million tokens (input / cached input / output), 1 USD = 4.1 MYR, MYR 20 a month, no daily cap. Until settings are saved, every AI request is blocked. An administrator can view and change them with `GET /ai/spend` and `PUT /ai/spend-settings`; each change is written to the audit trail with the new values.
+
+How a request is paid for (code in `src/spend/`, to be called by the extraction job in M4b):
+
+1. **Estimate a ceiling.** A token is at least one byte, so the prompt's size in bytes bounds its tokens. The estimate adds a margin for message framing, prices every input token as uncached, and assumes the whole `max output tokens` is used. The request must carry that maximum: without it the cost cannot be bounded and the request must not be sent.
+2. **Reserve.** Reservations take a database lock, so requests made at the same moment cannot each see the same headroom. The reservation is refused if it does not fit under every applicable limit (a reservation equal to what is left is allowed). A blank or zero limit allows nothing.
+3. **Settle.** The reservation is replaced by the cost of the usage the provider reports, priced at the rates in force when it was reserved. Settling twice counts once. A real cost above the estimate is recorded in full and flagged, never trimmed.
+4. **If the outcome is unknown** (timeout, lost connection, crash), mark it uncertain. The full estimate keeps counting until the real usage or evidence of no charge arrives. Only a request that was never sent can be released at once.
+
+Every attempt, including a retry or a fallback, is its own entry and counts. Entries are never deleted. Amounts are whole micro-MYR (1 MYR = 1,000,000), with no floating point, and costs are rounded up.
+
+**Reservations are deliberately larger than the likely cost.** A 50,000-byte note with up to 8,000 output tokens reserves MYR 0.74, but the example extraction of 10,000 input and 2,000 output tokens costs MYR 0.164. The extra is held only while the request runs. Near the end of the month a long note may be refused even though its real cost would have fit; that is the price of never overspending.
+
+Not covered yet: the global limit of two simultaneous AI requests (A05), the three-attempts rule, and the per-user limit. They belong with the extraction job.
 
 ## Sign-in design notes
 

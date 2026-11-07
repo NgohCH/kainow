@@ -10,7 +10,7 @@ import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { runMigrations } from './migrate';
 
 const realMigrations = loadDatabaseConfig({ DATABASE_URL: 'x' }).migrationsDir;
-const REAL_FILES = ['0001_identity_and_audit.sql', '0002_sign_in_throttle.sql'];
+const REAL_FILES = ['0001_identity_and_audit.sql', '0002_sign_in_throttle.sql', '0003_ai_spend.sql'];
 
 describe('migrations', { skip: SKIP_NO_DB }, () => {
   let pool: Pool;

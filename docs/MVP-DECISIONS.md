@@ -59,10 +59,25 @@ R02–R20 remain open for the full V1.0 release, except where listed above. R14,
    The Product Owner also quoted Batch/Flex rates for `gpt-6.1-sol` ($1 input and $5 output per million tokens). The MVP is built on the Standard rates above, which cost more, so the cap errs on the safe side.
 3. **Originals:** the MVP stores the original file and its extracted text in PostgreSQL. SharePoint/OneDrive storage stays deferred.
 
+### Confirmed later on 7 November 2026
+
+- **Prices are per 1 million tokens.** The Product Owner's pricing screenshot is headed "API pricing (USD per 1 million tokens)".
+- **Price column:** the `gpt-6.1-sol` column is used (cached input $0.10). The screenshot also has a "GPT-6 Sol" column at $0.20 cached input, which is not used because the model chosen is `gpt-6.1-sol`.
+- **`gpt-6-luna` is dropped.** "Drop gpt-6.1-luna" was read as `gpt-6-luna`, and the Product Owner confirmed.
+- **The monthly cap resets at the start of the calendar month in UTC+8.** Confirmed.
+
+### How "no daily cap" is represented
+
+The product rules say a blank spending limit means zero allowance and that no setting silently means unlimited. The Product Owner decided there is no daily cap in the MVP. Both hold if "no daily cap" is an explicit, recorded setting and not a blank:
+
+- Daily mode `not_applied` means no daily limit is enforced. It is set deliberately and recorded in the audit trail.
+- Daily mode `limit` with a blank or zero amount blocks every request, as the product rules require.
+- A monthly limit that is blank or zero blocks every request.
+
+### Spend cap figures (for reference)
+
+At 1 USD = 4.1 MYR, MYR 20 a month is about USD 4.88. At the Standard rates above, a meeting extraction of 10,000 input tokens and 2,000 output tokens (the example in the Product Owner's screenshot) costs about USD 0.04, or MYR 0.164, so the cap allows roughly 120 such extractions a month. Longer notes cost more. Reservations are deliberately larger than the likely cost (see `app/README.md`).
+
 ## Open items for the Product Owner
 
-1. Confirm the reset boundary for the spend cap (item 3), or confirm the calendar-month default.
-2. Confirm the quoted prices are per 1 million tokens. The message gave the unit only for the Batch/Flex rates.
-3. The price table had a column headed "GPT-6 Sol" next to "GPT-6.1 Sol" (cached input $0.20 against $0.10). The `gpt-6.1-sol` column is used. Confirm that is the right one.
-4. "Drop gpt-6.1-luna" was read as dropping `gpt-6-luna`, the only luna model in this log. Confirm.
-5. Approve or change each proposed default above.
+1. Approve or change each proposed default above.

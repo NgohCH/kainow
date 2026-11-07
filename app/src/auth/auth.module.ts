@@ -7,12 +7,11 @@ import { AuthController } from './auth.controller';
 import { AuthGuard } from './auth.guard';
 import { AuthService } from './auth.service';
 import { createCodeSender } from './code-senders';
-import { CLOCK, CODE_SENDER, type Clock, type CodeSender } from './tokens';
+import { CODE_SENDER, type CodeSender } from './tokens';
 
-/** Replaceable pieces, so tests can capture codes and control time. */
+/** Replaceable pieces, so tests can capture codes. */
 export interface AuthOptions {
   codeSender?: CodeSender;
-  clock?: Clock;
 }
 
 @Module({})
@@ -25,14 +24,13 @@ export class AuthModule {
         AuthService,
         UsersService,
         { provide: APP_GUARD, useClass: AuthGuard },
-        { provide: CLOCK, useValue: options.clock ?? (() => new Date()) },
         {
           provide: CODE_SENDER,
           inject: [APP_CONFIG],
           useFactory: (config: AppConfig) => options.codeSender ?? createCodeSender(config.codeDelivery),
         },
       ],
-      exports: [AuthService, UsersService, CLOCK],
+      exports: [AuthService, UsersService],
     };
   }
 }
