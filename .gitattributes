@@ -1,0 +1,8 @@
+# Same line endings on every computer. Files copied into the Linux containers, and the checksums of the
+# database migrations, must not depend on whether the repository was cloned on Windows or on Linux.
+* text=auto eol=lf
+*.docx binary
+*.pdf binary
+*.woff2 binary
+*.png binary
+*.jpg binary
