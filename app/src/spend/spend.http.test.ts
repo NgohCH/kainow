@@ -27,6 +27,7 @@ describe('spend settings over HTTP', { skip: SKIP_NO_DB }, () => {
   let app: INestApplication;
   let base: string;
   let cookie: string;
+  let csrf: string;
 
   beforeEach(async () => {
     const sender = new CaptureSender();
@@ -47,6 +48,7 @@ describe('spend settings over HTTP', { skip: SKIP_NO_DB }, () => {
       body: JSON.stringify({ email: EMAIL, code: sender.lastCode(EMAIL) }),
     });
     cookie = (verify.headers.getSetCookie()[0] ?? '').split(';')[0];
+    csrf = ((await verify.json()) as { csrfToken: string }).csrfToken;
   });
   afterEach(async () => {
     await app?.close();
@@ -55,7 +57,7 @@ describe('spend settings over HTTP', { skip: SKIP_NO_DB }, () => {
   async function call(method: string, path: string, body?: unknown, signedIn = true): Promise<{ status: number; body: any }> {
     const res = await fetch(`${base}${path}`, {
       method,
-      headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(signedIn && cookie ? { Cookie: cookie } : {}) },
+      headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(signedIn && cookie ? { Cookie: cookie, 'X-CSRF-Token': csrf } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     const text = await res.text();

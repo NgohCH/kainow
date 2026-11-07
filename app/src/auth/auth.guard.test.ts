@@ -29,7 +29,7 @@ const fakeAuth = {
 const guard = new AuthGuard(new Reflector(), fakeAuth);
 
 function contextFor(handler: () => void, cookie?: string): { ctx: ExecutionContext; req: HttpRequest } {
-  const req: HttpRequest = { headers: cookie ? { cookie: `kainow_session=${cookie}` } : {} };
+  const req: HttpRequest = { method: 'GET', headers: cookie ? { cookie: `kainow_session=${cookie}` } : {} };
   const ctx = {
     getHandler: () => handler,
     getClass: () => Sample,

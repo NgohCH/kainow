@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
-import { ApiError, api, type User } from './api.ts';
+import { ApiError, api, setCsrfToken, type User } from './api.ts';
 import { NoteDetail } from './views/NoteDetail.tsx';
 import { Notes } from './views/Notes.tsx';
 import { People } from './views/People.tsx';
@@ -68,7 +68,8 @@ function SignIn({ onSignedIn }: { onSignedIn: (u: User) => void }) {
     setBusy(true);
     setError(null);
     try {
-      const r = await api.post<{ user: User }>('/auth/verify', { email, code: code.trim() });
+      const r = await api.post<{ user: User; csrfToken: string | null }>('/auth/verify', { email, code: code.trim() });
+      setCsrfToken(r.csrfToken);
       onSignedIn(r.user);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Something went wrong. Try again.');
@@ -123,8 +124,11 @@ export function App() {
   const [user, setUser] = useState<User | null | undefined>(undefined);
 
   useEffect(() => {
-    api.get<{ user: User }>('/auth/me').then(
-      (r) => setUser(r.user),
+    api.get<{ user: User; csrfToken: string | null }>('/auth/me').then(
+      (r) => {
+        setCsrfToken(r.csrfToken);
+        setUser(r.user);
+      },
       () => setUser(null),
     );
   }, []);

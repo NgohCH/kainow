@@ -17,13 +17,14 @@ describe('people over HTTP', { skip: SKIP_NO_DB }, () => {
   let pool: Pool;
   let base: string;
   let cookie: string;
+  let csrf: string;
   let adminId: string;
   let clock: FakeClock;
 
   async function api(method: string, path: string, body?: unknown, signedIn = true): Promise<{ status: number; body: any }> {
     const res = await fetch(`${base}${path}`, {
       method,
-      headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(signedIn ? { Cookie: cookie } : {}) },
+      headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(signedIn ? { Cookie: cookie, 'X-CSRF-Token': csrf } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     const text = await res.text();
@@ -44,6 +45,7 @@ describe('people over HTTP', { skip: SKIP_NO_DB }, () => {
     await api('POST', '/auth/request-code', { email: EMAIL }, false);
     const verify = await fetch(`${base}/auth/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: EMAIL, code: sender.lastCode(EMAIL) }) });
     cookie = (verify.headers.getSetCookie()[0] ?? '').split(';')[0];
+    csrf = ((await verify.json()) as { csrfToken: string }).csrfToken;
   });
   afterEach(async () => {
     await app?.close();

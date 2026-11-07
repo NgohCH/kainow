@@ -19,6 +19,7 @@ describe('reviewing proposals', { skip: SKIP_NO_DB }, () => {
   let pool: Pool;
   let base: string;
   let cookie: string;
+  let csrf: string;
   let runId: string;
   let versionId: string;
   let clock: FakeClock;
@@ -27,7 +28,7 @@ describe('reviewing proposals', { skip: SKIP_NO_DB }, () => {
   async function api(method: string, path: string, body?: unknown, signedIn = true): Promise<{ status: number; body: any }> {
     const res = await fetch(`${base}${path}`, {
       method,
-      headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(signedIn ? { Cookie: cookie } : {}) },
+      headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(signedIn ? { Cookie: cookie, 'X-CSRF-Token': csrf } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     const text = await res.text();
@@ -49,6 +50,7 @@ describe('reviewing proposals', { skip: SKIP_NO_DB }, () => {
     await fetch(`${base}/auth/request-code`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: EMAIL }) });
     const verify = await fetch(`${base}/auth/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: EMAIL, code: sender.lastCode(EMAIL) }) });
     cookie = (verify.headers.getSetCookie()[0] ?? '').split(';')[0];
+    csrf = ((await verify.json()) as { csrfToken: string }).csrfToken;
 
     const created = (await api('POST', '/notes', { title: 'T', text: TEXT })).body;
     versionId = created.version.id;

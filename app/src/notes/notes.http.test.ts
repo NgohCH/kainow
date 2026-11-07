@@ -19,6 +19,7 @@ describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
   let pool: Pool;
   let base: string;
   let cookie: string;
+  let csrf: string;
 
   beforeEach(async () => {
     const sender = new CaptureSender();
@@ -38,6 +39,7 @@ describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
       body: JSON.stringify({ email: EMAIL, code: sender.lastCode(EMAIL) }),
     });
     cookie = (verify.headers.getSetCookie()[0] ?? '').split(';')[0];
+    csrf = ((await verify.json()) as { csrfToken: string }).csrfToken;
   });
   afterEach(async () => {
     await app?.close();
@@ -47,7 +49,7 @@ describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
   async function json(method: string, path: string, body?: unknown, signedIn = true): Promise<{ status: number; body: any }> {
     const res = await fetch(`${base}${path}`, {
       method,
-      headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(signedIn ? { Cookie: cookie } : {}) },
+      headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(signedIn ? { Cookie: cookie, 'X-CSRF-Token': csrf } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     const text = await res.text();
@@ -58,7 +60,7 @@ describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
     const form = new FormData();
     if (title !== undefined) form.set('title', title);
     form.set('file', new Blob([new Uint8Array(bytes)]), filename);
-    const res = await fetch(`${base}${path}`, { method: 'POST', headers: { Cookie: cookie }, body: form });
+    const res = await fetch(`${base}${path}`, { method: 'POST', headers: { Cookie: cookie, 'X-CSRF-Token': csrf }, body: form });
     const text = await res.text();
     return { status: res.status, body: text ? JSON.parse(text) : undefined };
   }
@@ -129,7 +131,7 @@ describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
       const text = (await json('GET', `/notes/${id}/versions/1`)).body.version.text;
       assert.match(text, re);
 
-      const res = await fetch(`${base}/notes/${id}/versions/1/original`, { headers: { Cookie: cookie } });
+      const res = await fetch(`${base}/notes/${id}/versions/1/original`, { headers: { Cookie: cookie, 'X-CSRF-Token': csrf } });
       assert.equal(res.status, 200);
       assert.deepEqual(Buffer.from(await res.arrayBuffer()), bytes);
       assert.match(res.headers.get('content-disposition') ?? '', /^attachment; filename="sync\./);
@@ -149,7 +151,7 @@ describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
 
   test('a pasted version has no original to download', async () => {
     const { body } = await json('POST', '/notes', { title: 'T', text: 'x' });
-    assert.equal((await fetch(`${base}/notes/${body.source.id}/versions/1/original`, { headers: { Cookie: cookie } })).status, 404);
+    assert.equal((await fetch(`${base}/notes/${body.source.id}/versions/1/original`, { headers: { Cookie: cookie, 'X-CSRF-Token': csrf } })).status, 404);
   });
 
   test('bad uploads are refused with a reason and store nothing', async () => {
@@ -175,7 +177,7 @@ describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
   test('a request needs exactly one of pasted text or a file', async () => {
     const form = new FormData();
     form.set('title', 'No file');
-    const res = await fetch(`${base}/notes/upload`, { method: 'POST', headers: { Cookie: cookie }, body: form });
+    const res = await fetch(`${base}/notes/upload`, { method: 'POST', headers: { Cookie: cookie, 'X-CSRF-Token': csrf }, body: form });
     assert.equal(res.status, 400);
     assert.equal((await json('POST', '/notes', { title: 'T' })).status, 400);
     assert.equal((await json('POST', '/notes', { title: 'T', text: 5 })).status, 400);

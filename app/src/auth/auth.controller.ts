@@ -49,13 +49,14 @@ export class AuthController {
     }
     const maxAge = this.config.auth.sessionHours * 3600;
     res.setHeader('Set-Cookie', sessionCookie(SESSION_COOKIE, result.token, maxAge, this.config.cookieSecure));
-    return { user: result.user };
+    const session = await this.auth.resolveSession(result.token);
+    return { user: result.user, csrfToken: session ? this.auth.csrfToken(session.sessionId) : null };
   }
 
   @Get('me')
   @AnySignedInUser()
   me(@Req() req: HttpRequest) {
-    return { user: req.auth?.user };
+    return { user: req.auth?.user, csrfToken: req.auth ? this.auth.csrfToken(req.auth.sessionId) : null };
   }
 
   @Post('logout')

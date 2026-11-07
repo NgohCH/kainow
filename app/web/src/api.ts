@@ -7,6 +7,12 @@ export class ApiError extends Error {
 // In development Vite serves the page and proxies /api to the API; in production the API serves the page itself.
 const BASE = import.meta.env.DEV ? '/api' : '';
 
+// Given by the server at sign-in and on /auth/me; sent back on every request that changes something.
+let csrfToken: string | null = null;
+export const setCsrfToken = (t: string | null | undefined): void => {
+  csrfToken = t ?? null;
+};
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const isForm = body instanceof FormData;
   let res: Response;
@@ -14,7 +20,10 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
     res = await fetch(BASE + path, {
       method,
       credentials: 'same-origin',
-      headers: body !== undefined && !isForm ? { 'Content-Type': 'application/json' } : undefined,
+      headers: {
+        ...(body !== undefined && !isForm ? { 'Content-Type': 'application/json' } : {}),
+        ...(method !== 'GET' && csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
+      },
       body: body === undefined ? undefined : isForm ? body : JSON.stringify(body),
     });
   } catch {

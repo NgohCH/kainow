@@ -180,6 +180,11 @@ export class AuthService {
     return row ? { user: toAuthUser(row), sessionId: row.session_id } : null;
   }
 
+  /** The anti-forgery token for one session. Derived, so nothing more is stored; useless without the secret. */
+  csrfToken(sessionId: string): string {
+    return createHmac('sha256', this.config.authSecret).update(`csrf:${sessionId}`).digest('hex');
+  }
+
   async signOut(auth: AuthContext): Promise<void> {
     const now = this.clock();
     await this.pool.query('UPDATE sessions SET revoked_at = $2 WHERE id = $1 AND revoked_at IS NULL', [auth.sessionId, now]);

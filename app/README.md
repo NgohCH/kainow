@@ -141,7 +141,7 @@ These are design choices made under R05. They are not accepted product policy, s
 - **A newer code replaces the earlier unused one.**
 - **The last active administrator cannot be disabled,** so access cannot be lost by accident. Users are disabled, never deleted.
 - **Every route must declare how it is protected** (`@Public`, `@AnySignedInUser` or `@RequireAction`). A route that declares nothing is refused. The only public routes are `/health`, `/auth/request-code` and `/auth/verify`.
-- **No CSRF token yet.** The session cookie is `SameSite=Lax` and the API accepts only JSON. Add a token before any form-style endpoint is exposed.
+- **Anti-forgery token.** Every request other than GET/HEAD/OPTIONS from a signed-in person must carry an `X-CSRF-Token` header. The token is an HMAC of the session id under the server secret, returned by `/auth/verify` and `/auth/me`; the web app sends it automatically. The session cookie is also `SameSite=Lax`. The two public sign-in POSTs (request code, verify) are not covered, because no session exists yet.
 - Failed permission checks are not yet written to the audit trail. With a single role they cannot occur for a signed-in person, so this waits for more roles.
 
 ## Decisions already fixed in code

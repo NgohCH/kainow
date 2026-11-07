@@ -37,13 +37,15 @@ describe('sign-in over HTTP', { skip: SKIP_NO_DB }, () => {
     base = await app.getUrl();
   }
 
+  let csrf = '';
   async function call(method: string, path: string, body?: unknown, cookie?: string): Promise<Reply> {
     const res = await fetch(`${base}${path}`, {
       method,
-      headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(cookie ? { Cookie: cookie } : {}) },
+      headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(cookie ? { Cookie: cookie } : {}), ...(cookie && csrf ? { 'X-CSRF-Token': csrf } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     const text = await res.text();
+    if (path === '/auth/verify' && res.ok) csrf = (JSON.parse(text) as { csrfToken: string }).csrfToken;
     return { status: res.status, body: text ? JSON.parse(text) : undefined, cookies: res.headers.getSetCookie() };
   }
 
@@ -99,7 +101,8 @@ describe('sign-in over HTTP', { skip: SKIP_NO_DB }, () => {
     await call('POST', '/auth/request-code', { email: EMAIL });
     const verify = await call('POST', '/auth/verify', { email: EMAIL, code: sender.lastCode(EMAIL) });
     assert.equal(verify.status, 200);
-    assert.deepEqual(Object.keys(verify.body), ['user']);
+    assert.deepEqual(Object.keys(verify.body), ['user', 'csrfToken']);
+    assert.match(verify.body.csrfToken, /^[0-9a-f]{64}$/);
     assert.equal(verify.body.user.email, EMAIL);
 
     const setCookie = verify.cookies[0];
@@ -133,6 +136,26 @@ describe('sign-in over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.equal((await call('POST', '/auth/verify', { email: EMAIL })).status, 400);
     assert.equal((await call('POST', '/users', { email: 'bad', displayName: 'X' }, cookie)).status, 400);
     assert.equal((await call('POST', '/users', { email: 'ok@example.org' }, cookie)).status, 400);
+  });
+
+  test('anti-forgery: a change without the right token is refused, reading is not', async () => {
+    await start();
+    const cookie = await signIn();
+    const good = csrf;
+    const post = (token?: string) =>
+      fetch(`${base}/users`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', Cookie: cookie, ...(token ? { 'X-CSRF-Token': token } : {}) },
+        body: JSON.stringify({ email: 'forged@example.org', displayName: 'Forged' }),
+      });
+    assert.equal((await post()).status, 403, 'no token');
+    assert.equal((await post('0'.repeat(64))).status, 403, 'wrong token');
+    assert.equal((await post(good.slice(1))).status, 403, 'truncated token');
+    assert.equal((await post(good)).status, 201, 'right token');
+    assert.equal((await call('GET', '/auth/me', undefined, cookie)).body.csrfToken, good, 'me gives the same token');
+    assert.equal((await fetch(`${base}/users`, { headers: { Cookie: cookie } })).status, 200, 'reading needs no token');
+    const logout = await fetch(`${base}/auth/logout`, { method: 'POST', headers: { Cookie: cookie } });
+    assert.equal(logout.status, 403, 'signing out is a change too');
   });
 
   test('the session cookie is marked Secure when configured', async () => {
