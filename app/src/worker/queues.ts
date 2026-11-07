@@ -14,8 +14,12 @@ export const BOSS_SCHEMA = 'pgboss';
  * limit (A05) and pre-execution permission/allowance rechecks (A11) are added with the
  * features that use these queues; the library's defaults are not product policy.
  */
-export async function startQueues(connectionString: string, schema: string = BOSS_SCHEMA): Promise<PgBoss> {
-  const boss = new PgBoss({ connectionString, schema });
+export async function startQueues(
+  connectionString: string,
+  schema: string = BOSS_SCHEMA,
+  options: { supervise?: boolean; schedule?: boolean } = {},
+): Promise<PgBoss> {
+  const boss = new PgBoss({ connectionString, schema, ...options });
   boss.on('error', (err: Error) => console.error('pg-boss error:', err.message));
   await boss.start();
   for (const name of Object.values(QUEUES)) {

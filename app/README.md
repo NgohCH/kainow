@@ -41,7 +41,7 @@ The test database is throwaway: the suite drops and recreates its `public` schem
 | M2 | Passwordless sign-in and permissions: one-time codes (10 min, 5 attempts, 30 min lockout), 12-hour sessions, Enterprise Administrator, default-deny permission checks with allowed and denied tests for every action | Done, tested on PostgreSQL 16 |
 | M3 | Notes intake: paste, TXT, Markdown, DOCX, selectable-text PDF; NFC normalisation; source versions and character offsets | Done, tested on PostgreSQL 16 |
 | M4a | AI spend cap: MYR 20 monthly cap, reserve before each call, settle from reported usage, uncertain charges stay counted, UTC+8 periods, administrator settings and view | Done, tested on PostgreSQL 16 |
-| M4b | AI extraction: pg-boss job, OpenAI adapter with the pinned model ID, quote-to-offset location, token usage records, credential pattern check before sending. It calls the spend cap above before every request | Not started |
+| M4b | AI extraction: pg-boss job, OpenAI adapter with the pinned model ID, quote-to-offset location, token usage records, credential pattern check before sending. It calls the spend cap above before every request | Built and tested with a stand-in model. **Not yet run against the real API** (the sandbox cannot reach it) |
 | M5 | Review screen (React): source-linked proposals, approve and reject bound to the exact source version | Not started |
 | M6 | Docker Compose package and local install, built and tested on the Product Owner's computer (Docker Hub is unreachable from the sandbox) | Not started |
 
@@ -70,7 +70,7 @@ Every attempt, including a retry or a fallback, is its own entry and counts. Ent
 
 **Reservations are deliberately larger than the likely cost.** A 50,000-byte note with up to 8,000 output tokens reserves MYR 0.74, but the example extraction of 10,000 input and 2,000 output tokens costs MYR 0.164. The extra is held only while the request runs. Near the end of the month a long note may be refused even though its real cost would have fit; that is the price of never overspending.
 
-Not covered yet: the global limit of two simultaneous AI requests (A05), the three-attempts rule, and the per-user limit. They belong with the extraction job.
+The extraction job (below) calls all of this. Not covered yet: the per-user limit.
 
 ## Notes intake
 
@@ -94,6 +94,28 @@ Code in `src/notes/`. Needs the `note.import` action to add notes and `note.view
 **Limits I chose** (technical defaults, not product policy, in `src/notes/text.ts` and `readers.ts`): upload 10 MiB, text 500,000 characters, JSON body 4 MB.
 
 **Not covered yet.** Scanned PDFs need OCR (not in the MVP). Tables in Word documents come out as one cell per paragraph. Any note is visible to anyone with `note.view`; with one role that is every signed-in person.
+
+## AI extraction
+
+Code in `src/extraction/` and `src/worker/`. `POST /notes/:id/versions/:n/extractions` (needs `extraction.run`) records a queued run for that exact version and answers 202 at once. The worker picks it up, and `GET /extractions/:runId` (or the list at `GET /notes/:id/versions/:n/extractions`) shows its state and, when finished, its proposals. Only one run per version can be waiting or running, so a double click cannot pay twice.
+
+**What the worker does with each run, in order:**
+
+1. Checks the person who asked is still active and still allowed (A11).
+2. Looks for credentials in the text (O01): private keys, AWS, `sk-`, GitHub, Slack and Google keys, JSON web tokens, bearer tokens, `password: ...` style assignments and passwords inside web addresses. If it finds any the run is **blocked and nothing is sent**; the message names the kind and count, never the secret. This is a basic safety net, not a guarantee.
+3. Reserves the worst-case cost under the spend cap. If that is refused (blank or zero limit, no approved settings, or not enough left) the run is blocked and nothing is sent.
+4. Sends the request to `gpt-6.1-sol` (the model saved in the spend settings) and settles from the reported usage.
+5. Saves the proposals. For each one it looks for the model's quote in the stored text and keeps the character offsets of the first match, plus how many places it matches.
+
+**Quotes are never trusted.** A quote that is found nowhere is still kept and shown as unlocated (`quoteMatches: 0`, no offsets), so a reviewer sees the model made it up and can reject it; the run reports `unlocatedCount`. A quote that occurs more than once is flagged (`quoteMatches > 1`) because we cannot know which place the model meant. Review screen (M5) must show both clearly.
+
+**Retries and limits.** Each request is tried at most 3 times in all, 30 seconds apart and growing. Every attempt is reserved and recorded separately, so retries cost money and count against the cap. At most 2 AI requests run at once (A05), counted per worker process: run one worker.
+
+**Decision for the Product Owner to confirm.** I treat an HTTP 4xx answer from OpenAI (a refused key, a bad request, "slow down") as proof nothing was charged and give the reservation back, because the provider answered with an error before doing any work. A timeout, a lost connection, a 5xx answer or an answer without usage is an unknown outcome and the full estimate stays counted. Say if you want 4xx treated as unknown too; the cost is that a run of rate-limit errors would use up the allowance quickly.
+
+**An unusable answer is still paid for.** If the model answers with broken JSON, a malformed item, a refusal, or is cut off at the 8,000-token limit, the usage it reported is charged and the attempt counts as failed.
+
+**Not yet verified against the real API.** The adapter follows the same call as `tests/extraction/run.mjs`, but with `max_completion_tokens` added so cost can be bounded. Neither has run against `gpt-6.1-sol` from here. Run `tests/extraction` on your computer with `OPENAI_API_KEY` set, then start the worker with the same key, before relying on it. The worker needs `OPENAI_API_KEY`; without it runs fail with `model_not_configured` and nothing is sent or charged.
 
 ## Sign-in design notes
 

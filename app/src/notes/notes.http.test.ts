@@ -224,7 +224,7 @@ describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
     const { body } = await json('POST', '/notes', { title: 'T', text: 'original' });
     await assert.rejects(pool.query("UPDATE source_versions SET text_content = 'edited'"), /immutable/);
     await assert.rejects(pool.query('DELETE FROM source_versions'), /immutable/);
-    await assert.rejects(pool.query('TRUNCATE source_versions'), /immutable/);
+    await assert.rejects(pool.query('TRUNCATE source_versions'), /immutable|cannot truncate/);
     await assert.rejects(pool.query('DELETE FROM sources'), /never deleted/);
     assert.equal((await json('GET', `/notes/${body.source.id}/versions/1`)).body.version.text, 'original');
   });

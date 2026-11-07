@@ -5,6 +5,8 @@ import { ClockModule } from './common/clock.module';
 import { APP_CONFIG, type AppConfig } from './config';
 import { DatabaseModule } from './db/database.module';
 import { HealthController } from './health/health.controller';
+import { ExtractionModule } from './extraction/extraction.module';
+import type { ExtractionQueue } from './extraction/queue';
 import { NotesModule } from './notes/notes.module';
 import { SpendModule } from './spend/spend.module';
 
@@ -23,6 +25,8 @@ class ConfigModule {
 /** Replaceable pieces, so tests can capture sign-in codes and control time. */
 export interface AppOptions extends AuthOptions {
   clock?: Clock;
+  /** Tests only: replaces the pg-boss queue that carries runs to the worker. */
+  extractionQueue?: ExtractionQueue;
 }
 
 @Module({})
@@ -38,6 +42,7 @@ export class AppModule {
         AuthModule.register({ codeSender: options.codeSender }),
         SpendModule,
         NotesModule,
+        ExtractionModule.register(options.extractionQueue),
       ],
       controllers: [HealthController],
     };

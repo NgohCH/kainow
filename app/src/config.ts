@@ -89,3 +89,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     codeDelivery,
   };
 }
+
+export interface WorkerConfig extends DatabaseConfig {
+  /** Absent means AI runs fail with a clear reason and nothing is sent or charged. */
+  openAiApiKey: string | null;
+}
+
+export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
+  return { ...loadDatabaseConfig(env), openAiApiKey: env.OPENAI_API_KEY?.trim() || null };
+}
