@@ -45,6 +45,8 @@ The Product Owner answered these proposed defaults. Items marked with a note wer
 
 R02–R20 remain open for the full V1.0 release, except where listed above. R14, R15, R16, R17 and R19 are deferred. R20 (repository notices) is checked before go-live, not for the MVP.
 
+**Docker test deferred (Product Owner, 7 November 2026).** The first real `docker compose up --build` of the Compose package is postponed until the Product Owner can run it. Coding continues without it. The package is written and checked as far as the sandbox allows (see `INSTALL.md`); it is not proven until that first build is done.
+
 ## Updates of 7 November 2026 (Product Owner, later the same day)
 
 1. **Sign-in code delivery:** the proposal was accepted. The code is sent by a small email sender used only for sign-in codes. Other email stays deferred to January.

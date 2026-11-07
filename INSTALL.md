@@ -2,7 +2,7 @@
 
 This starts Kainow with Docker Compose: a PostgreSQL database, the Kainow server (which also serves the review screen) and the background worker that talks to the AI. It is for one computer, reached at `http://localhost:3000`. There is no HTTPS and nothing is reachable from other computers.
 
-**Status: this package has not been built or run with Docker yet.** The sandbox it was written in has no Docker daemon and cannot reach Docker Hub. What was checked instead: the compose file validates (`docker compose config`), and the exact contents of the final image (production dependencies, compiled code, migrations, the built screen) were assembled in a clean folder and run against PostgreSQL 16: migrate, create the administrator, sign in, open the screen, run the worker. If a step below fails on your computer, the first build is the most likely place, and I want to hear about it.
+**Status: this package has not been built or run with Docker yet, and the Product Owner has deferred that first test to later.** The sandbox it was written in has no Docker daemon and cannot reach Docker Hub. What was checked instead: the compose file validates (`docker compose config`), and the exact contents of the final image (production dependencies, compiled code, migrations, the built screen) were assembled in a clean folder and run against PostgreSQL 16: migrate, create the administrator, sign in, open the screen, run the worker. If a step below fails on your computer, the first build is the most likely place, and I want to hear about it.
 
 ## What you need
 
