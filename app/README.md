@@ -44,7 +44,7 @@ The test database is throwaway: the suite drops and recreates its `public` schem
 | M4a | AI spend cap: MYR 20 monthly cap, reserve before each call, settle from reported usage, uncertain charges stay counted, UTC+8 periods, administrator settings and view | Done, tested on PostgreSQL 16 |
 | M4b | AI extraction: pg-boss job, OpenAI adapter with the pinned model ID, quote-to-offset location, token usage records, credential pattern check before sending. It calls the spend cap above before every request | Built and tested with a stand-in model. **Not yet run against the real API** (the sandbox cannot reach it) |
 | M5 | Review screen (React): source-linked proposals, approve and reject bound to the exact source version | Built and checked in a real browser; not yet tested by a person on the Product Owner's machine |
-| M6 | Docker Compose package and local install, built and tested on the Product Owner's computer (Docker Hub is unreachable from the sandbox) | Not started |
+| M6 | Docker Compose package and local install, built and tested on the Product Owner's computer (Docker Hub is unreachable from the sandbox) | Written and checked as far as the sandbox allows (see `../INSTALL.md`). **Never built with Docker.** |
 
 ## Answered by the Product Owner (7 November 2026)
 

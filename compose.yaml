@@ -1,0 +1,79 @@
+# Kainow on one computer: PostgreSQL, the API (which also serves the review screen) and the worker.
+# Read INSTALL.md first. Everything is bound to this computer only (127.0.0.1); there is no HTTPS here.
+
+x-kainow: &kainow
+  build:
+    context: ./app
+  image: kainow-app:0.0.0
+  restart: unless-stopped
+  read_only: true
+  tmpfs: [/tmp]
+  cap_drop: [ALL]
+  security_opt: ["no-new-privileges:true"]
+  logging:
+    driver: json-file
+    options: { max-size: 10m, max-file: "3" }
+  environment: &kainow-env
+    DATABASE_URL: postgres://kainow:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the .env file}@db:5432/kainow
+    NODE_ENV: production
+
+services:
+  db:
+    image: postgres:16
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kainow
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the .env file}
+      POSTGRES_DB: kainow
+    volumes:
+      - kainow-db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kainow -d kainow"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: "3" }
+
+  # Runs once at every start and applies any new database migrations, then exits.
+  migrate:
+    <<: *kainow
+    restart: "no"
+    command: ["node", "dist/db/migrate-cli.js"]
+    depends_on:
+      db: { condition: service_healthy }
+
+  api:
+    <<: *kainow
+    command: ["node", "dist/main.js"]
+    environment:
+      <<: *kainow-env
+      PORT: "3000"
+      AUTH_SECRET: ${AUTH_SECRET:?Set AUTH_SECRET in the .env file (at least 32 characters)}
+      SMTP_URL: ${SMTP_URL:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      LOG_SIGN_IN_CODES: ${LOG_SIGN_IN_CODES:-}
+      COOKIE_SECURE: ${COOKIE_SECURE:-true}
+    ports:
+      - "127.0.0.1:${KAINOW_PORT:-3000}:3000"
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r=>process.exit(r.ok?0:1),()=>process.exit(1))"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  worker:
+    <<: *kainow
+    command: ["node", "dist/worker/main.js"]
+    environment:
+      <<: *kainow-env
+      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+    depends_on:
+      migrate: { condition: service_completed_successfully }
+
+volumes:
+  kainow-db:
