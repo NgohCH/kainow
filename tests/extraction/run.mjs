@@ -58,6 +58,10 @@ async function extract(text) {
             "its meaning, including any approval, condition, exception or deadline that applies " +
             "(for example, a rule plus the exception that needs written approval). " +
             "Do not shorten a quote to one sentence if the rule depends on a following sentence. " +
+            "A source_quote must be ONE contiguous passage copied from one place in the notes. " +
+            "Never join text from separate sections, lines or table rows, and never add a separator " +
+            "such as a line break or table marker between two passages. If one item needs two places, " +
+            "split it into two items, each with its own quote. " +
             "Do not invent items. Use null when owner or due is not stated.",
         },
         { role: "user", content: text },

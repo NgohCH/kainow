@@ -26,6 +26,8 @@ Per dataset: each input must meet 95% supported proposals and 90% expected items
 
 Quotes must include the whole clause that gives an item its meaning, including approval conditions and exceptions. This was added after gpt-6-luna quoted only part of a policy rule.
 
+The prompt also requires one contiguous passage per quote. Quotes built from separate sections are not allowed; the scorer marks them unsupported.
+
 ## Human marking
 
 `make-marking.mjs` creates a CSV for each run. A reviewer marks every expected item as captured, partly captured or missed, by meaning, with a reason. The key-phrase matcher is only a rough proxy.
