@@ -54,7 +54,11 @@ async function extract(text) {
           content:
             "Extract decisions, actions, open questions and risks from meeting notes. " +
             "Each item must include source_quote copied exactly, character for character, " +
-            "from the notes. Do not invent items. Use null when owner or due is not stated.",
+            "from the notes. The source_quote must contain the whole clause that gives the item " +
+            "its meaning, including any approval, condition, exception or deadline that applies " +
+            "(for example, a rule plus the exception that needs written approval). " +
+            "Do not shorten a quote to one sentence if the rule depends on a following sentence. " +
+            "Do not invent items. Use null when owner or due is not stated.",
         },
         { role: "user", content: text },
       ],
@@ -81,6 +85,7 @@ for (const file of readdirSync(inputsDir).filter((f) => f.endsWith(".md")).sort(
     captured = { total: 0, captured: 0, rate: 0, missed: [], note: "no expected file: NOT SCORED" };
   }
   // A missing expected file must fail, never pass by default.
+  // Per-dataset policy: each dataset must meet both thresholds on its own.
   const ok = captured.total > 0 && passes(supported, captured, config.thresholds);
   results.push({ file, model, supported, captured, pass: ok, items });
   console.log(

@@ -2,7 +2,11 @@
   "model": "gpt-6-luna",
   "alternateModel": "gpt-6.1-sol",
   "modelVerified": false,
-  "thresholds": { "supportedProposals": 0.95, "expectedItemsCaptured": 0.9 },
+  "thresholds": {
+    "supportedProposals": 0.95,
+    "expectedItemsCaptured": 0.9
+  },
   "inputsDir": "KAINOW_TEST_INPUTS",
-  "note": "modelVerified stays false until the model ID is checked against the provider list on the test machine."
+  "note": "modelVerified stays false until the model ID is checked against the provider list on the test machine.",
+  "thresholdScope": "per-dataset"
 }

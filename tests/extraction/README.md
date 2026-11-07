@@ -18,6 +18,18 @@ KAINOW_MODEL=gpt-6.1-sol node tests/extraction/run.mjs   # try the alternate mod
 
 Without `OPENAI_API_KEY` the script exits without testing anything.
 
+## Threshold policy
+
+Per dataset: each input must meet 95% supported proposals and 90% expected items captured on its own. Pooling across datasets is not allowed (`config.json`: `thresholdScope`).
+
+## Prompt
+
+Quotes must include the whole clause that gives an item its meaning, including approval conditions and exceptions. This was added after gpt-6-luna quoted only part of a policy rule.
+
+## Human marking
+
+`make-marking.mjs` creates a CSV for each run. A reviewer marks every expected item as captured, partly captured or missed, by meaning, with a reason. The key-phrase matcher is only a rough proxy.
+
 ## What the score means
 
 - The key-phrase match is an automated proxy. It doesn't judge meaning. A human reviewer must still adjudicate the expected items (R19) before a pass counts.
