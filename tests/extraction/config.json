@@ -1,12 +1,11 @@
 {
-  "model": "gpt-6-luna",
-  "alternateModel": "gpt-6.1-sol",
-  "modelVerified": false,
+  "model": "gpt-6.1-sol",
+  "modelVerified": true,
+  "note": "gpt-6.1-sol was confirmed by the Product Owner on 7 November 2026 as available on the provider list. It has not yet been confirmed by a real API call from this runner.",
   "thresholds": {
     "supportedProposals": 0.95,
     "expectedItemsCaptured": 0.9
   },
   "inputsDir": "KAINOW_TEST_INPUTS",
-  "note": "modelVerified stays false until the model ID is checked against the provider list on the test machine.",
   "thresholdScope": "per-dataset"
 }

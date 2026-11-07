@@ -9,12 +9,11 @@ Purpose: close O16 (supported proposals) and R19 (expected items captured) with 
 3. Confirm the inputs match the repo copies: `diff -r tests/extraction/inputs/synthetic <your synthetic folder>`.
 4. Set the key for this session only: `export OPENAI_API_KEY=...`. Never commit it.
 
-## 2. Run both models
+## 2. Run the model
 
 ```
 node --test tests/extraction/score.test.mjs
-node tests/extraction/run.mjs                                  # gpt-6-luna (default)
-KAINOW_MODEL=gpt-6.1-sol node tests/extraction/run.mjs         # gpt-6.1-sol
+node tests/extraction/run.mjs                                  # gpt-6.1-sol (default)
 ```
 
 Each run writes `tests/extraction/out/run-<timestamp>.json`. Keep the runner's console output with each file.
@@ -22,8 +21,7 @@ Each run writes `tests/extraction/out/run-<timestamp>.json`. Keep the runner's c
 ## 3. Create review sheets
 
 ```
-node tests/extraction/make-review.mjs tests/extraction/out/run-<gpt-6-luna>.json
-node tests/extraction/make-review.mjs tests/extraction/out/run-<gpt-6.1-sol>.json
+node tests/extraction/make-review.mjs tests/extraction/out/run-<timestamp>.json
 ```
 
 The sheets are in `tests/extraction/out/review-*.csv`. `quote_verbatim` is computed automatically. Any row marked `NO` fails the 95% check for that item.

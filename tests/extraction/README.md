@@ -13,7 +13,7 @@ Run this on a machine that can reach `api.openai.com`. The Kainow sandbox cannot
 export OPENAI_API_KEY=...            # your key, never committed
 node tests/extraction/run.mjs         # uses inputs/synthetic by default
 KAINOW_TEST_INPUTS=/path/to/notes node tests/extraction/run.mjs
-KAINOW_MODEL=gpt-6.1-sol node tests/extraction/run.mjs   # try the alternate model
+KAINOW_MODEL=<model-id> node tests/extraction/run.mjs    # try a different model
 ```
 
 Without `OPENAI_API_KEY` the script exits without testing anything.
@@ -40,7 +40,7 @@ The prompt also requires one contiguous passage per quote. Quotes built from sep
 
 ## Model
 
-`config.json` names `gpt-6-luna` and `gpt-6.1-sol`, but `modelVerified` is `false`. Check both IDs against the provider's model list before relying on the results.
+`config.json` names `gpt-6.1-sol`, which the Product Owner confirmed on 7 November 2026 is on the provider list (`modelVerified` is `true`). The first real run from your computer is the first test that the runner can actually call it. `gpt-6-luna` was dropped.
 
 ## Tests for the scoring code
 

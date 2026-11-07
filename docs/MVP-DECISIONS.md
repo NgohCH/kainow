@@ -8,7 +8,7 @@ Scope: December 2026 MVP, a working vertical slice. It is not the full V1.0 rele
 | # | Topic | Decision |
 |---|---|---|
 | 1 | MVP scope | Accepted as proposed: sign-in, meeting notes (paste/upload), AI extraction with source links, review screen, monthly AI spend cap, local Compose install. Deferred to January: SharePoint/OneDrive, email, reminders, updater, full restore drill, full accessibility audit, newcomer test, 200-user load test, Safari/Firefox. |
-| 2 | OpenAI model | Primary: `gpt-6-luna`. Alternate, to switch to later if needed: `gpt-6.1-sol`. **Pending check:** confirm both IDs against OpenAI's model list on the Product Owner's machine before pinning (R09). |
+| 2 | OpenAI model | **Changed 7 November 2026:** `gpt-6.1-sol` is the model. `gpt-6-luna` is dropped and there is no alternate for now. See "Updates of 7 November 2026" below. |
 | 3 | AI spend cap | Applies to the finished product's runtime AI use only, not to development. Amount: MYR 20 per month. Reset boundary: calendar month, UTC+8 (assumed; confirm if different). |
 | 4 | Sign-in | Passwordless. Named user for the Product Owner: ngoh.ch@help.edu.my. More users to be supplied. |
 | 5 | Roles | Enterprise Administrator for the MVP. Project Manager and delegates as described in the handover (to be mapped to the register's role matrix under R03). |
@@ -45,8 +45,24 @@ The Product Owner answered these proposed defaults. Items marked with a note wer
 
 R02–R20 remain open for the full V1.0 release, except where listed above. R14, R15, R16, R17 and R19 are deferred. R20 (repository notices) is checked before go-live, not for the MVP.
 
+## Updates of 7 November 2026 (Product Owner, later the same day)
+
+1. **Sign-in code delivery:** the proposal was accepted. The code is sent by a small email sender used only for sign-in codes. Other email stays deferred to January.
+2. **Model and prices:** the model is `gpt-6.1-sol`. Conversion rate: 1 USD = 4.1 MYR. Prices quoted in USD at Standard processing rates for normal-length requests:
+
+   | Token type | `gpt-6.1-sol` |
+   | --- | --- |
+   | Input | $2.00 |
+   | Cached input | $0.10 |
+   | Output | $10.00 |
+
+   The Product Owner also quoted Batch/Flex rates for `gpt-6.1-sol` ($1 input and $5 output per million tokens). The MVP is built on the Standard rates above, which cost more, so the cap errs on the safe side.
+3. **Originals:** the MVP stores the original file and its extracted text in PostgreSQL. SharePoint/OneDrive storage stays deferred.
+
 ## Open items for the Product Owner
 
 1. Confirm the reset boundary for the spend cap (item 3), or confirm the calendar-month default.
-2. Confirm `gpt-6-luna` and `gpt-6.1-sol` exist on the provider list before pinning (item 2).
-3. Approve or change each proposed default above.
+2. Confirm the quoted prices are per 1 million tokens. The message gave the unit only for the Batch/Flex rates.
+3. The price table had a column headed "GPT-6 Sol" next to "GPT-6.1 Sol" (cached input $0.20 against $0.10). The `gpt-6.1-sol` column is used. Confirm that is the right one.
+4. "Drop gpt-6.1-luna" was read as dropping `gpt-6-luna`, the only luna model in this log. Confirm.
+5. Approve or change each proposed default above.
