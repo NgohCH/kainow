@@ -292,7 +292,7 @@ Additional capabilities may be considered for future versions or extensions. Men
 
 The selected product licence is **GNU Affero General Public License version 3 only (AGPL-3.0-only)**. This supersedes the original Intent Card's UNLICENSED wording. The accepted V1.0 choice is AGPL-3.0-only without additional commercial restrictions. Future commercial arrangements require a separate decision.
 
-Repository: https://github.com/NgohCH/katempor
+Repository: https://github.com/NgohCH/kainow
 
 ## 17. Current baseline and supporting detail
 

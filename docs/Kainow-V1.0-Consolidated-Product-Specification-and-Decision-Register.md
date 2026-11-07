@@ -42,7 +42,7 @@ Native meeting minute-taking, recording/transcription, Gantt charts, advanced po
 
 Project discussion and action-item emails are included; a general chat or email-client replacement is not. Native minute-taking is a future direction requiring its own specification.
 
-The selected product licence is **AGPL-3.0-only**, replacing the original UNLICENSED wording. V1.0 adds no commercial restrictions; future commercial arrangements require a separate decision. Repository: https://github.com/NgohCH/katempor.
+The selected product licence is **AGPL-3.0-only**, replacing the original UNLICENSED wording. V1.0 adds no commercial restrictions; future commercial arrangements require a separate decision. Repository: https://github.com/NgohCH/kainow.
 
 ## 3. Organisation, departments and accountability
 
