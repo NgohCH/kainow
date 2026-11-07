@@ -5,6 +5,7 @@ import { ClockModule } from './common/clock.module';
 import { APP_CONFIG, type AppConfig } from './config';
 import { DatabaseModule } from './db/database.module';
 import { HealthController } from './health/health.controller';
+import { NotesModule } from './notes/notes.module';
 import { SpendModule } from './spend/spend.module';
 
 @Global()
@@ -36,6 +37,7 @@ export class AppModule {
         DatabaseModule,
         AuthModule.register({ codeSender: options.codeSender }),
         SpendModule,
+        NotesModule,
       ],
       controllers: [HealthController],
     };

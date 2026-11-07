@@ -39,7 +39,7 @@ The test database is throwaway: the suite drops and recreates its `public` schem
 | --- | --- | --- |
 | M1 | Foundation: API and worker entry points, config, SQL migrations with checksums, identity and append-only audit schema, health check, durable AI/email/document queues | Done, tested on PostgreSQL 16 |
 | M2 | Passwordless sign-in and permissions: one-time codes (10 min, 5 attempts, 30 min lockout), 12-hour sessions, Enterprise Administrator, default-deny permission checks with allowed and denied tests for every action | Done, tested on PostgreSQL 16 |
-| M3 | Notes intake: paste, TXT, Markdown, DOCX, selectable-text PDF; NFC normalisation; source versions and character offsets | Not started |
+| M3 | Notes intake: paste, TXT, Markdown, DOCX, selectable-text PDF; NFC normalisation; source versions and character offsets | Done, tested on PostgreSQL 16 |
 | M4a | AI spend cap: MYR 20 monthly cap, reserve before each call, settle from reported usage, uncertain charges stay counted, UTC+8 periods, administrator settings and view | Done, tested on PostgreSQL 16 |
 | M4b | AI extraction: pg-boss job, OpenAI adapter with the pinned model ID, quote-to-offset location, token usage records, credential pattern check before sending. It calls the spend cap above before every request | Not started |
 | M5 | Review screen (React): source-linked proposals, approve and reject bound to the exact source version | Not started |
@@ -71,6 +71,29 @@ Every attempt, including a retry or a fallback, is its own entry and counts. Ent
 **Reservations are deliberately larger than the likely cost.** A 50,000-byte note with up to 8,000 output tokens reserves MYR 0.74, but the example extraction of 10,000 input and 2,000 output tokens costs MYR 0.164. The extra is held only while the request runs. Near the end of the month a long note may be refused even though its real cost would have fit; that is the price of never overspending.
 
 Not covered yet: the global limit of two simultaneous AI requests (A05), the three-attempts rule, and the per-user limit. They belong with the extraction job.
+
+## Notes intake
+
+Code in `src/notes/`. Needs the `note.import` action to add notes and `note.view` to read them.
+
+| Route | Does |
+| --- | --- |
+| `POST /notes` | Paste: `{ "title", "text" }`. Makes a source and its version 1. |
+| `POST /notes/upload` | Multipart with `file` and an optional `title` (the file name is the default title). |
+| `POST /notes/:id/versions` and `/versions/upload` | A new version by paste or by file. |
+| `GET /notes`, `GET /notes/:id` | List, and one source with its versions (no text). |
+| `GET /notes/:id/versions/:n` | One version with its text. |
+| `GET /notes/:id/versions/:n/original` | The uploaded file exactly as received, always as a download. |
+
+**Text contract (R02).** Stored text is Unicode NFC with LF line ends; a leading BOM is dropped. Quote positions are **UTF-16 code units** (the index into the JavaScript string), end exclusive, counted in the stored text and never in the original file. `locateQuote` in `src/notes/text.ts` returns every place a quote occurs, each with an occurrence number, so a repeated quote is not ambiguous. An emoji counts as two.
+
+**Versions are immutable.** A change is a new version. Identical text is refused with 409. The database itself rejects update, delete and truncate of versions, and deleting a source. Originals (for uploads) are kept in PostgreSQL next to the text.
+
+**Safety checks on files.** The extension must be .txt, .md, .docx or .pdf and the content must match it. Text must be valid UTF-8 with no NUL bytes. A Word file's ZIP directory is inspected before anything is unpacked (no ZIP64, no encryption, at most 2,000 parts, at most 100 MiB declared in total). PDFs with a password, more than 300 pages, or no selectable text (scans) are refused with a plain reason. Nothing is written to disk. The audit trail records the file name, sizes and hashes, never the text.
+
+**Limits I chose** (technical defaults, not product policy, in `src/notes/text.ts` and `readers.ts`): upload 10 MiB, text 500,000 characters, JSON body 4 MB.
+
+**Not covered yet.** Scanned PDFs need OCR (not in the MVP). Tables in Word documents come out as one cell per paragraph. Any note is visible to anyone with `note.view`; with one role that is every signed-in person.
 
 ## Sign-in design notes
 
