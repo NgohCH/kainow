@@ -34,6 +34,13 @@ The Product Owner answered these proposed defaults. Items marked with a note wer
 - **R09 Provider data:** the provider model ID is pinned in configuration and can be changed by the Enterprise Administrator. Each call records input and output token counts. The system does not assume the provider can cancel or delete data.
 - **R10 Spend enforcement:** a monthly cap of MYR 20. Each call reserves its estimated cost before it runs and stops when the cap would be exceeded. Charges that cannot be confirmed count against the cap until reconciled.
 
+## Decisions on O01–O07 conflicts (Product Owner, 7 November 2026)
+
+1. **Input and output formats:** accept all formats in O03. Input: pasted text, TXT, Markdown, DOCX, selectable-text PDF. Output: Markdown, DOCX, PDF, CSV for tabular reports. This replaces the earlier text-and-DOCX-only scope.
+2. **Spend cap:** the monthly cap of MYR 20 is sufficient. No separate daily cap for the MVP. **Note:** O04 requires daily and monthly periods with a blank limit meaning no allowance. Confirm the implementation treats the daily period as unlimited when no daily cap is set, rather than blocking all calls.
+3. **Administrators and recovery:** one Enterprise Administrator for the MVP, who is also the recovery custodian. **Risk:** with one administrator, a lockout has no second person to restore access. O07 expects two or more named administrators and a separate custodian before go-live. This is acceptable for the MVP only, and must be fixed before production.
+4. **Credential detection (O01):** accepted. A basic pattern check runs before AI transmission. Detection is best-effort, as O01 states.
+
 ## Deferred (not in MVP)
 
 R02–R20 remain open for the full V1.0 release, except where listed above. R14, R15, R16, R17 and R19 are deferred. R20 (repository notices) is checked before go-live, not for the MVP.
