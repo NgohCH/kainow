@@ -126,7 +126,9 @@ Code in `web/` (React and Vite, bundled fonts, nothing loaded from the internet)
 
 **Rules the screen and the API both enforce:** a decision is bound to the exact version the reviewer was looking at (the screen sends it, the API refuses a mismatch). A quote that is not in the notes is shown with a warning and cannot be approved. A quote that appears more than once shows how many times, highlights the first, and needs a tick ("I checked this is the passage meant") before Approve is enabled. Every decision is audited, including a change of mind.
 
-**Not in the MVP screen:** editing a proposal's wording, choosing which of several repeated passages was meant, changing AI spend settings (use `npm run apply-mvp-spend-settings` or `PUT /ai/spend-settings`), and anything for administrators beyond what is above. The responsive layout stacks the notes above the proposals on a phone, which works but is not tuned. Safari and Firefox are deferred to January.
+**Administrator screens.** *People* lists everyone, adds an administrator and disables one; it warns while fewer than two are active, and the last active administrator cannot be disabled (the API refuses). *AI spending* shows this month's and today's figures (used, held for requests in progress, counted while an outcome is unknown, left) and edits the model, prices, exchange rate and limits. A blank monthly limit is saved as no allowance and the form says so; "no daily cap" is an explicit choice. Every change is audited.
+
+**Not in the MVP screens:** editing a proposal's wording, choosing which of several repeated passages was meant, and re-enabling a disabled person. The responsive layout stacks the notes above the proposals on a phone, which works but is not tuned. Safari and Firefox are deferred to January.
 
 ## Sign-in design notes
 

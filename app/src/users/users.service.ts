@@ -54,6 +54,14 @@ export class UsersService {
    * Users are never deleted. The last active administrator cannot be disabled, because nobody
    * would be left to recover access (decision log, 7 November 2026, item 3 on recovery).
    */
+  async list(): Promise<Array<{ id: string; email: string; displayName: string; role: string; status: string; lockedUntil: Date | null; createdAt: Date }>> {
+    const { rows } = await this.pool.query(
+      `SELECT id, email, display_name AS "displayName", role, status, locked_until AS "lockedUntil", created_at AS "createdAt"
+         FROM users ORDER BY created_at, id`,
+    );
+    return rows;
+  }
+
   async disable(id: string, actorUserId: string | null): Promise<void> {
     if (!UUID_PATTERN.test(id)) {
       throw new NotFoundException();

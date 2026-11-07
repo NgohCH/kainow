@@ -55,7 +55,8 @@ p { margin: 0 0 0.75rem; }
 label { display: grid; gap: 0.35rem; font-weight: 500; }
 input, textarea, select { font: inherit; padding: 0.55rem 0.7rem; border: 1px solid #8fa3a1; border-radius: 4px; background: var(--surface); color: var(--ink); width: 100%; }
 textarea { font-family: var(--serif); line-height: 1.6; resize: vertical; }
-input[type='checkbox'] { width: auto; margin-right: 0.5rem; }
+input[type='checkbox'], input[type='radio'] { width: auto; margin-right: 0.5rem; }
+.stack > button { justify-self: start; }
 input[type='file'] { border: 0; padding: 0.25rem 0; }
 input.code { font-size: 1.6rem; letter-spacing: 0.4em; max-width: 12rem; text-align: center; }
 button, .button { font: inherit; font-weight: 600; cursor: pointer; border: 1px solid var(--teal); background: var(--surface); color: var(--teal-deep); padding: 0.5rem 1rem; border-radius: 4px; text-decoration: none; display: inline-block; }
@@ -139,3 +140,20 @@ button.reject:not(:disabled):hover { background: var(--rust-wash); }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; scroll-behavior: auto !important; }
 }
+
+/* Admin screens */
+.mainnav { display: flex; gap: 1rem; }
+.mainnav a { text-decoration: none; padding: 0.25rem 0; border-bottom: 3px solid transparent; }
+.mainnav a[aria-current='page'] { border-bottom-color: var(--teal); font-weight: 600; }
+.people > li { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.75rem 0.25rem; }
+.person { display: grid; }
+.figures { display: grid; gap: 0.35rem; margin: 0 0 0.75rem; }
+.figures > div { display: flex; justify-content: space-between; gap: 1rem; border-bottom: 1px solid var(--rule); padding-bottom: 0.35rem; }
+.figures dt { color: var(--muted); }
+.figures dd { margin: 0; font-variant-numeric: tabular-nums; }
+fieldset { border: 1px solid var(--rule); border-radius: 4px; padding: 0.75rem 1rem; display: grid; gap: 0.75rem; }
+legend { font-weight: 600; padding: 0 0.35rem; }
+.trio { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.75rem; }
+label.choice { display: flex; align-items: center; font-weight: 400; }
+.ok { color: var(--teal-deep); font-weight: 600; }
+@media (max-width: 560px) { .trio { grid-template-columns: 1fr; } }

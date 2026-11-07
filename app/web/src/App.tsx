@@ -2,7 +2,9 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { ApiError, api, type User } from './api.ts';
 import { NoteDetail } from './views/NoteDetail.tsx';
 import { Notes } from './views/Notes.tsx';
+import { People } from './views/People.tsx';
 import { Review } from './views/Review.tsx';
+import { Spending } from './views/Spending.tsx';
 
 function useHash(): string {
   const [hash, setHash] = useState(window.location.hash || '#/');
@@ -144,6 +146,11 @@ export function App() {
       <a className="skip" href="#main">Skip to content</a>
       <header className="bar">
         <a className="wordmark" href="#/">Kainow</a>
+        <nav aria-label="Main" className="mainnav">
+          <a href="#/" aria-current={!/^#\/(people|spending)/.test(hash) ? 'page' : undefined}>Notes</a>
+          <a href="#/people" aria-current={hash === '#/people' ? 'page' : undefined}>People</a>
+          <a href="#/spending" aria-current={hash === '#/spending' ? 'page' : undefined}>AI spending</a>
+        </nav>
         <SpendMeter />
         <span className="who">
           {user.displayName}
@@ -151,7 +158,7 @@ export function App() {
         </span>
       </header>
       <div id="main">
-        {run ? <Review runId={run[1]} /> : note ? <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} /> : <Notes />}
+        {hash === '#/people' ? <People meId={user.id} /> : hash === '#/spending' ? <Spending /> : run ? <Review runId={run[1]} /> : note ? <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} /> : <Notes />}
       </div>
       <footer className="foot">Times are shown in UTC+8.</footer>
     </>

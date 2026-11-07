@@ -1,4 +1,4 @@
-import { Body, Controller, HttpCode, Param, Post, Req } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post, Req } from '@nestjs/common';
 import { RequireAction } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import { UsersService } from './users.service';
@@ -10,6 +10,12 @@ function field(body: unknown, name: string): unknown {
 @Controller('users')
 export class UsersController {
   constructor(private readonly users: UsersService) {}
+
+  @Get()
+  @RequireAction('user.manage')
+  async list() {
+    return { users: await this.users.list() };
+  }
 
   @Post()
   @RequireAction('user.manage')
