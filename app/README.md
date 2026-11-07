@@ -9,6 +9,7 @@ cd app
 npm install
 cp .env.example .env          # then fill in the values (see below)
 npm run build
+npm run build:web        # the review screen; the API serves it at /
 npm run migrate
 npm run create-admin -- you@example.org "Your Name"   # the first Enterprise Administrator
 npm run start:api             # GET /health
@@ -42,7 +43,7 @@ The test database is throwaway: the suite drops and recreates its `public` schem
 | M3 | Notes intake: paste, TXT, Markdown, DOCX, selectable-text PDF; NFC normalisation; source versions and character offsets | Done, tested on PostgreSQL 16 |
 | M4a | AI spend cap: MYR 20 monthly cap, reserve before each call, settle from reported usage, uncertain charges stay counted, UTC+8 periods, administrator settings and view | Done, tested on PostgreSQL 16 |
 | M4b | AI extraction: pg-boss job, OpenAI adapter with the pinned model ID, quote-to-offset location, token usage records, credential pattern check before sending. It calls the spend cap above before every request | Built and tested with a stand-in model. **Not yet run against the real API** (the sandbox cannot reach it) |
-| M5 | Review screen (React): source-linked proposals, approve and reject bound to the exact source version | Not started |
+| M5 | Review screen (React): source-linked proposals, approve and reject bound to the exact source version | Built and checked in a real browser; not yet tested by a person on the Product Owner's machine |
 | M6 | Docker Compose package and local install, built and tested on the Product Owner's computer (Docker Hub is unreachable from the sandbox) | Not started |
 
 ## Answered by the Product Owner (7 November 2026)
@@ -116,6 +117,16 @@ Code in `src/extraction/` and `src/worker/`. `POST /notes/:id/versions/:n/extrac
 **An unusable answer is still paid for.** If the model answers with broken JSON, a malformed item, a refusal, or is cut off at the 8,000-token limit, the usage it reported is charged and the attempt counts as failed.
 
 **Not yet verified against the real API.** The adapter follows the same call as `tests/extraction/run.mjs`, but with `max_completion_tokens` added so cost can be bounded. Neither has run against `gpt-6.1-sol` from here. Run `tests/extraction` on your computer with `OPENAI_API_KEY` set, then start the worker with the same key, before relying on it. The worker needs `OPENAI_API_KEY`; without it runs fail with `model_not_configured` and nothing is sent or charged.
+
+## Review screen
+
+Code in `web/` (React and Vite, bundled fonts, nothing loaded from the internet). `npm run build:web` builds it and the API serves it at `/`; for development `npm run dev` inside `web/` proxies `/api` to the API on port 3000. It has sign-in by emailed code, notes list and intake (paste or upload), a note page with its versions and extraction runs, and the review screen.
+
+**On the review screen** the notes sit on the left with every proposed passage highlighted, and the proposals on the right. Selecting a proposal (click, or j and k) scrolls to and strongly marks its passage; clicking a passage selects its proposal. Approved passages turn teal, rejected ones fade. `a` approves and `r` rejects the proposal in focus.
+
+**Rules the screen and the API both enforce:** a decision is bound to the exact version the reviewer was looking at (the screen sends it, the API refuses a mismatch). A quote that is not in the notes is shown with a warning and cannot be approved. A quote that appears more than once shows how many times, highlights the first, and needs a tick ("I checked this is the passage meant") before Approve is enabled. Every decision is audited, including a change of mind.
+
+**Not in the MVP screen:** editing a proposal's wording, choosing which of several repeated passages was meant, changing AI spend settings (use `npm run apply-mvp-spend-settings` or `PUT /ai/spend-settings`), and anything for administrators beyond what is above. The responsive layout stacks the notes above the proposals on a phone, which works but is not tuned. Safari and Firefox are deferred to January.
 
 ## Sign-in design notes
 

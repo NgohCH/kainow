@@ -79,7 +79,13 @@ export class ExtractionService {
          FROM extraction_items WHERE run_id = $1 ORDER BY position`,
       [runId],
     );
-    return { run: run.rows[0], items: items.rows };
+    const src = await this.pool.query(
+      `SELECT s.id AS "sourceId", s.title, v.version_no AS "versionNo"
+         FROM extraction_runs r JOIN source_versions v ON v.id = r.source_version_id JOIN sources s ON s.id = v.source_id
+        WHERE r.id = $1`,
+      [runId],
+    );
+    return { run: run.rows[0], source: src.rows[0], items: items.rows };
   }
 
   async listForVersion(sourceId: string, versionNo: number) {

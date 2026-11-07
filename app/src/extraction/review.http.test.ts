@@ -141,5 +141,6 @@ describe('reviewing proposals', { skip: SKIP_NO_DB }, () => {
     const view = (await api('GET', `/extractions/${runId}`)).body;
     assert.deepEqual(view.items.map((i: any) => i.reviewStatus), ['approved', 'pending', 'pending']);
     assert.equal(view.run.sourceVersionId, versionId);
+    assert.deepEqual([view.source.title, view.source.versionNo], ['T', 1]);
   });
 });

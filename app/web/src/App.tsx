@@ -1,0 +1,159 @@
+import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { ApiError, api, type User } from './api.ts';
+import { NoteDetail } from './views/NoteDetail.tsx';
+import { Notes } from './views/Notes.tsx';
+import { Review } from './views/Review.tsx';
+
+function useHash(): string {
+  const [hash, setHash] = useState(window.location.hash || '#/');
+  useEffect(() => {
+    const on = () => setHash(window.location.hash || '#/');
+    window.addEventListener('hashchange', on);
+    return () => window.removeEventListener('hashchange', on);
+  }, []);
+  return hash;
+}
+
+export function go(path: string): void {
+  window.location.hash = path;
+}
+
+interface Spend {
+  configured: boolean;
+  month: { limitMyr: string | null; usedMyr: string; remainingMyr: string } | null;
+}
+
+const myr = (v: string): string => `MYR ${Number(v).toFixed(2)}`;
+
+function SpendMeter() {
+  const [spend, setSpend] = useState<Spend | null>(null);
+  useEffect(() => {
+    api.get<Spend>('/ai/spend').then(setSpend, () => setSpend(null));
+  }, []);
+  if (!spend) return null;
+  if (!spend.configured || !spend.month) return <span className="meter meter-warn">AI spending is not set up, so extraction is off</span>;
+  const { limitMyr, usedMyr } = spend.month;
+  return (
+    <span className="meter" title="Counted from the start of the calendar month, UTC+8">
+      AI spend this month {myr(usedMyr)} of {limitMyr === null ? 'no allowance' : myr(limitMyr)}
+    </span>
+  );
+}
+
+function SignIn({ onSignedIn }: { onSignedIn: (u: User) => void }) {
+  const [step, setStep] = useState<'email' | 'code'>('email');
+  const [email, setEmail] = useState('');
+  const [code, setCode] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function requestCode(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      await api.post('/auth/request-code', { email });
+      setStep('code');
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Something went wrong. Try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function verify(e: FormEvent) {
+    e.preventDefault();
+    setBusy(true);
+    setError(null);
+    try {
+      const r = await api.post<{ user: User }>('/auth/verify', { email, code: code.trim() });
+      onSignedIn(r.user);
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Something went wrong. Try again.');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="signin">
+      <h1 className="wordmark">Kainow</h1>
+      <p className="lede">Turn meeting notes into decisions and actions you have checked against the page.</p>
+      {step === 'email' ? (
+        <form onSubmit={requestCode} className="stack">
+          <label>
+            Work email
+            <input type="email" required autoFocus autoComplete="username" value={email} onChange={(e) => setEmail(e.target.value)} />
+          </label>
+          {error && <p role="alert" className="error">{error}</p>}
+          <button className="primary" disabled={busy}>Email me a sign-in code</button>
+        </form>
+      ) : (
+        <form onSubmit={verify} className="stack">
+          <p>If {email} has an account, a 6-digit code is on its way. It works once and expires in 10 minutes.</p>
+          <label>
+            Sign-in code
+            <input
+              className="code"
+              required
+              autoFocus
+              inputMode="numeric"
+              autoComplete="one-time-code"
+              pattern="[0-9]{6}"
+              maxLength={6}
+              value={code}
+              onChange={(e) => setCode(e.target.value)}
+            />
+          </label>
+          {error && <p role="alert" className="error">{error}</p>}
+          <button className="primary" disabled={busy}>Sign in</button>
+          <button type="button" className="quiet" onClick={() => { setStep('email'); setCode(''); setError(null); }}>
+            Use a different email
+          </button>
+        </form>
+      )}
+    </main>
+  );
+}
+
+export function App() {
+  const hash = useHash();
+  const [user, setUser] = useState<User | null | undefined>(undefined);
+
+  useEffect(() => {
+    api.get<{ user: User }>('/auth/me').then(
+      (r) => setUser(r.user),
+      () => setUser(null),
+    );
+  }, []);
+
+  const signOut = useCallback(async () => {
+    await api.post('/auth/logout').catch(() => undefined);
+    setUser(null);
+    go('#/');
+  }, []);
+
+  if (user === undefined) return <p className="loading">Loading</p>;
+  if (user === null) return <SignIn onSignedIn={setUser} />;
+
+  const note = /^#\/notes\/([0-9a-f-]{36})(?:\/v\/(\d+))?$/i.exec(hash);
+  const run = /^#\/runs\/([0-9a-f-]{36})$/i.exec(hash);
+
+  return (
+    <>
+      <a className="skip" href="#main">Skip to content</a>
+      <header className="bar">
+        <a className="wordmark" href="#/">Kainow</a>
+        <SpendMeter />
+        <span className="who">
+          {user.displayName}
+          <button className="quiet" onClick={signOut}>Sign out</button>
+        </span>
+      </header>
+      <div id="main">
+        {run ? <Review runId={run[1]} /> : note ? <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} /> : <Notes />}
+      </div>
+      <footer className="foot">Times are shown in UTC+8.</footer>
+    </>
+  );
+}
