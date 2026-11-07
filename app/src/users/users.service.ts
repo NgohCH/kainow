@@ -96,4 +96,36 @@ export class UsersService {
       client.release();
     }
   }
+
+  /**
+   * Re-enables a disabled user. Their old sessions and codes stay revoked, so they sign in again with
+   * a new code. Any lock from failed attempts is cleared. Enabling someone already active changes nothing.
+   */
+  async enable(id: string, actorUserId: string | null): Promise<void> {
+    if (!UUID_PATTERN.test(id)) {
+      throw new NotFoundException();
+    }
+    const now = this.clock();
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const target = await client.query<{ status: string }>('SELECT status FROM users WHERE id = $1 FOR UPDATE', [id]);
+      if (!target.rows[0]) {
+        throw new NotFoundException();
+      }
+      if (target.rows[0].status === 'disabled') {
+        await client.query(
+          `UPDATE users SET status = 'active', locked_until = NULL, failed_code_attempts = 0, updated_at = $2 WHERE id = $1`,
+          [id, now],
+        );
+        await writeAudit(client, { at: now, action: 'user.enabled', actorUserId, subjectType: 'user', subjectId: id });
+      }
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
 }

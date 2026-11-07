@@ -35,4 +35,11 @@ export class UsersController {
   async disable(@Param('id') id: string, @Req() req: HttpRequest): Promise<void> {
     await this.users.disable(id, req.auth?.user.id ?? null);
   }
+
+  @Post(':id/enable')
+  @RequireAction('user.manage')
+  @HttpCode(204)
+  async enable(@Param('id') id: string, @Req() req: HttpRequest): Promise<void> {
+    await this.users.enable(id, req.auth?.user.id ?? null);
+  }
 }

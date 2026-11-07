@@ -54,6 +54,16 @@ export function People({ meId }: { meId: string }) {
     }
   }
 
+  async function enable(p: Person) {
+    setError(null);
+    try {
+      await api.post(`/users/${p.id}/enable`);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : 'Could not enable this person.');
+    }
+  }
+
   const active = people?.filter((p) => p.status === 'active').length ?? 0;
 
   return (
@@ -74,7 +84,10 @@ export function People({ meId }: { meId: string }) {
                 <span className="meta">{p.email}, added {formatWhen(p.createdAt)}</span>
               </div>
               {p.status === 'disabled' ? (
-                <span className="badge badge-rejected">Disabled</span>
+                <>
+                  <span className="badge badge-rejected">Disabled</span>
+                  <button onClick={() => void enable(p)}>Enable</button>
+                </>
               ) : (
                 <button className="reject" onClick={() => void disable(p)} disabled={active < 2}>Disable</button>
               )}

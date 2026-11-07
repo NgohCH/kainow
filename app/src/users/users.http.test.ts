@@ -63,6 +63,22 @@ describe('people over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(users.map((u: any) => [u.email, u.status, u.role]), [[EMAIL, 'active', 'enterprise_administrator'], ['second@example.org', 'active', 'enterprise_administrator']]);
   });
 
+  test('a disabled person can be enabled again, which is audited, clears any lock and is safe to repeat', async () => {
+    const second = (await api('POST', '/users', { email: 'back@example.org', displayName: 'Back' })).body.user;
+    assert.equal((await api('POST', `/users/${second.id}/disable`)).status, 204);
+    await pool.query(`UPDATE users SET locked_until = now() + interval '1 hour', failed_code_attempts = 5 WHERE id = $1`, [second.id]);
+    clock.advanceSeconds(1);
+    assert.equal((await api('POST', `/users/${second.id}/enable`)).status, 204);
+    assert.equal((await api('POST', `/users/${second.id}/enable`)).status, 204, 'repeating is harmless');
+    const row = (await pool.query('SELECT status, locked_until, failed_code_attempts FROM users WHERE id = $1', [second.id])).rows[0];
+    assert.deepEqual([row.status, row.locked_until, row.failed_code_attempts], ['active', null, 0]);
+    const audit = await pool.query(`SELECT actor_user_id FROM audit_events WHERE action = 'user.enabled' AND subject_id = $1`, [second.id]);
+    assert.equal(audit.rowCount, 1, 'only the real change is audited');
+    assert.equal(audit.rows[0].actor_user_id, adminId);
+    assert.equal((await api('POST', '/users/not-a-uuid/enable')).status, 404);
+    assert.equal((await api('POST', `/users/00000000-0000-4000-8000-000000000000/enable`)).status, 404);
+  });
+
   test('a second administrator can be added and the first can then be disabled, but never the last', async () => {
     assert.equal((await api('POST', `/users/${adminId}/disable`)).status, 409, 'the only administrator cannot be disabled');
     const second = (await api('POST', '/users', { email: 'second@example.org', displayName: 'Second' })).body.user;
