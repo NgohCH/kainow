@@ -128,7 +128,9 @@ Code in `web/` (React and Vite, bundled fonts, nothing loaded from the internet)
 
 **Administrator screens.** *People* lists everyone, adds an administrator, disables one and enables a disabled one again (`POST /users/:id/enable`; their old sessions and codes stay revoked, so they sign in afresh, and the change is audited as `user.enabled`); it warns while fewer than two are active, and the last active administrator cannot be disabled (the API refuses). *AI spending* shows this month's and today's figures (used, held for requests in progress, counted while an outcome is unknown, left) and edits the model, prices, exchange rate and limits. A blank monthly limit is saved as no allowance and the form says so; "no daily cap" is an explicit choice. Every change is audited.
 
-**Not in the MVP screens:** editing a proposal's wording. The responsive layout stacks the notes above the proposals on a phone, which works but is not tuned. Safari and Firefox are deferred to January.
+**Editing wording.** *Edit wording* on a proposal changes its text, owner and due (`POST /extractions/:runId/items/:itemId/edit`, same permission as reviewing). The model's own wording is never overwritten: each edit is a new row in `extraction_item_edits` (append-only in the database), the latest is in force, and the screen shows what the model said beside it (`edited`, `original`). The quoted passage and its place do not change. Saving sends a decided proposal back to review, so an approval always refers to the wording the reviewer saw. The audit entry (`proposal.edited`) names the fields changed and the earlier status, not the wording. Limits: text 2,000 characters, owner and due 200. A blank owner or due clears it, and an edit that changes nothing is refused with 409.
+
+**Not in the MVP screens:** changing a proposal's kind or its quoted passage. The responsive layout stacks the notes above the proposals on a phone, which works but is not tuned. Safari and Firefox are deferred to January.
 
 ## Sign-in design notes
 

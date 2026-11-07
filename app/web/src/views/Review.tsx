@@ -19,6 +19,9 @@ export function Review({ runId }: { runId: string }) {
   // For a quote that repeats: the place the reviewer has picked (an index into the item's occurrences).
   const [pick, setPick] = useState<Record<string, number>>({});
   const [saving, setSaving] = useState<Set<string>>(new Set());
+  // The proposal whose wording is being edited, and what has been typed so far.
+  const [editing, setEditing] = useState<{ id: string; text: string; owner: string; due: string } | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const marks = useRef(new Map<string, HTMLElement>());
   const cards = useRef(new Map<string, HTMLElement>());
 
@@ -75,6 +78,37 @@ export function Review({ runId }: { runId: string }) {
     [view, saving, runId, pick],
   );
 
+  const saveEdit = useCallback(async () => {
+    if (!view || !editing || saving.has(editing.id)) return;
+    const id = editing.id;
+    const before = view.items.find((i) => i.id === id);
+    setSaving((s) => new Set(s).add(id));
+    setError(null);
+    try {
+      const r = await api.post<{ item: Item }>(`/extractions/${runId}/items/${id}/edit`, {
+        sourceVersionId: view.run.sourceVersionId,
+        text: editing.text,
+        owner: editing.owner,
+        due: editing.due,
+      });
+      setView((v) => (v ? { ...v, items: v.items.map((i) => (i.id === id ? r.item : i)) } : v));
+      setPick((p) => {
+        const { [id]: _gone, ...rest } = p;
+        return rest;
+      });
+      setEditing(null);
+      setNotice(before && before.reviewStatus !== 'pending' ? 'Saved. The earlier decision was withdrawn, so this proposal needs review again.' : 'Saved.');
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'The change was not saved. Try again.');
+    } finally {
+      setSaving((s) => {
+        const next = new Set(s);
+        next.delete(id);
+        return next;
+      });
+    }
+  }, [view, editing, saving, runId]);
+
   // j and k move between proposals, a approves and r rejects the one in focus.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
@@ -111,6 +145,7 @@ export function Review({ runId }: { runId: string }) {
         Keys: j and k move, a approves, r rejects.
       </p>
       {error && <p role="alert" className="error">{error}</p>}
+      {notice && <p role="status" className="meta">{notice}</p>}
       {items.length === 0 && <p className="empty">The model found nothing to propose in this version.</p>}
 
       <div className="split review-split">
@@ -153,6 +188,50 @@ export function Review({ runId }: { runId: string }) {
                   <span className="meta">{[item.owner && `Owner: ${item.owner}`, item.due && `Due: ${item.due}`].filter(Boolean).join(', ')}</span>
                 )}
               </button>
+              {item.edited && item.original && (
+                <p className="meta edited">
+                  Edited. The model said: {item.original.text}
+                  {(item.original.owner || item.original.due) && ` (${[item.original.owner && `Owner: ${item.original.owner}`, item.original.due && `Due: ${item.original.due}`].filter(Boolean).join(', ')})`}
+                </p>
+              )}
+              {editing?.id === item.id ? (
+                <form
+                  className="edit-form"
+                  onSubmit={(e) => {
+                    e.preventDefault();
+                    void saveEdit();
+                  }}
+                >
+                  <label>
+                    Wording
+                    <textarea required rows={3} maxLength={2000} value={editing.text} onChange={(e) => setEditing({ ...editing, text: e.target.value })} />
+                  </label>
+                  <label>
+                    Owner
+                    <input maxLength={200} value={editing.owner} onChange={(e) => setEditing({ ...editing, owner: e.target.value })} />
+                  </label>
+                  <label>
+                    Due
+                    <input maxLength={200} value={editing.due} onChange={(e) => setEditing({ ...editing, due: e.target.value })} />
+                  </label>
+                  <p className="meta">Saving sends this proposal back to review. The quoted passage does not change.</p>
+                  <div className="decision">
+                    <button type="submit" className="approve" disabled={saving.has(item.id) || editing.text.trim() === ''}>Save</button>
+                    <button type="button" onClick={() => setEditing(null)}>Cancel</button>
+                  </div>
+                </form>
+              ) : (
+                <button
+                  type="button"
+                  className="link-button"
+                  onClick={() => {
+                    setNotice(null);
+                    setEditing({ id: item.id, text: item.text, owner: item.owner ?? '', due: item.due ?? '' });
+                  }}
+                >
+                  Edit wording
+                </button>
+              )}
               <blockquote>{item.quote}</blockquote>
               {item.quoteMatches === 0 && (
                 <p className="warn">This quote is not in the notes. The model may have made it up, so it cannot be approved.</p>

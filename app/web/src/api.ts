@@ -111,4 +111,7 @@ export interface Item {
   /** Which of the occurrences the reviewer approved, 0-based. null unless approved and repeated. */
   chosenOccurrence: number | null;
   reviewStatus: ReviewStatus;
+  /** True when a reviewer has changed the wording. `original` is then what the model said. */
+  edited?: boolean;
+  original?: { text: string; owner: string | null; due: string | null };
 }
