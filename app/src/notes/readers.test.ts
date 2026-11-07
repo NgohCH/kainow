@@ -45,6 +45,22 @@ test('a real Word document gives its paragraphs', async () => {
   assert.equal(r.text, 'Decisions\n\nWe agreed to ship on Friday.\n\nCafé & <tea>\n\n');
 });
 
+test('a Word table comes out as one line per row, with the cells joined', async () => {
+  const docx = makeDocx(['Actions', { table: [['Who', 'What', 'When'], ['Sam', 'Send the budget', 'Friday'], ['Priya', 'Book the room', '12 Dec']] }, 'End.']);
+  const r = await readUpload('minutes.docx', docx);
+  assert.equal(r.text, 'Actions\n\nWho | What | When\n\nSam | Send the budget | Friday\n\nPriya | Book the room | 12 Dec\n\nEnd.\n\n');
+});
+
+test('empty table cells keep their column and rows with no text are dropped', async () => {
+  const r = await readUpload('t.docx', makeDocx([{ table: [['Sam', '', 'Friday'], ['', '', '']] }]));
+  assert.equal(r.text, 'Sam |  | Friday\n\n');
+});
+
+test('table text with markup characters is not changed', async () => {
+  const r = await readUpload('t.docx', makeDocx([{ table: [['R&D <team>', 'Café']] }]));
+  assert.equal(r.text, 'R&D <team> | Café\n\n');
+});
+
 test('a Word file that is not a ZIP, or has no body, is refused', async () => {
   await rejects(readUpload('a.docx', Buffer.from('just text')), /not a Word document/);
   await rejects(readUpload('a.docx', makeZip([{ name: 'other.txt', data: 'x' }])), /word\/document\.xml/);
