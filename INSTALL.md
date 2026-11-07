@@ -4,6 +4,10 @@ This starts Kainow with Docker Compose: a PostgreSQL database, the Kainow server
 
 **Status: this package has not been built or run with Docker yet, and the Product Owner has deferred that first test to later.** The sandbox it was written in has no Docker daemon and cannot reach Docker Hub. What was checked instead: the compose file validates (`docker compose config`), and the exact contents of the final image (production dependencies, compiled code, migrations, the built screen) were assembled in a clean folder and run against PostgreSQL 16: migrate, create the administrator, sign in, open the screen, run the worker. If a step below fails on your computer, the first build is the most likely place, and I want to hear about it.
 
+## Windows
+
+This guide was written on Linux and the PowerShell lines have not been run on Windows. The repository now forces Linux line endings (`.gitattributes`), so a Windows checkout does not break files inside the containers. If you cloned before that was added and see odd errors such as `\r` in a message, clone again. Use Docker Desktop with the WSL 2 engine (its default).
+
 ## What you need
 
 - Docker Desktop (or Docker Engine with the Compose plugin), version 24 or later.
@@ -19,9 +23,19 @@ This starts Kainow with Docker Compose: a PostgreSQL database, the Kainow server
    cp .env.example .env
    ```
 
-   Open `.env` and fill in:
-   - `POSTGRES_PASSWORD`: letters and digits only. For example: `openssl rand -hex 24`
-   - `AUTH_SECRET`: at least 32 characters. For example: `openssl rand -base64 48`
+   (In Windows PowerShell, `cp` works too. `Copy-Item .env.example .env` is the same thing.)
+
+   Open `.env` (in PowerShell, `notepad .env`) and fill in:
+   - `POSTGRES_PASSWORD`: letters and digits only. On Mac or Linux: `openssl rand -hex 24`. In Windows PowerShell, which usually has no `openssl`:
+
+     ```
+     $b = New-Object byte[] 24; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); -join ($b | ForEach-Object { $_.ToString('x2') })
+     ```
+   - `AUTH_SECRET`: at least 32 characters. On Mac or Linux: `openssl rand -base64 48`. In Windows PowerShell:
+
+     ```
+     $b = New-Object byte[] 48; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [Convert]::ToBase64String($b)
+     ```
    - Sign-in codes: either `SMTP_URL` and `SMTP_FROM`, or leave `LOG_SIGN_IN_CODES=true` to read codes from the log (own computer only).
    - `OPENAI_API_KEY`: your key. It stays in `.env`, which is never committed, and only the worker receives it.
 
@@ -72,8 +86,18 @@ This starts Kainow with Docker Compose: a PostgreSQL database, the Kainow server
 
 ## Back up
 
+On Mac or Linux:
+
 ```
 docker compose exec -T db pg_dump -U kainow -Fc kainow > kainow-backup-$(date +%F).dump
+```
+
+In Windows PowerShell do **not** use `>` to save the dump: Windows PowerShell 5.1 rewrites the file as text and corrupts it. Let the database write the file and copy it out instead:
+
+```
+docker compose exec -T db sh -c "pg_dump -U kainow -Fc kainow -f /tmp/kainow.dump"
+docker compose cp db:/tmp/kainow.dump "kainow-backup-$(Get-Date -Format yyyy-MM-dd).dump"
+docker compose exec -T db rm /tmp/kainow.dump
 ```
 
 This holds everything: notes, original files, proposals, decisions, the audit trail and AI spend records. Keep it somewhere other than this computer. **Restoring from a backup has not been rehearsed** (the full restore drill is deferred to January), so treat the backup as unproven until you have restored one into a spare copy.

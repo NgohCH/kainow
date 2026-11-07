@@ -1,0 +1,7 @@
+{
+  "name": "kainow-a11y-check",
+  "private": true,
+  "type": "module",
+  "scripts": { "audit": "node audit.mjs" },
+  "dependencies": { "axe-core": "4.11.0", "puppeteer-core": "25.16.0" }
+}

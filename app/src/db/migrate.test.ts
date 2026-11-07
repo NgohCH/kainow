@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -39,6 +40,25 @@ describe('migrations', { skip: SKIP_NO_DB }, () => {
     await runMigrations(pool, dir);
     writeFileSync(file, 'CREATE TABLE a (id int, extra int);');
     await assert.rejects(runMigrations(pool, dir), /changed after it was applied/);
+  });
+
+  test('a migration checked out with Windows line endings is the same migration', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kainow-mig-'));
+    const file = join(dir, '0001_a.sql');
+    writeFileSync(file, 'CREATE TABLE a (\n  id int\n);\n');
+    await runMigrations(pool, dir);
+    writeFileSync(file, 'CREATE TABLE a (\r\n  id int\r\n);\r\n');
+    const again = await runMigrations(pool, dir);
+    assert.deepEqual(again, { applied: [], skipped: ['0001_a.sql'] });
+  });
+
+  test('the recorded checksum is the hash of the file with LF line ends, so it is the same on every computer', async () => {
+    await runMigrations(pool, realMigrations);
+    const { rows } = await pool.query('SELECT name, checksum FROM schema_migrations ORDER BY name');
+    for (const row of rows) {
+      const lf = readFileSync(join(realMigrations, row.name), 'utf8').replace(/\r\n/g, '\n');
+      assert.equal(row.checksum, createHash('sha256').update(lf).digest('hex'), row.name);
+    }
   });
 
   test('stops when an applied migration is missing from disk', async () => {

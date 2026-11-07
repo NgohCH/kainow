@@ -45,9 +45,17 @@ export function makeZip(entries: Array<{ name: string; data: Buffer | string }>)
 
 const xmlEscape = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
-/** A minimal but valid Word document with one paragraph per string. */
-export function makeDocx(paragraphs: string[]): Buffer {
-  const body = paragraphs.map((p) => `<w:p><w:r><w:t xml:space="preserve">${xmlEscape(p)}</w:t></w:r></w:p>`).join('');
+export interface DocxTable {
+  table: string[][];
+}
+
+const wPara = (p: string): string => `<w:p><w:r><w:t xml:space="preserve">${xmlEscape(p)}</w:t></w:r></w:p>`;
+const wTable = (rows: string[][]): string =>
+  `<w:tbl>${rows.map((r) => `<w:tr>${r.map((c) => `<w:tc>${wPara(c)}</w:tc>`).join('')}</w:tr>`).join('')}</w:tbl>`;
+
+/** A minimal but valid Word document with one paragraph per string, or a table for a { table } entry. */
+export function makeDocx(parts: Array<string | DocxTable>): Buffer {
+  const body = parts.map((p) => (typeof p === 'string' ? wPara(p) : wTable(p.table))).join('');
   return makeZip([
     {
       name: '[Content_Types].xml',

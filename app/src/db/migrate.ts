@@ -44,7 +44,8 @@ export async function runMigrations(pool: Pool, dir: string): Promise<MigrationR
 
     const result: MigrationResult = { applied: [], skipped: [] };
     for (const name of files) {
-      const sql = readFileSync(join(dir, name), 'utf8');
+      // Line ends are not part of the migration: a Windows checkout (CRLF) and a Linux one (LF) are the same file.
+      const sql = readFileSync(join(dir, name), 'utf8').replace(/\r\n/g, '\n');
       const checksum = createHash('sha256').update(sql).digest('hex');
       const previous = done.get(name);
       if (previous !== undefined) {

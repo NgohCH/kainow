@@ -11,6 +11,7 @@
     "build:web": "npm --prefix web run build",
     "build": "tsc -p tsconfig.json",
     "migrate": "node dist/db/migrate-cli.js",
+    "probe-ai": "node dist/extraction/probe-cli.js",
     "create-admin": "node dist/users/create-admin-cli.js",
     "apply-mvp-spend-settings": "node dist/spend/apply-mvp-settings-cli.js",
     "start:api": "node dist/main.js",

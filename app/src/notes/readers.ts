@@ -116,12 +116,62 @@ async function readDocx(bytes: Buffer): Promise<string> {
     throw new UploadRejected('The Word document body is too large.');
   }
   // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const mammoth = require('mammoth') as { extractRawText(input: { buffer: Buffer }): Promise<{ value: string }> };
+  const mammoth = require('mammoth') as MammothApi;
   try {
-    return (await mammoth.extractRawText({ buffer: bytes })).value;
+    const html = (await mammoth.convertToHtml({ buffer: bytes }, { transformDocument: tablesAsRows })).value;
+    return htmlToText(html);
   } catch {
     throw new UploadRejected('The Word document could not be read.');
   }
+}
+
+interface MammothApi {
+  convertToHtml(input: { buffer: Buffer }, options: { transformDocument(doc: DocNode): DocNode }): Promise<{ value: string }>;
+}
+
+interface DocNode {
+  type: string;
+  value?: string;
+  children?: DocNode[];
+}
+
+const textOf = (n: DocNode): string => (n.type === 'text' ? n.value ?? '' : n.type === 'tab' ? ' ' : (n.children ?? []).map(textOf).join(' '));
+
+/**
+ * A table row is one thing someone said, so each row becomes one line ("Sam | Send the budget | Friday")
+ * instead of one line per cell, which would separate the owner from the action. Only the public mammoth API is used.
+ */
+function tablesAsRows(node: DocNode): DocNode {
+  const walk = (n: DocNode): DocNode[] => {
+    if (n.type === 'table') {
+      const rows: DocNode[] = [];
+      for (const row of (n.children ?? []).filter((c) => c.type === 'tableRow')) {
+        const cells = (row.children ?? []).filter((c) => c.type === 'tableCell').map((c) => textOf(c).replace(/\s+/g, ' ').trim());
+        if (cells.every((c) => c === '')) continue;
+        rows.push({ type: 'paragraph', children: [{ type: 'run', children: [{ type: 'text', value: cells.join(' | ') }] }] });
+      }
+      return rows;
+    }
+    return [n.children ? { ...n, children: n.children.flatMap(walk) } : n];
+  };
+  return walk(node)[0];
+}
+
+const ENTITIES: Record<string, string> = { amp: '&', lt: '<', gt: '>', quot: '"', apos: "'" };
+
+/** The text of mammoth's HTML, with one blank line after each paragraph, heading or list item, like the raw-text reader gave. */
+function htmlToText(html: string): string {
+  return html
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/(p|h[1-6]|li)>/gi, '\n\n')
+    .replace(/<[^>]*>/g, '')
+    .replace(/&(#x[0-9a-f]+|#\d+|[a-z]+);/gi, (m, e: string) => {
+      if (e[0] === '#') {
+        const code = e[1].toLowerCase() === 'x' ? parseInt(e.slice(2), 16) : parseInt(e.slice(1), 10);
+        return Number.isInteger(code) && code > 0 && code <= 0x10ffff ? String.fromCodePoint(code) : m;
+      }
+      return ENTITIES[e.toLowerCase()] ?? m;
+    });
 }
 
 // pdfjs-dist is ESM only and this project compiles to CommonJS, so the import must not be rewritten to require().
