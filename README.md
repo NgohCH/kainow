@@ -89,7 +89,7 @@ One TypeScript application and one worker, one PostgreSQL 16 database, one organ
 | Sign-in, people, notes intake, spend cap, review screen | Built and tested against PostgreSQL 16; the review screen has been checked in a real browser, not yet used by a person on a real installation |
 | AI extraction | Built and tested with a stand-in model. The standalone check has run against the real `gpt-6.1-sol` on three synthetic notes, with all quotes verbatim ([review record](docs/MVP-EXTRACTION-REVIEW-2026-11-07.md)). The application's own AI adapter reached the real model on 8 November 2026 (`probe-ai` in the Docker worker, one small request). One full extraction inside the Docker install (synthetic note SYN-02) returned 11 proposals, all quotes found, for MYR 0.06 |
 | Docker Compose install | Built and run on Windows 11 with Docker Desktop (8 November 2026): the install steps, sign-in in a browser, a Word upload, the backup, and extraction and review of one synthetic note with the real model all work |
-| Real meeting notes | Not yet run. The first Docker test is done, so this is next |
+| Real meeting notes | Seven sets of real minutes run in the Docker install (8 November 2026), twice: all quotes found both times. Due dates are now read as a day, a range or an event, and an action without one cannot be approved ([record](docs/MVP-EXTRACTION-REVIEW-2026-11-08-DUE-DATES.md)). The human review of the real-note results is not yet done |
 | One administrator | The MVP names two administrators, but there is no separate recovery custodian yet; that must be fixed before production |
 
 The accuracy target is 95% of proposals supported by a real quote and 90% of expected items captured. A good score on synthetic notes does not show the rate on real ones.
