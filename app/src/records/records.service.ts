@@ -14,6 +14,7 @@ import { type TaskStatus, taskIndicators } from './tasks';
 
 export const MISSING_ACCOUNTABILITY = 'The project is missing a required role, so proposals cannot be approved until it is repaired.';
 export const NEEDS_ASSIGNEE = 'A task needs one assignee and a due date before it can be authorised.';
+export const HUMAN_LABEL = 'Human proposal — no discussion source';
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export type RecordKind = 'task' | 'decision' | 'question' | 'risk';
@@ -237,6 +238,81 @@ export class RecordsService {
     }
     await writeAudit(c, { at, action: `record.authorised`, actorUserId: user.id, subjectType: 'project', subjectId: ctx.project.id, detail: { kind: record.kind, id: record.id, ...('itemId' in origin ? { itemId: origin.itemId } : { proposalId: origin.proposalId }) } });
     return { record, deliver };
+  }
+
+  /** A person's own proposal without a discussion source (V1.0 proposals §4). */
+  async propose(user: AuthUser, projectId: string, input: Record<string, unknown>) {
+    const kind = input.kind;
+    if (!['action', 'decision', 'question', 'risk'].includes(kind as string)) throw new BadRequestException('Choose action, decision, question or risk.');
+    const text = typeof input.text === 'string' ? input.text.trim() : '';
+    if (text === '' || text.length > 2000) throw new BadRequestException('Write the proposal (up to 2000 characters).');
+    const opt = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? v.trim().slice(0, 200) : null);
+    const at = this.now();
+    return this.tx(async (c) => {
+      await this.access.authorize(user, 'proposal.submit', projectId, c, true);
+      const id = uuidv7(at.getTime());
+      await c.query(
+        `INSERT INTO human_proposals (id, project_id, kind, text, owner, due, proposed_by, proposed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [id, projectId, kind, text, opt(input.owner), opt(input.due), user.id, at],
+      );
+      await writeAudit(c, { at, action: 'proposal.submitted', actorUserId: user.id, subjectType: 'project', subjectId: projectId, detail: { proposalId: id, kind } });
+      return { proposal: { id, kind, text } };
+    });
+  }
+
+  async proposals(user: AuthUser, projectId: string) {
+    await this.access.authorize(user, 'project.view', projectId);
+    const { rows } = await this.pool.query(
+      `SELECT h.id, h.kind, h.text, h.owner, h.due, u.display_name AS "proposedBy", h.proposed_at AS "proposedAt",
+              h.review_status AS "reviewStatus", h.reject_reason AS "rejectReason"
+         FROM human_proposals h JOIN users u ON u.id = h.proposed_by WHERE h.project_id = $1 ORDER BY h.proposed_at, h.id`,
+      [projectId],
+    );
+    const out = [];
+    for (const r of rows) out.push({ ...r, label: HUMAN_LABEL, record: await this.existingRecord(this.pool, { proposalId: r.id }) });
+    return { proposals: out };
+  }
+
+  /** Locks a human proposal and returns it with its project (404 when unknown). */
+  private async lockProposal(c: PoolClient, proposalId: string) {
+    if (!UUID.test(proposalId)) throw new NotFoundException();
+    const p = (await c.query(`SELECT id, project_id, kind, text, owner, review_status FROM human_proposals WHERE id = $1`, [proposalId])).rows[0];
+    if (!p) throw new NotFoundException();
+    return p as { id: string; project_id: string; kind: Content['kind']; text: string; owner: string | null; review_status: string };
+  }
+
+  async authoriseProposal(user: AuthUser, proposalId: string, body: Record<string, unknown>): Promise<Created & { created: boolean }> {
+    const at = this.now();
+    let deliver: (() => Promise<boolean>) | null = null;
+    const result = await this.tx(async (c) => {
+      const peek = await this.lockProposal(c, proposalId);
+      const ctx = await this.authoriser(c, user, peek.project_id);
+      const p = (await c.query(`SELECT review_status FROM human_proposals WHERE id = $1 FOR UPDATE`, [proposalId])).rows[0];
+      const existing = await this.existingRecord(c, { proposalId });
+      if (existing) return { record: existing, created: false };
+      if (p.review_status === 'rejected') throw new ConflictException('This proposal was rejected.');
+      const made = await this.createFrom(c, ctx, { proposalId }, { kind: peek.kind, text: peek.text, owner: peek.owner }, body, user, at);
+      await c.query(`UPDATE human_proposals SET review_status = 'approved', reviewed_by = $2, reviewed_at = $3 WHERE id = $1`, [proposalId, user.id, at]);
+      deliver = made.deliver;
+      return { record: made.record, created: true };
+    });
+    const delivered = deliver ? await (deliver as () => Promise<boolean>)() : undefined;
+    return { ...result, ...(delivered !== undefined ? { delivered } : {}) };
+  }
+
+  async rejectProposal(user: AuthUser, proposalId: string, input: Record<string, unknown>) {
+    const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
+    if (reason === '') throw new BadRequestException('A reason is required.');
+    const at = this.now();
+    return this.tx(async (c) => {
+      const peek = await this.lockProposal(c, proposalId);
+      await this.access.authorize(user, 'proposal.review', peek.project_id, c, true);
+      const p = (await c.query(`SELECT review_status FROM human_proposals WHERE id = $1 FOR UPDATE`, [proposalId])).rows[0];
+      if (p.review_status !== 'pending') throw new ConflictException('Only a proposal waiting for review can be rejected.');
+      await c.query(`UPDATE human_proposals SET review_status = 'rejected', reviewed_by = $2, reviewed_at = $3, reject_reason = $4 WHERE id = $1`, [proposalId, user.id, at, reason]);
+      await writeAudit(c, { at, action: 'proposal.rejected', actorUserId: user.id, subjectType: 'project', subjectId: peek.project_id, detail: { proposalId } });
+      return { proposal: { id: proposalId, reviewStatus: 'rejected' } };
+    });
   }
 
   /** Every record of a project, for participants and grant holders (V1.0: read follows project access). */
