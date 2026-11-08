@@ -193,8 +193,20 @@ export class ProjectsService {
         [id],
       )
     ).rows;
+    // The project team sees pending invitations (V1.0 invitation rules, section 4); never the token.
+    const now = this.now();
+    const invitations = (
+      await this.pool.query(
+        `SELECT id, email, role, to_char(starts_on, 'YYYY-MM-DD') AS "startsOn", to_char(expires_on, 'YYYY-MM-DD') AS "expiresOn",
+                issued_at AS "issuedAt", expires_at AS "expiresAt",
+                CASE WHEN status = 'invited' AND expires_at <= $2 THEN 'expired' ELSE status END AS status
+           FROM invitations WHERE project_id = $1 AND status <> 'replaced' ORDER BY issued_at DESC, id`,
+        [id, now],
+      )
+    ).rows;
     return {
       ...p,
+      invitations,
       contributingDepartments: contributing,
       stage: stagePeriods.find((s) => s.endedAt === null) ?? null,
       stagePeriods,

@@ -25,6 +25,8 @@ export interface AppConfig extends DatabaseConfig {
   authSecret: string;
   cookieSecure: boolean;
   codeDelivery: CodeDelivery;
+  /** Where people open Kainow; used for links in invitation emails. */
+  appUrl: string;
 }
 
 export const DEFAULT_AUTH_SETTINGS: AuthSettings = {
@@ -86,6 +88,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     authSecret,
     // Browsers accept Secure cookies on http://localhost; set COOKIE_SECURE=false only if a browser does not.
     cookieSecure: env.COOKIE_SECURE !== 'false',
+    appUrl: (env.APP_URL || 'http://localhost:3000').replace(/\/+$/, ''),
     codeDelivery,
   };
 }

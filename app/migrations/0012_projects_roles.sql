@@ -88,9 +88,10 @@ CREATE TABLE memberships (
   revoked_at     timestamptz,
   revoked_by     uuid REFERENCES users (id),
   revoke_reason  text,
-  CONSTRAINT memberships_dates CHECK (expires_on IS NULL OR expires_on >= starts_on),
-  CONSTRAINT memberships_one_per_role UNIQUE (project_id, user_id, role)
+  CONSTRAINT memberships_dates CHECK (expires_on IS NULL OR expires_on >= starts_on)
 );
+-- One non-revoked appointment per person and role; a revoked person can be invited again.
+CREATE UNIQUE INDEX memberships_one_per_role ON memberships (project_id, user_id, role) WHERE revoked_at IS NULL;
 CREATE INDEX memberships_user ON memberships (user_id);
 
 CREATE TABLE membership_events (

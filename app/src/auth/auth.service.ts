@@ -60,7 +60,7 @@ export class AuthService {
   async requestCode(rawEmail: unknown): Promise<void> {
     const now = this.clock();
     const email = normaliseEmail(rawEmail);
-    const user = email ? await this.findUser(this.pool, email) : null;
+    const user = email ? ((await this.findUser(this.pool, email)) ?? (await this.accountForInvitee(email, now))) : null;
     if (!user || user.status !== 'active') {
       await this.ignored(now, 'unknown_or_disabled');
       return;
@@ -193,6 +193,31 @@ export class AuthService {
 
   private hashCode(userId: string, code: string): string {
     return createHmac('sha256', this.config.authSecret).update(`${userId}:${code}`).digest('hex');
+  }
+
+  /**
+   * The only way a new account is made outside the administrator screens: an address with an open project
+   * invitation (not answered, not replaced or revoked, not expired) on a currently eligible domain gets an
+   * ordinary member account when it first asks for a code. Any other unknown address gets nothing.
+   */
+  private async accountForInvitee(email: string, now: Date): Promise<UserRow | null> {
+    const { rows } = await this.pool.query<{ display_name: string | null }>(
+      `SELECT i.display_name FROM invitations i
+         JOIN eligible_domains d ON d.domain = split_part(i.email, '@', 2) AND d.removed_at IS NULL
+        WHERE i.email = $1 AND i.status = 'invited' AND i.expires_at > $2
+        ORDER BY i.issued_at DESC LIMIT 1`,
+      [email, now],
+    );
+    if (!rows[0]) return null;
+    const id = uuidv7(now.getTime());
+    const displayName = rows[0].display_name?.trim() || email.split('@')[0];
+    await this.pool.query(
+      `INSERT INTO users (id, email, display_name, role, created_at, updated_at) VALUES ($1, $2, $3, 'member', $4, $4)
+       ON CONFLICT DO NOTHING`,
+      [id, email, displayName, now],
+    );
+    await writeAudit(this.pool, { at: now, action: 'user.created_for_invitation', subjectType: 'user', subjectId: id });
+    return this.findUser(this.pool, email);
   }
 
   private async findUser(db: Pool | PoolClient, email: string, forUpdate = false): Promise<UserRow | null> {
