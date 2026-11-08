@@ -37,16 +37,37 @@ export function effectiveRoles(rows: MembershipRow[], userId: string, today: str
 /** Scheduled or Active: an appointment that has been accepted and has not ended. */
 const current = (r: MembershipRow, today: string): boolean => ['scheduled', 'active'].includes(membershipState(r, today));
 
+/** Roles that only one person may hold at any one time; a successor may be appointed to follow on. */
+export const SINGLE_HOLDER_ROLES: readonly ProjectRole[] = ['pm', 'owner'];
+
+/** Whether two appointments' date ranges share at least one day (no expiry runs on for ever). */
+export function datesOverlap(a: MembershipRow, b: MembershipRow): boolean {
+  const end = (r: MembershipRow) => r.expiresOn ?? '9999-12-31';
+  return a.startsOn <= end(b) && b.startsOn <= end(a);
+}
+
+/** A single-holder role that two different people would hold on the same day, if any. */
+export function doubleHolding(rows: MembershipRow[], today: string): ProjectRole | null {
+  const live = rows.filter((r) => current(r, today));
+  for (const role of SINGLE_HOLDER_ROLES) {
+    const holders = live.filter((r) => r.role === role);
+    for (const a of holders) for (const b of holders) if (a.userId !== b.userId && datesOverlap(a, b)) return role;
+  }
+  return null;
+}
+
 /**
  * The required roles: exactly one Project Manager, a Member who is a different person, and an Owner or
  * a Sponsor. 'accepted' counts Scheduled and Active appointments; 'active' counts Active ones only.
+ * A Project Manager followed by a successor (dates that do not overlap) still counts as one.
  */
 export function requiredRolesCheck(rows: MembershipRow[], today: string, mode: 'accepted' | 'active'): { ok: boolean; missing: string[] } {
   const counted = rows.filter((r) => (mode === 'active' ? membershipState(r, today) === 'active' : current(r, today)));
-  const pms = [...new Set(counted.filter((r) => r.role === 'pm').map((r) => r.userId))];
+  const pmRows = counted.filter((r) => r.role === 'pm');
+  const pms = new Set(pmRows.map((r) => r.userId));
   const missing: string[] = [];
-  if (pms.length !== 1) missing.push('a Project Manager');
-  else if (!counted.some((r) => r.role === 'member' && r.userId !== pms[0])) missing.push('a Member who is not the Project Manager');
+  if (pmRows.length === 0 || doubleHolding(pmRows, today) === 'pm') missing.push('a Project Manager');
+  else if (!counted.some((r) => r.role === 'member' && !pms.has(r.userId))) missing.push('a Member who is not the Project Manager');
   if (!counted.some((r) => r.role === 'owner' || r.role === 'sponsor')) missing.push('an Owner or a Sponsor');
   return { ok: missing.length === 0, missing };
 }

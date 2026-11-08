@@ -41,7 +41,7 @@ Dates follow the documents: membership starts at 00:00 UTC+8 on its start date; 
 - **Required roles** for a project: exactly one PM; at least one Member who is a different person from the PM; at least one Owner or Sponsor. At most one Owner; any number of Sponsors and Deputy PMs.
 - **Gates.** Draft may be incomplete. Draft → Planned needs the required roles accepted (Scheduled or Active memberships count). Planned → Active, Draft → Active (fast track) and Deferred/Closed → Active need the required roles Active and separation valid.
 - **Small teams.** A project with six or fewer distinct people holding non-revoked, non-expired memberships may combine PM, Owner and Sponsor in one person. At seven or more, PM, Owner and Sponsor must be different people. An appointment or acceptance that would make the seventh person while a combination exists is refused with the reason.
-- **Removing a required role.** Outside Draft, revoking an appointment that would leave a required role unfilled (counting Scheduled replacements) is refused: "Arrange a replacement first." Natural expiry still ends access.
+- **Changing appointments.** Every appointment, acceptance, extension, date change and revocation is checked on the memberships as they would be afterwards: one Project Manager and one Owner on any day; outside Draft, no required role left unfilled (counting Scheduled replacements: "Arrange a replacement first."); separation at seven people. A new Project Manager or Owner takes over from the current one in the same action: the current holder is revoked if the newcomer starts today or earlier, and otherwise keeps the role until the day before the newcomer starts. Natural expiry still ends access.
 - **Missing accountability.** On an Active project whose required roles are not all Active, the project is flagged; approving or rejecting proposals is refused; existing records stay readable and role repairs stay allowed. Access is never extended to cover the gap.
 - **No silent changes.** Expiry ends access on its date even for a required role. Reopening does not revive expired memberships or invitations.
 
@@ -73,9 +73,9 @@ Resuming or reopening starts a new stage period in the chosen stage. A small-tea
 | `project.edit` (name, purpose, contributing departments, planned end) | PM, Owner, Sponsor | Draft, Planned, Active | — *(default chosen here: the documents give no explicit editor)*. Moving the owning department is refused: only the Enterprise Administrator transfers ownership, with a reason (Consolidated Specification §3); that transfer comes with external file storage. |
 | `project.transition` | per the transition table | per the transition table | per the transition table |
 | `project.stage` | PM | Active | reason optional |
-| `role.manage` (appoint, invite, extend, change dates, revoke) for Owner | Enterprise Administrator | appointments: all; invitations: Draft, Planned, Active | separation and required-role checks |
+| `role.manage` (appoint, invite, extend, change dates, revoke) for Owner | Enterprise Administrator | appointments: all; invitations: Draft, Planned, Active | one Owner on any day; a new Owner takes over from the current one; separation and required-role checks |
 | `role.manage` for Sponsor | Enterprise Administrator, Owner | as above | as above |
-| `role.manage` for PM | Enterprise Administrator, Owner, Sponsor | as above | exactly one PM; replacing ends the old appointment in the same action |
+| `role.manage` for PM | Enterprise Administrator, Owner, Sponsor | as above | exactly one PM on any day; a new PM takes over from the current one (see Changing appointments) |
 | `role.manage` for Deputy PM, Member | PM, Owner, Sponsor | as above | PM and required Member different |
 | `note.import` | PM, Deputy PM, Owner, Sponsor | Draft, Planned, Active | — |
 | `note.view` | any participant | all | — |

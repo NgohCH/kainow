@@ -60,10 +60,12 @@ export class ProjectsService {
       typeof id === 'string' &&
       /^[0-9a-f-]{36}$/i.test(id) &&
       ((await db.query(`SELECT 1 FROM departments WHERE id = $1 AND status = 'active'`, [id])).rowCount ?? 0) > 0;
-    if (!(await active(owning))) throw new BadRequestException('Choose an active owning department.');
+    // A department retired later stays on the projects that already use it; only ones being added must be active.
+    const kept = (id: unknown) => current !== undefined && (id === current.owningDepartmentId || current.contributingDepartmentIds.includes(id as string));
+    if (!kept(owning) && !(await active(owning))) throw new BadRequestException('Choose an active owning department.');
     const contributingIds = [...new Set(contributing as string[])];
     if (contributingIds.includes(owning as string)) throw new BadRequestException('A contributing department cannot also be the owning department.');
-    for (const d of contributingIds) if (!(await active(d))) throw new BadRequestException('Choose active contributing departments.');
+    for (const d of contributingIds) if (!kept(d) && !(await active(d))) throw new BadRequestException('Choose active contributing departments.');
     const plannedEndIn = 'plannedEnd' in input || !current ? input.plannedEnd : current.plannedEnd;
     let plannedEnd: string | null = null;
     if (plannedEndIn !== undefined && plannedEndIn !== null && plannedEndIn !== '') {

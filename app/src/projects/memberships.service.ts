@@ -7,7 +7,7 @@ import { PG_POOL } from '../db/database.module';
 import { isCalendarDate } from '../extraction/due';
 import { type ProjectContext, ProjectAccess } from './access.service';
 import { canManageRole } from './matrix';
-import { type MembershipRow, type ProjectRole, membershipState, requiredRolesCheck, separationCheck } from './membership';
+import { type MembershipRow, type ProjectRole, SINGLE_HOLDER_ROLES, datesOverlap, doubleHolding, membershipState, requiredRolesCheck, separationCheck } from './membership';
 
 export const PROJECT_ROLES: readonly ProjectRole[] = ['pm', 'deputy_pm', 'owner', 'sponsor', 'member'];
 
@@ -32,22 +32,68 @@ export function cleanRole(v: unknown): ProjectRole {
   return v as ProjectRole;
 }
 
+type Row = ProjectContext['rows'][number];
+
+const SINGLE_LABEL: Partial<Record<ProjectRole, { one: string; two: string }>> = {
+  pm: { one: 'Project Manager', two: 'Project Managers' },
+  owner: { one: 'Owner', two: 'Owners' },
+};
+
+/** The day before a 'YYYY-MM-DD' day. */
+function dayBefore(day: string): string {
+  return new Date(Date.parse(`${day}T00:00:00Z`) - 86_400_000).toISOString().slice(0, 10);
+}
+
+/**
+ * How a new Project Manager or Owner takes over from the current holder: one who would overlap is revoked
+ * when the newcomer starts today or earlier (or the holder had not started yet), and otherwise keeps the
+ * role until the day before the newcomer starts. Other roles replace nobody.
+ */
+export function planReplacement(ctx: ProjectContext, candidate: MembershipRow): Array<{ row: Row; end: string | null }> {
+  if (!SINGLE_HOLDER_ROLES.includes(candidate.role)) return [];
+  const current = (m: MembershipRow) => ['scheduled', 'active'].includes(membershipState(m, ctx.today));
+  return ctx.rows
+    .filter((m) => m.role === candidate.role && m.userId !== candidate.userId && current(m) && datesOverlap(m, candidate))
+    .map((row) => ({ row, end: candidate.startsOn > ctx.today && row.startsOn < candidate.startsOn ? dayBefore(candidate.startsOn) : null }));
+}
+
+/** The memberships as they would be after a replacement plan is carried out. */
+function applyPlan(rows: Row[], plan: Array<{ row: Row; end: string | null }>, at: Date): Row[] {
+  return rows.map((r) => {
+    const p = plan.find((x) => x.row.id === r.id);
+    if (!p) return r;
+    return p.end === null ? { ...r, revokedAt: at } : { ...r, expiresOn: p.end };
+  });
+}
+
+/**
+ * The rules every membership change keeps, checked on the memberships as they would be afterwards: one
+ * Project Manager and one Owner on any day, no required role lost outside Draft (Product Summary §4:
+ * arrange a replacement first), and separation at seven people. Callers hold the project row lock.
+ */
+export function checkMembershipsAfter(ctx: ProjectContext, after: MembershipRow[]): void {
+  const two = doubleHolding(after, ctx.today);
+  if (two) throw new ConflictException(`Those dates would give the project two ${SINGLE_LABEL[two]?.two} at the same time.`);
+  if (ctx.project.status !== 'draft') {
+    const before = requiredRolesCheck(ctx.rows, ctx.today, 'accepted').missing;
+    const lost = requiredRolesCheck(after, ctx.today, 'accepted').missing.filter((m) => !before.includes(m));
+    if (lost.length > 0) {
+      throw new ConflictException(`Arrange a replacement first. Without this appointment the project would be missing ${lost.join(' and ')}.`);
+    }
+  }
+  const sep = separationCheck(after, ctx.today);
+  if (!sep.ok) throw new ConflictException(sep.reason);
+}
+
 /**
  * The checks every new appointment passes, whether made directly or by accepting an invitation, against
- * the project's memberships as they would be with the candidate added. Callers hold the project row lock.
+ * the project's memberships as they would be with the candidate added (and any holder it replaces).
  */
 export function checkNewAppointment(ctx: ProjectContext, candidate: MembershipRow): void {
-  const current = (m: MembershipRow) => ['scheduled', 'active'].includes(membershipState(m, ctx.today));
   if (ctx.rows.some((m) => m.userId === candidate.userId && m.role === candidate.role && !m.revokedAt)) {
     throw new ConflictException('That person already holds this role in the project; extend or change its dates instead.');
   }
-  if (candidate.role === 'owner' && ctx.rows.some((m) => m.role === 'owner' && current(m))) {
-    throw new ConflictException('A project can have only one Owner.');
-  }
-  // A new PM replaces the old one (done by the caller), so the old PM does not count here.
-  const others = candidate.role === 'pm' ? ctx.rows.filter((m) => m.role !== 'pm') : ctx.rows;
-  const sep = separationCheck([...others, candidate], ctx.today);
-  if (!sep.ok) throw new ConflictException(sep.reason);
+  checkMembershipsAfter(ctx, [...applyPlan(ctx.rows, planReplacement(ctx, candidate), new Date(0)), candidate]);
 }
 
 @Injectable()
@@ -78,7 +124,7 @@ export class MembershipsService {
     if (!v.allowed) throw new ForbiddenException(v.reason);
   }
 
-  /** Inserts an appointment (replacing the current PM when appointing a PM) with its history. */
+  /** Inserts an appointment (a new Project Manager or Owner takes over from the current one) with its history. */
   async insertAppointment(
     c: PoolClient,
     ctx: ProjectContext,
@@ -87,17 +133,15 @@ export class MembershipsService {
     reason: string,
     at: Date,
   ): Promise<string> {
-    if (candidate.role === 'pm') {
-      for (const old of ctx.rows.filter((m) => m.role === 'pm' && !m.revokedAt && membershipState(m, ctx.today) !== 'expired')) {
-        if (old.userId === candidate.userId) continue;
-        await c.query(`UPDATE memberships SET revoked_at = $2, revoked_by = $3, revoke_reason = 'Replaced by a new Project Manager' WHERE id = $1`, [
-          old.id, at, actorId,
-        ]);
-        await c.query(
-          `INSERT INTO membership_events (id, membership_id, kind, previous_starts_on, previous_expires_on, actor_id, reason, at)
-           VALUES ($1, $2, 'revoked', $3, $4, $5, 'Replaced by a new Project Manager', $6)`,
-          [uuidv7(at.getTime()), old.id, old.startsOn, old.expiresOn, actorId, at],
-        );
+    const label = SINGLE_LABEL[candidate.role]?.one;
+    for (const { row: old, end } of planReplacement(ctx, candidate)) {
+      if (end === null) {
+        const why = `Replaced by a new ${label}`;
+        await c.query(`UPDATE memberships SET revoked_at = $2, revoked_by = $3, revoke_reason = $4 WHERE id = $1`, [old.id, at, actorId, why]);
+        await this.recordChange(c, 'revoked', old, null, actorId, why, at, ctx.project.id);
+      } else {
+        await c.query(`UPDATE memberships SET expires_on = $2 WHERE id = $1`, [old.id, end]);
+        await this.recordChange(c, 'dates_changed', old, { startsOn: old.startsOn, expiresOn: end }, actorId, `Ends the day before the new ${label} starts`, at, ctx.project.id);
       }
     }
     const id = uuidv7(at.getTime());
@@ -174,8 +218,7 @@ export class MembershipsService {
       const { ctx, row } = await this.loadForChange(c, user, membershipId);
       const next = cleanDates(ctx.project.createdOn, row.startsOn, input.expiresOn);
       if (next.expiresOn === null) throw new BadRequestException('Give the new expiry date.');
-      const sep = separationCheck(ctx.rows.map((r) => (r.id === row.id ? { ...r, ...next } : r)), ctx.today);
-      if (!sep.ok) throw new ConflictException(sep.reason);
+      checkMembershipsAfter(ctx, ctx.rows.map((r) => (r.id === row.id ? { ...r, ...next } : r)));
       await c.query(`UPDATE memberships SET expires_on = $2 WHERE id = $1`, [row.id, next.expiresOn]);
       await this.recordChange(c, 'extended', row, next, user.id, null, at, ctx.project.id);
       return { membership: { id: row.id, ...next, state: membershipState({ ...row, ...next }, ctx.today) } };
@@ -187,8 +230,7 @@ export class MembershipsService {
     return this.tx(async (c) => {
       const { ctx, row } = await this.loadForChange(c, user, membershipId);
       const next = cleanDates(ctx.project.createdOn, input.startsOn, input.expiresOn);
-      const sep = separationCheck(ctx.rows.map((r) => (r.id === row.id ? { ...r, ...next } : r)), ctx.today);
-      if (!sep.ok) throw new ConflictException(sep.reason);
+      checkMembershipsAfter(ctx, ctx.rows.map((r) => (r.id === row.id ? { ...r, ...next } : r)));
       await c.query(`UPDATE memberships SET starts_on = $2, expires_on = $3 WHERE id = $1`, [row.id, next.startsOn, next.expiresOn]);
       await this.recordChange(c, 'dates_changed', row, next, user.id, null, at, ctx.project.id);
       return { membership: { id: row.id, ...next, state: membershipState({ ...row, ...next }, ctx.today) } };
@@ -202,14 +244,7 @@ export class MembershipsService {
     return this.tx(async (c) => {
       const { ctx, row } = await this.loadForChange(c, user, membershipId);
       // Arrange a replacement before removing a required role (Product Summary §4); a Draft may be incomplete.
-      if (ctx.project.status !== 'draft') {
-        const before = requiredRolesCheck(ctx.rows, ctx.today, 'accepted').missing;
-        const after = requiredRolesCheck(ctx.rows.filter((r) => r.id !== row.id), ctx.today, 'accepted').missing;
-        const lost = after.filter((m) => !before.includes(m));
-        if (lost.length > 0) {
-          throw new ConflictException(`Arrange a replacement first. Without this appointment the project would be missing ${lost.join(' and ')}.`);
-        }
-      }
+      checkMembershipsAfter(ctx, ctx.rows.filter((r) => r.id !== row.id));
       await c.query(`UPDATE memberships SET revoked_at = $2, revoked_by = $3, revoke_reason = $4 WHERE id = $1`, [row.id, at, user.id, reason]);
       await this.recordChange(c, 'revoked', row, null, user.id, reason, at, ctx.project.id);
       return { membership: { id: row.id, state: 'revoked' } };

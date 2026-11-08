@@ -42,18 +42,22 @@ describe('project memberships and role management', { skip: SKIP_NO_DB }, () => 
     assert.equal((await appoint(admin, id, { userId: ids.x3, role: 'deputy_pm' })).status, 403, 'the administrator does not manage Deputies');
   });
 
-  test('a project has only one Owner, and a new Project Manager replaces the old one', async () => {
-    const id = await seedProject(t.pool, { members: [{ userId: pm.userId, role: 'pm' }, { userId: owner.userId, role: 'owner' }] });
-    const second = await appoint(admin, id, { userId: ids.x1, role: 'owner' });
-    assert.equal(second.status, 409);
-    assert.equal(second.body.message, 'A project can have only one Owner.');
-    assert.equal((await appoint(owner, id, { userId: ids.x1, role: 'pm' })).status, 201);
+  test('a new Owner replaces the old one, as a new Project Manager does', async () => {
+    const id = await seedProject(t.pool, {
+      status: 'active',
+      members: [{ userId: pm.userId, role: 'pm' }, { userId: owner.userId, role: 'owner' }, { userId: member.userId, role: 'member' }],
+    });
+    assert.equal((await appoint(admin, id, { userId: ids.x2, role: 'owner' })).status, 201, 'a sole Owner can be replaced directly');
+    const owners = (await t.pool.query(`SELECT user_id, revoke_reason FROM memberships WHERE project_id = $1 AND role = 'owner' ORDER BY starts_on, id`, [id])).rows;
+    assert.deepEqual(owners.map((o) => [o.user_id, o.revoke_reason]), [[owner.userId, 'Replaced by a new Owner'], [ids.x2, null]]);
+    assert.equal((await appoint(owner, id, { userId: ids.x1, role: 'pm' })).status, 404, 'the replaced Owner is no longer in the project');
+    assert.equal((await appoint(admin, id, { userId: ids.x1, role: 'pm' })).status, 201);
     const rows = await memberships(id);
     assert.deepEqual(rows.filter((r: { role: string }) => r.role === 'pm').map((r: { user_id: string; revoked: boolean }) => [r.user_id, r.revoked]), [
       [pm.userId, true],
       [ids.x1, false],
     ]);
-    const events = (await t.pool.query(`SELECT kind FROM membership_events ORDER BY at, id`)).rows.map((r) => r.kind);
+    const events = (await t.pool.query(`SELECT e.kind FROM membership_events e JOIN memberships m ON m.id = e.membership_id WHERE m.project_id = $1 AND m.role = 'pm' AND e.kind <> 'appointed' OR (e.kind = 'appointed' AND m.user_id = $2 AND m.role = 'pm')`, [id, ids.x1])).rows.map((r) => r.kind);
     assert.deepEqual(events.sort(), ['appointed', 'revoked']);
   });
 
@@ -98,11 +102,74 @@ describe('project memberships and role management', { skip: SKIP_NO_DB }, () => 
     assert.equal(seventh.body.message, 'With seven or more people, the Project Manager, Owner and Sponsors must be different people.');
   });
 
-  test('two simultaneous Owner appointments: exactly one succeeds', async () => {
+  test('two simultaneous Owner appointments leave exactly one Owner', async () => {
     const id = await seedProject(t.pool, { members: [{ userId: pm.userId, role: 'pm' }] });
     const [a, b] = await Promise.all([appoint(admin, id, { userId: ids.x1, role: 'owner' }), appoint(admin, id, { userId: ids.x2, role: 'owner' })]);
+    assert.deepEqual([a.status, b.status], [201, 201], 'they are serialised; the second replaces the first');
+    const live = `SELECT count(*)::int AS n FROM memberships WHERE project_id = $1 AND role = 'owner' AND revoked_at IS NULL`;
+    assert.equal((await t.pool.query(live, [id])).rows[0].n, 1);
+  });
+
+  test('a seventh person and a combined role requested at the same moment: exactly one succeeds', async () => {
+    // Six distinct people, no combined roles. Each request alone is fine; together they would break separation.
+    const id = await seedProject(t.pool, {
+      members: [
+        { userId: pm.userId, role: 'pm' },
+        ...[ids.x1, ids.x2, ids.x3, ids.x4].map((userId) => ({ userId, role: 'member' as const })),
+        { userId: owner.userId, role: 'owner' },
+      ],
+    });
+    const [a, b] = await Promise.all([
+      appoint(pm, id, { userId: ids.x6, role: 'member' }),
+      appoint(owner, id, { userId: pm.userId, role: 'sponsor' }),
+    ]);
     assert.deepEqual([a.status, b.status].sort(), [201, 409]);
-    assert.equal((await t.pool.query(`SELECT count(*)::int AS n FROM memberships WHERE project_id = $1 AND role = 'owner'`, [id])).rows[0].n, 1);
+  });
+
+  test('a replacement Project Manager who starts later leaves the current one in place until the day before', async () => {
+    const id = await seedProject(t.pool, {
+      status: 'active',
+      members: [{ userId: pm.userId, role: 'pm' }, { userId: owner.userId, role: 'owner' }, { userId: member.userId, role: 'member' }],
+    });
+    assert.equal((await appoint(owner, id, { userId: ids.x1, role: 'pm', startsOn: '2026-12-01' })).status, 201);
+    const old = (await t.pool.query(`SELECT to_char(expires_on, 'YYYY-MM-DD') AS e, revoked_at FROM memberships WHERE project_id = $1 AND user_id = $2 AND role = 'pm'`, [id, pm.userId])).rows[0];
+    assert.deepEqual([old.e, old.revoked_at], ['2026-11-30', null]);
+    const p = (await pm.request('GET', `/projects/${id}`)).body.project;
+    assert.equal(p.missingAccountability, false);
+    assert.deepEqual(p.myRoles, ['pm']);
+  });
+
+  test('extending or changing dates cannot give a project two Owners or two Project Managers at once', async () => {
+    const id = await seedProject(t.pool, {
+      status: 'active',
+      members: [
+        { userId: pm.userId, role: 'pm' },
+        { userId: ids.x1, role: 'pm', expiresOn: '2026-11-05' },
+        { userId: owner.userId, role: 'owner' },
+        { userId: ids.x2, role: 'owner', expiresOn: '2026-11-05' },
+        { userId: member.userId, role: 'member' },
+      ],
+    });
+    const row = async (u: string, role: string) => (await t.pool.query(`SELECT id FROM memberships WHERE project_id = $1 AND user_id = $2 AND role = $3`, [id, u, role])).rows[0].id;
+    const owners = await admin.request('POST', `/memberships/${await row(ids.x2, 'owner')}/extend`, { expiresOn: '2026-12-31' });
+    assert.equal(owners.status, 409);
+    assert.equal(owners.body.message, 'Those dates would give the project two Owners at the same time.');
+    const pms = await owner.request('POST', `/memberships/${await row(ids.x1, 'pm')}/dates`, { startsOn: '2026-11-01', expiresOn: null });
+    assert.equal(pms.status, 409);
+    assert.equal(pms.body.message, 'Those dates would give the project two Project Managers at the same time.');
+  });
+
+  test('ending a required role early by its dates needs a replacement first, as removing it does', async () => {
+    const id = await seedProject(t.pool, {
+      status: 'active',
+      members: [{ userId: pm.userId, role: 'pm' }, { userId: owner.userId, role: 'owner' }, { userId: member.userId, role: 'member' }],
+    });
+    const mid = (await t.pool.query(`SELECT id FROM memberships WHERE project_id = $1 AND role = 'member'`, [id])).rows[0].id;
+    const ended = await pm.request('POST', `/memberships/${mid}/dates`, { startsOn: '2026-11-01', expiresOn: '2026-11-08' });
+    assert.equal(ended.status, 409);
+    assert.equal(ended.body.message, 'Arrange a replacement first. Without this appointment the project would be missing a Member who is not the Project Manager.');
+    assert.equal((await pm.request('POST', `/memberships/${mid}/extend`, { expiresOn: '2026-11-08' })).status, 409);
+    assert.equal((await pm.request('POST', `/memberships/${mid}/extend`, { expiresOn: '2027-06-30' })).status, 200, 'a real extension is fine');
   });
 
   test('a required role that expired while Deferred can be repaired, and the project then resumes', async () => {

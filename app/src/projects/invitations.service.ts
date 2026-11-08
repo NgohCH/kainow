@@ -111,10 +111,8 @@ export class InvitationsService {
       if (!(await this.org.isEligible(email))) throw new BadRequestException('That address is not in an eligible organisation domain.');
       const { startsOn, expiresOn } = cleanDates(ctx.project.createdOn, input.startsOn, input.expiresOn);
       const existing = (await c.query(`SELECT id FROM users WHERE email = $1`, [email])).rows[0];
+      // A new Owner or Project Manager replaces the current one when the invitation is accepted.
       if (existing) checkNewAppointment(ctx, { userId: existing.id, role, startsOn, expiresOn, revokedAt: null });
-      else if (role === 'owner' && ctx.rows.some((m) => m.role === 'owner' && ['scheduled', 'active'].includes(membershipState(m, ctx.today)))) {
-        throw new ConflictException('A project can have only one Owner.');
-      }
       const name = (await c.query(`SELECT name FROM projects WHERE id = $1`, [projectId])).rows[0].name as string;
       const issued = await this.issue(
         c,
