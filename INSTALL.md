@@ -87,6 +87,8 @@ The PowerShell lines in this guide were run in Windows PowerShell 5.1 on 8 Novem
 6. Sign in as the Owner, choose Review, approve one proposal and reject another. The highlighted passage should change colour. The spend figure should rise by a few sen. (The Project Manager and Members can read the proposals but cannot approve them.)
 7. If extraction says "No AI key is configured", the worker did not receive `OPENAI_API_KEY`: check `.env` and run `docker compose up -d` again.
 
+8. Optional, as the Administrator: under **People**, disable the Member's account. The project now says "A member is On Hold — investigation needed" and the Project Manager gets an email (or a line in `docker compose logs api`). Enable the account again, then as the Project Manager or Owner record a finding on the People tab and choose **Restore**.
+
 Notes added before projects existed (before 8 November 2026) stay in the database but are not shown.
 
 ## Everyday use

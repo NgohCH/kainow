@@ -37,6 +37,16 @@ await db.query("update projects set status = 'active' where id = $1", [projectId
 const invited = await api('POST', `/projects/${projectId}/invitations`, { email: 'sponsor.a11y@example.org', role: 'sponsor', startsOn: new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10) });
 if (!invited.invitation) throw new Error('invitation not created: ' + JSON.stringify(invited));
 
+const today = new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10);
+const disabled = await fetch(base + `/users/${memberId}/disable`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf } });
+const enabled = await fetch(base + `/users/${memberId}/enable`, { method: 'POST', headers: { cookie, 'x-csrf-token': csrf } });
+if (disabled.status !== 204 || enabled.status !== 204) throw new Error('could not hold the member');
+const grant = await api('POST', `/projects/${projectId}/grants`, { userId: memberId, kind: 'audit', purpose: 'Access check', scope: 'Everything', startsOn: today });
+if (!grant.grant) throw new Error('grant not recorded: ' + JSON.stringify(grant));
+const handover = await api('POST', `/projects/${projectId}/handover`, { email: 'next.a11y@example.org', outgoingRole: 'member' });
+if (!handover.invitation) throw new Error('handover not issued: ' + JSON.stringify(handover));
+const closedId = (await api('POST', '/projects', { name: 'Closed access check', purpose: 'A Closed project for the archive panel.', owningDepartmentId: department.id })).project.id;
+
 const text = 'We agreed to ship on Friday.\nWe agreed to ship on Friday.\nSam will send the budget to Priya by 12 December.\nRisk: the venue may not be free.';
 const created = await api('POST', `/projects/${projectId}/notes`, { title: 'Access check note', text });
 const sourceId = created.source?.id ?? created.id;
@@ -52,10 +62,13 @@ const items = [
 for (const [i, it] of items.entries()) {
   await db.query('insert into extraction_items (id, run_id, source_version_id, position, kind, text, owner, due, quote, quote_start, quote_end, quote_matches, created_at) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())', [randomUUID(), runId, versionId, i, it[0], it[1], it[2], it[3], it[4], it[5], it[6], it[7]]);
 }
+await db.query("insert into memberships (id, project_id, user_id, role, starts_on) values ($1, $2, $3, 'owner', (now() at time zone 'Asia/Kuala_Lumpur')::date)", [randomUUID(), closedId, user]);
+await db.query("update projects set status = 'closed', closure_outcome = 'delivered' where id = $1", [closedId]);
 await db.end();
 // The invitation link is written to the API log (LOG_SIGN_IN_CODES); read it after the invitation was sent.
 await new Promise((r) => setTimeout(r, 300));
 const inviteToken = [...readFileSync(API_LOG, 'utf8').matchAll(/sponsor\.a11y@example\.org: .*#\/invitations\/([A-Za-z0-9_-]+)/g)].pop()[1];
+const handoverToken = [...readFileSync(API_LOG, 'utf8').matchAll(/next\.a11y@example\.org: .*#\/invitations\/([A-Za-z0-9_-]+)/g)].pop()[1];
 
 const axe = readFileSync(createRequire(import.meta.url).resolve('axe-core/axe.min.js'), 'utf8');
 const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox'] });
@@ -90,12 +103,16 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
   await page.goto(`${base}/#/invitations/${inviteToken}`, { waitUntil: 'networkidle0' });
   await wait(300);
   await check(`${theme}: invitation, signed out`, page);
+  await page.goto(`${base}/#/invitations/${handoverToken}`, { waitUntil: 'networkidle0' });
+  await wait(300);
+  await check(`${theme}: handover invitation, signed out`, page);
   await ctx.close();
   // Signed in
   page = await open(browser.defaultBrowserContext());
   const [n, ...val] = cookie.split('=');
   await page.setCookie({ name: n, value: val.join('='), domain: 'localhost', path: '/' });
   const screens = [
+    ['closed project overview (archive panel)', `#/projects/${closedId}`],
     ['my projects', '#/'],
     ['project overview', `#/projects/${projectId}`],
     ['project people', `#/projects/${projectId}/people`],
@@ -130,6 +147,23 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
   }
   await wait(300);
   await check(`${theme}: defer form open`, page);
+  // Forms on the People tab: handover, grant request; and the department move on the Overview.
+  for (const [label, hash, button] of [
+    ['handover form open', `#/projects/${projectId}/people`, 'Hand over the project'],
+    ['grant request form open', `#/projects/${projectId}/people`, 'Record a request'],
+    ['finding form open', `#/projects/${projectId}/people`, 'Record finding'],
+    ['department move form open', `#/projects/${projectId}`, 'Move to another department'],
+  ]) {
+    await page.goto(`${base}/${hash}`, { waitUntil: 'networkidle0' });
+    await page.reload({ waitUntil: 'networkidle0' });
+    let clicked = false;
+    for (const b of await page.$$('main button')) {
+      if ((await b.evaluate((e) => e.textContent)) === button) { await b.click(); clicked = true; break; }
+    }
+    if (!clicked) throw new Error(`no "${button}" button for ${label}`);
+    await wait(400);
+    await check(`${theme}: ${label}`, page);
+  }
   await page.close();
 }
 await browser.close();
