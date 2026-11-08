@@ -63,6 +63,9 @@ const COUNT = `(\\d{1,3}|${Object.keys(NUMBER_WORDS).join('|')})`;
 
 const re = (src: string) => new RegExp(`^${src}$`);
 const P = {
+  isoDate: re(`(\\d{4})-(\\d{2})-(\\d{2})`),
+  /** Day first, as dates are written in Malaysia: 14/05/2026 is 14 May. */
+  numericDate: re(`(\\d{1,2})[/-](\\d{1,2})[/-](\\d{4})`),
   dayMonthYear: re(`(\\d{1,2}) ${MONTH} (\\d{4})`),
   dayMonth: re(`(\\d{1,2}) ${MONTH}`),
   beforeDay: re(`before (\\d{1,2}) ${MONTH}(?: (\\d{4}))?`),
@@ -140,6 +143,11 @@ const days = (n: number, unit: string): number => (unit.startsWith('week') ? n *
 /** Reads one piece of wording, already lower case with spaces collapsed. */
 function readPart(s: string, meeting: string | null): Part {
   let m: RegExpExecArray | null;
+  if ((m = P.isoDate.exec(s) ?? P.numericDate.exec(s))) {
+    const [y, mo, d] = P.isoDate.test(s) ? [m[1], m[2], m[3]] : [m[3], m[2], m[1]];
+    const v = iso(Number(y), Number(mo), Number(d));
+    return isCalendarDate(v) ? { kind: 'date', earliest: v, latest: v, used: false } : unknown();
+  }
   if ((m = P.dayMonthYear.exec(s))) {
     const d = day(Number(m[3]), m[2], m[1]);
     return d ? { kind: 'date', earliest: d, latest: d, used: false } : unknown();

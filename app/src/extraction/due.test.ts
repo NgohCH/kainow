@@ -77,6 +77,12 @@ const CASES: Case[] = [
   ['15 Disember 2026', null, exact('2026-12-15')],
   ['Dis 2026', null, range('2026-12-01', '2026-12-31')],
   ['Mac 2027', null, range('2027-03-01', '2027-03-31')],
+  ['2026-12-11', null, exact('2026-12-11')],
+  ['14/05/2026', null, exact('2026-05-14')],
+  ['2/10/2026', null, exact('2026-10-02')],
+  ['14-05-2026', null, exact('2026-05-14')],
+  ['2026-02-30', null, needs('wording not understood')],
+  ['31/02/2027', null, needs('wording not understood')],
   ['31 February 2027', null, needs('wording not understood')],
   ['sometime soon', M, needs('wording not understood')],
 ];
