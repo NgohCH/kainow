@@ -32,20 +32,20 @@ export function questionTransition(input: {
   switch (action) {
     case 'answer':
       if (!actor.active) return refuse('Only an Active member of the project can answer.');
-      if (status !== 'open' && status !== 'answered') return refuse('Only an open question can be answered.');
+      if (status !== 'open' && status !== 'answered') return refuse('This question is no longer open for answers.');
       return blank(input.note) ? refuse('Write the answer.') : { allowed: true, to: 'answered' };
     case 'resolve':
       if (!resolver) return refuse('Only the requester, the Project Manager or a Deputy can resolve a question.');
       if (status === 'open') return refuse('Answered is not Resolved: the requester, Project Manager or a Deputy confirms the answer.');
-      if (status !== 'answered') return refuse('Only an answered question can be resolved.');
+      if (status !== 'answered') return refuse('A question is resolved only once it has an answer.');
       return { allowed: true, to: 'resolved' };
     case 'reopen':
       if (!resolver) return refuse('Only the requester, the Project Manager or a Deputy can reopen a question.');
-      if (status !== 'resolved') return refuse('Only a resolved question can be reopened.');
+      if (status !== 'resolved') return refuse('A question can be reopened only after it is resolved.');
       return blank(input.note) ? refuse(NOTE) : { allowed: true, to: 'open' };
     case 'withdraw':
       if (!actor.isRequester && !has(actor.roles, 'pm')) return refuse('Only the requester or the Project Manager can withdraw a question.');
-      if (status !== 'open' && status !== 'answered') return refuse('Only an open or answered question can be withdrawn.');
+      if (status !== 'open' && status !== 'answered') return refuse('A question can be withdrawn only while it is open or answered.');
       return blank(input.note) ? refuse(NOTE) : { allowed: true, to: 'withdrawn' };
   }
 }
@@ -67,13 +67,13 @@ export function riskTransition(input: {
   switch (action) {
     case 'mitigate':
       if (!worker) return refuse('Only the Risk Responsible Person, the Project Manager or a Deputy can record mitigation.');
-      return status === 'open' ? { allowed: true, to: 'mitigating' } : refuse('Only an open risk can move to Mitigating.');
+      return status === 'open' ? { allowed: true, to: 'mitigating' } : refuse('A risk moves to Mitigating only from Open.');
     case 'update':
       if (!worker) return refuse('Only the Risk Responsible Person, the Project Manager or a Deputy can update a risk.');
-      return status === 'open' || status === 'mitigating' ? { allowed: true, to: status } : refuse('Only an open or mitigating risk can be updated.');
+      return status === 'open' || status === 'mitigating' ? { allowed: true, to: status } : refuse('A risk can be updated only while it is open or mitigating.');
     case 'accept':
       if (!authority) return refuse('Only the Owner or a Sponsor can accept a risk.');
-      if (status !== 'open' && status !== 'mitigating') return refuse('Only an open or mitigating risk can be accepted.');
+      if (status !== 'open' && status !== 'mitigating') return refuse('A risk can be accepted only while it is open or mitigating.');
       if (!input.responsibleSet || !input.reviewOnSet) return refuse('Accepting a risk needs a responsible person and a review date.');
       return { allowed: true, to: 'accepted' };
     case 'resolve':
@@ -81,7 +81,7 @@ export function riskTransition(input: {
       return status === 'resolved' ? refuse('This risk is already resolved.') : { allowed: true, to: 'resolved' };
     case 'reopen':
       if (status === 'accepted') return authority ? { allowed: true, to: 'open' } : refuse('Only the Owner or a Sponsor can reverse an acceptance.');
-      if (status !== 'resolved') return refuse('Only a resolved or accepted risk can be reopened.');
+      if (status !== 'resolved') return refuse('A risk can be reopened only after it is resolved or accepted.');
       return worker ? { allowed: true, to: 'open' } : refuse('Only the Risk Responsible Person, the Project Manager or a Deputy can reopen a risk.');
   }
 }

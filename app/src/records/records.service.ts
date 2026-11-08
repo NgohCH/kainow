@@ -9,7 +9,7 @@ import { type ApprovedItem, ExtractionService } from '../extraction/extraction.s
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { InvitationsService } from '../projects/invitations.service';
 import { membershipState } from '../projects/membership';
-import { SEVERITIES, type Severity } from './lifecycles';
+import { type QuestionAction, type RiskAction, SEVERITIES, type Severity, questionTransition, riskTransition } from './lifecycles';
 import { TASK_ACTIONS, type TaskAction, type TaskStatus, ancestorsToReopen, parentMayComplete, taskIndicators, taskTransition } from './tasks';
 
 export const MISSING_ACCOUNTABILITY = 'The project is missing a required role, so proposals cannot be approved until it is repaired.';
@@ -410,6 +410,81 @@ export class RecordsService {
     });
   }
 
+  /** Loads a question or risk with its project under lock; anyone who may read the project gets this far. */
+  private async recordContext(c: PoolClient, user: AuthUser, table: 'questions' | 'risks', id: string) {
+    if (!UUID.test(id)) throw new NotFoundException();
+    const row = (await c.query(`SELECT project_id FROM ${table} WHERE id = $1`, [id])).rows[0];
+    if (!row) throw new NotFoundException();
+    const ctx = await this.access.authorize(user, 'project.view', row.project_id, c, true);
+    const rec = (await c.query(`SELECT * FROM ${table} WHERE id = $1 FOR UPDATE`, [id])).rows[0];
+    return { ctx, rec };
+  }
+
+  private async recordEvent(c: PoolClient, kind: 'question' | 'risk', id: string, event: string, from: string, to: string, note: string | null, actorId: string, at: Date) {
+    await c.query(
+      `INSERT INTO record_events (id, record_kind, record_id, kind, from_status, to_status, note, actor_id, at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [uuidv7(at.getTime()), kind, id, event, from, to, note, actorId, at],
+    );
+  }
+
+  /** Answer, resolve, reopen or withdraw a question (V1.0 questions §3). */
+  async questionAction(user: AuthUser, id: string, action: QuestionAction, input: Record<string, unknown>) {
+    const text = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : null);
+    const note = action === 'answer' ? text(input.text) : action === 'resolve' ? text(input.note) ?? '' : text(input.reason);
+    const at = this.now();
+    return this.tx(async (c) => {
+      const { ctx, rec } = await this.recordContext(c, user, 'questions', id);
+      const verdict = questionTransition({
+        action,
+        status: rec.status,
+        actor: { isRequester: rec.requester_id === user.id, roles: ctx.roles, active: isActiveIn(ctx, user.id) },
+        projectStatus: ctx.project.status,
+        note,
+      });
+      if (!verdict.allowed) RecordsService.refusal(verdict.reason);
+      if (action === 'answer') {
+        await c.query(`INSERT INTO question_answers (id, question_id, answer, author_id, at) VALUES ($1, $2, $3, $4, $5)`, [uuidv7(at.getTime()), id, note, user.id, at]);
+      }
+      await c.query(`UPDATE questions SET status = $2 WHERE id = $1`, [id, verdict.to]);
+      const EVENT: Record<QuestionAction, string> = { answer: 'answered', resolve: 'resolved', reopen: 'reopened', withdraw: 'withdrawn' };
+      await this.recordEvent(c, 'question', id, EVENT[action], rec.status, verdict.to, action === 'answer' ? null : note, user.id, at);
+      await writeAudit(c, { at, action: `question.${EVENT[action]}`, actorUserId: user.id, subjectType: 'project', subjectId: ctx.project.id, detail: { questionId: id } });
+      return { question: { id, status: verdict.to } };
+    });
+  }
+
+  /** Mitigate, update, accept, resolve or reopen a risk (V1.0 risks §5, §9). */
+  async riskAction(user: AuthUser, id: string, action: RiskAction, input: Record<string, unknown>) {
+    const note = typeof input.note === 'string' && input.note.trim() !== '' ? input.note.trim() : null;
+    const at = this.now();
+    return this.tx(async (c) => {
+      const { ctx, rec } = await this.recordContext(c, user, 'risks', id);
+      const responsible = input.responsibleId === undefined ? rec.responsible_id : input.responsibleId === null || input.responsibleId === '' ? null : input.responsibleId;
+      if (responsible !== null && responsible !== rec.responsible_id && !isProjectPerson(ctx, responsible)) {
+        throw new BadRequestException('Choose the responsible person from the project\'s people.');
+      }
+      const reviewOnIn = input.reviewOn === undefined ? undefined : input.reviewOn === null || input.reviewOn === '' ? null : input.reviewOn;
+      if (reviewOnIn !== undefined && reviewOnIn !== null && !isCalendarDate(reviewOnIn)) throw new BadRequestException('Dates must be in the form YYYY-MM-DD.');
+      const reviewOn = reviewOnIn === undefined ? rec.review_on : reviewOnIn;
+      const verdict = riskTransition({
+        action,
+        status: rec.status,
+        actor: { isResponsible: rec.responsible_id === user.id, roles: ctx.roles },
+        projectStatus: ctx.project.status,
+        note,
+        responsibleSet: responsible !== null,
+        reviewOnSet: reviewOn !== null,
+      });
+      if (!verdict.allowed) RecordsService.refusal(verdict.reason);
+      const mitigation = typeof input.mitigation === 'string' && input.mitigation.trim() !== '' ? input.mitigation.trim().slice(0, 4000) : rec.mitigation;
+      await c.query(`UPDATE risks SET status = $2, responsible_id = $3, review_on = $4, mitigation = $5 WHERE id = $1`, [id, verdict.to, responsible, reviewOn, mitigation]);
+      const EVENT: Record<RiskAction, string> = { mitigate: 'mitigating', update: 'updated', accept: 'accepted', resolve: 'resolved', reopen: 'reopened' };
+      await this.recordEvent(c, 'risk', id, EVENT[action], rec.status, verdict.to, note, user.id, at);
+      await writeAudit(c, { at, action: `risk.${EVENT[action]}`, actorUserId: user.id, subjectType: 'project', subjectId: ctx.project.id, detail: { riskId: id } });
+      return { risk: { id, status: verdict.to } };
+    });
+  }
+
   /** One task with its history and source quote. */
   async getTask(user: AuthUser, taskId: string) {
     const { ctx, task } = await this.taskContext(this.pool, user, taskId, false);
@@ -490,6 +565,41 @@ export class RecordsService {
       }
     };
     walk(null);
-    return { tasks: ordered, decisions: [] as unknown[], questions: [] as unknown[], risks: [] as unknown[] };
+    const decisions = (
+      await this.pool.query(
+        `SELECT d.id, d.statement, d.rationale, d.status, u.display_name AS "authorisedBy", d.authorised_at AS "authorisedAt"
+           FROM decisions d JOIN users u ON u.id = d.authorised_by WHERE d.project_id = $1 ORDER BY d.authorised_at, d.id`,
+        [ctx.project.id],
+      )
+    ).rows;
+    const questions = (
+      await this.pool.query(
+        `SELECT q.id, q.text, q.status, json_build_object('id', r.id, 'displayName', r.display_name) AS requester,
+                COALESCE((SELECT json_agg(json_build_object('answer', a.answer, 'author', au.display_name, 'at', a.at) ORDER BY a.at, a.id)
+                            FROM question_answers a JOIN users au ON au.id = a.author_id WHERE a.question_id = q.id), '[]') AS answers
+           FROM questions q JOIN users r ON r.id = q.requester_id WHERE q.project_id = $1 ORDER BY q.authorised_at, q.id`,
+        [ctx.project.id],
+      )
+    ).rows.map((q) => {
+      const actor = { isRequester: q.requester.id === user.id, roles: ctx.roles, active: isActiveIn(ctx, user.id) };
+      const actions: QuestionAction[] = ['answer', 'resolve', 'reopen', 'withdraw'];
+      return { ...q, mayAct: actions.filter((action) => questionTransition({ action, status: q.status, actor, projectStatus: ctx.project.status, note: 'x' }).allowed) };
+    });
+    const risks = (
+      await this.pool.query(
+        `SELECT k.id, k.description, k.severity, k.status, k.mitigation, to_char(k.review_on, 'YYYY-MM-DD') AS "reviewOn",
+                CASE WHEN r.id IS NULL THEN NULL ELSE json_build_object('id', r.id, 'displayName', r.display_name) END AS responsible
+           FROM risks k LEFT JOIN users r ON r.id = k.responsible_id WHERE k.project_id = $1 ORDER BY k.authorised_at, k.id`,
+        [ctx.project.id],
+      )
+    ).rows.map((k) => {
+      const actor = { isResponsible: k.responsible?.id === user.id, roles: ctx.roles };
+      const actions: RiskAction[] = ['mitigate', 'update', 'accept', 'resolve', 'reopen'];
+      const mayAct = actions.filter(
+        (action) => riskTransition({ action, status: k.status, actor, projectStatus: ctx.project.status, note: 'x', responsibleSet: true, reviewOnSet: true }).allowed,
+      );
+      return { ...k, mayAct };
+    });
+    return { tasks: ordered, decisions, questions, risks };
   }
 }

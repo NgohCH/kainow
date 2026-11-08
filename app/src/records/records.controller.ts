@@ -3,6 +3,7 @@ import { AnySignedInUser } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
 import { RecordsService } from './records.service';
+import type { QuestionAction, RiskAction } from './lifecycles';
 import { TASK_ACTIONS, type TaskAction } from './tasks';
 
 const body = (b: unknown): Record<string, unknown> => (b && typeof b === 'object' ? (b as Record<string, unknown>) : {});
@@ -88,6 +89,24 @@ export class RecordsController {
   taskAction(@Param('id') id: string, @Param('action') action: string, @Body() b: unknown, @Req() req: HttpRequest) {
     if (!TASK_ACTIONS.includes(action as TaskAction)) throw new NotFoundException();
     return this.records.taskAction(who(req), id, action as TaskAction, body(b));
+  }
+
+  /** answer { text } | resolve { note? } | reopen { reason } | withdraw { reason } */
+  @Post('records/questions/:id/:action')
+  @AnySignedInUser()
+  @HttpCode(200)
+  questionAction(@Param('id') id: string, @Param('action') action: string, @Body() b: unknown, @Req() req: HttpRequest) {
+    if (!['answer', 'resolve', 'reopen', 'withdraw'].includes(action)) throw new NotFoundException();
+    return this.records.questionAction(who(req), id, action as QuestionAction, body(b));
+  }
+
+  /** { note, mitigation?, responsibleId?, reviewOn? } — action is mitigate, update, accept, resolve or reopen. */
+  @Post('records/risks/:id/:action')
+  @AnySignedInUser()
+  @HttpCode(200)
+  riskAction(@Param('id') id: string, @Param('action') action: string, @Body() b: unknown, @Req() req: HttpRequest) {
+    if (!['mitigate', 'update', 'accept', 'resolve', 'reopen'].includes(action)) throw new NotFoundException();
+    return this.records.riskAction(who(req), id, action as RiskAction, body(b));
   }
 
   @Get('projects/:id/records')
