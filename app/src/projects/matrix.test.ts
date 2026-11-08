@@ -53,16 +53,22 @@ test('role managers follow the accepted matrix for every target, manager and sta
   for (const target of ROLES) {
     for (const status of PROJECT_STATUSES) {
       const open = ['draft', 'planned', 'active'].includes(status);
-      for (const role of ROLES) {
-        const expected: boolean = open && (ROLE_MANAGERS[target] as readonly string[]).includes(role);
-        assert.equal(canManageRole({ target, roles: [role], isAdmin: false, status }).allowed, expected, `${role} manages ${target} in ${status}`);
+      for (const via of ['appointment', 'invitation'] as const) {
+        // Appointments may be repaired in every status; invitations are locked while Deferred or Closed.
+        const stateOk = via === 'appointment' || open;
+        for (const role of ROLES) {
+          const expected: boolean = stateOk && (ROLE_MANAGERS[target] as readonly string[]).includes(role);
+          assert.equal(canManageRole({ target, roles: [role], isAdmin: false, status, via }).allowed, expected, `${role} manages ${target} by ${via} in ${status}`);
+        }
+        const admin = canManageRole({ target, roles: [], isAdmin: true, status, via });
+        assert.equal(admin.allowed, stateOk && ROLE_MANAGERS[target].includes('administrator'), `admin manages ${target} by ${via} in ${status}`);
       }
-      const admin = canManageRole({ target, roles: [], isAdmin: true, status });
-      assert.equal(admin.allowed, open && ROLE_MANAGERS[target].includes('administrator'), `admin manages ${target} in ${status}`);
     }
   }
-  const refused = canManageRole({ target: 'owner', roles: ['pm', 'sponsor'], isAdmin: false, status: 'active' });
-  assert.deepEqual(refused, { allowed: false, reason: 'Only an Enterprise Administrator can manage the Owner role, and not while the project is Deferred or Closed.' });
-  const member = canManageRole({ target: 'member', roles: ['deputy_pm'], isAdmin: true, status: 'draft' });
-  assert.deepEqual(member, { allowed: false, reason: 'Only the Project Manager, the Owner or a Sponsor can manage the Member role, and not while the project is Deferred or Closed.' });
+  const refused = canManageRole({ target: 'owner', roles: ['pm', 'sponsor'], isAdmin: false, status: 'active', via: 'appointment' });
+  assert.deepEqual(refused, { allowed: false, reason: 'Only an Enterprise Administrator can manage the Owner role.' });
+  const member = canManageRole({ target: 'member', roles: ['deputy_pm'], isAdmin: true, status: 'draft', via: 'invitation' });
+  assert.deepEqual(member, { allowed: false, reason: 'Only the Project Manager, the Owner or a Sponsor can invite for the Member role, and not while the project is Deferred or Closed.' });
+  const locked = canManageRole({ target: 'member', roles: ['pm'], isAdmin: false, status: 'deferred', via: 'invitation' });
+  assert.deepEqual(locked, { allowed: false, reason: 'Only the Project Manager, the Owner or a Sponsor can invite for the Member role, and not while the project is Deferred or Closed.' });
 });

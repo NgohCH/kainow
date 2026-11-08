@@ -82,12 +82,26 @@ const MANAGER_TEXT: Readonly<Record<ProjectRole, string>> = {
   member: 'the Project Manager, the Owner or a Sponsor',
 };
 
-export function canManageRole(input: { target: ProjectRole; roles: ProjectRole[]; isAdmin: boolean; status: ProjectStatus }): { allowed: true } | { allowed: false; reason: string } {
+/**
+ * Appointments (appoint, extend, change dates, revoke) stay open to the role's managers in every status, so a
+ * required role that lapses while Deferred or Closed can be repaired before resuming (Consolidated Specification
+ * §5, D21, Q05). Invitations are locked while Deferred or Closed (Product Summary §10).
+ */
+export function canManageRole(input: {
+  target: ProjectRole;
+  roles: ProjectRole[];
+  isAdmin: boolean;
+  status: ProjectStatus;
+  via: 'appointment' | 'invitation';
+}): { allowed: true } | { allowed: false; reason: string } {
   const managers = ROLE_MANAGERS[input.target];
   const holder = (input.isAdmin && managers.includes('administrator')) || input.roles.some((r) => managers.includes(r));
+  if (input.via === 'appointment') {
+    return holder ? { allowed: true } : { allowed: false, reason: `Only ${MANAGER_TEXT[input.target]} can manage the ${ROLE_LABEL[input.target]} role.` };
+  }
   if (holder && OPEN.includes(input.status)) return { allowed: true };
   return {
     allowed: false,
-    reason: `Only ${MANAGER_TEXT[input.target]} can manage the ${ROLE_LABEL[input.target]} role, and not while the project is Deferred or Closed.`,
+    reason: `Only ${MANAGER_TEXT[input.target]} can invite for the ${ROLE_LABEL[input.target]} role, and not while the project is Deferred or Closed.`,
   };
 }

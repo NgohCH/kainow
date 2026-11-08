@@ -34,7 +34,7 @@ describe('project memberships and role management', { skip: SKIP_NO_DB }, () => 
     const id = await seedProject(t.pool, { members: [{ userId: pm.userId, role: 'pm' }, { userId: owner.userId, role: 'owner' }, { userId: member.userId, role: 'member' }] });
     const owner2 = await appoint(pm, id, { userId: ids.x1, role: 'owner' });
     assert.equal(owner2.status, 403);
-    assert.equal(owner2.body.message, 'Only an Enterprise Administrator can manage the Owner role, and not while the project is Deferred or Closed.');
+    assert.equal(owner2.body.message, 'Only an Enterprise Administrator can manage the Owner role.');
     assert.equal((await appoint(member, id, { userId: ids.x1, role: 'member' })).status, 403);
     assert.equal((await appoint(pm, id, { userId: ids.x1, role: 'member' })).status, 201);
     assert.equal((await appoint(owner, id, { userId: ids.x2, role: 'sponsor' })).status, 201);
@@ -105,8 +105,29 @@ describe('project memberships and role management', { skip: SKIP_NO_DB }, () => 
     assert.equal((await t.pool.query(`SELECT count(*)::int AS n FROM memberships WHERE project_id = $1 AND role = 'owner'`, [id])).rows[0].n, 1);
   });
 
-  test('role changes are locked while the project is Deferred', async () => {
-    const id = await seedProject(t.pool, { status: 'deferred', members: [{ userId: pm.userId, role: 'pm' }] });
-    assert.equal((await appoint(pm, id, { userId: ids.x1, role: 'member' })).status, 403);
+  test('a required role that expired while Deferred can be repaired, and the project then resumes', async () => {
+    const id = await seedProject(t.pool, {
+      status: 'deferred',
+      members: [
+        { userId: pm.userId, role: 'pm', expiresOn: '2026-11-05' },
+        { userId: owner.userId, role: 'owner' },
+        { userId: member.userId, role: 'member' },
+      ],
+    });
+    const resume = () => owner.request('POST', `/projects/${id}/transition`, { to: 'active', reason: 'Budget approved', stage: 'Execution' });
+    assert.equal((await resume()).status, 409, 'the Project Manager has expired');
+    const pmRow = (await t.pool.query(`SELECT id FROM memberships WHERE project_id = $1 AND role = 'pm'`, [id])).rows[0];
+    const extend = await owner.request('POST', `/memberships/${pmRow.id}/extend`, { expiresOn: '2026-12-31' });
+    assert.equal(extend.status, 200, JSON.stringify(extend.body));
+    assert.equal((await appoint(owner, id, { userId: ids.x1, role: 'member' })).status, 201, 'appointing is a repair too');
+    assert.equal((await resume()).status, 200);
+  });
+
+  test('role managers stay as named while Deferred or Closed', async () => {
+    const id = await seedProject(t.pool, { status: 'closed', members: [{ userId: pm.userId, role: 'pm' }, { userId: member.userId, role: 'member' }] });
+    const refused = await appoint(member, id, { userId: ids.x1, role: 'member' });
+    assert.equal(refused.status, 403);
+    assert.equal(refused.body.message, 'Only the Project Manager, the Owner or a Sponsor can manage the Member role.');
+    assert.equal((await appoint(pm, id, { userId: ids.x1, role: 'member' })).status, 201);
   });
 });

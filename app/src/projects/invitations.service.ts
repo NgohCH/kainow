@@ -106,7 +106,7 @@ export class InvitationsService {
     let out: { id: string; token: string; expiresAt: Date; name: string };
     const result = await this.tx(async (c) => {
       const ctx = await this.access.context(user, projectId, c, true);
-      const v = canManageRole({ target: role, roles: ctx.roles, isAdmin: ctx.isAdmin, status: ctx.project.status });
+      const v = canManageRole({ target: role, roles: ctx.roles, isAdmin: ctx.isAdmin, status: ctx.project.status, via: 'invitation' });
       if (!v.allowed) throw new ForbiddenException(v.reason);
       if (!(await this.org.isEligible(email))) throw new BadRequestException('That address is not in an eligible organisation domain.');
       const { startsOn, expiresOn } = cleanDates(ctx.project.createdOn, input.startsOn, input.expiresOn);
@@ -136,7 +136,7 @@ export class InvitationsService {
     const r = (await c.query(`SELECT ${COLUMNS} FROM invitations WHERE id = $1 FOR UPDATE`, [invitationId])).rows[0] as InvitationRow | undefined;
     if (!r) throw new NotFoundException();
     const ctx = await this.access.context(user, r.project_id, c, true);
-    const v = canManageRole({ target: r.role, roles: ctx.roles, isAdmin: ctx.isAdmin, status: ctx.project.status });
+    const v = canManageRole({ target: r.role, roles: ctx.roles, isAdmin: ctx.isAdmin, status: ctx.project.status, via: 'invitation' });
     if (!v.allowed) throw new ForbiddenException(v.reason);
     return { r, ctx };
   }

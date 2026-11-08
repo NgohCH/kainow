@@ -36,6 +36,17 @@ test('lifecycle buttons follow who may make each change', () => {
   assert.deepEqual(close, { to: 'closed', label: 'Close as Abandoned', fastTrack: false, needs: { reason: true, outcome: true, stage: false }, outcomes: ['abandoned'] });
 });
 
+test('appointments can be repaired while Deferred or Closed; invitations cannot', async () => {
+  const { canManage, manageableRoles } = await import('./projects.ts');
+  assert.equal(canManage('pm', ['owner'], false, 'deferred', 'appointment'), true);
+  assert.equal(canManage('member', ['pm'], false, 'closed', 'appointment'), true);
+  assert.equal(canManage('owner', ['pm'], false, 'deferred', 'appointment'), false);
+  assert.equal(canManage('member', ['pm'], false, 'deferred', 'invitation'), false);
+  assert.equal(canManage('member', ['pm'], false, 'active', 'invitation'), true);
+  assert.deepEqual(manageableRoles(['pm'], false, 'deferred'), []);
+  assert.deepEqual(manageableRoles(['pm'], false, 'active'), ['deputy_pm', 'member']);
+});
+
 test('time in the current stage counts UTC+8 calendar days', async () => {
   const { stageDuration } = await import('./projects.ts');
   const now = new Date('2026-11-09T02:00:00Z'); // 9 Nov, 10:00 UTC+8

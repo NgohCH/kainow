@@ -403,7 +403,7 @@ function People({ project, act }: { project: Project; act: Act }) {
             </thead>
             <tbody>
               {project.invitations.map((i) => {
-                const manage = canManage(i.role, project.myRoles, project.isAdmin, project.status);
+                const manage = canManage(i.role, project.myRoles, project.isAdmin, project.status, 'invitation');
                 return (
                   <tr key={i.id}>
                     <td>{i.email}</td>
@@ -435,7 +435,7 @@ function People({ project, act }: { project: Project; act: Act }) {
 }
 
 function MemberRow({ m, project, act }: { m: Membership; project: Project; act: Act }) {
-  const manage = canManage(m.role, project.myRoles, project.isAdmin, project.status);
+  const manage = canManage(m.role, project.myRoles, project.isAdmin, project.status, 'appointment');
   const [mode, setMode] = useState<'none' | 'extend' | 'revoke'>('none');
   const [date, setDate] = useState(m.expiresOn ?? '');
   const [reason, setReason] = useState('');

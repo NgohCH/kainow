@@ -74,7 +74,7 @@ export class MembershipsService {
   }
 
   private mayManage(ctx: ProjectContext, target: ProjectRole): void {
-    const v = canManageRole({ target, roles: ctx.roles, isAdmin: ctx.isAdmin, status: ctx.project.status });
+    const v = canManageRole({ target, roles: ctx.roles, isAdmin: ctx.isAdmin, status: ctx.project.status, via: 'appointment' });
     if (!v.allowed) throw new ForbiddenException(v.reason);
   }
 

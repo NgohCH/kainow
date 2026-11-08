@@ -85,14 +85,15 @@ const MANAGERS: Record<ProjectRole, ReadonlyArray<ProjectRole | 'administrator'>
   member: ['pm', 'owner', 'sponsor'],
 };
 
-export function canManage(target: ProjectRole, roles: ProjectRole[], isAdmin: boolean, status: ProjectStatus): boolean {
-  if (!['draft', 'planned', 'active'].includes(status)) return false;
+/** Appointments can be repaired in any status; invitations are locked while Deferred or Closed (as on the server). */
+export function canManage(target: ProjectRole, roles: ProjectRole[], isAdmin: boolean, status: ProjectStatus, via: 'appointment' | 'invitation'): boolean {
+  if (via === 'invitation' && !['draft', 'planned', 'active'].includes(status)) return false;
   return (isAdmin && MANAGERS[target].includes('administrator')) || roles.some((r) => MANAGERS[target].includes(r));
 }
 
-/** Roles this person may invite or appoint. */
+/** Roles this person may invite for. */
 export function manageableRoles(roles: ProjectRole[], isAdmin: boolean, status: ProjectStatus): ProjectRole[] {
-  return ROLES.filter((r) => canManage(r, roles, isAdmin, status));
+  return ROLES.filter((r) => canManage(r, roles, isAdmin, status, 'invitation'));
 }
 
 /** How long the project has been in its current stage, in whole days (UTC+8 calendar days). */

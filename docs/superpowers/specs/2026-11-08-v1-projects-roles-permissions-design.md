@@ -72,17 +72,17 @@ Resuming or reopening starts a new stage period in the chosen stage. A small-tea
 | `project.edit` (name, purpose, departments, planned end) | PM, Owner, Sponsor | Draft, Planned, Active | — *(default chosen here: the documents give no explicit editor)* |
 | `project.transition` | per the transition table | per the transition table | per the transition table |
 | `project.stage` | PM | Active | reason optional |
-| `role.manage` (appoint, invite, extend, change dates, revoke) for Owner | Enterprise Administrator | Draft, Planned, Active | separation and required-role checks |
-| `role.manage` for Sponsor | Enterprise Administrator, Owner | Draft, Planned, Active | as above |
-| `role.manage` for PM | Enterprise Administrator, Owner, Sponsor | Draft, Planned, Active | exactly one PM; replacing ends the old appointment in the same action |
-| `role.manage` for Deputy PM, Member | PM, Owner, Sponsor | Draft, Planned, Active | PM and required Member different |
+| `role.manage` (appoint, invite, extend, change dates, revoke) for Owner | Enterprise Administrator | appointments: all; invitations: Draft, Planned, Active | separation and required-role checks |
+| `role.manage` for Sponsor | Enterprise Administrator, Owner | as above | as above |
+| `role.manage` for PM | Enterprise Administrator, Owner, Sponsor | as above | exactly one PM; replacing ends the old appointment in the same action |
+| `role.manage` for Deputy PM, Member | PM, Owner, Sponsor | as above | PM and required Member different |
 | `note.import` | PM, Deputy PM, Owner, Sponsor | Draft, Planned, Active | — |
 | `note.view` | any participant | all | — |
 | `extraction.run` | PM, Deputy PM, Owner, Sponsor | Draft, Planned, Active | spend cap as today |
 | `proposal.edit`, `meeting_date.set` | PM, Owner, Sponsor | Draft, Planned, Active | — |
 | `proposal.review` (approve, reject) | Owner, Sponsor | Planned, Active | no missing accountability; Draft cannot authorise |
 
-The Enterprise Administrator acts in projects only where the table names them (managing Owner, Sponsor and PM appointments; resuming a Deferred project). Holding the administrator role grants no reading of notes or proposals. Deferred and Closed projects are read-only except the transitions out of them.
+The Enterprise Administrator acts in projects only where the table names them (managing Owner, Sponsor and PM appointments; resuming a Deferred project). Holding the administrator role grants no reading of notes or proposals. Deferred and Closed projects are read-only except the transitions out of them and role repair: the role's managers may still appoint, extend, change dates and revoke, so a required role that lapses can be restored before resuming (Consolidated Specification §5, D21, Q05). Invitations stay locked while Deferred or Closed (Product Summary §10).
 
 `visibleProjectIds(person)` lists the projects where the person has an Active membership. Every list of projects, notes or runs filters through it, so a list never shows what `authorize` would refuse. The administrator sees all projects' names, statuses and role holders on the administration side (to manage appointments), not their content.
 
