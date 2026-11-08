@@ -35,3 +35,7 @@ test('the prompt asks for the meeting date, due wording and events, and clearly 
   assert.match(p, /propose it as a question/i);
   assert.match(p, /alternatives/);
 });
+
+test('the prompt asks for one item per sub-action when a row lists several', () => {
+  assert.match(EXTRACTION_SYSTEM_PROMPT, /several sub-actions[^.]*each sub-action as its own item/i);
+});
