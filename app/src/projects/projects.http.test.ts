@@ -105,4 +105,15 @@ describe('projects', { skip: SKIP_NO_DB }, () => {
     assert.equal(refused.status, 403);
     assert.equal(refused.body.message, "Only the Project Manager, Owner or a Sponsor can change the project's details, and not while it is Deferred or Closed.");
   });
+
+  test('editing the details cannot move the project to another owning department', async () => {
+    const id = await seedProject(t.pool, { members: [{ userId: sam.userId, role: 'pm' }, { userId: sam.userId, role: 'owner' }] });
+    const before = (await t.pool.query(`SELECT owning_department_id AS d FROM projects WHERE id = $1`, [id])).rows[0].d;
+    const other = await seedDepartment(t.pool, 'Finance');
+    const moved = await sam.request('POST', `/projects/${id}/edit`, { owningDepartmentId: other });
+    assert.equal(moved.status, 403);
+    assert.equal(moved.body.message, 'Only an Enterprise Administrator can move a project to another owning department.');
+    assert.equal((await t.pool.query(`SELECT owning_department_id AS d FROM projects WHERE id = $1`, [id])).rows[0].d, before);
+    assert.equal((await sam.request('POST', `/projects/${id}/edit`, { owningDepartmentId: before, name: 'Same department' })).status, 200);
+  });
 });

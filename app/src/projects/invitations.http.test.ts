@@ -74,6 +74,7 @@ describe('project invitations', { skip: SKIP_NO_DB }, () => {
   test('decline, revoke and resend', async () => {
     await invite({ email: 'lee@help.edu.my' });
     const first = tokenFor('lee@help.edu.my');
+    t.clock.advanceSeconds(60); // so the resend is issued later; ids are not ordered within one millisecond
     const resent = await pm.request('POST', `/invitations/${(await t.pool.query(`SELECT id FROM invitations`)).rows[0].id}/resend`);
     assert.equal(resent.status, 201);
     const second = tokenFor('lee@help.edu.my');

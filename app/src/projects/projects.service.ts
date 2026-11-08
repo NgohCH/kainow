@@ -243,6 +243,10 @@ export class ProjectsService {
         )
       ).rows[0] as Details;
       const d = await this.cleanDetails(client, input, cur);
+      // Consolidated Specification §3: only the Enterprise Administrator transfers departmental ownership.
+      if (d.owningDepartmentId !== cur.owningDepartmentId) {
+        throw new ForbiddenException('Only an Enterprise Administrator can move a project to another owning department.');
+      }
       await client.query(`UPDATE projects SET name = $2, purpose = $3, owning_department_id = $4, planned_end = $5 WHERE id = $1`, [
         id, d.name, d.purpose, d.owningDepartmentId, d.plannedEnd,
       ]);

@@ -69,7 +69,7 @@ Resuming or reopening starts a new stage period in the chosen stage. A small-tea
 | Action | Roles | Project states | Extra condition |
 | --- | --- | --- | --- |
 | `project.view` | any participant | all | — |
-| `project.edit` (name, purpose, departments, planned end) | PM, Owner, Sponsor | Draft, Planned, Active | — *(default chosen here: the documents give no explicit editor)* |
+| `project.edit` (name, purpose, contributing departments, planned end) | PM, Owner, Sponsor | Draft, Planned, Active | — *(default chosen here: the documents give no explicit editor)*. Moving the owning department is refused: only the Enterprise Administrator transfers ownership, with a reason (Consolidated Specification §3); that transfer comes with external file storage. |
 | `project.transition` | per the transition table | per the transition table | per the transition table |
 | `project.stage` | PM | Active | reason optional |
 | `role.manage` (appoint, invite, extend, change dates, revoke) for Owner | Enterprise Administrator | appointments: all; invitations: Draft, Planned, Active | separation and required-role checks |

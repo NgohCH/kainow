@@ -1,5 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
-import { ApiError, api, type Department, type Membership, type Project } from '../api.ts';
+import { ApiError, api, type Membership, type Project } from '../api.ts';
 import { formatWhen } from '../format.ts';
 import {
   type ClosureOutcome,
@@ -295,18 +295,13 @@ function StageForm({ project, act, onDone }: { project: Project; act: Act; onDon
 }
 
 function EditDetails({ project, act, onDone }: { project: Project; act: Act; onDone: () => void }) {
-  const [departments, setDepartments] = useState<Department[]>([]);
   const [name, setName] = useState(project.name);
   const [purpose, setPurpose] = useState(project.purpose);
-  const [owning, setOwning] = useState(project.owningDepartment.id);
   const [plannedEnd, setPlannedEnd] = useState(project.plannedEnd ?? '');
-  useEffect(() => {
-    api.get<{ departments: Department[] }>('/departments').then((r) => setDepartments(r.departments), () => setDepartments([]));
-  }, []);
   async function submit(e: FormEvent) {
     e.preventDefault();
     const ok = await act(
-      () => api.post(`/projects/${project.id}/edit`, { name, purpose, owningDepartmentId: owning, plannedEnd: plannedEnd || null }),
+      () => api.post(`/projects/${project.id}/edit`, { name, purpose, plannedEnd: plannedEnd || null }),
       'Details saved.',
     );
     if (ok) onDone();
@@ -321,17 +316,9 @@ function EditDetails({ project, act, onDone }: { project: Project; act: Act; onD
         Purpose
         <textarea required rows={3} value={purpose} onChange={(e) => setPurpose(e.target.value)} />
       </label>
-      <label>
-        Owning department
-        <select value={owning} onChange={(e) => setOwning(e.target.value)}>
-          {!departments.some((d) => d.id === owning) && <option value={owning}>{project.owningDepartment.name}</option>}
-          {departments.map((d) => (
-            <option key={d.id} value={d.id}>
-              {d.name}
-            </option>
-          ))}
-        </select>
-      </label>
+      <p className="meta">
+        Owning department: {project.owningDepartment.name}. Only an Enterprise Administrator can move a project to another department.
+      </p>
       <label>
         Planned end (optional)
         <input type="date" value={plannedEnd} onChange={(e) => setPlannedEnd(e.target.value)} />
