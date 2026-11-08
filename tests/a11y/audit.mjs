@@ -180,6 +180,7 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
     ['authorise form open (split into subtasks)', `#/projects/${recordsId}/notes`, 'Authorise'],
     ['task complete form open', `#/projects/${recordsId}/work`, 'Complete'],
     ['risk accept form open', `#/projects/${recordsId}/work`, 'Accept exposure'],
+    ['task history open', `#/projects/${recordsId}/work`, 'History'],
   ]) {
     await page.goto(`${base}/${hash}`, { waitUntil: 'networkidle0' });
     await page.reload({ waitUntil: 'networkidle0' });

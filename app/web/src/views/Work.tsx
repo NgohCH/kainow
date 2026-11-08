@@ -14,7 +14,9 @@ import {
   TASK_ACTION_PROMPT,
   TASK_STATUS_LABEL,
   type TaskAction,
+  type TaskHistoryEntry,
   type TaskStatus,
+  historyLine,
 } from '../records.ts';
 import type { Person } from './AuthoriseForm.tsx';
 
@@ -169,6 +171,17 @@ function TaskRow({ t, hasChildren, people, act, canSplit }: { t: TaskView; hasCh
   const [note, setNote] = useState('');
   const [override, setOverride] = useState('');
   const [sub, setSub] = useState({ title: '', assigneeId: '', dueOn: t.dueOn, reason: '' });
+  const [history, setHistory] = useState<TaskHistoryEntry[] | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  async function toggleHistory() {
+    if (history) return setHistory(null);
+    setHistoryError(null);
+    try {
+      setHistory((await api.get<{ history: TaskHistoryEntry[] }>(`/records/tasks/${t.id}`)).history);
+    } catch (e) {
+      setHistoryError((e as Error).message);
+    }
+  }
   async function run(action: TaskAction) {
     if (TASK_ACTION_PROMPT[action] === null) return act(`/records/tasks/${t.id}/${action}`, {}, `${TASK_ACTION_LABEL[action]}: done.`);
     setOpen(action);
@@ -211,7 +224,18 @@ function TaskRow({ t, hasChildren, people, act, canSplit }: { t: TaskView; hasCh
             </button>
           ))}
           {mayAddSubtask && people.length > 0 && <button className="link-button" onClick={() => setOpen('subtask')}>Add subtask</button>}
+          <button className="link-button" aria-expanded={history !== null} onClick={() => void toggleHistory()}>
+            {history ? 'Hide history' : 'History'}
+          </button>
         </div>
+      )}
+      {historyError && <p role="alert" className="error">{historyError}</p>}
+      {history && (
+        <ol className="history" aria-label={`History of ${t.title}`}>
+          {history.map((h, i) => (
+            <li key={i}>{historyLine(h)}</li>
+          ))}
+        </ol>
       )}
       {open !== null && open !== 'subtask' && (
         <form className="inline-form stack" onSubmit={submit} aria-label={`${TASK_ACTION_LABEL[open]} task`}>

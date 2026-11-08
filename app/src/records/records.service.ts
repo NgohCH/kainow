@@ -8,6 +8,8 @@ import { isCalendarDate, readDue } from '../extraction/due';
 import { type ApprovedItem, ExtractionService } from '../extraction/extraction.service';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { InvitationsService } from '../projects/invitations.service';
+import { GRANT_READ_ONLY } from '../projects/matrix';
+import { checkNewAppointment } from '../projects/memberships.service';
 import { membershipState, todayUtc8 } from '../projects/membership';
 import { type QuestionAction, type RiskAction, SEVERITIES, type Severity, questionTransition, riskTransition } from './lifecycles';
 import { TASK_ACTIONS, type TaskAction, type TaskStatus, ancestorsToReopen, parentMayComplete, taskIndicators, taskTransition } from './tasks';
@@ -114,8 +116,17 @@ export class RecordsService {
     }
     const email = typeof body.inviteEmail === 'string' ? body.inviteEmail.trim().toLowerCase() : '';
     if (!EMAIL.test(email)) throw new BadRequestException(NEEDS_ASSIGNEE);
-    const existing = (await c.query(`SELECT id FROM users WHERE email = $1`, [email])).rows[0];
+    const existing = (await c.query(`SELECT id, status FROM users WHERE email = $1`, [email])).rows[0];
     if (existing && isProjectPerson(ctx, existing.id)) return { userId: existing.id as string, invitationId: null, deliver: null };
+    if (existing?.status === 'disabled') throw new BadRequestException('That account is disabled; an Administrator must enable it first.');
+    if (existing) {
+      // The same checks as inviting from the People tab: an expired or held Member is extended or restored there.
+      try {
+        checkNewAppointment(ctx, { userId: existing.id, role: 'member', startsOn: ctx.today, expiresOn: null, revokedAt: null });
+      } catch {
+        throw new ConflictException('This person already has a Member appointment here; extend or restore it on the People tab, then choose them.');
+      }
+    }
     const inv = await this.invitations.issueMemberInvitation(c, ctx.project.id, email, user.id, ctx.today, at);
     let userId = existing?.id as string | undefined;
     if (!userId) {
@@ -349,6 +360,7 @@ export class RecordsService {
     const at = this.now();
     return this.tx(async (c) => {
       const { ctx, task } = await this.taskContext(c, user, taskId, true);
+      if (ctx.roles.length === 0) throw new ForbiddenException(GRANT_READ_ONLY);
       const verdict = taskTransition({
         action,
         status: task.status,
@@ -424,10 +436,21 @@ export class RecordsService {
     return { ctx, rec };
   }
 
-  private async recordEvent(c: PoolClient, kind: 'question' | 'risk', id: string, event: string, from: string, to: string, note: string | null, actorId: string, at: Date) {
+  private async recordEvent(
+    c: PoolClient,
+    kind: 'question' | 'risk',
+    id: string,
+    event: string,
+    from: string,
+    to: string,
+    note: string | null,
+    actorId: string,
+    at: Date,
+    detail: Record<string, { from: unknown; to: unknown }> | null = null,
+  ) {
     await c.query(
-      `INSERT INTO record_events (id, record_kind, record_id, kind, from_status, to_status, note, actor_id, at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [uuidv7(at.getTime()), kind, id, event, from, to, note, actorId, at],
+      `INSERT INTO record_events (id, record_kind, record_id, kind, from_status, to_status, note, actor_id, at, detail) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+      [uuidv7(at.getTime()), kind, id, event, from, to, note, actorId, at, detail === null ? null : JSON.stringify(detail)],
     );
   }
 
@@ -438,6 +461,7 @@ export class RecordsService {
     const at = this.now();
     return this.tx(async (c) => {
       const { ctx, rec } = await this.recordContext(c, user, 'questions', id);
+      if (ctx.roles.length === 0) throw new ForbiddenException(GRANT_READ_ONLY);
       const verdict = questionTransition({
         action,
         status: rec.status,
@@ -463,6 +487,10 @@ export class RecordsService {
     const at = this.now();
     return this.tx(async (c) => {
       const { ctx, rec } = await this.recordContext(c, user, 'risks', id);
+      if (ctx.roles.length === 0) throw new ForbiddenException(GRANT_READ_ONLY);
+      // Only mitigating, updating and accepting change the responsible person, review date or mitigation.
+      const fieldsChange = action === 'mitigate' || action === 'update' || action === 'accept';
+      if (!fieldsChange) input = { note: input.note };
       const responsible = input.responsibleId === undefined ? rec.responsible_id : input.responsibleId === null || input.responsibleId === '' ? null : input.responsibleId;
       if (responsible !== null && responsible !== rec.responsible_id && !isProjectPerson(ctx, responsible)) {
         throw new BadRequestException('Choose the responsible person from the project\'s people.');
@@ -481,9 +509,14 @@ export class RecordsService {
       });
       if (!verdict.allowed) RecordsService.refusal(verdict.reason);
       const mitigation = typeof input.mitigation === 'string' && input.mitigation.trim() !== '' ? input.mitigation.trim().slice(0, 4000) : rec.mitigation;
+      const day = (d: unknown) => (d instanceof Date ? todayUtc8(d) : (d as string | null));
+      const before = { responsible: rec.responsible_id as string | null, reviewOn: rec.review_on === null ? null : String(day(rec.review_on)).slice(0, 10), mitigation: rec.mitigation as string | null };
+      const after = { responsible: responsible as string | null, reviewOn: reviewOn === null ? null : String(day(reviewOn)).slice(0, 10), mitigation };
+      const detail: Record<string, { from: unknown; to: unknown }> = {};
+      for (const k of ['responsible', 'reviewOn', 'mitigation'] as const) if (before[k] !== after[k]) detail[k] = { from: before[k], to: after[k] };
       await c.query(`UPDATE risks SET status = $2, responsible_id = $3, review_on = $4, mitigation = $5 WHERE id = $1`, [id, verdict.to, responsible, reviewOn, mitigation]);
       const EVENT: Record<RiskAction, string> = { mitigate: 'mitigating', update: 'updated', accept: 'accepted', resolve: 'resolved', reopen: 'reopened' };
-      await this.recordEvent(c, 'risk', id, EVENT[action], rec.status, verdict.to, note, user.id, at);
+      await this.recordEvent(c, 'risk', id, EVENT[action], rec.status, verdict.to, note, user.id, at, Object.keys(detail).length > 0 ? detail : null);
       await writeAudit(c, { at, action: `risk.${EVENT[action]}`, actorUserId: user.id, subjectType: 'project', subjectId: ctx.project.id, detail: { riskId: id } });
       return { risk: { id, status: verdict.to } };
     });
@@ -497,7 +530,7 @@ export class RecordsService {
     const history = (
       await this.pool.query(
         `SELECT e.kind, e.from_status AS "from", e.to_status AS "to", e.note, e.override_reason AS "overrideReason", u.display_name AS actor, e.at
-           FROM task_events e JOIN users u ON u.id = e.actor_id WHERE e.task_id = $1 AND e.kind <> 'authorised' ORDER BY e.at, e.id`,
+           FROM task_events e JOIN users u ON u.id = e.actor_id WHERE e.task_id = $1 ORDER BY e.at, e.id`,
         [taskId],
       )
     ).rows;
@@ -546,7 +579,7 @@ export class RecordsService {
       }),
       source: t.quote ? { quote: t.quote as string } : null,
       // What this viewer may do now (notes are asked for when they act).
-      mayAct: TASK_ACTIONS.filter(
+      mayAct: ctx.roles.length === 0 ? [] : TASK_ACTIONS.filter(
         (action) =>
           taskTransition({
             action,
@@ -587,7 +620,7 @@ export class RecordsService {
     ).rows.map((q) => {
       const actor = { isRequester: q.requester.id === user.id, roles: ctx.roles, active: isActiveIn(ctx, user.id) };
       const actions: QuestionAction[] = ['answer', 'resolve', 'reopen', 'withdraw'];
-      return { ...q, mayAct: actions.filter((action) => questionTransition({ action, status: q.status, actor, projectStatus: ctx.project.status, note: 'x' }).allowed) };
+      return { ...q, mayAct: ctx.roles.length === 0 ? [] : actions.filter((action) => questionTransition({ action, status: q.status, actor, projectStatus: ctx.project.status, note: 'x' }).allowed) };
     });
     const risks = (
       await this.pool.query(
@@ -599,7 +632,7 @@ export class RecordsService {
     ).rows.map((k) => {
       const actor = { isResponsible: k.responsible?.id === user.id, roles: ctx.roles };
       const actions: RiskAction[] = ['mitigate', 'update', 'accept', 'resolve', 'reopen'];
-      const mayAct = actions.filter(
+      const mayAct = ctx.roles.length === 0 ? [] : actions.filter(
         (action) => riskTransition({ action, status: k.status, actor, projectStatus: ctx.project.status, note: 'x', responsibleSet: true, reviewOnSet: true }).allowed,
       );
       return { ...k, mayAct };

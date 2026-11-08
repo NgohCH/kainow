@@ -455,7 +455,6 @@ export class ExtractionService {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await this.refuseIfAuthorised(client, itemId);
       const found = await client.query(
         `SELECT i.id, i.source_version_id, i.review_status, r.status AS run_status
            FROM extraction_items i
@@ -464,6 +463,8 @@ export class ExtractionService {
         [itemId, runId],
       );
       if (!found.rows[0]) throw new NotFoundException();
+      // Checked after the item lock, so an authorise that committed while we waited is seen.
+      await this.refuseIfAuthorised(client, itemId);
       // The wording in force is read after the lock, in its own statement, so a concurrent edit is seen.
       const current = await client.query(
         `SELECT COALESCE(e.text, i.text) AS text, CASE WHEN e.id IS NULL THEN i.owner ELSE e.owner END AS owner, ${DUE_COLUMNS}

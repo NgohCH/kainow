@@ -72,3 +72,22 @@ export function defaultDueOn(due: { state: string; earliest: string | null; late
   if (due.state === 'exact' || due.state === 'range') return due.latest ?? due.earliest;
   return null;
 }
+
+export type TaskHistoryEntry = { kind: string; from: string | null; to: string; note: string | null; overrideReason: string | null; actor: string; at: string };
+
+const HISTORY_VERB: Record<string, string> = {
+  authorised: 'Authorised',
+  started: 'Started',
+  blocked: 'Blocked',
+  unblocked: 'Unblocked',
+  completed: 'Completed',
+  reopened: 'Reopened',
+};
+
+/** One line of a task's history: what happened, who did it, when (Malaysia time) and why. */
+export function historyLine(h: TaskHistoryEntry): string {
+  const day = new Date(h.at).toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric', timeZone: 'Asia/Kuala_Lumpur' });
+  const why = h.note ? `: ${h.note}` : '';
+  const override = h.overrideReason ? ` (override: ${h.overrideReason})` : '';
+  return `${HISTORY_VERB[h.kind] ?? h.kind} by ${h.actor}, ${day}${why}${override}`;
+}

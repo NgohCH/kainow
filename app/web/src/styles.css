@@ -209,6 +209,7 @@ details.archived summary { cursor: pointer; font-weight: 600; }
 .work-item.depth-2 { margin-left: 3rem; }
 .work-item .badge { margin-left: 0.35rem; }
 .work-item .quote { margin: 0.35rem 0; font-size: 0.9em; }
+.work-item .history { margin: 0.35rem 0 0 1.2rem; padding: 0; font-size: 0.9em; color: var(--muted); }
 .answers li { margin-top: 0.25rem; }
 .authorise-form { margin-top: 0.75rem; }
 .subtask-row { border: 1px solid var(--line, #ddd); padding: 0.5rem 0.75rem; }
