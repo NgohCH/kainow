@@ -60,7 +60,7 @@ export class ExtractionController {
     const edit = decide({ action: 'proposal.edit', roles: ctx.roles, status: ctx.project.status });
     const approve = review.allowed && !ctx.missingAccountability;
     const note = !review.allowed ? review.reason : ctx.missingAccountability ? MISSING_ACCOUNTABILITY : null;
-    return { ...view, permissions: { approve, reject: review.allowed, edit: edit.allowed, note } };
+    return { ...view, projectId: ctx.project.id, permissions: { approve, reject: review.allowed, edit: edit.allowed, note } };
   }
 
   /** Approve or reject one proposal: { decision, sourceVersionId, occurrence? } (occurrence is needed to approve a quote that repeats). */

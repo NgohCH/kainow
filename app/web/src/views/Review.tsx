@@ -1,10 +1,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ApiError, api, type Item, type Run } from '../api.ts';
+import { ApiError, api, type Item, type Project, type Run } from '../api.ts';
+import { AuthoriseForm, type Person } from './AuthoriseForm.tsx';
 import { KIND_LABEL, plural } from '../format.ts';
 import { buildSegments, contextAround, markedSpan } from '../segments.ts';
 import { type EditFields, blocksApproval, dueLine, editFormFrom, formatDay } from '../due.ts';
 
 interface RunView {
+  projectId: string;
   run: Run;
   source: { sourceId: string; title: string; versionNo: number };
   items: Item[];
@@ -14,7 +16,7 @@ interface RunView {
 
 const STATUS_LABEL = { pending: 'Not reviewed', approved: 'Approved', rejected: 'Rejected' } as const;
 
-export function Review({ runId }: { runId: string }) {
+export function Review({ runId, meId }: { runId: string; meId: string }) {
   const [view, setView] = useState<RunView | null>(null);
   const [text, setText] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -27,6 +29,42 @@ export function Review({ runId }: { runId: string }) {
   // The meeting date being typed, while the banner's input is open.
   const [meetingInput, setMeetingInput] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  // The proposal whose Authorise form is open, and the project's people to choose from.
+  const [authorising, setAuthorising] = useState<string | null>(null);
+  const [people, setPeople] = useState<Person[]>([]);
+  useEffect(() => {
+    if (!view?.projectId) return;
+    api.get<{ project: Project }>(`/projects/${view.projectId}`).then(
+      (r) => {
+        const live = r.project.memberships.filter((m) => m.state === 'active' || m.state === 'scheduled');
+        setPeople([...new Map(live.map((m) => [m.userId, { userId: m.userId, displayName: m.displayName, email: m.email }])).values()]);
+      },
+      () => setPeople([]),
+    );
+  }, [view?.projectId]);
+
+  /** Authorise one proposal into its record; on success reload the run so the card shows it. */
+  const authorise = useCallback(
+    async (item: Item, body: Record<string, unknown>) => {
+      if (!view) return false;
+      setError(null);
+      try {
+        const r = await api.post<{ record: { kind: string }; delivered?: boolean }>(`/extractions/${runId}/items/${item.id}/authorise`, {
+          sourceVersionId: view.run.sourceVersionId,
+          occurrence: item.quoteMatches > 1 ? pick[item.id] : undefined,
+          ...body,
+        });
+        setView(await api.get<RunView>(`/extractions/${runId}`));
+        setAuthorising(null);
+        setNotice(r.delivered === false ? 'Authorised. The invitation email was not sent; send it again from People.' : `Authorised: a ${r.record.kind} is now on the Work tab.`);
+        return true;
+      } catch (e) {
+        setError(e instanceof ApiError ? e.message : 'It was not authorised. Try again.');
+        return false;
+      }
+    },
+    [view, runId, pick],
+  );
   const marks = useRef(new Map<string, HTMLElement>());
   const cards = useRef(new Map<string, HTMLElement>());
 
@@ -139,7 +177,7 @@ export function Review({ runId }: { runId: string }) {
       const idx = items.findIndex((i) => i.id === selected);
       if (e.key === 'j' && idx < items.length - 1) select(items[idx + 1].id, true);
       else if (e.key === 'k' && idx > 0) select(items[idx - 1].id, true);
-      else if (current && e.key === 'a' && view?.permissions.approve && canApprove(current, pick)) void decide(current, 'approved');
+      else if (current && e.key === 'a' && view?.permissions.approve && canApprove(current, pick) && !current.record) setAuthorising(current.id);
       else if (current && e.key === 'r' && view?.permissions.reject) void decide(current, 'rejected');
     }
     window.addEventListener('keydown', onKey);
@@ -382,24 +420,45 @@ export function Review({ runId }: { runId: string }) {
                 </fieldset>
               )}
               <div className="decision">
-                <span className={`badge badge-${item.reviewStatus}`}>{STATUS_LABEL[item.reviewStatus]}</span>
-                {view.permissions.approve && (
+                {item.record ? (
+                  <a className="badge badge-approved" href={`#/projects/${view.projectId}/work`}>
+                    Authorised: see the Work tab
+                  </a>
+                ) : item.approvedWithoutRecord ? (
+                  <span className="badge badge-pending">Approved before records existed</span>
+                ) : (
+                  <span className={`badge badge-${item.reviewStatus}`}>{STATUS_LABEL[item.reviewStatus]}</span>
+                )}
+                {view.permissions.approve && !item.record && (
                 <button
                   className="approve"
-                  disabled={saving.has(item.id) || isCurrentApproval(item, pick) || !canApprove(item, pick)}
+                  disabled={saving.has(item.id) || !canApprove(item, pick)}
                   title={blocksApproval(item) ? 'Add a due date, a date range or the event it waits on first' : undefined}
                   aria-describedby={blocksApproval(item) ? `due-${item.id}` : undefined}
-                  onClick={() => void decide(item, 'approved')}
+                  aria-expanded={authorising === item.id}
+                  onClick={() => setAuthorising(authorising === item.id ? null : item.id)}
                 >
-                  Approve
+                  Authorise
                 </button>
                 )}
-                {view.permissions.reject && (
+                {view.permissions.reject && !item.record && (
                 <button className="reject" disabled={saving.has(item.id) || item.reviewStatus === 'rejected'} onClick={() => void decide(item, 'rejected')}>
                   Reject
                 </button>
                 )}
               </div>
+              {authorising === item.id && (
+                <AuthoriseForm
+                  kind={item.kind}
+                  text={item.text}
+                  owner={item.owner}
+                  due={item.dueReading}
+                  people={people}
+                  meId={meId}
+                  onSubmit={(body) => authorise(item, body)}
+                  onCancel={() => setAuthorising(null)}
+                />
+              )}
             </article>
           ))}
         </section>

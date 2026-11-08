@@ -160,7 +160,7 @@ export function App() {
   const isAdmin = user.role === 'enterprise_administrator';
   const note = /^#\/notes\/([0-9a-f-]{36})(?:\/v\/(\d+))?$/i.exec(hash);
   const run = /^#\/runs\/([0-9a-f-]{36})$/i.exec(hash);
-  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes))?$/i.exec(hash);
+  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work))?$/i.exec(hash);
   const adminPage = /^#\/(people|spending|departments|domains)$/.exec(hash)?.[1];
 
   let page;
@@ -169,9 +169,9 @@ export function App() {
   else if (isAdmin && adminPage === 'spending') page = <Spending />;
   else if (isAdmin && adminPage === 'departments') page = <Departments />;
   else if (isAdmin && adminPage === 'domains') page = <Domains />;
-  else if (run) page = <Review runId={run[1]} />;
+  else if (run) page = <Review runId={run[1]} meId={user.id} />;
   else if (note) page = <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} />;
-  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} tab={(project[2] as 'people' | 'notes' | undefined) ?? 'overview'} />;
+  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | undefined) ?? 'overview'} />;
   else page = <Projects isAdmin={isAdmin} />;
 
   return (
