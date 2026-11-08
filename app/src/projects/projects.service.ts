@@ -5,7 +5,8 @@ import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { isCalendarDate } from '../extraction/due';
-import { type ProjectContext, ProjectAccess, managesRoles } from './access.service';
+import { type ProjectContext, ProjectAccess, managesGrants, managesRoles } from './access.service';
+import { grantState } from './grants';
 import { type ClosureOutcome, STAGES, checkTransition } from './lifecycle';
 import { membershipState, requiredRolesCheck, separationCheck } from './membership';
 import { type ProjectStatus, PROJECT_STATUSES } from './matrix';
@@ -126,9 +127,17 @@ export class ProjectsService {
     const ids = await this.access.visibleProjectIds(user.id);
     const projects = [];
     for (const id of ids) {
-      const ctx = await this.access.context(user, id);
+      // A held membership or a suspended grant leaves a candidate with no access: it is simply not listed.
+      const ctx = await this.access.load(id, user);
+      if (!ctx || (ctx.roles.length === 0 && ctx.grantKinds.length === 0)) continue;
       const p = await this.summary(id);
-      projects.push({ ...p, myRoles: ctx.roles, missingAccountability: ctx.missingAccountability, onHold: managesRoles(ctx) && ctx.onHold });
+      projects.push({
+        ...p,
+        myRoles: ctx.roles,
+        access: ctx.roles.length === 0 ? ctx.grantKinds[0] : null,
+        missingAccountability: ctx.missingAccountability,
+        onHold: managesRoles(ctx) && ctx.onHold,
+      });
     }
     projects.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
     if (user.role !== 'enterprise_administrator') return { projects };
@@ -229,7 +238,27 @@ export class ProjectsService {
       missingAccountability: ctx.missingAccountability,
       missingRoles: ctx.missingRoles,
       onHold: managesRoles(ctx) && ctx.onHold,
+      access: ctx.roles.length === 0 && ctx.grantKinds.length > 0 ? ctx.grantKinds[0] : null,
+      grants: await this.grantsFor(ctx),
     };
+  }
+
+  /** Grant managers and the Administrator see every grant; anyone else only their own. */
+  private async grantsFor(ctx: ProjectContext) {
+    const all = managesGrants(ctx);
+    const { rows } = await this.pool.query(
+      `SELECT g.id, g.kind, g.purpose, g.scope, to_char(g.starts_on, 'YYYY-MM-DD') AS "startsOn", to_char(g.expires_on, 'YYYY-MM-DD') AS "expiresOn",
+              json_build_object('id', u.id, 'displayName', u.display_name, 'email', u.email) AS "user",
+              r.display_name AS "requestedBy", d.display_name AS "decidedBy", g.decision_reason AS "decisionReason",
+              g.suspend_reason AS "suspendReason", g.revoke_reason AS "revokeReason"
+         FROM access_grants g JOIN users u ON u.id = g.user_id JOIN users r ON r.id = g.requested_by LEFT JOIN users d ON d.id = g.decided_by
+        WHERE g.project_id = $1 ORDER BY g.requested_at, g.id`,
+      [ctx.project.id],
+    );
+    const viewer = ctx.viewerId;
+    return rows
+      .map((r) => ({ ...r, state: grantState(ctx.grants.find((g) => g.id === r.id)!, ctx.today) }))
+      .filter((r) => all || r.user.id === viewer);
   }
 
   async edit(user: AuthUser, id: string, input: Record<string, unknown>) {

@@ -72,3 +72,8 @@ test('role managers follow the accepted matrix for every target, manager and sta
   const locked = canManageRole({ target: 'member', roles: ['pm'], isAdmin: false, status: 'deferred', via: 'invitation' });
   assert.deepEqual(locked, { allowed: false, reason: 'Only the Project Manager, the Owner or a Sponsor can invite for the Member role, and not while the project is Deferred or Closed.' });
 });
+
+test('a grant allows reading only', async () => {
+  const { GRANT_ACTIONS } = await import('./matrix');
+  assert.deepEqual(GRANT_ACTIONS, ['project.view', 'note.view']);
+});

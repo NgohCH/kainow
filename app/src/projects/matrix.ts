@@ -51,6 +51,10 @@ export const PROJECT_MATRIX: Readonly<Record<ProjectAction, MatrixRow>> = {
   },
 };
 
+/** What an Active Audit or Oversight grant allows: reading only. */
+export const GRANT_ACTIONS: readonly ProjectAction[] = ['project.view', 'note.view'];
+export const GRANT_READ_ONLY = 'Audit and Oversight access is read-only.';
+
 export function decide(input: { action: ProjectAction; roles: ProjectRole[]; status: ProjectStatus }): { allowed: true } | { allowed: false; reason: string } {
   const row = PROJECT_MATRIX[input.action];
   const roleOk = row.roles.includes('participant') ? input.roles.length > 0 : input.roles.some((r) => row.roles.includes(r));
