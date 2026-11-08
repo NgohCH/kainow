@@ -69,7 +69,7 @@ The PowerShell lines in this guide were run in Windows PowerShell 5.1 on 8 Novem
 
 6. **Set up the organisation and the first project** (as the administrator):
    - Under **Departments**, add at least one department. Every project belongs to one.
-   - Under **Domains**, add your organisation's email domain (for example `help.edu.my`). Only addresses at these domains can be invited, and a domain alone admits nobody.
+   - Under **Domains**, add your organisation's email domain (for example `example.com`). Only addresses at these domains can be invited, and a domain alone admits nobody.
    - Under **My Projects**, choose **New project**. It starts as a Draft.
    - On the project's **People** tab, invite a Project Manager and an Owner or Sponsor. The Project Manager then invites the Members. Each invitation is emailed (or, with `LOG_SIGN_IN_CODES=true`, written to `docker compose logs api`) as a link that expires after seven days.
 

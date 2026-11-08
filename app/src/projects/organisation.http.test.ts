@@ -46,18 +46,18 @@ describe('departments and eligible domains', { skip: SKIP_NO_DB }, () => {
 
   test('only an administrator manages eligible domains', async () => {
     assert.equal((await member.request('GET', '/domains')).status, 403);
-    assert.equal((await member.request('POST', '/domains', { domain: 'help.edu.my' })).status, 403);
-    const made = await admin.request('POST', '/domains', { domain: ' HELP.edu.my ' });
+    assert.equal((await member.request('POST', '/domains', { domain: 'example.com' })).status, 403);
+    const made = await admin.request('POST', '/domains', { domain: ' EXAMPLE.com ' });
     assert.equal(made.status, 201);
-    assert.equal(made.body.domain.domain, 'help.edu.my');
-    assert.equal((await admin.request('POST', '/domains', { domain: 'help.edu.my' })).status, 409);
-    for (const bad of ['', 'help', 'a@help.edu.my', 'help .edu.my']) {
+    assert.equal(made.body.domain.domain, 'example.com');
+    assert.equal((await admin.request('POST', '/domains', { domain: 'example.com' })).status, 409);
+    for (const bad of ['', 'example', 'a@example.com', 'example .com']) {
       const r = await admin.request('POST', '/domains', { domain: bad });
       assert.equal(r.status, 400, bad);
-      assert.equal(r.body.message, 'Enter a domain such as help.edu.my.');
+      assert.equal(r.body.message, 'Enter a domain such as example.com.');
     }
     assert.equal((await admin.request('POST', `/domains/${made.body.domain.id}/remove`)).status, 200);
     assert.deepEqual((await admin.request('GET', '/domains')).body.domains, []);
-    assert.equal((await admin.request('POST', '/domains', { domain: 'help.edu.my' })).status, 201, 'a removed domain can be added again');
+    assert.equal((await admin.request('POST', '/domains', { domain: 'example.com' })).status, 201, 'a removed domain can be added again');
   });
 });

@@ -11,9 +11,9 @@ test('record states and severities read as words', () => {
 
 test('a written name suggests one person, or nobody when unsure', () => {
   const people = [
-    { userId: 'a', displayName: 'Su Ling Tan', email: 'suling.tan@help.edu.my' },
-    { userId: 'b', displayName: 'Daniel Wong', email: 'daniel@help.edu.my' },
-    { userId: 'c', displayName: 'Daniel Lee', email: 'jlee@help.edu.my' },
+    { userId: 'a', displayName: 'Su Ling Tan', email: 'suling.tan@example.com' },
+    { userId: 'b', displayName: 'Daniel Wong', email: 'daniel@example.com' },
+    { userId: 'c', displayName: 'Daniel Lee', email: 'jlee@example.com' },
   ];
   assert.equal(likelyAssignee('Ms Su Ling', people), 'a');
   assert.equal(likelyAssignee('Mr Daniel', people), null, 'two people called Daniel');
