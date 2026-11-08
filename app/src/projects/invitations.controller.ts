@@ -23,6 +23,14 @@ export class InvitationsController {
     return this.invitations.invite(who(req), id, body(b));
   }
 
+  /** The current Project Manager hands over: { email, outgoingRole: 'deputy_pm' | 'member' | 'leave', displayName? } */
+  @Post('projects/:id/handover')
+  @AnySignedInUser()
+  @HttpCode(201)
+  handover(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest) {
+    return this.invitations.handover(who(req), id, body(b));
+  }
+
   @Post('invitations/:id/resend')
   @AnySignedInUser()
   @HttpCode(201)

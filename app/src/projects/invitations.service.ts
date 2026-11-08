@@ -9,7 +9,7 @@ import { PG_POOL } from '../db/database.module';
 import { ProjectAccess } from './access.service';
 import { ROLE_LABEL, canManageRole } from './matrix';
 import { type ProjectRole, membershipState } from './membership';
-import { MembershipsService, checkNewAppointment, cleanDates, cleanRole } from './memberships.service';
+import { MembershipsService, checkMembershipsAfter, checkNewAppointment, cleanDates, cleanRole } from './memberships.service';
 import { OrganisationService } from './organisation.service';
 
 const VALID_FOR_MS = 7 * 24 * 60 * 60 * 1000;
@@ -30,10 +30,16 @@ interface InvitationRow {
   issued_at: Date;
   expires_at: Date;
   status: string;
+  kind: 'role' | 'handover';
+  outgoing_membership_id: string | null;
+  outgoing_role: 'deputy_pm' | 'member' | 'leave' | null;
 }
 
+const OUTGOING_ROLES = ['deputy_pm', 'member', 'leave'] as const;
+const HANDOVER_GONE = 'This handover is no longer valid.';
+
 const COLUMNS = `id, project_id, email, display_name, role, to_char(starts_on, 'YYYY-MM-DD') AS starts_on,
-  to_char(expires_on, 'YYYY-MM-DD') AS expires_on, invited_by, issued_at, expires_at, status`;
+  to_char(expires_on, 'YYYY-MM-DD') AS expires_on, invited_by, issued_at, expires_at, status, kind, outgoing_membership_id, outgoing_role`;
 
 @Injectable()
 export class InvitationsService {
@@ -71,20 +77,30 @@ export class InvitationsService {
       role: r.role,
       startsOn: r.starts_on,
       expiresOn: r.expires_on,
+      kind: r.kind,
+      outgoingRole: r.outgoing_role,
       issuedAt: r.issued_at.toISOString(),
       expiresAt: r.expires_at.toISOString(),
       status,
     };
   }
 
-  private async issue(c: PoolClient, r: Omit<InvitationRow, 'id' | 'issued_at' | 'expires_at' | 'status'>, projectName: string, at: Date) {
+  private async issue(
+    c: PoolClient,
+    r: Omit<InvitationRow, 'id' | 'issued_at' | 'expires_at' | 'status' | 'kind' | 'outgoing_membership_id' | 'outgoing_role'> &
+      Partial<Pick<InvitationRow, 'kind' | 'outgoing_membership_id' | 'outgoing_role'>>,
+    projectName: string,
+    at: Date,
+  ) {
     const token = randomBytes(32).toString('base64url');
     const id = uuidv7(at.getTime());
     const expiresAt = new Date(at.getTime() + VALID_FOR_MS);
     await c.query(
-      `INSERT INTO invitations (id, project_id, email, display_name, role, starts_on, expires_on, invited_by, token_hash, issued_at, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
-      [id, r.project_id, r.email, r.display_name, r.role, r.starts_on, r.expires_on, r.invited_by, hashToken(token), at, expiresAt],
+      `INSERT INTO invitations (id, project_id, email, display_name, role, starts_on, expires_on, invited_by, token_hash, issued_at, expires_at,
+                                kind, outgoing_membership_id, outgoing_role)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+      [id, r.project_id, r.email, r.display_name, r.role, r.starts_on, r.expires_on, r.invited_by, hashToken(token), at, expiresAt,
+        r.kind ?? 'role', r.outgoing_membership_id ?? null, r.outgoing_role ?? null],
     );
     return { id, token, expiresAt };
   }
@@ -134,6 +150,8 @@ export class InvitationsService {
     const r = (await c.query(`SELECT ${COLUMNS} FROM invitations WHERE id = $1 FOR UPDATE`, [invitationId])).rows[0] as InvitationRow | undefined;
     if (!r) throw new NotFoundException();
     const ctx = await this.access.context(user, r.project_id, c, true);
+    const outgoing = r.kind === 'handover' ? ctx.rows.find((m) => m.id === r.outgoing_membership_id) : undefined;
+    if (outgoing && outgoing.userId === user.id) return { r, ctx };
     const v = canManageRole({ target: r.role, roles: ctx.roles, isAdmin: ctx.isAdmin, status: ctx.project.status, via: 'invitation' });
     if (!v.allowed) throw new ForbiddenException(v.reason);
     return { r, ctx };
@@ -175,7 +193,9 @@ export class InvitationsService {
     if (!r) throw new NotFoundException(NO_LONGER_VALID);
     const projectName = (await this.pool.query(`SELECT name FROM projects WHERE id = $1`, [r.project_id])).rows[0].name;
     const v = this.view(r, this.now());
-    return { invitation: { projectName, email: v.email, role: v.role, startsOn: v.startsOn, expiresOn: v.expiresOn, expiresAt: v.expiresAt, status: v.status } };
+    return {
+      invitation: { projectName, email: v.email, role: v.role, kind: v.kind, startsOn: v.startsOn, expiresOn: v.expiresOn, expiresAt: v.expiresAt, status: v.status },
+    };
   }
 
   /** Locks the invitation and its project and checks it can still be answered by this person. */
@@ -197,6 +217,7 @@ export class InvitationsService {
         throw new ConflictException('Invitations cannot be accepted while the project is Deferred or Closed.');
       }
       if (!(await this.org.isEligible(r.email))) throw new ConflictException('That address is not in an eligible organisation domain.');
+      if (r.kind === 'handover') return this.acceptHandover(c, ctx, r, user, at);
       const candidate = { userId: user.id, role: r.role, startsOn: r.starts_on, expiresOn: r.expires_on, revokedAt: null };
       checkNewAppointment(ctx, candidate);
       const membershipId = await this.memberships.insertAppointment(c, ctx, candidate, user.id, 'Accepted an invitation', at);
@@ -204,6 +225,78 @@ export class InvitationsService {
       await writeAudit(c, { at, action: 'invitation.accepted', actorUserId: user.id, subjectType: 'project', subjectId: r.project_id, detail: { invitationId: r.id } });
       return { membership: { id: membershipId, projectId: r.project_id, role: r.role, startsOn: r.starts_on, expiresOn: r.expires_on, state: membershipState(candidate, ctx.today) } };
     });
+  }
+
+  /**
+   * The current, Active Project Manager hands the project over (V1.0 role management §2): the replacement
+   * accepts through the usual link, and only then does the switch happen.
+   */
+  async handover(user: AuthUser, projectId: string, input: Record<string, unknown>) {
+    const email = typeof input.email === 'string' ? input.email.trim().toLowerCase() : '';
+    if (!EMAIL.test(email)) throw new BadRequestException('Enter the email address of the person taking over.');
+    const outgoingRole = input.outgoingRole as (typeof OUTGOING_ROLES)[number];
+    if (!OUTGOING_ROLES.includes(outgoingRole)) throw new BadRequestException('Choose your role afterwards: deputy_pm, member or leave.');
+    const displayName = typeof input.displayName === 'string' && input.displayName.trim() !== '' ? input.displayName.trim().slice(0, 200) : null;
+    const at = this.now();
+    let out: { token: string; expiresAt: Date; name: string };
+    const result = await this.tx(async (c) => {
+      const ctx = await this.access.context(user, projectId, c, true);
+      const mine = ctx.rows.find((m) => m.userId === user.id && m.role === 'pm' && membershipState(m, ctx.today) === 'active');
+      if (!mine) throw new ForbiddenException('Only the current Project Manager can hand over the project.');
+      if (!['draft', 'planned', 'active'].includes(ctx.project.status)) {
+        throw new ConflictException('A handover can only be made while the project is Draft, Planned or Active.');
+      }
+      if (email === user.email.toLowerCase()) throw new BadRequestException('Choose someone else to take over.');
+      if (!(await this.org.isEligible(email))) throw new BadRequestException('That address is not in an eligible organisation domain.');
+      const open = await c.query(`SELECT 1 FROM invitations WHERE project_id = $1 AND kind = 'handover' AND status = 'invited' AND expires_at > $2`, [projectId, at]);
+      if (open.rowCount) throw new ConflictException('A handover is already waiting; send it again or withdraw it.');
+      const name = (await c.query(`SELECT name FROM projects WHERE id = $1`, [projectId])).rows[0].name as string;
+      const issued = await this.issue(
+        c,
+        {
+          project_id: projectId, email, display_name: displayName, role: 'pm', starts_on: ctx.today, expires_on: null, invited_by: user.id,
+          kind: 'handover', outgoing_membership_id: mine.id, outgoing_role: outgoingRole,
+        },
+        name,
+        at,
+      );
+      out = { token: issued.token, expiresAt: issued.expiresAt, name };
+      await writeAudit(c, { at, action: 'invitation.handover_issued', actorUserId: user.id, subjectType: 'project', subjectId: projectId, detail: { invitationId: issued.id, outgoingRole } });
+      const row = (await c.query(`SELECT ${COLUMNS} FROM invitations WHERE id = $1`, [issued.id])).rows[0] as InvitationRow;
+      return { invitation: this.view(row, at) };
+    });
+    await this.deliver(email, out!.token, out!.name, 'pm', out!.expiresAt);
+    return result;
+  }
+
+  /** The switch, in one transaction: outgoing PM revoked ("Handed over"), replacement PM from today, chosen role appointed. */
+  private async acceptHandover(c: PoolClient, ctx: Awaited<ReturnType<ProjectAccess['context']>>, r: InvitationRow, user: AuthUser, at: Date) {
+    const outgoing = ctx.rows.find((m) => m.id === r.outgoing_membership_id);
+    if (!outgoing || outgoing.role !== 'pm' || membershipState(outgoing, ctx.today) !== 'active') throw new ConflictException(HANDOVER_GONE);
+    const today = ctx.today;
+    const incoming = { userId: user.id, role: 'pm' as const, startsOn: today, expiresOn: null, revokedAt: null };
+    const keeps = r.outgoing_role !== 'leave' && r.outgoing_role !== null
+      && !ctx.rows.some((m) => m.userId === outgoing.userId && m.role === r.outgoing_role && !m.revokedAt);
+    const disposition = keeps ? { userId: outgoing.userId, role: r.outgoing_role as 'deputy_pm' | 'member', startsOn: today, expiresOn: null, revokedAt: null } : null;
+    if (ctx.rows.some((m) => m.userId === user.id && m.role === 'pm' && !m.revokedAt)) throw new ConflictException(HANDOVER_GONE);
+    const after = [
+      ...ctx.rows.map((m) => (m.id === outgoing.id ? { ...m, revokedAt: at } : m)),
+      incoming,
+      ...(disposition ? [disposition] : []),
+    ];
+    checkMembershipsAfter(ctx, after);
+    await c.query(`UPDATE memberships SET revoked_at = $2, revoked_by = $3, revoke_reason = 'Handed over' WHERE id = $1`, [outgoing.id, at, user.id]);
+    await c.query(
+      `INSERT INTO membership_events (id, membership_id, kind, previous_starts_on, previous_expires_on, actor_id, reason, at)
+       VALUES ($1, $2, 'revoked', $3, $4, $5, 'Handed over', $6)`,
+      [uuidv7(at.getTime()), outgoing.id, outgoing.startsOn, outgoing.expiresOn, user.id, at],
+    );
+    const ctxAfter = { ...ctx, rows: ctx.rows.map((m) => (m.id === outgoing.id ? { ...m, revokedAt: at } : m)) };
+    const membershipId = await this.memberships.insertAppointment(c, ctxAfter, incoming, user.id, 'Accepted a handover', at);
+    if (disposition) await this.memberships.insertAppointment(c, ctxAfter, disposition, r.invited_by, 'Role after handing over', at);
+    await c.query(`UPDATE invitations SET status = 'accepted', responded_at = $2, membership_id = $3 WHERE id = $1`, [r.id, at, membershipId]);
+    await writeAudit(c, { at, action: 'invitation.handover_accepted', actorUserId: user.id, subjectType: 'project', subjectId: r.project_id, detail: { invitationId: r.id } });
+    return { membership: { id: membershipId, projectId: r.project_id, role: 'pm' as const, startsOn: today, expiresOn: null, state: 'active' as const } };
   }
 
   async decline(user: AuthUser, token: string) {
