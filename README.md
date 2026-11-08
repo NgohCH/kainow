@@ -4,7 +4,7 @@
 
 Meetings produce notes. Notes produce good intentions. Weeks later nobody is sure what was decided, who agreed to do what, or by when. Kainow closes that gap: you give it the notes, AI proposes the decisions, actions, open questions and risks it finds, and **people review and approve each one** before it becomes a record anyone relies on. Every proposal points back to the exact words in the notes that support it.
 
-> **Status.** Kainow is being built as a **December 2026 MVP**: one working path from notes to reviewed proposals. The full product described in `docs/` (V1.0) is a design baseline, not something that has been built or accepted. This README says clearly which is which. The MVP has not yet been run with Docker on a real installation, and the AI step has been checked against the real model only with synthetic notes. See [Where things stand](#where-things-stand).
+> **Status.** Kainow is being built as a **December 2026 MVP**: one working path from notes to reviewed proposals. The full product described in `docs/` (V1.0) is a design baseline, not something that has been built or accepted. This README says clearly which is which. The MVP has been installed with Docker on one Windows computer, and the AI step has been checked against the real model only with synthetic notes. See [Where things stand](#where-things-stand).
 
 ## The idea
 
@@ -36,7 +36,7 @@ Four rules shape everything:
 | **Spending control** | A monthly AI spending cap (MYR 20 by default, reset on the first of the month, UTC+8). Each call reserves its worst-case cost before it runs and is refused if it would not fit. An optional per-person monthly limit. Administrators see and change the settings. |
 | **Languages** | English, Bahasa Melayu and mixed-language notes. |
 | **Audit** | Sign-ins, decisions, edits, settings changes and administration are recorded and cannot be changed or deleted. |
-| **Install** | A Docker Compose package for a single computer (written, not yet built with Docker). |
+| **Install** | A Docker Compose package for a single computer (built and run on Windows with Docker Desktop on 8 November 2026). |
 
 Dates and times are shown in UTC+8.
 
@@ -87,9 +87,9 @@ One TypeScript application and one worker, one PostgreSQL 16 database, one organ
 | Item | State |
 | --- | --- |
 | Sign-in, people, notes intake, spend cap, review screen | Built and tested against PostgreSQL 16; the review screen has been checked in a real browser, not yet used by a person on a real installation |
-| AI extraction | Built and tested with a stand-in model. The standalone check has run against the real `gpt-6.1-sol` on three synthetic notes, with all quotes verbatim ([review record](docs/MVP-EXTRACTION-REVIEW-2026-11-07.md)). The application's own AI call has not yet run against the real model |
-| Docker Compose install | Written and checked as far as possible without Docker; never built |
-| Real meeting notes | Not yet run. This comes after the first Docker test |
+| AI extraction | Built and tested with a stand-in model. The standalone check has run against the real `gpt-6.1-sol` on three synthetic notes, with all quotes verbatim ([review record](docs/MVP-EXTRACTION-REVIEW-2026-11-07.md)). The application's own AI adapter reached the real model on 8 November 2026 (`probe-ai` in the Docker worker, one small request). One full extraction inside the Docker install (synthetic note SYN-02) returned 11 proposals, all quotes found, for MYR 0.06 |
+| Docker Compose install | Built and run on Windows 11 with Docker Desktop (8 November 2026): the install steps, sign-in in a browser, a Word upload, the backup, and extraction and review of one synthetic note with the real model all work |
+| Real meeting notes | Not yet run. The first Docker test is done, so this is next |
 | One administrator | The MVP names two administrators, but there is no separate recovery custodian yet; that must be fixed before production |
 
 The accuracy target is 95% of proposals supported by a real quote and 90% of expected items captured. A good score on synthetic notes does not show the rate on real ones.

@@ -62,6 +62,13 @@ async function extract(text) {
             "Never join text from separate sections, lines or table rows, and never add a separator " +
             "such as a line break or table marker between two passages. If one item needs two places, " +
             "split it into two items, each with its own quote. " +
+            "If the same decision, action, question or risk is stated in more than one place, for example " +
+            "in a summary paragraph and again in a table, report it once, using the quote from the place " +
+            "that states it most completely. " +
+            "The date or time of the next meeting is not a decision. " +
+            "The owner is the person who will do the work or is accountable for the result, not someone " +
+            "who only approves or is consulted; use null if the notes name only an approver. " +
+            "The due value is the deadline for the item, not the date of the meeting or of an event. " +
             "Do not invent items. Use null when owner or due is not stated.",
         },
         { role: "user", content: text },

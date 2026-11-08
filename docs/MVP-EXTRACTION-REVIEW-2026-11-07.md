@@ -39,7 +39,30 @@ No row was marked partly captured or missed. Each meets the 90% bar on its own, 
 
 The two items the automatic matcher missed (SYN-01 A2 and SYN-03 A2) were confirmed by the reviewer to be present, and are recorded as `alsoKeys` in the expected files. The automatic key-phrase score is a proxy only.
 
+## Review of a run with the changed prompt (8 November 2026)
+
+After the review above, four sentences were added to the extraction prompt (see "Still open", item 3) to address findings from it. The check was run again on `f2d10b2` (the prompt change is in `26f4383`). The automatic result: all three notes at 100% supported and 100% captured. The run produced 29 items: SYN-01 10, SYN-02 11, SYN-03 8. The review sheet is `review-run-1794088343357.csv`, kept outside the repository. Reviewer: Ngoh Chee Hung. The sheet was first generated empty. Claude then drafted the marks, and the reviewer returned a sheet whose classification, owner and conditional marks match that draft on every row. The reviewer's three flagged items were all accepted: SYN-02 item 2 (publish on 14 Dec) is marked OK, SYN-02 items 3 and 4 are not marked as duplicates, and SYN-03 item 7 keeps its owner.
+
+| Measure | First run (earlier prompt) | This run (changed prompt) |
+| --- | --- | --- |
+| Items | 33 | 29 |
+| Supported (word for word, computed by the script) | 33 of 33 | 29 of 29 |
+| Classification not OK | 2 (next meeting date as a decision) | 0 |
+| Owner not OK | 1 (the approver named as owner) | 0 |
+| Duplicates marked | 2 | 0 |
+| Classification, owner and conditional all OK | 30 of 33 (91%) | 29 of 29 (100%) |
+| Conditional items marked OK | 11 | 9 |
+
+Limits of this comparison:
+
+- It is one run on each prompt, and the model's answers differ from run to run. A clean result is encouraging, not proof that the change works.
+- The three notes are the same three synthetic notes the findings came from, so a fix aimed at them may not carry over to other notes.
+- The fourth finding (an event date in the due field) was not marked in the first review, so there is no before and after for it. In this run the reviewer found no due value that is an event date.
+- Fewer items (29 against 33) is consistent with duplicates being removed, but is also what missed items would look like. The expected items were not marked by meaning for this run; only the automatic key-phrase score (100% captured) is available, and that is a proxy only.
+- The reviewer's marks equal the draft marks, so this is a weaker check than a blank-sheet review would have been.
+
 ## Still open
 
-1. A review of a later run, and of real meeting notes, before relying on the 95% and 90% result for the product. The reviewed run is the first of three, the model's answers differ between runs, and the synthetic notes are not real notes.
+1. A review of real meeting notes before relying on the 95% and 90% result for the product. Two runs have now been reviewed (the first, and one on the changed prompt), the model's answers differ between runs, and the synthetic notes are not real notes. Marking the expected items by meaning has been done for the first run only.
 2. Sign-off. This record is the human review of the three synthetic notes; it is not an acceptance of O16 and R19 for the product.
+3. **Prompt changed after the first review.** To address three findings from it (duplicate items from a narrative and a table, the next meeting date reported as a decision, an approver named as owner) and a fourth raised on reading (an event date in the due field), four sentences were added to the extraction prompt in both `tests/extraction/run.mjs` and `app/src/extraction/prompt.ts`. A test keeps the two word for word the same. One run on the changed prompt was reviewed (above) and shows none of the findings. The change is not confirmed: it needs more runs and notes other than these three.

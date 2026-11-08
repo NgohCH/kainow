@@ -2,7 +2,11 @@
 
 This starts Kainow with Docker Compose: a PostgreSQL database, the Kainow server (which also serves the review screen) and the background worker that talks to the AI. It is for one computer, reached at `http://localhost:3000`. There is no HTTPS and nothing is reachable from other computers.
 
-**Status: this package has not been built or run with Docker yet, and the Product Owner has deferred that first test to later.** The sandbox it was written in has no Docker daemon and cannot reach Docker Hub. What was checked instead: the compose file validates (`docker compose config`), and the exact contents of the final image (production dependencies, compiled code, migrations, the built screen) were assembled in a clean folder and run against PostgreSQL 16: migrate, create the administrator, sign in, open the screen, run the worker. If a step below fails on your computer, the first build is the most likely place, and I want to hear about it.
+**Status: first built and run on 8 November 2026** on Windows 11, with Docker Desktop 29.9.2 (WSL 2 engine) and Compose 5.6.1. These steps worked as written: the build, the migrations, creating the administrator, saving the spend settings, signing in at `http://localhost:3000` in a browser, uploading a Word document, the Windows backup, and every step of "Check that it works" below. One extraction of a synthetic note with the real `gpt-6.1-sol` returned 11 proposals, all quotes found, for MYR 0.06. If a step fails on your computer, I want to hear about it.
+
+## Windows
+
+The PowerShell lines in this guide were run in Windows PowerShell 5.1 on 8 November 2026 and work as written. The repository now forces Linux line endings (`.gitattributes`), so a Windows checkout does not break files inside the containers. If you cloned before that was added and see odd errors such as `\r` in a message, clone again. Use Docker Desktop with the WSL 2 engine (its default).
 
 ## What you need
 
@@ -19,9 +23,19 @@ This starts Kainow with Docker Compose: a PostgreSQL database, the Kainow server
    cp .env.example .env
    ```
 
-   Open `.env` and fill in:
-   - `POSTGRES_PASSWORD`: letters and digits only. For example: `openssl rand -hex 24`
-   - `AUTH_SECRET`: at least 32 characters. For example: `openssl rand -base64 48`
+   (In Windows PowerShell, `cp` works too. `Copy-Item .env.example .env` is the same thing.)
+
+   Open `.env` (in PowerShell, `notepad .env`) and fill in:
+   - `POSTGRES_PASSWORD`: letters and digits only. On Mac or Linux: `openssl rand -hex 24`. In Windows PowerShell, which usually has no `openssl`:
+
+     ```
+     $b = New-Object byte[] 24; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); -join ($b | ForEach-Object { $_.ToString('x2') })
+     ```
+   - `AUTH_SECRET`: at least 32 characters. On Mac or Linux: `openssl rand -base64 48`. In Windows PowerShell:
+
+     ```
+     $b = New-Object byte[] 48; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [Convert]::ToBase64String($b)
+     ```
    - Sign-in codes: either `SMTP_URL` and `SMTP_FROM`, or leave `LOG_SIGN_IN_CODES=true` to read codes from the log (own computer only).
    - `OPENAI_API_KEY`: your key. It stays in `.env`, which is never committed, and only the worker receives it.
 
@@ -51,6 +65,8 @@ This starts Kainow with Docker Compose: a PostgreSQL database, the Kainow server
    docker compose logs api --tail 20
    ```
 
+   A new code is made at most once a minute. If you ask again sooner, the screen looks the same but no new code is made, so use the latest code in the log.
+
 ## Check that it works
 
 1. Sign in. The top bar should show "AI spend this month MYR 0.00 of MYR 20.00".
@@ -72,8 +88,18 @@ This starts Kainow with Docker Compose: a PostgreSQL database, the Kainow server
 
 ## Back up
 
+On Mac or Linux:
+
 ```
 docker compose exec -T db pg_dump -U kainow -Fc kainow > kainow-backup-$(date +%F).dump
+```
+
+In Windows PowerShell do **not** use `>` to save the dump: Windows PowerShell 5.1 rewrites the file as text and corrupts it. Let the database write the file and copy it out instead:
+
+```
+docker compose exec -T db sh -c "pg_dump -U kainow -Fc kainow -f /tmp/kainow.dump"
+docker compose cp db:/tmp/kainow.dump "kainow-backup-$(Get-Date -Format yyyy-MM-dd).dump"
+docker compose exec -T db rm /tmp/kainow.dump
 ```
 
 This holds everything: notes, original files, proposals, decisions, the audit trail and AI spend records. Keep it somewhere other than this computer. **Restoring from a backup has not been rehearsed** (the full restore drill is deferred to January), so treat the backup as unproven until you have restored one into a spare copy.
