@@ -94,3 +94,10 @@ export function canManage(target: ProjectRole, roles: ProjectRole[], isAdmin: bo
 export function manageableRoles(roles: ProjectRole[], isAdmin: boolean, status: ProjectStatus): ProjectRole[] {
   return ROLES.filter((r) => canManage(r, roles, isAdmin, status));
 }
+
+/** How long the project has been in its current stage, in whole days (UTC+8 calendar days). */
+export function stageDuration(startedAt: string, now: Date = new Date()): string {
+  const day = (d: Date) => Math.floor((d.getTime() + 8 * 3600 * 1000) / 86_400_000);
+  const days = day(now) - day(new Date(startedAt));
+  return days <= 0 ? 'started today' : days === 1 ? '1 day in this stage' : `${days} days in this stage`;
+}

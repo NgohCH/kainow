@@ -14,11 +14,13 @@ import {
   manageableRoles,
   membershipStateLabel,
   roleLabel,
+  stageDuration,
   transitionsFor,
 } from '../projects.ts';
 import { Notes } from './Notes.tsx';
 
 type Tab = 'overview' | 'people' | 'notes';
+
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
 export function ProjectPage({ projectId, tab }: { projectId: string; tab: Tab }) {
@@ -75,7 +77,7 @@ export function ProjectPage({ projectId, tab }: { projectId: string; tab: Tab })
       </div>
       <p className="meta">
         {project.owningDepartment.name}
-        {project.stage ? ` · ${project.stage.stage}${project.stage.substage ? `: ${project.stage.substage}` : ''}` : ''}
+        {project.stage ? ` · ${project.stage.stage}${project.stage.substage ? `: ${project.stage.substage}` : ''} (${stageDuration(project.stage.startedAt)})` : ''}
         {roles.length > 0 ? ` · You: ${roles.map(roleLabel).join(', ')}` : project.isAdmin ? ' · You manage appointments as an administrator' : ''}
       </p>
       {project.missingAccountability && (

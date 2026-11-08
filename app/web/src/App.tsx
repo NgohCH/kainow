@@ -170,7 +170,7 @@ export function App() {
       <header className="bar">
         <a className="wordmark" href="#/">Kainow</a>
         <nav aria-label="Main" className="mainnav">
-          <a href="#/" aria-current={!adminPage ? 'page' : undefined}>Projects</a>
+          <a href="#/" aria-current={!adminPage ? 'page' : undefined}>My Projects</a>
           {isAdmin && (
             <>
               <a href="#/people" aria-current={adminPage === 'people' ? 'page' : undefined}>Administrators</a>

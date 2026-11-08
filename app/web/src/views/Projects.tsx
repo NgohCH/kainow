@@ -23,7 +23,7 @@ export function Projects({ isAdmin }: { isAdmin: boolean }) {
   return (
     <main className="page narrow">
       <div className="row">
-        <h1>Projects</h1>
+        <h1>My Projects</h1>
         <button className="primary" onClick={() => setCreating((c) => !c)} aria-expanded={creating}>
           {creating ? 'Close' : 'New project'}
         </button>

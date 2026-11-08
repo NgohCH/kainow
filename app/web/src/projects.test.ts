@@ -35,3 +35,12 @@ test('lifecycle buttons follow who may make each change', () => {
   const close = transitionsFor('planned', ['owner'], false).find((t) => t.to === 'closed');
   assert.deepEqual(close, { to: 'closed', label: 'Close as Abandoned', fastTrack: false, needs: { reason: true, outcome: true, stage: false }, outcomes: ['abandoned'] });
 });
+
+test('time in the current stage counts UTC+8 calendar days', async () => {
+  const { stageDuration } = await import('./projects.ts');
+  const now = new Date('2026-11-09T02:00:00Z'); // 9 Nov, 10:00 UTC+8
+  assert.equal(stageDuration('2026-11-09T01:00:00Z', now), 'started today');
+  assert.equal(stageDuration('2026-11-08T15:59:00Z', now), '1 day in this stage', '8 Nov 23:59 UTC+8');
+  assert.equal(stageDuration('2026-11-08T16:00:00Z', now), 'started today', '9 Nov 00:00 UTC+8');
+  assert.equal(stageDuration('2026-10-31T16:00:00Z', now), '8 days in this stage');
+});
