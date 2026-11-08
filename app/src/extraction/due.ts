@@ -304,6 +304,7 @@ const fromMalay = (s: string): string => MALAY.reduce((t, [from, to]) => t.repla
 /** Lower case, plain dashes, no trailing full stop or commas, no ordinal endings ("30th"), no leading "by"/"on". */
 const lower = (s: string): string =>
   fromMalay(core(s).toLowerCase())
+    .replace(/^(the )?following (week|month)$/, 'next $2')
     .replace(/[–—]/g, '-')
     .replace(/[.,;:!]+$/, '')
     .replace(/,/g, '')
@@ -322,6 +323,12 @@ function fromDates(earliest: string, latest: string, usedMeetingDate: boolean, n
 function readLoose(s: string, meeting: string | null): Part {
   const part = readPart(s, meeting);
   if (part.kind !== 'needs' || part.reason !== REASON.unknown) return part;
+  // A date in brackets: "12 months (June 2027)".
+  const bracketed = /\(([^)]+)\)/.exec(s);
+  if (bracketed) {
+    const inner = readPart(lower(bracketed[1]), meeting);
+    if (inner.kind === 'date') return inner;
+  }
   const tail = /\s(by|before|on)\s(.+)$/.exec(s);
   return tail ? readPart(lower(`${tail[1]} ${tail[2]}`), meeting) : part;
 }
@@ -333,7 +340,7 @@ const DAY_LIST = /^(\d{1,2})((?:\s*,\s*\d{1,2})*)\s*,?\s+and\s+(\d{1,2})\s+([a-z
  * "i. 11 November ii. 16 November", "6, 9 and 11 November respectively", "16 November and end of November".
  */
 function splitParts(wording: string, meeting: string | null): string[] {
-  let w = wording;
+  let w = wording.replace(/\s*&\s*/g, ' and ');
   if (/(^|\s)i\.\s/i.test(w) && /\sii\.\s/i.test(w)) w = w.replace(/(?:^|\s)(?:i{1,3}|iv|vi{0,3})\.\s+/gi, ';');
   w = w.replace(/\s+respectively\s*$/i, '');
   const out: string[] = [];
@@ -373,7 +380,7 @@ export function readDue(input: DueInput, reviewer?: ReviewerDue | null): DueRead
     return reading({ state: 'needs_date', reason: REASON.several });
   }
 
-  const part = readPart(lower(wording), input.meetingDate);
+  const part = readLoose(lower(wording), input.meetingDate);
   if (part.kind === 'date') return fromDates(part.earliest, part.latest, part.used);
   if (part.kind === 'event') return reading({ state: 'event', event: dueEvent ?? core(wording) });
   // Wording that cannot be read ("TBC") still waits on the event the model named, if it named one.

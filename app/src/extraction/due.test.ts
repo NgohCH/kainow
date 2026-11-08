@@ -102,6 +102,9 @@ const CASES: Case[] = [
   ['i. Immediate ii. Immediate iii. 16 November and end of November respectively', M, range('2026-11-04', '2026-11-30', true, SEVERAL)],
   ['Data by 5 November 2026; delivery and testing by 12 November 2026', null, range('2026-11-05', '2026-11-12', false, SEVERAL)],
   ['i. 5 November ii. after approval', M, needs('several dates in one item; not all are dates')],
+  ['21 & 28 Oct 2026', null, range('2026-10-21', '2026-10-28', false, SEVERAL)],
+  ['the following week', M, range('2026-11-09', '2026-11-15', true)],
+  ['12 months (June 2027)', null, range('2027-06-01', '2027-06-30')],
   // Final review: a month span across a year end runs into the next year.
   ['November-January 2026', null, range('2026-11-01', '2027-01-31')],
   ['Before rollout', null, event('Before rollout')],
