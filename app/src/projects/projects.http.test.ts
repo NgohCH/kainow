@@ -40,6 +40,7 @@ describe('projects', { skip: SKIP_NO_DB }, () => {
 
   test('after the first project anyone signed in may create one and becomes its Project Manager', async () => {
     await admin.request('POST', '/projects', body());
+    await admin.request('POST', '/domains', { domain: 'example.org' });
     const made = await sam.request('POST', '/projects', body({ name: 'Student app' }));
     assert.equal(made.status, 201);
     assert.deepEqual(
