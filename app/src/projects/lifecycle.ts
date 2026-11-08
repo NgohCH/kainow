@@ -17,10 +17,10 @@ export interface TransitionRequest {
   reason: string | null;
   outcome: ClosureOutcome | null;
   stage: string | null;
-  /** Required roles accepted (Scheduled or Active). */
-  requiredAccepted: boolean;
-  /** Required roles Active today. */
-  requiredActive: boolean;
+  /** Required roles not yet accepted (Scheduled or Active), in plain words; empty when all are. */
+  missingAccepted: string[];
+  /** Required roles not Active today, in plain words; empty when all are. */
+  missingActive: string[];
   separationOk: boolean;
 }
 
@@ -70,8 +70,12 @@ export function checkTransition(r: TransitionRequest): { allowed: true } | { all
   if (rule.outcome && r.outcome === null) return refuse('Choose a closure outcome.');
   if (r.from === 'planned' && r.to === 'closed' && r.outcome !== 'abandoned') return refuse('A project closed from Planned can only be Abandoned.');
   if (rule.stage && (r.stage === null || !STAGES.includes(r.stage))) return refuse('Choose the stage to continue in.');
-  if (rule.gate === 'accepted' && !r.requiredAccepted) return refuse('The required roles are not all accepted yet.');
-  if (rule.gate === 'active' && !r.requiredActive) return refuse('The required roles are not all active yet.');
+  if (rule.gate === 'accepted' && r.missingAccepted.length > 0) {
+    return refuse(`The required roles are not all accepted yet. Still needed: ${r.missingAccepted.join(', ')}.`);
+  }
+  if (rule.gate === 'active' && r.missingActive.length > 0) {
+    return refuse(`The required roles are not all active yet. Still needed: ${r.missingActive.join(', ')}.`);
+  }
   if (rule.gate === 'active' && !r.separationOk) return refuse(SEPARATION_REASON);
   return { allowed: true };
 }

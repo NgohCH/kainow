@@ -80,9 +80,9 @@ describe('project lifecycle', { skip: SKIP_NO_DB }, () => {
     assert.equal((await move(pm, scheduled, { to: 'planned' })).status, 200, 'a scheduled Member counts as accepted');
     const r = await move(pm, scheduled, { to: 'active' });
     assert.equal(r.status, 409);
-    assert.equal(r.body.message, 'The required roles are not all active yet.');
+    assert.equal(r.body.message, 'The required roles are not all active yet. Still needed: a Member who is not the Project Manager.');
     const noOwner = await seedProject(t.pool, { members: [full[0], full[2]] });
-    assert.equal((await move(pm, noOwner, { to: 'planned' })).body.message, 'The required roles are not all accepted yet.');
+    assert.equal((await move(pm, noOwner, { to: 'planned' })).body.message, 'The required roles are not all accepted yet. Still needed: an Owner or a Sponsor.');
   });
 
   test('an administrator without a role may resume a Deferred project but sees nothing else of it', async () => {

@@ -197,4 +197,23 @@ describe('reviewing proposals', { skip: SKIP_NO_DB }, () => {
     assert.equal(view.run.sourceVersionId, versionId);
     assert.deepEqual([view.source.title, view.source.versionNo], ['T', 1]);
   });
+  test('the run says what the viewer may do, and why not', async () => {
+    const perms = async () => (await api('GET', `/extractions/${runId}`)).body.permissions;
+    assert.deepEqual(await perms(), { approve: true, reject: true, edit: true, note: null });
+
+    await pool.query(`UPDATE memberships SET revoked_at = now() WHERE project_id = $1 AND role = 'member'`, [projectId]);
+    assert.deepEqual(await perms(), {
+      approve: false,
+      reject: true,
+      edit: true,
+      note: 'The project is missing a required role, so proposals cannot be approved until it is repaired.',
+    });
+
+    await pool.query(`DELETE FROM memberships WHERE project_id = $1 AND role = 'owner'`, [projectId]);
+    const reviewRefusal = 'Only the Owner or a Sponsor can approve or reject proposals, and only while the project is Planned or Active.';
+    assert.deepEqual(await perms(), { approve: false, reject: false, edit: true, note: reviewRefusal });
+
+    await pool.query(`UPDATE projects SET status = 'deferred' WHERE id = $1`, [projectId]);
+    assert.deepEqual(await perms(), { approve: false, reject: false, edit: false, note: reviewRefusal });
+  });
 });

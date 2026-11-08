@@ -6,7 +6,7 @@ import { PROJECT_STATUSES } from './matrix';
 const ok = { allowed: true };
 const base = (over: Partial<TransitionRequest>): TransitionRequest => ({
   from: 'draft', to: 'planned', roles: [], isAdmin: false, reason: 'Because', outcome: null, stage: null,
-  requiredAccepted: true, requiredActive: true, separationOk: true, ...over,
+  missingAccepted: [], missingActive: [], separationOk: true, ...over,
 });
 
 const ALLOWED: Array<[TransitionRequest['from'], TransitionRequest['to'], Partial<TransitionRequest>]> = [
@@ -62,16 +62,16 @@ test('missing inputs and unmet gates are refused with the reason', () => {
     [base({ from: 'planned', to: 'closed', roles: ['owner'], outcome: 'delivered' }), 'A project closed from Planned can only be Abandoned.'],
     [base({ from: 'deferred', to: 'active', roles: ['pm'] }), 'Choose the stage to continue in.'],
     [base({ from: 'closed', to: 'active', roles: ['owner'], stage: 'Somewhere' }), 'Choose the stage to continue in.'],
-    [base({ from: 'draft', to: 'planned', roles: ['pm'], requiredAccepted: false }), 'The required roles are not all accepted yet.'],
-    [base({ from: 'planned', to: 'active', roles: ['pm'], requiredActive: false }), 'The required roles are not all active yet.'],
-    [base({ from: 'draft', to: 'active', roles: ['pm'], requiredActive: false }), 'The required roles are not all active yet.'],
+    [base({ from: 'draft', to: 'planned', roles: ['pm'], missingAccepted: ['an Owner or a Sponsor'] }), 'The required roles are not all accepted yet. Still needed: an Owner or a Sponsor.'],
+    [base({ from: 'planned', to: 'active', roles: ['pm'], missingActive: ['a Project Manager', 'an Owner or a Sponsor'] }), 'The required roles are not all active yet. Still needed: a Project Manager, an Owner or a Sponsor.'],
+    [base({ from: 'draft', to: 'active', roles: ['pm'], missingActive: ['a Project Manager', 'an Owner or a Sponsor'] }), 'The required roles are not all active yet. Still needed: a Project Manager, an Owner or a Sponsor.'],
     [base({ from: 'closed', to: 'active', roles: ['owner'], stage: 'Execution', separationOk: false }), 'With seven or more people, the Project Manager, Owner and Sponsors must be different people.'],
   ];
   for (const [req, reason] of cases) assert.deepEqual(checkTransition(req), { allowed: false, reason }, reason);
 });
 
 test('moving to Planned needs accepted roles, not active ones; deferring and closing need neither', () => {
-  assert.deepEqual(checkTransition(base({ from: 'draft', to: 'planned', roles: ['pm'], requiredActive: false })), ok);
-  assert.deepEqual(checkTransition(base({ from: 'active', to: 'deferred', roles: ['pm'], requiredAccepted: false, requiredActive: false })), ok);
-  assert.deepEqual(checkTransition(base({ from: 'active', to: 'closed', roles: ['owner'], outcome: 'abandoned', requiredActive: false })), ok);
+  assert.deepEqual(checkTransition(base({ from: 'draft', to: 'planned', roles: ['pm'], missingActive: ['a Project Manager'] })), ok);
+  assert.deepEqual(checkTransition(base({ from: 'active', to: 'deferred', roles: ['pm'], missingAccepted: ['a Project Manager'], missingActive: ['a Project Manager'] })), ok);
+  assert.deepEqual(checkTransition(base({ from: 'active', to: 'closed', roles: ['owner'], outcome: 'abandoned', missingActive: ['a Project Manager'] })), ok);
 });

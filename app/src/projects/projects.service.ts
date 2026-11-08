@@ -287,8 +287,8 @@ export class ProjectsService {
         reason,
         outcome,
         stage,
-        requiredAccepted: requiredRolesCheck(ctx.rows, ctx.today, 'accepted').ok,
-        requiredActive: requiredRolesCheck(ctx.rows, ctx.today, 'active').ok,
+        missingAccepted: requiredRolesCheck(ctx.rows, ctx.today, 'accepted').missing,
+        missingActive: requiredRolesCheck(ctx.rows, ctx.today, 'active').missing,
         separationOk: separationCheck(ctx.rows, ctx.today).ok,
       });
       if (!verdict.allowed) {

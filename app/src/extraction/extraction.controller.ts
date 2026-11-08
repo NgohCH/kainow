@@ -3,7 +3,7 @@ import { AnySignedInUser } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
 import { ProjectAccess } from '../projects/access.service';
-import type { ProjectAction } from '../projects/matrix';
+import { type ProjectAction, decide } from '../projects/matrix';
 import { ExtractionService } from './extraction.service';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
@@ -53,8 +53,14 @@ export class ExtractionController {
   @Get('extractions/:runId')
   @AnySignedInUser()
   async get(@Param('runId') runId: string, @Req() req: HttpRequest) {
-    await this.forRun(req, runId, 'note.view');
-    return this.extraction.getRun(runId);
+    const ctx = await this.forRun(req, runId, 'note.view');
+    const view = await this.extraction.getRun(runId);
+    // What this viewer may do here, so the page offers only those controls and says why not.
+    const review = decide({ action: 'proposal.review', roles: ctx.roles, status: ctx.project.status });
+    const edit = decide({ action: 'proposal.edit', roles: ctx.roles, status: ctx.project.status });
+    const approve = review.allowed && !ctx.missingAccountability;
+    const note = !review.allowed ? review.reason : ctx.missingAccountability ? MISSING_ACCOUNTABILITY : null;
+    return { ...view, permissions: { approve, reject: review.allowed, edit: edit.allowed, note } };
   }
 
   /** Approve or reject one proposal: { decision, sourceVersionId, occurrence? } (occurrence is needed to approve a quote that repeats). */

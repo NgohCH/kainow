@@ -58,7 +58,7 @@ export function ProjectPage({ projectId, tab }: { projectId: string; tab: Tab })
     return (
       <main className="page narrow">
         {error ? <p role="alert" className="error">{error}</p> : <p className="loading">Loading</p>}
-        <a href="#/">All projects</a>
+        <a href="#/">My Projects</a>
       </main>
     );
   }
@@ -70,7 +70,7 @@ export function ProjectPage({ projectId, tab }: { projectId: string; tab: Tab })
 
   return (
     <main className="page">
-      <p><a href="#/">All projects</a></p>
+      <p><a href="#/">My Projects</a></p>
       <div className="row">
         <h1>{project.name}</h1>
         <span className={`badge status-${project.status}`}>{STATUS_LABEL[project.status]}</span>

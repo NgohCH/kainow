@@ -70,7 +70,7 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
     }
   }
 
-  if (error && !detail) return <main className="page narrow"><p role="alert" className="error">{error}</p><a href="#/">All projects</a></main>;
+  if (error && !detail) return <main className="page narrow"><p role="alert" className="error">{error}</p><a href="#/">My Projects</a></main>;
   if (!detail || !version) return <p className="loading">Loading</p>;
 
   return (
