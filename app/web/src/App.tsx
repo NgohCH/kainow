@@ -45,7 +45,10 @@ function SpendMeter() {
   );
 }
 
-export function SignIn({ onSignedIn }: { onSignedIn: (u: User) => void }) {
+export function SignIn({ onSignedIn, embedded = false }: { onSignedIn: (u: User) => void; embedded?: boolean }) {
+  // Inside another page (the invitation page) the form is a section with a level-two heading, not a second main landmark.
+  const Wrapper = embedded ? 'section' : 'main';
+  const Heading = embedded ? 'h2' : 'h1';
   const [step, setStep] = useState<'email' | 'code'>('email');
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
@@ -82,8 +85,8 @@ export function SignIn({ onSignedIn }: { onSignedIn: (u: User) => void }) {
   }
 
   return (
-    <main className="signin">
-      <h1 className="wordmark">Kainow</h1>
+    <Wrapper className="signin" aria-label={embedded ? "Sign in" : undefined}>
+      <Heading className="wordmark">Kainow</Heading>
       <p className="lede">Turn meeting notes into decisions and actions you have checked against the page.</p>
       {step === 'email' ? (
         <form onSubmit={requestCode} className="stack">
@@ -118,7 +121,7 @@ export function SignIn({ onSignedIn }: { onSignedIn: (u: User) => void }) {
           </button>
         </form>
       )}
-    </main>
+    </Wrapper>
   );
 }
 

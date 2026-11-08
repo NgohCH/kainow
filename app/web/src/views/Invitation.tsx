@@ -72,7 +72,7 @@ export function Invitation({ token, user, onSignedIn }: { token: string; user: U
           {summary}
           {open ? <p>Sign in with {inv.email} to answer it.</p> : <p className="warn">This invitation can no longer be answered ({inv.status}).</p>}
         </main>
-        {open && <SignIn onSignedIn={onSignedIn} />}
+        {open && <SignIn onSignedIn={onSignedIn} embedded />}
       </>
     );
   }
