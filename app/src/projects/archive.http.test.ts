@@ -42,6 +42,7 @@ describe('archive and department transfer', { skip: SKIP_NO_DB }, () => {
     const p = await project(owner);
     assert.deepEqual([p.archived, p.archivedAutomatically], [true, false]);
     assert.equal((await owner.request('POST', `/projects/${projectId}/archive`, { reason: 'again' })).body.message, 'This project is already archived.');
+    t.clock.advanceSeconds(60); // ids are not ordered within one instant
     assert.equal((await owner.request('POST', `/projects/${projectId}/unarchive`, { reason: 'Needed for reference' })).status, 200);
     assert.equal((await project(owner)).archived, false);
     assert.equal((await owner.request('POST', `/projects/${projectId}/unarchive`, { reason: 'again' })).body.message, 'This project is not archived.');
