@@ -55,3 +55,21 @@ test('time in the current stage counts UTC+8 calendar days', async () => {
   assert.equal(stageDuration('2026-11-08T16:00:00Z', now), 'started today', '9 Nov 00:00 UTC+8');
   assert.equal(stageDuration('2026-10-31T16:00:00Z', now), '8 days in this stage');
 });
+
+test('holds, grants and access read as words', async () => {
+  const { accessLabel, canArchive, canManageGrants, grantStateLabel } = await import('./projects.ts');
+  assert.equal(membershipStateLabel('on_hold'), 'On Hold');
+  assert.deepEqual(
+    (['requested', 'declined', 'scheduled', 'active', 'suspended', 'expired', 'revoked'] as const).map(grantStateLabel),
+    ['Waiting for approval', 'Declined', 'Starts later', 'Active', 'Suspended', 'Expired', 'Revoked'],
+  );
+  assert.equal(accessLabel('audit'), 'Audit access');
+  assert.equal(accessLabel('oversight'), 'Oversight access');
+  assert.equal(canManageGrants(['owner'], false), true);
+  assert.equal(canManageGrants(['sponsor'], false), true);
+  assert.equal(canManageGrants([], true), true);
+  assert.equal(canManageGrants(['pm', 'member'], false), false);
+  assert.equal(canArchive('closed', ['pm']), true);
+  assert.equal(canArchive('closed', ['member']), false);
+  assert.equal(canArchive('active', ['owner']), false);
+});

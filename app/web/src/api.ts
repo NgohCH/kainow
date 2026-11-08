@@ -147,7 +147,7 @@ export interface Item {
 }
 
 // --- Projects (V1.0 sub-project 1) ---
-import type { ClosureOutcome, MembershipState, ProjectRole, ProjectStatus } from './projects.ts';
+import type { ClosureOutcome, GrantKind, GrantState, MembershipState, ProjectRole, ProjectStatus } from './projects.ts';
 
 export interface Department {
   id: string;
@@ -163,6 +163,11 @@ export interface ProjectSummary {
   stage: { stage: string; substage: string | null } | null;
   myRoles: ProjectRole[];
   missingAccountability: boolean;
+  /** Set when the person reads this project through an Audit or Oversight grant only. */
+  access: GrantKind | null;
+  /** A member is On Hold (shown to role managers only). */
+  onHold: boolean;
+  archived: boolean;
 }
 
 export interface AdminProjectRow {
@@ -182,6 +187,32 @@ export interface Membership {
   startsOn: string;
   expiresOn: string | null;
   state: MembershipState;
+  /** Shown to role managers for a held membership. */
+  holdReason?: string | null;
+}
+
+export interface Grant {
+  id: string;
+  kind: GrantKind;
+  purpose: string;
+  scope: string;
+  startsOn: string;
+  expiresOn: string;
+  state: GrantState;
+  user: { id: string; displayName: string; email: string };
+  requestedBy: string;
+  decidedBy: string | null;
+  decisionReason: string | null;
+  suspendReason: string | null;
+  revokeReason: string | null;
+}
+
+export interface Finding {
+  id: string;
+  finding: string;
+  recommendation: 'restore' | 'revoke';
+  recordedBy: string;
+  at: string;
 }
 
 export interface InvitationRow {
@@ -193,6 +224,8 @@ export interface InvitationRow {
   issuedAt: string;
   expiresAt: string;
   status: 'invited' | 'accepted' | 'declined' | 'revoked' | 'expired';
+  kind?: 'role' | 'handover';
+  outgoingRole?: 'deputy_pm' | 'member' | 'leave' | null;
 }
 
 export interface StagePeriod {
@@ -232,4 +265,9 @@ export interface Project {
   isAdmin: boolean;
   missingAccountability: boolean;
   missingRoles: string[];
+  onHold: boolean;
+  access: GrantKind | null;
+  grants: Grant[];
+  archived: boolean;
+  archivedAutomatically: boolean;
 }

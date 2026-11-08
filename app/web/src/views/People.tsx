@@ -6,10 +6,12 @@ interface Person {
   id: string;
   email: string;
   displayName: string;
-  role: string;
-  status: 'active' | 'disabled';
+  role: 'enterprise_administrator' | 'member';
+  status: 'invited' | 'active' | 'disabled';
   createdAt: string;
 }
+
+const ACCOUNT_STATE = { invited: 'Invited', active: 'Active', disabled: 'Disabled' } as const;
 
 export function People({ meId }: { meId: string }) {
   const [people, setPeople] = useState<Person[] | null>(null);
@@ -44,7 +46,12 @@ export function People({ meId }: { meId: string }) {
   }
 
   async function disable(p: Person) {
-    if (!window.confirm(`Disable ${p.displayName}? They will be signed out and will not be able to sign in. A disabled person is never deleted, so the audit trail stays complete.`)) return;
+    if (
+      !window.confirm(
+        `Disable ${p.displayName}? They will be signed out and will not be able to sign in. Their current project memberships go On Hold and each Project Manager is asked to investigate. Enabling the account later does not lift those holds. A disabled person is never deleted, so the audit trail stays complete.`,
+      )
+    )
+      return;
     setError(null);
     try {
       await api.post(`/users/${p.id}/disable`);
@@ -64,12 +71,15 @@ export function People({ meId }: { meId: string }) {
     }
   }
 
-  const active = people?.filter((p) => p.status === 'active').length ?? 0;
+  const active = people?.filter((p) => p.status === 'active' && p.role === 'enterprise_administrator').length ?? 0;
 
   return (
     <main className="page narrow">
       <h1>People</h1>
-      <p className="meta">Every person here is an Enterprise Administrator, the only role in this version. Keep at least two active, so one person being locked out does not lock everyone out.</p>
+      <p className="meta">
+        Everyone with an account. Administrators are added here; everyone else joins through a project invitation. Keep at least two active administrators, so one person
+        being locked out does not lock everyone out.
+      </p>
       {error && <p role="alert" className="error">{error}</p>}
       {people && active < 2 && (
         <p className="warn">Only {active} active administrator. Add a second one now, and agree who holds recovery.</p>
@@ -81,15 +91,21 @@ export function People({ meId }: { meId: string }) {
             <li key={p.id}>
               <div className="person">
                 <strong>{p.displayName}{p.id === meId ? ' (you)' : ''}</strong>
-                <span className="meta">{p.email}, added {formatWhen(p.createdAt)}</span>
+                <span className="meta">
+                  {p.email}, {p.role === 'enterprise_administrator' ? 'Administrator' : 'Member'}, added {formatWhen(p.createdAt)}
+                </span>
               </div>
+              <span className={`badge ${p.status === 'disabled' ? 'badge-rejected' : 'badge-pending'}`}>{ACCOUNT_STATE[p.status]}</span>
               {p.status === 'disabled' ? (
-                <>
-                  <span className="badge badge-rejected">Disabled</span>
-                  <button onClick={() => void enable(p)}>Enable</button>
-                </>
+                <button onClick={() => void enable(p)}>Enable</button>
               ) : (
-                <button className="reject" onClick={() => void disable(p)} disabled={active < 2}>Disable</button>
+                <button
+                  className="reject"
+                  onClick={() => void disable(p)}
+                  disabled={p.role === 'enterprise_administrator' && active < 2}
+                >
+                  Disable
+                </button>
               )}
             </li>
           ))}

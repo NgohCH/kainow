@@ -195,3 +195,10 @@ label.choice { display: flex; align-items: center; font-weight: 400; }
   .table tr { display: block; border-bottom: 1px solid var(--rule); padding: 0.4rem 0; }
   .table td { display: block; border: 0; padding: 0.15rem 0; }
 }
+
+/* Sub-project 1b: holds, findings, archived projects */
+.hold-actions { margin-top: 0.25rem; }
+.hold-actions .stack { max-width: 32rem; }
+.findings li { margin-top: 0.25rem; }
+details.archived { margin-top: 1.5rem; }
+details.archived summary { cursor: pointer; font-weight: 600; }

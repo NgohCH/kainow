@@ -6,6 +6,7 @@ import {
   type ProjectRole,
   OUTCOME_LABEL,
   STAGES,
+  accessLabel,
   STATUS_LABEL,
   SUBSTAGES,
   type TransitionOption,
@@ -18,6 +19,7 @@ import {
   transitionsFor,
 } from '../projects.ts';
 import { Notes } from './Notes.tsx';
+import { type Act, ArchivePanel, DepartmentMove, GrantsSection, HandoverForm, HoldActions } from './ProjectAccessPanels.tsx';
 
 type Tab = 'overview' | 'people' | 'notes';
 
@@ -35,15 +37,17 @@ export function ProjectPage({ projectId, tab }: { projectId: string; tab: Tab })
     );
   }, [projectId]);
   useEffect(load, [load]);
+  // A message about the last change belongs to the tab it was made on.
+  useEffect(() => setNotice(null), [tab]);
 
   /** Runs one change; shows the server's reason if it is refused, otherwise reloads the project. */
   const act = useCallback(
-    async (work: () => Promise<unknown>, done: string) => {
+    async (work: () => Promise<unknown>, done: string | ((result: unknown) => string)) => {
       setError(null);
       setNotice(null);
       try {
-        await work();
-        setNotice(done);
+        const result = await work();
+        setNotice(typeof done === 'function' ? done(result) : done);
         load();
         return true;
       } catch (e) {
@@ -64,7 +68,8 @@ export function ProjectPage({ projectId, tab }: { projectId: string; tab: Tab })
   }
 
   const roles = project.myRoles;
-  const contentAllowed = roles.length > 0;
+  // Members read the notes; so does an Audit or Oversight grant holder, read-only.
+  const contentAllowed = roles.length > 0 || project.access !== null;
   const tabs: Array<[Tab, string]> = [['overview', 'Overview'], ['people', 'People'], ...(contentAllowed ? ([['notes', 'Notes']] as Array<[Tab, string]>) : [])];
   const base = `#/projects/${project.id}`;
 
@@ -78,8 +83,20 @@ export function ProjectPage({ projectId, tab }: { projectId: string; tab: Tab })
       <p className="meta">
         {project.owningDepartment.name}
         {project.stage ? ` · ${project.stage.stage}${project.stage.substage ? `: ${project.stage.substage}` : ''} (${stageDuration(project.stage.startedAt)})` : ''}
-        {roles.length > 0 ? ` · You: ${roles.map(roleLabel).join(', ')}` : project.isAdmin ? ' · You manage appointments as an administrator' : ''}
+        {roles.length > 0
+          ? ` · You: ${roles.map(roleLabel).join(', ')}`
+          : project.access
+            ? ` · ${accessLabel(project.access)} (read-only)`
+            : project.isAdmin
+              ? ' · You manage appointments as an administrator'
+              : ''}
+        {project.archived ? ' · Archived' : ''}
       </p>
+      {project.onHold && (
+        <p className="warn" role="status">
+          A member is On Hold — investigation needed. <a href={`#/projects/${project.id}/people`}>Open People</a>
+        </p>
+      )}
       {project.missingAccountability && (
         <p className="warn" role="status">
           This project is missing {project.missingRoles.join(' and ')}. Existing work continues, but proposals cannot be approved until the role is filled.
@@ -102,8 +119,6 @@ export function ProjectPage({ projectId, tab }: { projectId: string; tab: Tab })
     </main>
   );
 }
-
-type Act = (work: () => Promise<unknown>, done: string) => Promise<boolean>;
 
 function Overview({ project, act }: { project: Project; act: Act }) {
   const options = transitionsFor(project.status, project.myRoles, project.isAdmin);
@@ -169,6 +184,9 @@ function Overview({ project, act }: { project: Project; act: Act }) {
           {staging && <StageForm project={project} act={act} onDone={() => setStaging(false)} />}
         </section>
       )}
+
+      <ArchivePanel project={project} act={act} />
+      <DepartmentMove project={project} act={act} />
 
       <section aria-labelledby="history-heading">
         <h2 id="history-heading">History</h2>
@@ -373,6 +391,9 @@ function People({ project, act }: { project: Project; act: Act }) {
         )}
       </section>
 
+      <HandoverForm project={project} act={act} />
+      <GrantsSection project={project} act={act} />
+
       <section aria-labelledby="invitations-heading">
         <h2 id="invitations-heading">Invitations</h2>
         {invitable.length > 0 && <InviteForm project={project} roles={invitable} act={act} />}
@@ -391,20 +412,30 @@ function People({ project, act }: { project: Project; act: Act }) {
             <tbody>
               {project.invitations.map((i) => {
                 const manage = canManage(i.role, project.myRoles, project.isAdmin, project.status, 'invitation');
+                // Withdrawing is cleanup, allowed in any status; the PM may withdraw their own handover.
+                const withdraw = canManage(i.role, project.myRoles, project.isAdmin, project.status, 'appointment') || (i.kind === 'handover' && project.myRoles.includes('pm'));
                 return (
                   <tr key={i.id}>
                     <td>{i.email}</td>
-                    <td>{roleLabel(i.role)}</td>
+                    <td>{i.kind === 'handover' ? 'Project Manager (handover)' : roleLabel(i.role)}</td>
                     <td>
                       {i.status === 'invited' ? `Waiting · ${formatExpiry(i.expiresAt)}` : i.status[0].toUpperCase() + i.status.slice(1)}
                     </td>
                     <td>
                       {manage && (i.status === 'invited' || i.status === 'expired') && (
-                        <button className="link-button" onClick={() => void act(() => api.post(`/invitations/${i.id}/resend`), `A new invitation was sent to ${i.email}.`)}>
+                        <button
+                          className="link-button"
+                          onClick={() =>
+                            void act(
+                              () => api.post(`/invitations/${i.id}/resend`),
+                              (r) => ((r as { delivered?: boolean }).delivered === false ? 'The email was not sent. Send again.' : `A new invitation was sent to ${i.email}.`),
+                            )
+                          }
+                        >
                           Send again
                         </button>
                       )}{' '}
-                      {manage && i.status === 'invited' && (
+                      {withdraw && i.status === 'invited' && (
                         <button className="link-button" onClick={() => void act(() => api.post(`/invitations/${i.id}/revoke`), 'Invitation withdrawn.')}>
                           Withdraw
                         </button>
@@ -437,8 +468,12 @@ function MemberRow({ m, project, act }: { m: Membership; project: Project; act: 
         from {m.startsOn}
         {m.expiresOn ? ` to ${m.expiresOn}` : ''}
       </td>
-      <td>{membershipStateLabel(m.state)}</td>
       <td>
+        {m.state === 'on_hold' ? <span className="badge badge-rejected">{membershipStateLabel(m.state)}</span> : membershipStateLabel(m.state)}
+        {m.holdReason ? <span className="meta"> {m.holdReason}</span> : null}
+      </td>
+      <td>
+        {m.state === 'on_hold' && <HoldActions m={m} project={project} act={act} canRestore={manage} />}
         {manage && mode === 'none' && (
           <>
             <button className="link-button" onClick={() => setMode('extend')}>Change expiry</button>{' '}
@@ -491,7 +526,7 @@ function InviteForm({ project, roles, act }: { project: Project; roles: ProjectR
     e.preventDefault();
     const ok = await act(
       () => api.post(`/projects/${project.id}/invitations`, { email, displayName: displayName || null, role, startsOn, expiresOn: expiresOn || null }),
-      `Invitation sent to ${email}. It expires in seven days.`,
+      (r) => ((r as { delivered?: boolean }).delivered === false ? 'The email was not sent. Send again.' : `Invitation sent to ${email}. It expires in seven days.`),
     );
     if (ok) {
       setEmail('');
