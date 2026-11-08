@@ -76,8 +76,42 @@ Synthetic notes: all three at 100% supported and 100% captured (10, 12 and 8 ite
 | Needs a date: a period or repeat | 9 | 8 |
 | Needs a date: wording not read | 6 | 0 |
 
-The rise in actions comes almost all from the minutes with a sub-action table (22 actions became 38, of which 35 now read as dates). The sheet for this run is `real-notes-review-2026-11-08-run3.csv`, outside the repository, with no marks yet.
+The rise in actions comes almost all from the minutes with a sub-action table (22 actions became 38, of which 35 now read as dates). The sheet for this run is `real-notes-review-2026-11-08-run3.csv`, outside the repository; its assessed copy is recorded in the next section.
+
+## Provisional review of the third run (8 November 2026)
+
+The Product Owner returned an assessed copy of the third-run sheet (`real-notes-review-2026-11-08-run3-assessed.xlsx`, kept outside the repository, because the minutes hold real names). The workbook describes itself as a **provisional review against the extracted quotes; the original meeting documents were not independently checked. It is NOT a final acceptance.** Only counts are recorded here.
+
+The sheet has 212 rows: the 205 proposals and 7 missed-item placeholders, one per set of minutes. The placeholders are left out of every rate below.
+
+| Field (205 proposals) | Accepted | Flagged |
+| --- | --- | --- |
+| Classification correct | 193 | 12 needs review |
+| Owner correct | 159 | 25 needs review, 21 needs assignment |
+| Condition or status kept | 193 | 12 needs review |
+| Question clear (22 questions) | 20 | 2 needs review |
+| Invented | 193 no evidence of invention | 12 needs review |
+| Duplicate of another proposal | none established | — |
+
+156 of 205 proposals (76%) have no mark against them. The 12 flagged for classification are the same 12 flagged for condition and invention: 10 actions that read as a status report, work already under way, an expected milestone or a suggested message rather than an assigned task, 1 question that is a proposal, and 1 decision that may be a milestone. The due readings were not marked.
+
+**Owners are the main finding.** 46 proposals have an owner mark:
+
+| Owner problem | Proposals |
+| --- | --- |
+| Action with no named person (needs assignment; the reviewer asks that none be invented) | 21 |
+| Several people, or responsibility split between them | 12 (11 actions, 1 decision) |
+| The named party has another role (asked to answer, approves, sets criteria), not owner | 6 (decisions and questions) |
+| The owner is not named in the quoted text | 4 (3 actions, 1 decision) |
+| No owner given for a decision or question | 3 |
+
+Besides the 11 flagged actions, 33 actions marked as correct still list more than one name in the owner field. V1.0 requires exactly one assignee per task, which sub-project 2 will enforce: the 21 actions with no one named and the 44 actions naming several people all need a single person chosen at review.
+
+**Against the targets.**
+
+- *95% of proposals supported by a real quote:* 193 of 205 (94.1%) carry no mark for invention, two short of the 195 needed. This is a reading of each extracted quote only. It does not show the quotes match the original documents (`quote_found` was carried over from the export, not re-checked), and "no evidence" does not mean the item was checked against the full minutes.
+- *90% of expected items captured:* not established. The 7 missed-item placeholders are empty, so the sheet gives no list of expected items to count against.
 
 ## Limits
 
-One run on each set. The synthetic notes are the same three the prompt was tuned on. Draft marks from the first real run do not carry over, because the items differ. The review sheet for this run is `real-notes-review-2026-11-08-rerun.csv`, kept outside the repository, and has no marks yet.
+One run on each set. The synthetic notes are the same three the prompt was tuned on. Draft marks from the first real run do not carry over, because the items differ. The second-run sheet (`real-notes-review-2026-11-08-rerun.csv`) has no marks. The third-run review above is provisional: against the extracted quotes only, with no check of missed items, and not a final acceptance.
