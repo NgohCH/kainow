@@ -227,7 +227,7 @@ export class ProjectsService {
     const now = this.now();
     const invitations = (
       await this.pool.query(
-        `SELECT id, email, role, to_char(starts_on, 'YYYY-MM-DD') AS "startsOn", to_char(expires_on, 'YYYY-MM-DD') AS "expiresOn",
+        `SELECT id, email, role, kind, to_char(starts_on, 'YYYY-MM-DD') AS "startsOn", to_char(expires_on, 'YYYY-MM-DD') AS "expiresOn",
                 issued_at AS "issuedAt", expires_at AS "expiresAt",
                 CASE WHEN status = 'invited' AND expires_at <= $2 THEN 'expired' ELSE status END AS status
            FROM invitations WHERE project_id = $1 AND status <> 'replaced' ORDER BY issued_at DESC, id`,
@@ -345,7 +345,7 @@ export class ProjectsService {
     const { rows } = await this.pool.query(
       `SELECT g.id, g.kind, g.purpose, g.scope, to_char(g.starts_on, 'YYYY-MM-DD') AS "startsOn", to_char(g.expires_on, 'YYYY-MM-DD') AS "expiresOn",
               json_build_object('id', u.id, 'displayName', u.display_name, 'email', u.email) AS "user",
-              r.display_name AS "requestedBy", d.display_name AS "decidedBy", g.decision_reason AS "decisionReason",
+              r.display_name AS "requestedBy", g.requested_by AS "requestedById", d.display_name AS "decidedBy", g.decision_reason AS "decisionReason",
               g.suspend_reason AS "suspendReason", g.revoke_reason AS "revokeReason"
          FROM access_grants g JOIN users u ON u.id = g.user_id JOIN users r ON r.id = g.requested_by LEFT JOIN users d ON d.id = g.decided_by
         WHERE g.project_id = $1 ORDER BY g.requested_at, g.id`,
@@ -353,7 +353,12 @@ export class ProjectsService {
     );
     const viewer = ctx.viewerId;
     return rows
-      .map((r) => ({ ...r, state: grantState(ctx.grants.find((g) => g.id === r.id)!, ctx.today) }))
+      .map(({ requestedById, ...r }) => {
+        const state = grantState(ctx.grants.find((g) => g.id === r.id)!, ctx.today);
+        // Only a manager who is neither the grantee nor the recorder decides a waiting request.
+        const mayDecide = all && state === 'requested' && r.user.id !== viewer && requestedById !== viewer;
+        return { ...r, state, mayDecide };
+      })
       .filter((r) => all || r.user.id === viewer);
   }
 

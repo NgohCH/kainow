@@ -360,7 +360,7 @@ function GrantRow({ g, manager, act }: { g: Grant; manager: boolean; act: Act })
       </div>
       {manager && mode === 'none' && (
         <div className="decision">
-          {g.state === 'requested' && (
+          {g.state === 'requested' && g.mayDecide && (
             <>
               <button onClick={() => void post('approve', {}, 'Approved.')}>Approve</button>
               <button onClick={() => setMode('decline')}>Decline</button>

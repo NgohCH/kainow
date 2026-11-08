@@ -39,6 +39,9 @@ describe('Audit and Oversight grants', { skip: SKIP_NO_DB }, () => {
   test('a manager records a request and a different manager approves it', async () => {
     const rec = await request(owner);
     assert.equal(rec.status, 201, JSON.stringify(rec.body));
+    const mayDecide = async (c: Client) => (await c.request('GET', `/projects/${projectId}`)).body.project.grants[0].mayDecide;
+    assert.equal(await mayDecide(owner), false, 'the recorder does not decide');
+    assert.equal(await mayDecide(sponsor), true);
     assert.equal(rec.body.grant.expiresOn, '2026-12-09');
     assert.equal(rec.body.grant.state, 'requested');
     const gid = rec.body.grant.id;

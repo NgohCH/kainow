@@ -42,6 +42,8 @@ describe('Project Manager handover', { skip: SKIP_NO_DB }, () => {
   test('the replacement accepts and becomes Project Manager; the outgoing PM becomes a Member', async () => {
     const issued = await handover(pm);
     assert.equal(issued.status, 201, JSON.stringify(issued.body));
+    const listed = (await pm.request('GET', `/projects/${projectId}`)).body.project.invitations.find((i: { email: string }) => i.email === 'lee@example.org');
+    assert.equal(listed.kind, 'handover', 'the People tab can show it as a handover');
     assert.equal((await t.anonymous('GET', `/invitations/by-token/${tokenFor('lee@example.org')}`)).body.invitation.kind, 'handover');
     const lee = await t.signIn('lee@example.org');
     const accepted = await lee.request('POST', `/invitations/by-token/${tokenFor('lee@example.org')}/accept`);

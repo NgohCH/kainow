@@ -205,6 +205,8 @@ export interface Grant {
   decisionReason: string | null;
   suspendReason: string | null;
   revokeReason: string | null;
+  /** This viewer may approve or decline it (a manager who is neither the grantee nor the recorder). */
+  mayDecide: boolean;
 }
 
 export interface Finding {
