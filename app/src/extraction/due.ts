@@ -134,9 +134,12 @@ function inYear(year: string | undefined, meeting: string | null, make: (y: numb
   }
   if (!meeting) return { kind: 'needs', reason: REASON.noYear };
   const y = Number(meeting.slice(0, 4));
-  let span = make(y);
-  if (span && span[1] < meeting) span = make(y + 1);
-  return span ? { kind: 'date', earliest: span[0], latest: span[1], used: true } : unknown();
+  // The first year, from the meeting's, in which the day exists and is not already past (29 February: a leap year).
+  for (let year = y; year <= y + 4; year++) {
+    const span = make(year);
+    if (span && span[1] >= meeting) return { kind: 'date', earliest: span[0], latest: span[1], used: true };
+  }
+  return unknown();
 }
 
 function day(y: number, month: string, d: string): string | null {
@@ -271,10 +274,34 @@ function daysToNextMonday(day: string): number {
 const tidy = (s: string): string => s.replace(/\s+/g, ' ').trim();
 /** Drops a leading "Label:" and a trailing "for the …". */
 const core = (s: string): string => tidy(s).replace(/^[^:]+:\s*/, '').replace(/ for (the|a|an) .*$/i, '');
+/** Bahasa Melayu deadline wording, turned into the English forms read below. Applied to lower-case text. */
+const MALAY: Array<[RegExp, string]> = [
+  [/\bseminggu\b/g, '1 minggu'],
+  [/\bminggu depan\b/g, 'next week'],
+  [/\bbulan depan\b/g, 'next month'],
+  [/^sebelum /, 'before '],
+  [/^menjelang /, 'by '],
+  [/^pada /, 'on '],
+  [/^selepas /, 'after '],
+  [/^segera$/, 'immediate'],
+  [/^dalam (\S+) hari$/, 'within $1 days'],
+  [/^dalam (\S+) minggu$/, 'within $1 weeks'],
+  [/^(hujung|akhir) /, 'end of '],
+  [/^pertengahan /, 'mid '],
+  [/^awal /, 'early '],
+  [/\bisnin\b/g, 'monday'],
+  [/\bselasa\b/g, 'tuesday'],
+  [/\brabu\b/g, 'wednesday'],
+  [/\bkhamis\b/g, 'thursday'],
+  [/\bjumaat\b/g, 'friday'],
+  [/\bsabtu\b/g, 'saturday'],
+  [/\bahad\b/g, 'sunday'],
+];
+const fromMalay = (s: string): string => MALAY.reduce((t, [from, to]) => t.replace(from, to), s);
+
 /** Lower case, plain dashes, no trailing full stop or commas, no ordinal endings ("30th"), no leading "by"/"on". */
 const lower = (s: string): string =>
-  core(s)
-    .toLowerCase()
+  fromMalay(core(s).toLowerCase())
     .replace(/[–—]/g, '-')
     .replace(/[.,;:!]+$/, '')
     .replace(/,/g, '')
@@ -289,6 +316,39 @@ function fromDates(earliest: string, latest: string, usedMeetingDate: boolean, n
   return reading({ state: earliest === latest ? 'exact' : 'range', earliest, latest, usedMeetingDate, note });
 }
 
+/** A part that cannot be read may still end in a date: "Data by 5 November" → "by 5 November". */
+function readLoose(s: string, meeting: string | null): Part {
+  const part = readPart(s, meeting);
+  if (part.kind !== 'needs' || part.reason !== REASON.unknown) return part;
+  const tail = /\s(by|before|on)\s(.+)$/.exec(s);
+  return tail ? readPart(lower(`${tail[1]} ${tail[2]}`), meeting) : part;
+}
+
+const DAY_LIST = /^(\d{1,2})((?:\s*,\s*\d{1,2})*)\s*,?\s+and\s+(\d{1,2})\s+([a-z]+)((?:\s+\d{4})?)$/i;
+
+/**
+ * Splits a due that lists dates for several sub-actions into one part per date: "a; b",
+ * "i. 11 November ii. 16 November", "6, 9 and 11 November respectively", "16 November and end of November".
+ */
+function splitParts(wording: string, meeting: string | null): string[] {
+  let w = wording;
+  if (/(^|\s)i\.\s/i.test(w) && /\sii\.\s/i.test(w)) w = w.replace(/(?:^|\s)(?:i{1,3}|iv|vi{0,3})\.\s+/gi, ';');
+  w = w.replace(/\s+respectively\s*$/i, '');
+  const out: string[] = [];
+  for (const raw of w.split(';').map((p) => p.trim()).filter((p) => p !== '')) {
+    const list = DAY_LIST.exec(raw);
+    if (list && MONTHS[list[4].toLowerCase()]) {
+      const days = [list[1], ...list[2].split(',').map((d) => d.trim()).filter((d) => d !== ''), list[3]];
+      for (const d of days) out.push(`${d} ${list[4]}${list[5]}`);
+      continue;
+    }
+    const halves = raw.split(/\s+and\s+/i);
+    if (halves.length > 1 && halves.every((h) => readLoose(lower(h), meeting).kind === 'date')) out.push(...halves);
+    else out.push(raw);
+  }
+  return out;
+}
+
 /** The reading of a due. A reviewer's due, when given, replaces the reading of the wording. */
 export function readDue(input: DueInput, reviewer?: ReviewerDue | null): DueReading {
   if (reviewer?.event) return reading({ state: 'event', event: reviewer.event });
@@ -298,9 +358,9 @@ export function readDue(input: DueInput, reviewer?: ReviewerDue | null): DueRead
   const wording = input.due ? tidy(input.due) : '';
   if (wording === '') return dueEvent ? reading({ state: 'event', event: dueEvent }) : reading({ state: 'needs_date', reason: REASON.none });
 
-  const parts = wording.split(';').map((p) => p.trim()).filter((p) => p !== '');
+  const parts = splitParts(wording, input.meetingDate);
   if (parts.length > 1) {
-    const read = parts.map((p) => readPart(lower(p), input.meetingDate));
+    const read = parts.map((p) => readLoose(lower(p), input.meetingDate));
     if (read.every((r) => r.kind === 'date')) {
       const dates = read as Array<Extract<Part, { kind: 'date' }>>;
       const earliest = dates.map((d) => d.earliest).sort()[0];
