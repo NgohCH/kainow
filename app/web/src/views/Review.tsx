@@ -109,6 +109,7 @@ export function Review({ runId }: { runId: string }) {
         dueEarliest: editing.dueEarliest,
         dueLatest: editing.dueLatest,
         dueEvent: editing.dueEvent,
+        ignoreModelEvent: editing.ignoreModelEvent,
       });
       setView((v) => (v ? { ...v, items: v.items.map((i) => (i.id === id ? r.item : i)) } : v));
       setPick((p) => {
@@ -165,6 +166,7 @@ export function Review({ runId }: { runId: string }) {
       </p>
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
+      {items.length > 0 && (
       <div className={`meeting-date${view.run.meetingDateSource === 'none' ? ' warn' : ''}`}>
         {meetingInput !== null || view.run.meetingDateSource === 'none' ? (
           <form
@@ -191,6 +193,7 @@ export function Review({ runId }: { runId: string }) {
           </p>
         )}
       </div>
+      )}
       {items.length === 0 && <p className="empty">The model found nothing to propose in this version.</p>}
 
       <div className="split review-split">
@@ -233,7 +236,7 @@ export function Review({ runId }: { runId: string }) {
               </button>
               {(() => {
                 const line = dueLine(item, view.run);
-                return line && <p role="note" className={line.tone === 'warn' ? 'warn due-line' : 'meta due-line'}>{line.text}</p>;
+                return line && <p id={`due-${item.id}`} role="note" className={line.tone === 'warn' ? 'warn due-line' : 'meta due-line'}>{line.text}</p>;
               })()}
               {blocksApproval(item) && editing?.id !== item.id && (
                 <button
@@ -306,6 +309,16 @@ export function Review({ runId }: { runId: string }) {
                         onChange={(e) => setEditing({ ...editing, dueEvent: e.target.value, dueEarliest: '', dueLatest: '' })}
                       />
                     </label>
+                    {item.dueEvent && (
+                      <label className="check">
+                        <input
+                          type="checkbox"
+                          checked={editing.ignoreModelEvent}
+                          onChange={(e) => setEditing({ ...editing, ignoreModelEvent: e.target.checked })}
+                        />{' '}
+                        The event the AI named (“{item.dueEvent}”) does not apply
+                      </label>
+                    )}
                   </fieldset>
                   <p className="meta">Saving sends this proposal back to review. The quoted passage does not change.</p>
                   <div className="decision">
@@ -369,6 +382,7 @@ export function Review({ runId }: { runId: string }) {
                   className="approve"
                   disabled={saving.has(item.id) || isCurrentApproval(item, pick) || !canApprove(item, pick)}
                   title={blocksApproval(item) ? 'Add a due date, a date range or the event it waits on first' : undefined}
+                  aria-describedby={blocksApproval(item) ? `due-${item.id}` : undefined}
                   onClick={() => void decide(item, 'approved')}
                 >
                   Approve

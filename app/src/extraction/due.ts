@@ -29,6 +29,8 @@ export interface ReviewerDue {
   earliest: string | null;
   latest: string | null;
   event: string | null;
+  /** The reviewer says the event the model named does not apply. */
+  ignoreModelEvent?: boolean;
 }
 
 const REASON = {
@@ -354,7 +356,8 @@ export function readDue(input: DueInput, reviewer?: ReviewerDue | null): DueRead
   if (reviewer?.event) return reading({ state: 'event', event: reviewer.event });
   if (reviewer?.earliest) return fromDates(reviewer.earliest, reviewer.latest ?? reviewer.earliest, false);
 
-  const dueEvent = input.dueEvent && tidy(input.dueEvent) !== '' ? tidy(input.dueEvent) : null;
+  const modelEvent = reviewer?.ignoreModelEvent ? null : input.dueEvent;
+  const dueEvent = modelEvent && tidy(modelEvent) !== '' ? tidy(modelEvent) : null;
   const wording = input.due ? tidy(input.due) : '';
   if (wording === '') return dueEvent ? reading({ state: 'event', event: dueEvent }) : reading({ state: 'needs_date', reason: REASON.none });
 

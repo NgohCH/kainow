@@ -47,7 +47,7 @@ test('the due line says what the notes say and what Kainow made of it', () => {
 });
 
 test('a reviewer due, an event and a missing date each have their own line', () => {
-  const set = item({ due: 'Friday', reviewerDue: { earliest: '2026-11-10', latest: '2026-11-12', event: null }, dueReading: reading({ state: 'range', earliest: '2026-11-10', latest: '2026-11-12' }) });
+  const set = item({ due: 'Friday', reviewerDue: { earliest: '2026-11-10', latest: '2026-11-12', event: null, ignoreModelEvent: false }, dueReading: reading({ state: 'range', earliest: '2026-11-10', latest: '2026-11-12' }) });
   assert.deepEqual(dueLine(set, run(null, 'none')), { tone: 'plain', text: 'Set by reviewer: 10–12 Nov 2026' });
   const waits = item({ dueReading: reading({ state: 'event', event: 'approval by Dr Goh' }) });
   assert.deepEqual(dueLine(waits, run(null, 'none')), { tone: 'plain', text: 'Waits on: approval by Dr Goh' });
@@ -67,10 +67,11 @@ test('only an action that needs a date blocks approval', () => {
 });
 
 test("the edit form starts from the wording and the reviewer's due, so saving new wording keeps the dates", () => {
-  const withDates = item({ due: 'Friday', owner: 'Sam', reviewerDue: { earliest: '2026-11-10', latest: '2026-11-12', event: null } });
-  assert.deepEqual(editFormFrom(withDates), { text: 'Do it', owner: 'Sam', due: 'Friday', dueEarliest: '2026-11-10', dueLatest: '2026-11-12', dueEvent: '' });
-  assert.deepEqual(editFormFrom(item({ reviewerDue: { earliest: null, latest: null, event: 'Senate' } })), {
-    text: 'Do it', owner: '', due: '', dueEarliest: '', dueLatest: '', dueEvent: 'Senate',
+  const withDates = item({ due: 'Friday', owner: 'Sam', reviewerDue: { earliest: '2026-11-10', latest: '2026-11-12', event: null, ignoreModelEvent: false } });
+  assert.deepEqual(editFormFrom(withDates), { text: 'Do it', owner: 'Sam', due: 'Friday', dueEarliest: '2026-11-10', dueLatest: '2026-11-12', dueEvent: '', ignoreModelEvent: false });
+  assert.deepEqual(editFormFrom(item({ reviewerDue: { earliest: null, latest: null, event: 'Senate', ignoreModelEvent: false } })), {
+    text: 'Do it', owner: '', due: '', dueEarliest: '', dueLatest: '', dueEvent: 'Senate', ignoreModelEvent: false,
   });
-  assert.deepEqual(editFormFrom(item()), { text: 'Do it', owner: '', due: '', dueEarliest: '', dueLatest: '', dueEvent: '' });
+  assert.deepEqual(editFormFrom(item()), { text: 'Do it', owner: '', due: '', dueEarliest: '', dueLatest: '', dueEvent: '', ignoreModelEvent: false });
+  assert.equal(editFormFrom(item({ reviewerDue: { earliest: null, latest: null, event: null, ignoreModelEvent: true } })).ignoreModelEvent, true);
 });

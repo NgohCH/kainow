@@ -172,7 +172,7 @@ describe('due readings, meeting dates and the approval rule', { skip: SKIP_NO_DB
     const r = await edit('friday', { text: 'T', due: 'Friday', dueEarliest: '2026-11-10', dueLatest: '2026-11-12' });
     assert.equal(r.status, 200);
     const it = await get('friday');
-    assert.deepEqual(it.reviewerDue, { earliest: '2026-11-10', latest: '2026-11-12', event: null });
+    assert.deepEqual(it.reviewerDue, { earliest: '2026-11-10', latest: '2026-11-12', event: null, ignoreModelEvent: false });
     assert.equal(it.dueReading.state, 'range');
     assert.equal(it.dueReading.latest, '2026-11-12');
     assert.equal(it.due, 'Friday');
@@ -182,10 +182,10 @@ describe('due readings, meeting dates and the approval rule', { skip: SKIP_NO_DB
 
   test('a blank latest date means the same day, and an event can be given instead', async () => {
     await edit('friday', { text: 'T', due: 'Friday', dueEarliest: '2026-11-10', dueLatest: '' });
-    assert.deepEqual((await get('friday')).reviewerDue, { earliest: '2026-11-10', latest: '2026-11-10', event: null });
+    assert.deepEqual((await get('friday')).reviewerDue, { earliest: '2026-11-10', latest: '2026-11-10', event: null, ignoreModelEvent: false });
     await edit('friday', { text: 'T', due: 'Friday', dueEvent: 'Senate approval' });
     const it = await get('friday');
-    assert.deepEqual(it.reviewerDue, { earliest: null, latest: null, event: 'Senate approval' });
+    assert.deepEqual(it.reviewerDue, { earliest: null, latest: null, event: 'Senate approval', ignoreModelEvent: false });
     assert.equal(it.dueReading.state, 'event');
   });
 
@@ -234,6 +234,31 @@ describe('due readings, meeting dates and the approval rule', { skip: SKIP_NO_DB
     } finally {
       client.release();
     }
+  });
+
+  test("leaving the due fields out of an edit keeps the reviewer's due", async () => {
+    await edit('friday', { text: 'T', due: 'Friday', dueEarliest: '2026-11-10', dueLatest: '2026-11-12' });
+    const r = await edit('friday', { text: 'New wording', due: 'Friday' });
+    assert.equal(r.status, 200);
+    const it = await get('friday');
+    assert.equal(it.text, 'New wording');
+    assert.deepEqual(it.reviewerDue, { earliest: '2026-11-10', latest: '2026-11-12', event: null, ignoreModelEvent: false });
+    const { rows } = await pool.query(`SELECT detail FROM audit_events WHERE action = 'proposal.edited'`);
+    assert.deepEqual(rows.map((r) => r.detail.changed.join(',')).sort(), ['due_dates', 'text'], 'the second edit changed only the text');
+  });
+
+  test("a reviewer can say the model's event does not apply", async () => {
+    assert.equal((await get('evented')).dueReading.state, 'event');
+    const r = await edit('evented', { text: 'T', ignoreModelEvent: true });
+    assert.equal(r.status, 200);
+    const it = await get('evented');
+    assert.deepEqual(it.reviewerDue, { earliest: null, latest: null, event: null, ignoreModelEvent: true });
+    assert.equal(it.dueReading.state, 'needs_date');
+    assert.equal(it.dueEvent, 'after the Dean approves', "the model's event is kept in the record");
+    assert.equal((await approve('evented')).status, 409);
+    // Giving dates afterwards makes it approvable.
+    await edit('evented', { text: 'T', ignoreModelEvent: true, dueEarliest: '2026-11-20' });
+    assert.equal((await approve('evented')).status, 200);
   });
 
   test('changing only the due counts as a change', async () => {

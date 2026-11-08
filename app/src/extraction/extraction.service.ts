@@ -14,14 +14,14 @@ type Queryable = Pick<Pool, 'query'>;
 
 /** The latest reviewer edit of item i, joined as e. */
 const LATEST_EDIT = `LEFT JOIN LATERAL (
-  SELECT id, text, owner, due, due_earliest, due_latest, due_event
+  SELECT id, text, owner, due, due_earliest, due_latest, due_event, ignore_model_event
     FROM extraction_item_edits WHERE item_id = i.id ORDER BY edited_at DESC, id DESC LIMIT 1
 ) e ON true`;
 
 /** What a due reading is worked out from, for item i with its latest edit e. */
 const DUE_COLUMNS = `CASE WHEN e.id IS NULL THEN i.due ELSE e.due END AS due, i.due_event AS "dueEvent",
   to_char(e.due_earliest, 'YYYY-MM-DD') AS "reviewerEarliest", to_char(e.due_latest, 'YYYY-MM-DD') AS "reviewerLatest",
-  e.due_event AS "reviewerEvent"`;
+  e.due_event AS "reviewerEvent", COALESCE(e.ignore_model_event, false) AS "reviewerIgnoreEvent"`;
 
 interface DueRow {
   due: string | null;
@@ -29,11 +29,14 @@ interface DueRow {
   reviewerEarliest: string | null;
   reviewerLatest: string | null;
   reviewerEvent: string | null;
+  reviewerIgnoreEvent: boolean;
 }
 
-function reviewerDueOf(row: DueRow): ReviewerDue | null {
-  return row.reviewerEarliest || row.reviewerEvent
-    ? { earliest: row.reviewerEarliest, latest: row.reviewerLatest, event: row.reviewerEvent }
+type FullReviewerDue = ReviewerDue & { ignoreModelEvent: boolean };
+
+function reviewerDueOf(row: DueRow): FullReviewerDue | null {
+  return row.reviewerEarliest || row.reviewerEvent || row.reviewerIgnoreEvent
+    ? { earliest: row.reviewerEarliest, latest: row.reviewerLatest, event: row.reviewerEvent, ignoreModelEvent: row.reviewerIgnoreEvent }
     : null;
 }
 
@@ -41,8 +44,17 @@ function dueReadingOf(row: DueRow, meetingDate: string | null): DueReading {
   return readDue({ due: row.due, dueEvent: row.dueEvent, meetingDate }, reviewerDueOf(row));
 }
 
+type DueFields = { dueEarliest?: unknown; dueLatest?: unknown; dueEvent?: unknown; ignoreModelEvent?: unknown };
+
+/** True when an edit body says anything about the due; the four fields are then replaced together. */
+const givesDue = (input: DueFields): boolean =>
+  input.dueEarliest !== undefined || input.dueLatest !== undefined || input.dueEvent !== undefined || input.ignoreModelEvent !== undefined;
+
 /** A reviewer's due from an edit body: dates or an event, not both. Blank means none. */
-function cleanReviewerDue(input: { dueEarliest?: unknown; dueLatest?: unknown; dueEvent?: unknown }): ReviewerDue {
+function cleanReviewerDue(input: DueFields): FullReviewerDue {
+  if (input.ignoreModelEvent !== undefined && typeof input.ignoreModelEvent !== 'boolean') {
+    throw new BadRequestException('ignoreModelEvent must be true or false');
+  }
   const day = (v: unknown): string | null => {
     if (v === undefined || v === null || (typeof v === 'string' && v.trim() === '')) return null;
     if (typeof v === 'string' && isCalendarDate(v.trim())) return v.trim();
@@ -54,7 +66,7 @@ function cleanReviewerDue(input: { dueEarliest?: unknown; dueLatest?: unknown; d
   if (event && (earliest || latest)) throw new BadRequestException('Give dates or an event, not both');
   if (latest && !earliest) throw new BadRequestException('Give the earliest date first');
   if (earliest && latest && latest < earliest) throw new BadRequestException('The latest date cannot be before the earliest date');
-  return { earliest, latest: earliest ? (latest ?? earliest) : null, event };
+  return { earliest, latest: earliest ? (latest ?? earliest) : null, event, ignoreModelEvent: input.ignoreModelEvent === true };
 }
 
 /** A quote that repeats more often than this lists only its first places for choosing. */
@@ -161,8 +173,8 @@ export class ExtractionService {
         WHERE i.run_id = $1 ORDER BY i.position`,
       [runId],
     );
-    const shaped = items.rows.map(({ originalText, originalOwner, originalDue, reviewerEarliest, reviewerLatest, reviewerEvent, ...item }) => {
-      const dueRow = { due: item.due, dueEvent: item.dueEvent, reviewerEarliest, reviewerLatest, reviewerEvent };
+    const shaped = items.rows.map(({ originalText, originalOwner, originalDue, reviewerEarliest, reviewerLatest, reviewerEvent, reviewerIgnoreEvent, ...item }) => {
+      const dueRow = { due: item.due, dueEvent: item.dueEvent, reviewerEarliest, reviewerLatest, reviewerEvent, reviewerIgnoreEvent };
       const withDue = { ...item, reviewerDue: reviewerDueOf(dueRow), dueReading: dueReadingOf(dueRow, meeting.meetingDate) };
       return item.edited ? { ...withDue, original: { text: originalText, owner: originalOwner, due: originalDue } } : withDue;
     });
@@ -349,7 +361,7 @@ export class ExtractionService {
   async edit(
     runId: string,
     itemId: string,
-    input: { sourceVersionId: unknown; text: unknown; owner?: unknown; due?: unknown; dueEarliest?: unknown; dueLatest?: unknown; dueEvent?: unknown },
+    input: { sourceVersionId: unknown; text: unknown; owner?: unknown; due?: unknown; dueEarliest?: unknown; dueLatest?: unknown; dueEvent?: unknown; ignoreModelEvent?: unknown },
     actorUserId: string,
   ) {
     if (typeof input.sourceVersionId !== 'string' || input.sourceVersionId === '') {
@@ -358,7 +370,8 @@ export class ExtractionService {
     const text = cleanWording(input.text, 'text', MAX_PROPOSAL_TEXT, true);
     const owner = cleanWording(input.owner, 'owner', MAX_PROPOSAL_FIELD, false);
     const due = cleanWording(input.due, 'due', MAX_PROPOSAL_FIELD, false);
-    const dates = cleanReviewerDue(input);
+    // The due fields are replaced together; an edit that sends none of them keeps the reviewer's due in force.
+    const sentDue = givesDue(input) ? cleanReviewerDue(input) : null;
     const at = this.now();
     const client = await this.pool.connect();
     try {
@@ -383,13 +396,26 @@ export class ExtractionService {
         throw new ConflictException('This proposal is for a different version of the notes than the one you reviewed');
       }
       const changed: string[] = (['text', 'owner', 'due'] as const).filter((f) => ({ text, owner, due })[f] !== item[f]);
-      const before = { earliest: item.reviewerEarliest ?? null, latest: item.reviewerLatest ?? null, event: item.reviewerEvent ?? null };
-      if (before.earliest !== dates.earliest || before.latest !== dates.latest || before.event !== dates.event) changed.push('due_dates');
+      const before: FullReviewerDue = {
+        earliest: item.reviewerEarliest ?? null,
+        latest: item.reviewerLatest ?? null,
+        event: item.reviewerEvent ?? null,
+        ignoreModelEvent: item.reviewerIgnoreEvent === true,
+      };
+      const dates = sentDue ?? before;
+      if (
+        before.earliest !== dates.earliest ||
+        before.latest !== dates.latest ||
+        before.event !== dates.event ||
+        before.ignoreModelEvent !== dates.ignoreModelEvent
+      ) {
+        changed.push('due_dates');
+      }
       if (changed.length === 0) throw new ConflictException('Nothing was changed');
       await client.query(
-        `INSERT INTO extraction_item_edits (id, item_id, text, owner, due, due_earliest, due_latest, due_event, edited_by, edited_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-        [uuidv7(), itemId, text, owner, due, dates.earliest, dates.latest, dates.event, actorUserId, at],
+        `INSERT INTO extraction_item_edits (id, item_id, text, owner, due, due_earliest, due_latest, due_event, ignore_model_event, edited_by, edited_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+        [uuidv7(), itemId, text, owner, due, dates.earliest, dates.latest, dates.event, dates.ignoreModelEvent, actorUserId, at],
       );
       if (item.review_status !== 'pending') {
         await client.query(

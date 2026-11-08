@@ -154,6 +154,15 @@ test("a reviewer's due replaces the reading of the wording", () => {
   assert.deepEqual(readDue(input, null), needs('relative wording and no meeting date'));
 });
 
+test("a reviewer can say the model's event does not apply", () => {
+  const ignore = { earliest: null, latest: null, event: null, ignoreModelEvent: true };
+  assert.deepEqual(readDue({ due: null, dueEvent: 'approval by the Dean', meetingDate: M }, ignore), needs('no due given'));
+  assert.deepEqual(readDue({ due: 'Immediate', dueEvent: 'approval by the Dean', meetingDate: M }, ignore), range('2026-11-04', '2026-11-07', true));
+  assert.deepEqual(readDue({ due: 'TBC', dueEvent: 'approval by the Dean', meetingDate: M }, ignore), needs('wording not understood'));
+  // Dates still win.
+  assert.deepEqual(readDue({ due: null, dueEvent: 'x', meetingDate: M }, { ...ignore, earliest: '2026-11-10', latest: '2026-11-10' }), exact('2026-11-10'));
+});
+
 test('isCalendarDate accepts only real days written YYYY-MM-DD', () => {
   assert.equal(isCalendarDate('2028-02-29'), true);
   assert.equal(isCalendarDate('2026-11-04'), true);

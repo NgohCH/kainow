@@ -71,6 +71,6 @@ export class ExtractionController {
     const userId = req.auth?.user.id;
     if (!userId) throw new NotFoundException();
     const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
-    return this.extraction.edit(uuid(runId), uuid(itemId), { sourceVersionId: b.sourceVersionId, text: b.text, owner: b.owner, due: b.due, dueEarliest: b.dueEarliest, dueLatest: b.dueLatest, dueEvent: b.dueEvent }, userId);
+    return this.extraction.edit(uuid(runId), uuid(itemId), { sourceVersionId: b.sourceVersionId, text: b.text, owner: b.owner, due: b.due, dueEarliest: b.dueEarliest, dueLatest: b.dueLatest, dueEvent: b.dueEvent, ignoreModelEvent: b.ignoreModelEvent }, userId);
   }
 }

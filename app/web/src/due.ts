@@ -55,6 +55,7 @@ export interface EditFields {
   dueEarliest: string;
   dueLatest: string;
   dueEvent: string;
+  ignoreModelEvent: boolean;
 }
 
 /** Starts the edit form from the wording and the reviewer's due in force, so saving new wording keeps the dates. */
@@ -66,5 +67,6 @@ export function editFormFrom(item: Item): EditFields {
     dueEarliest: item.reviewerDue?.earliest ?? '',
     dueLatest: item.reviewerDue?.latest ?? '',
     dueEvent: item.reviewerDue?.event ?? '',
+    ignoreModelEvent: item.reviewerDue?.ignoreModelEvent ?? false,
   };
 }

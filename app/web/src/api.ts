@@ -111,6 +111,8 @@ export interface ReviewerDue {
   earliest: string | null;
   latest: string | null;
   event: string | null;
+  /** The reviewer says the event the model named does not apply. */
+  ignoreModelEvent: boolean;
 }
 
 export type Kind = 'decision' | 'action' | 'question' | 'risk';
