@@ -64,3 +64,19 @@ test('one person in several roles counts once, and expired people do not count',
   const withScheduled = [...rows, row('x', 'member', { startsOn: '2026-12-01' }), row('y', 'member', { startsOn: '2026-12-01' })];
   assert.equal(separationCheck(withScheduled, T).ok, false, 'scheduled people count: seven');
 });
+
+test('a hold sits between expiry and the dates', async () => {
+  const { isHeld } = await import('./membership');
+  const t1 = new Date('2026-11-05T00:00:00Z');
+  const t2 = new Date('2026-11-06T00:00:00Z');
+  const held = row('a', 'member', { heldAt: t1, restoredAt: null });
+  assert.equal(isHeld(held), true);
+  assert.equal(membershipState(held, T), 'on_hold');
+  assert.equal(membershipState(row('a', 'member', { heldAt: t1, expiresOn: '2026-11-07' }), T), 'expired');
+  assert.equal(membershipState(row('a', 'member', { heldAt: t1, revokedAt: t2 }), T), 'revoked');
+  assert.equal(membershipState(row('a', 'member', { heldAt: t1, restoredAt: t2 }), T), 'active', 'restored after the hold');
+  assert.equal(membershipState(row('a', 'member', { heldAt: t2, restoredAt: t1 }), T), 'on_hold', 'held again after a restore');
+  assert.deepEqual(effectiveRoles([row('a', 'pm', { heldAt: t1 }), row('a', 'member')], 'a', T), ['member']);
+  const rows = [row('a', 'pm'), row('b', 'member', { heldAt: t1 }), row('c', 'owner')];
+  assert.deepEqual(requiredRolesCheck(rows, T, 'accepted').missing, ['a Member who is not the Project Manager']);
+});
