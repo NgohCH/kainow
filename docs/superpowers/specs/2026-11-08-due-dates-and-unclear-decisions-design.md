@@ -103,7 +103,7 @@ Not included: turning a question into a decision on the review screen. A reviewe
 
 ## API changes
 
-- `GET /extractions/:runId`: each item gains `due: { wording, state, earliest, latest, event, reason, basis }` (the reading) and `alternatives`. The run gains `meetingDate` (the one in use) and `meetingDateSource` (`notes`, `reviewer` or `none`).
+- `GET /extractions/:runId`: each item gains `due: { wording, state, earliest, latest, event, reason, basis }` (the reading) and `alternatives`. *(As built: `due` stays the wording, and the reading is a separate `dueReading` field with `usedMeetingDate` in place of `basis`; items also carry `reviewerDue` and the model's `dueEvent`. This keeps existing readers of `due` working.)* The run gains `meetingDate` (the one in use) and `meetingDateSource` (`notes`, `reviewer` or `none`).
 - `POST /notes/:id/versions/:n/meeting-date` with `{ meetingDate }`: sets the reviewer's meeting date. Signed-in, anti-forgery token, same permission as review. Audited as `note.meeting_date_set`.
 - `POST /extractions/:runId/items/:itemId/edit` accepts `dueEarliest`, `dueLatest` and `dueEvent` in addition to the existing fields.
 - `POST .../review` with `approved` is refused with 409 for an action whose reading is `needs_date`.
