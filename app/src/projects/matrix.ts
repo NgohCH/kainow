@@ -17,7 +17,8 @@ export type ProjectAction =
   | 'extraction.run'
   | 'proposal.edit'
   | 'meeting_date.set'
-  | 'proposal.review';
+  | 'proposal.review'
+  | 'project.archive';
 
 interface MatrixRow {
   roles: ReadonlyArray<ProjectRole | 'participant'>;
@@ -44,6 +45,11 @@ export const PROJECT_MATRIX: Readonly<Record<ProjectAction, MatrixRow>> = {
   'extraction.run': { roles: ['pm', 'deputy_pm', 'owner', 'sponsor'], states: OPEN, refusal: IMPORT },
   'proposal.edit': { roles: ['pm', 'owner', 'sponsor'], states: OPEN, refusal: EDIT_PROPOSALS },
   'meeting_date.set': { roles: ['pm', 'owner', 'sponsor'], states: OPEN, refusal: EDIT_PROPOSALS },
+  'project.archive': {
+    roles: ['pm', 'owner', 'sponsor'],
+    states: ['closed'],
+    refusal: 'Only the Project Manager, the Owner or a Sponsor can archive a project, and only once it is Closed.',
+  },
   'proposal.review': {
     roles: ['owner', 'sponsor'],
     states: ['planned', 'active'],

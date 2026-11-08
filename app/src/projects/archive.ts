@@ -1,8 +1,10 @@
 /**
  * Archiving (V1.0 Q04): only Closed projects; archived by hand, or automatically twelve calendar months
- * after closing unless unarchived since. Worked out on read; days are 'YYYY-MM-DD' in UTC+8.
+ * after closing unless unarchived since. Worked out on read. Events and the closing are exact instants
+ * (ISO strings); the twelve months count from the closing's UTC+8 day.
  */
 import type { ProjectStatus } from './matrix';
+import { todayUtc8 } from './membership';
 
 export const ARCHIVE_AFTER_MONTHS = 12;
 
@@ -17,17 +19,20 @@ export function addMonths(day: string, months: number): string {
 
 export function archiveState(input: {
   status: ProjectStatus;
-  closedOn: string | null;
+  closedAt: string | null;
   events: Array<{ kind: 'archived' | 'unarchived'; at: string }>;
   today: string;
 }): { archived: boolean; automatic: boolean } {
-  if (input.status !== 'closed' || input.closedOn === null) return { archived: false, automatic: false };
-  const closedOn = input.closedOn;
-  const since = input.events.filter((e) => e.at >= closedOn).sort((a, b) => (a.at < b.at ? -1 : a.at > b.at ? 1 : 0));
+  if (input.status !== 'closed' || input.closedAt === null) return { archived: false, automatic: false };
+  const closedAt = Date.parse(input.closedAt);
+  const since = input.events
+    .map((e) => ({ kind: e.kind, at: Date.parse(e.at) }))
+    .filter((e) => e.at >= closedAt)
+    .sort((a, b) => a.at - b.at);
   const latest = since[since.length - 1];
-  const due = addMonths(closedOn, ARCHIVE_AFTER_MONTHS);
   if (latest?.kind === 'archived') return { archived: true, automatic: false };
-  if (latest?.kind === 'unarchived' && latest.at >= due) return { archived: false, automatic: false };
-  if (input.today >= due && !(latest?.kind === 'unarchived' && latest.at >= due)) return { archived: true, automatic: true };
+  const due = addMonths(todayUtc8(new Date(closedAt)), ARCHIVE_AFTER_MONTHS);
+  const unarchivedAfterDue = latest?.kind === 'unarchived' && todayUtc8(new Date(latest.at)) >= due;
+  if (input.today >= due && !unarchivedAfterDue) return { archived: true, automatic: true };
   return { archived: false, automatic: false };
 }

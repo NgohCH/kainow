@@ -6,10 +6,13 @@ import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { isCalendarDate } from '../extraction/due';
 import { type ProjectContext, ProjectAccess, managesGrants, managesRoles } from './access.service';
+import { archiveState } from './archive';
 import { grantState } from './grants';
 import { type ClosureOutcome, STAGES, checkTransition } from './lifecycle';
 import { membershipState, requiredRolesCheck, separationCheck } from './membership';
 import { type ProjectStatus, PROJECT_STATUSES } from './matrix';
+
+const UUID_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** The documents' optional default substages; projects may leave them unused. */
 export const SUBSTAGES: Readonly<Record<string, readonly string[]>> = {
@@ -137,6 +140,7 @@ export class ProjectsService {
         access: ctx.roles.length === 0 ? ctx.grantKinds[0] : null,
         missingAccountability: ctx.missingAccountability,
         onHold: managesRoles(ctx) && ctx.onHold,
+        ...(await this.archiveOf(this.pool, id, ctx.project.status, ctx.today)),
       });
     }
     projects.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
@@ -240,8 +244,85 @@ export class ProjectsService {
       onHold: managesRoles(ctx) && ctx.onHold,
       access: ctx.roles.length === 0 && ctx.grantKinds.length > 0 ? ctx.grantKinds[0] : null,
       grants: await this.grantsFor(ctx),
+      ...(await this.archiveOf(this.pool, id, ctx.project.status, ctx.today)),
     };
   }
+
+  /** Archived state, worked out from the latest closing and the archive history (V1.0 Q04). */
+  private async archiveOf(db: Pool | PoolClient, id: string, status: ProjectStatus, today: string) {
+    const closing = (
+      await db.query(`SELECT at FROM project_transitions WHERE project_id = $1 AND to_status = 'closed' ORDER BY at DESC, id DESC LIMIT 1`, [id])
+    ).rows[0];
+    const events = (await db.query(`SELECT kind, at FROM project_archive_events WHERE project_id = $1 ORDER BY at, id`, [id])).rows;
+    const s = archiveState({
+      status,
+      closedAt: closing ? new Date(closing.at).toISOString() : null,
+      events: events.map((e) => ({ kind: e.kind, at: new Date(e.at).toISOString() })),
+      today,
+    });
+    return { archived: s.archived, archivedAutomatically: s.automatic };
+  }
+
+  async archive(user: AuthUser, id: string, kind: 'archived' | 'unarchived', input: Record<string, unknown>) {
+    const at = this.now();
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const ctx = await this.access.authorize(user, 'project.archive', id, client, true);
+      const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
+      if (reason === '') throw new BadRequestException('A reason is required.');
+      const current = await this.archiveOf(client, id, ctx.project.status, ctx.today);
+      if (kind === 'archived' && current.archived) throw new ConflictException('This project is already archived.');
+      if (kind === 'unarchived' && !current.archived) throw new ConflictException('This project is not archived.');
+      await client.query(`INSERT INTO project_archive_events (id, project_id, kind, actor_id, reason, at) VALUES ($1, $2, $3, $4, $5, $6)`, [
+        uuidv7(at.getTime()), id, kind, user.id, reason, at,
+      ]);
+      await writeAudit(client, { at, action: `project.${kind}`, actorUserId: user.id, subjectType: 'project', subjectId: id });
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+    return this.detail(user, id);
+  }
+
+  /** The Administrator moves a project to another owning department (Consolidated Specification §3). */
+  async moveDepartment(user: AuthUser, id: string, input: Record<string, unknown>) {
+    const at = this.now();
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const ctx = await this.access.context(user, id, client, true);
+      if (!ctx.isAdmin) throw new ForbiddenException('Only an Enterprise Administrator can move a project to another owning department.');
+      const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
+      if (reason === '') throw new BadRequestException('A reason is required.');
+      const to = input.departmentId;
+      if (typeof to !== 'string' || !UUID_ID.test(to)) throw new BadRequestException('Choose an active department.');
+      const dept = (await client.query(`SELECT id FROM departments WHERE id = $1 AND status = 'active'`, [to])).rows[0];
+      if (!dept) throw new BadRequestException('Choose an active department.');
+      const from = (await client.query(`SELECT owning_department_id AS d FROM projects WHERE id = $1`, [id])).rows[0].d as string;
+      if (from === to) throw new ConflictException('The project already belongs to that department.');
+      const contributes = (await client.query(`SELECT 1 FROM project_departments WHERE project_id = $1 AND department_id = $2`, [id, to])).rowCount;
+      if (contributes) throw new ConflictException('That department contributes to this project; remove it from the contributing departments first.');
+      await client.query(`UPDATE projects SET owning_department_id = $2 WHERE id = $1`, [id, to]);
+      await client.query(
+        `INSERT INTO project_department_changes (id, project_id, from_department_id, to_department_id, actor_id, reason, files_decision, at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'kept_in_place', $7)`,
+        [uuidv7(at.getTime()), id, from, to, user.id, reason, at],
+      );
+      await writeAudit(client, { at, action: 'project.department_moved', actorUserId: user.id, subjectType: 'project', subjectId: id, detail: { from, to } });
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+    return this.detail(user, id);
+  }
+
 
   /** Grant managers and the Administrator see every grant; anyone else only their own. */
   private async grantsFor(ctx: ProjectContext) {

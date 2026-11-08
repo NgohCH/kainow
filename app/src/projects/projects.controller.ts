@@ -50,6 +50,30 @@ export class ProjectsController {
     return this.projects.transition(who(req), id, body(b));
   }
 
+  /** { reason } — Closed projects only. */
+  @Post(':id/archive')
+  @AnySignedInUser()
+  @HttpCode(200)
+  archive(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest) {
+    return this.projects.archive(who(req), id, 'archived', body(b));
+  }
+
+  /** { reason } */
+  @Post(':id/unarchive')
+  @AnySignedInUser()
+  @HttpCode(200)
+  unarchive(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest) {
+    return this.projects.archive(who(req), id, 'unarchived', body(b));
+  }
+
+  /** { departmentId, reason } — Enterprise Administrator only. */
+  @Post(':id/department')
+  @AnySignedInUser()
+  @HttpCode(200)
+  department(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest) {
+    return this.projects.moveDepartment(who(req), id, body(b));
+  }
+
   /** { stage, substage?, reason? } */
   @Post(':id/stage')
   @AnySignedInUser()
