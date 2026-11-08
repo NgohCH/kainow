@@ -84,7 +84,7 @@ The PowerShell lines in this guide were run in Windows PowerShell 5.1 on 8 Novem
 3. As the Project Manager: **Move to Planned**, then **Make Active**. Until everyone has accepted, Kainow says which role is still needed.
 4. As the Project Manager, on the **Notes** tab, add notes: paste any meeting notes, or upload one of `tests/extraction/inputs/synthetic/*.md`.
 5. Choose "Find decisions and actions". The run should go from waiting to ready in under a minute.
-6. Sign in as the Owner, choose Review, approve one proposal and reject another. The highlighted passage should change colour. The spend figure should rise by a few sen. (The Project Manager and Members can read the proposals but cannot approve them.)
+6. Sign in as the Owner, choose Review, **Authorise** one proposal (for an action: pick the accountable person and the due date) and reject another. The highlighted passage should change colour, and the authorised item appears on the project's **Work** tab. The spend figure should rise by a few sen. (The Project Manager and Members can read the proposals but cannot authorise them.)
 7. If extraction says "No AI key is configured", the worker did not receive `OPENAI_API_KEY`: check `.env` and run `docker compose up -d` again.
 
 8. Optional, as the Administrator: under **People**, disable the Member's account. The project now says "A member is On Hold — investigation needed" and the Project Manager gets an email (or a line in `docker compose logs api`). Enable the account again, then as the Project Manager or Owner record a finding on the People tab and choose **Restore**.

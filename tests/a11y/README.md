@@ -18,6 +18,6 @@ The script signs in with the code printed in the API log, adds a department and 
 
 ## What a clean result means
 
-Run on 7 November 2026: 0 violations across 18 screen states. Run on 8 November 2026 (with projects): 0 violations across 34 screen states, after moving the sign-in form on the invitation page out of a second main landmark. With sub-project 1b's screens: 0 violations across 46 screen states.
+Run on 7 November 2026: 0 violations across 18 screen states. Run on 8 November 2026 (with projects): 0 violations across 34 screen states, after moving the sign-in form on the invitation page out of a second main landmark. With sub-project 1b's screens: 0 violations across 46 screen states. With sub-project 2a (the Work tab, people's proposals, the Authorise form with subtasks, the task complete and risk accept forms, in an extra "Records access check" project): 0 violations across 58 screen states.
 
 Automated rules find only a part of the real problems (missing names and labels, colour contrast, bad structure). A clean run does not show the product is accessible. Still to do by hand, as part of the January accessibility audit: keyboard-only use of every screen, focus order and visible focus, a screen reader on the review screen (the marked passage and the repeated-passage chooser), zoom to 200%, and reduced motion. The app has no dark theme, so none was tested.

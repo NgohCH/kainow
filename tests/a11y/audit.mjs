@@ -64,7 +64,28 @@ for (const [i, it] of items.entries()) {
 }
 await db.query("insert into memberships (id, project_id, user_id, role, starts_on) values ($1, $2, $3, 'owner', (now() at time zone 'Asia/Kuala_Lumpur')::date)", [randomUUID(), closedId, user]);
 await db.query("update projects set status = 'closed', closure_outcome = 'delivered' where id = $1", [closedId]);
+const recordsId = (await api('POST', '/projects', { name: 'Records access check', purpose: 'Tasks, questions, decisions and risks.', owningDepartmentId: department.id })).project.id;
+// The creator is already its Project Manager; add the Owner role and a Member.
+for (const [who, role] of [[user, 'owner'], [memberId, 'member']]) {
+  await db.query("insert into memberships (id, project_id, user_id, role, starts_on) values ($1, $2, $3, $4, (now() at time zone 'Asia/Kuala_Lumpur')::date)", [randomUUID(), recordsId, who, role]);
+}
+await db.query("update projects set status = 'active' where id = $1", [recordsId]);
+const origin = async (kind) => {
+  const id = randomUUID();
+  await db.query("insert into human_proposals (id, project_id, kind, text, proposed_by, proposed_at, review_status, reviewed_by, reviewed_at) values ($1, $2, $3, 'x', $4, now(), 'approved', $4, now())", [id, recordsId, kind, user]);
+  return id;
+};
+const parentTask = randomUUID();
+await db.query("insert into tasks (id, project_id, depth, title, assignee_id, owner_as_written, due_on, origin_proposal_id, authorised_by, authorised_at) values ($1, $2, 0, 'Export the catalogue records', $3, 'Ann and Ben', (now() at time zone 'Asia/Kuala_Lumpur')::date - 1, $4, $3, now())", [parentTask, recordsId, user, await origin('action')]);
+await db.query("insert into tasks (id, project_id, parent_id, depth, title, assignee_id, due_on, authorised_by, authorised_at) values ($1, $2, $3, 1, 'Export the finance records', $4, (now() at time zone 'Asia/Kuala_Lumpur')::date + 5, $4, now())", [randomUUID(), recordsId, parentTask, memberId]);
+const questionId = randomUUID();
+await db.query("insert into questions (id, project_id, text, requester_id, status, origin_proposal_id, authorised_by, authorised_at) values ($1, $2, 'Keep the old barcode?', $3, 'answered', $4, $3, now())", [questionId, recordsId, user, await origin('question')]);
+await db.query("insert into question_answers (id, question_id, answer, author_id, at) values ($1, $2, 'Until March', $3, now())", [randomUUID(), questionId, user]);
+await db.query("insert into decisions (id, project_id, statement, rationale, origin_proposal_id, authorised_by, authorised_at) values ($1, $2, 'Move to the new system', 'Cheaper', $3, $4, now())", [randomUUID(), recordsId, await origin('decision'), user]);
+await db.query("insert into risks (id, project_id, description, severity, responsible_id, review_on, status, origin_proposal_id, authorised_by, authorised_at) values ($1, $2, 'The vendor may be late', 'high', $3, (now() at time zone 'Asia/Kuala_Lumpur')::date + 20, 'mitigating', $4, $3, now())", [randomUUID(), recordsId, user, await origin('risk')]);
 await db.end();
+const waiting = await api('POST', `/projects/${recordsId}/proposals`, { kind: 'action', text: 'Book the launch room', owner: 'Ann and Ben', due: 'by 30 November 2026' });
+if (!waiting.proposal) throw new Error('proposal not recorded: ' + JSON.stringify(waiting));
 // The invitation link is written to the API log (LOG_SIGN_IN_CODES); read it after the invitation was sent.
 await new Promise((r) => setTimeout(r, 300));
 const inviteToken = [...readFileSync(API_LOG, 'utf8').matchAll(/sponsor\.a11y@example\.org: .*#\/invitations\/([A-Za-z0-9_-]+)/g)].pop()[1];
@@ -112,6 +133,8 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
   const [n, ...val] = cookie.split('=');
   await page.setCookie({ name: n, value: val.join('='), domain: 'localhost', path: '/' });
   const screens = [
+    ['work tab (tasks, questions, decisions, risks)', `#/projects/${recordsId}/work`],
+    ['notes tab with proposals from people', `#/projects/${recordsId}/notes`],
     ['closed project overview (archive panel)', `#/projects/${closedId}`],
     ['my projects', '#/'],
     ['project overview', `#/projects/${projectId}`],
@@ -153,6 +176,10 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
     ['grant request form open', `#/projects/${projectId}/people`, 'Record a request'],
     ['finding form open', `#/projects/${projectId}/people`, 'Record finding'],
     ['department move form open', `#/projects/${projectId}`, 'Move to another department'],
+    ['propose form open', `#/projects/${recordsId}/notes`, 'Propose something'],
+    ['authorise form open (split into subtasks)', `#/projects/${recordsId}/notes`, 'Authorise'],
+    ['task complete form open', `#/projects/${recordsId}/work`, 'Complete'],
+    ['risk accept form open', `#/projects/${recordsId}/work`, 'Accept exposure'],
   ]) {
     await page.goto(`${base}/${hash}`, { waitUntil: 'networkidle0' });
     await page.reload({ waitUntil: 'networkidle0' });
