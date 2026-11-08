@@ -5,7 +5,57 @@ import { CLOCK, type Clock } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { locateQuote } from '../notes/text';
+import { type DueReading, type ReviewerDue, isCalendarDate, readDue } from './due';
 import { EXTRACTION_QUEUE, type ExtractionQueue } from './queue';
+
+export const NEEDS_DATE_MESSAGE = 'This action needs a due date, a date range or the event it waits on before it can be approved.';
+
+type Queryable = Pick<Pool, 'query'>;
+
+/** The latest reviewer edit of item i, joined as e. */
+const LATEST_EDIT = `LEFT JOIN LATERAL (
+  SELECT id, text, owner, due, due_earliest, due_latest, due_event
+    FROM extraction_item_edits WHERE item_id = i.id ORDER BY edited_at DESC, id DESC LIMIT 1
+) e ON true`;
+
+/** What a due reading is worked out from, for item i with its latest edit e. */
+const DUE_COLUMNS = `CASE WHEN e.id IS NULL THEN i.due ELSE e.due END AS due, i.due_event AS "dueEvent",
+  to_char(e.due_earliest, 'YYYY-MM-DD') AS "reviewerEarliest", to_char(e.due_latest, 'YYYY-MM-DD') AS "reviewerLatest",
+  e.due_event AS "reviewerEvent"`;
+
+interface DueRow {
+  due: string | null;
+  dueEvent: string | null;
+  reviewerEarliest: string | null;
+  reviewerLatest: string | null;
+  reviewerEvent: string | null;
+}
+
+function reviewerDueOf(row: DueRow): ReviewerDue | null {
+  return row.reviewerEarliest || row.reviewerEvent
+    ? { earliest: row.reviewerEarliest, latest: row.reviewerLatest, event: row.reviewerEvent }
+    : null;
+}
+
+function dueReadingOf(row: DueRow, meetingDate: string | null): DueReading {
+  return readDue({ due: row.due, dueEvent: row.dueEvent, meetingDate }, reviewerDueOf(row));
+}
+
+/** A reviewer's due from an edit body: dates or an event, not both. Blank means none. */
+function cleanReviewerDue(input: { dueEarliest?: unknown; dueLatest?: unknown; dueEvent?: unknown }): ReviewerDue {
+  const day = (v: unknown): string | null => {
+    if (v === undefined || v === null || (typeof v === 'string' && v.trim() === '')) return null;
+    if (typeof v === 'string' && isCalendarDate(v.trim())) return v.trim();
+    throw new BadRequestException('Dates must be in the form YYYY-MM-DD');
+  };
+  const earliest = day(input.dueEarliest);
+  const latest = day(input.dueLatest);
+  const event = cleanWording(input.dueEvent, 'dueEvent', MAX_PROPOSAL_FIELD, false);
+  if (event && (earliest || latest)) throw new BadRequestException('Give dates or an event, not both');
+  if (latest && !earliest) throw new BadRequestException('Give the earliest date first');
+  if (earliest && latest && latest < earliest) throw new BadRequestException('The latest date cannot be before the earliest date');
+  return { earliest, latest: earliest ? (latest ?? earliest) : null, event };
+}
 
 /** A quote that repeats more often than this lists only its first places for choosing. */
 export const MAX_OCCURRENCE_CHOICES = 100;
@@ -95,26 +145,28 @@ export class ExtractionService {
   async getRun(runId: string) {
     const run = await this.pool.query(`SELECT ${RUN_COLUMNS} FROM extraction_runs WHERE id = $1`, [runId]);
     if (!run.rows[0]) throw new NotFoundException();
+    const meeting = await this.meetingDateFor(this.pool, runId);
     const items = await this.pool.query(
       `SELECT i.id, i.position, i.kind,
               COALESCE(e.text, i.text) AS text,
               CASE WHEN e.id IS NULL THEN i.owner ELSE e.owner END AS owner,
-              CASE WHEN e.id IS NULL THEN i.due ELSE e.due END AS due,
+              ${DUE_COLUMNS}, i.alternatives,
               e.id IS NOT NULL AS edited, i.text AS "originalText", i.owner AS "originalOwner", i.due AS "originalDue",
               i.quote, i.quote_start AS "quoteStart", i.quote_end AS "quoteEnd",
               i.quote_matches AS "quoteMatches", i.review_status AS "reviewStatus",
               i.chosen_occurrence AS "chosenOccurrence",
               i.reviewed_by AS "reviewedBy", i.reviewed_at AS "reviewedAt"
          FROM extraction_items i
-         LEFT JOIN LATERAL (
-           SELECT id, text, owner, due FROM extraction_item_edits WHERE item_id = i.id ORDER BY edited_at DESC, id DESC LIMIT 1
-         ) e ON true
+         ${LATEST_EDIT}
         WHERE i.run_id = $1 ORDER BY i.position`,
       [runId],
     );
-    const shaped = items.rows.map(({ originalText, originalOwner, originalDue, ...item }) =>
-      item.edited ? { ...item, original: { text: originalText, owner: originalOwner, due: originalDue } } : item,
-    );
+    const shaped = items.rows.map(({ originalText, originalOwner, originalDue, reviewerEarliest, reviewerLatest, reviewerEvent, ...item }) => {
+      const dueRow = { due: item.due, dueEvent: item.dueEvent, reviewerEarliest, reviewerLatest, reviewerEvent };
+      const withDue = { ...item, reviewerDue: reviewerDueOf(dueRow), dueReading: dueReadingOf(dueRow, meeting.meetingDate) };
+      return item.edited ? { ...withDue, original: { text: originalText, owner: originalOwner, due: originalDue } } : withDue;
+    });
+    Object.assign(run.rows[0], meeting);
     const src = await this.pool.query(
       `SELECT s.id AS "sourceId", s.title, v.version_no AS "versionNo"
          FROM extraction_runs r JOIN source_versions v ON v.id = r.source_version_id JOIN sources s ON s.id = v.source_id
@@ -122,6 +174,57 @@ export class ExtractionService {
       [runId],
     );
     return { run: run.rows[0], source: src.rows[0], items: await this.withOccurrences(run.rows[0].sourceVersionId, shaped) };
+  }
+
+  /** The meeting date in force for a run: the reviewer's latest for its version, else the model's, else none. */
+  private async meetingDateFor(q: Queryable, runId: string): Promise<{ meetingDate: string | null; meetingDateSource: 'notes' | 'reviewer' | 'none' }> {
+    const { rows } = await q.query(
+      `SELECT to_char(r.meeting_date, 'YYYY-MM-DD') AS model,
+              (SELECT to_char(m.meeting_date, 'YYYY-MM-DD') FROM source_version_meeting_dates m
+                WHERE m.source_version_id = r.source_version_id ORDER BY m.set_at DESC, m.id DESC LIMIT 1) AS reviewer
+         FROM extraction_runs r WHERE r.id = $1`,
+      [runId],
+    );
+    const row = rows[0] ?? {};
+    if (row.reviewer) return { meetingDate: row.reviewer, meetingDateSource: 'reviewer' };
+    if (row.model) return { meetingDate: row.model, meetingDateSource: 'notes' };
+    return { meetingDate: null, meetingDateSource: 'none' };
+  }
+
+  /** Records the meeting date a reviewer gives for one note version. The latest one is used. */
+  async setMeetingDate(sourceId: string, versionNo: number, meetingDate: unknown, actorUserId: string) {
+    if (!isCalendarDate(meetingDate)) throw new BadRequestException('meetingDate must be a date in the form YYYY-MM-DD');
+    const at = this.now();
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const found = await client.query(
+        `SELECT v.id FROM source_versions v JOIN sources s ON s.id = v.source_id
+          WHERE v.source_id = $1 AND v.version_no = $2 AND s.status = 'active'`,
+        [sourceId, versionNo],
+      );
+      const versionId = found.rows[0]?.id;
+      if (!versionId) throw new NotFoundException();
+      await client.query(
+        `INSERT INTO source_version_meeting_dates (id, source_version_id, meeting_date, set_by, set_at) VALUES ($1, $2, $3, $4, $5)`,
+        [uuidv7(), versionId, meetingDate, actorUserId, at],
+      );
+      await writeAudit(client, {
+        at,
+        action: 'note.meeting_date_set',
+        actorUserId,
+        subjectType: 'source_version',
+        subjectId: versionId,
+        detail: { meetingDate },
+      });
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+    return { meetingDate };
   }
 
   /**
@@ -174,8 +277,9 @@ export class ExtractionService {
     try {
       await client.query('BEGIN');
       const found = await client.query(
-        `SELECT i.id, i.source_version_id, i.quote_matches, i.review_status, r.status AS run_status
+        `SELECT i.id, i.source_version_id, i.quote_matches, i.review_status, i.kind, r.status AS run_status, ${DUE_COLUMNS}
            FROM extraction_items i JOIN extraction_runs r ON r.id = i.run_id
+           ${LATEST_EDIT}
           WHERE i.id = $1 AND i.run_id = $2 FOR UPDATE OF i`,
         [itemId, runId],
       );
@@ -201,6 +305,10 @@ export class ExtractionService {
           chosen = input.occurrence as number;
         } else if (input.occurrence !== undefined && input.occurrence !== 0) {
           throw new BadRequestException('This quote appears once, so occurrence can only be 0 or left out');
+        }
+        if (item.kind === 'action') {
+          const { meetingDate } = await this.meetingDateFor(client, runId);
+          if (dueReadingOf(item, meetingDate).state === 'needs_date') throw new ConflictException(NEEDS_DATE_MESSAGE);
         }
       }
       await client.query(
@@ -234,7 +342,7 @@ export class ExtractionService {
   async edit(
     runId: string,
     itemId: string,
-    input: { sourceVersionId: unknown; text: unknown; owner?: unknown; due?: unknown },
+    input: { sourceVersionId: unknown; text: unknown; owner?: unknown; due?: unknown; dueEarliest?: unknown; dueLatest?: unknown; dueEvent?: unknown },
     actorUserId: string,
   ) {
     if (typeof input.sourceVersionId !== 'string' || input.sourceVersionId === '') {
@@ -243,6 +351,7 @@ export class ExtractionService {
     const text = cleanWording(input.text, 'text', MAX_PROPOSAL_TEXT, true);
     const owner = cleanWording(input.owner, 'owner', MAX_PROPOSAL_FIELD, false);
     const due = cleanWording(input.due, 'due', MAX_PROPOSAL_FIELD, false);
+    const dates = cleanReviewerDue(input);
     const at = this.now();
     const client = await this.pool.connect();
     try {
@@ -251,12 +360,10 @@ export class ExtractionService {
         `SELECT i.id, i.source_version_id, i.review_status, r.status AS run_status,
                 COALESCE(e.text, i.text) AS text,
                 CASE WHEN e.id IS NULL THEN i.owner ELSE e.owner END AS owner,
-                CASE WHEN e.id IS NULL THEN i.due ELSE e.due END AS due
+                ${DUE_COLUMNS}
            FROM extraction_items i
            JOIN extraction_runs r ON r.id = i.run_id
-           LEFT JOIN LATERAL (
-             SELECT id, text, owner, due FROM extraction_item_edits WHERE item_id = i.id ORDER BY edited_at DESC, id DESC LIMIT 1
-           ) e ON true
+           ${LATEST_EDIT}
           WHERE i.id = $1 AND i.run_id = $2 FOR UPDATE OF i`,
         [itemId, runId],
       );
@@ -266,11 +373,14 @@ export class ExtractionService {
       if (item.source_version_id !== input.sourceVersionId) {
         throw new ConflictException('This proposal is for a different version of the notes than the one you reviewed');
       }
-      const changed = (['text', 'owner', 'due'] as const).filter((f) => ({ text, owner, due })[f] !== item[f]);
+      const changed: string[] = (['text', 'owner', 'due'] as const).filter((f) => ({ text, owner, due })[f] !== item[f]);
+      const before = { earliest: item.reviewerEarliest ?? null, latest: item.reviewerLatest ?? null, event: item.reviewerEvent ?? null };
+      if (before.earliest !== dates.earliest || before.latest !== dates.latest || before.event !== dates.event) changed.push('due_dates');
       if (changed.length === 0) throw new ConflictException('Nothing was changed');
       await client.query(
-        `INSERT INTO extraction_item_edits (id, item_id, text, owner, due, edited_by, edited_at) VALUES ($1,$2,$3,$4,$5,$6,$7)`,
-        [uuidv7(), itemId, text, owner, due, actorUserId, at],
+        `INSERT INTO extraction_item_edits (id, item_id, text, owner, due, due_earliest, due_latest, due_event, edited_by, edited_at)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [uuidv7(), itemId, text, owner, due, dates.earliest, dates.latest, dates.event, actorUserId, at],
       );
       if (item.review_status !== 'pending') {
         await client.query(

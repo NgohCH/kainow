@@ -52,7 +52,18 @@ export class ExtractionController {
     }, userId);
   }
 
-  /** Replace a proposal's wording: { sourceVersionId, text, owner?, due? }. Sends it back to review. */
+  /** The meeting date for one note version, when the notes do not give it or give it wrongly: { meetingDate: 'YYYY-MM-DD' }. */
+  @Post('notes/:id/versions/:n/meeting-date')
+  @RequireAction('proposal.review')
+  @HttpCode(200)
+  setMeetingDate(@Param('id') id: string, @Param('n') n: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    const userId = req.auth?.user.id;
+    if (!userId) throw new NotFoundException();
+    const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
+    return this.extraction.setMeetingDate(uuid(id), versionNumber(n), b.meetingDate, userId);
+  }
+
+  /** Replace a proposal's wording: { sourceVersionId, text, owner?, due?, dueEarliest?, dueLatest?, dueEvent? }. Sends it back to review. */
   @Post('extractions/:runId/items/:itemId/edit')
   @RequireAction('proposal.review')
   @HttpCode(200)
@@ -60,6 +71,6 @@ export class ExtractionController {
     const userId = req.auth?.user.id;
     if (!userId) throw new NotFoundException();
     const b = (body && typeof body === 'object' ? body : {}) as Record<string, unknown>;
-    return this.extraction.edit(uuid(runId), uuid(itemId), { sourceVersionId: b.sourceVersionId, text: b.text, owner: b.owner, due: b.due }, userId);
+    return this.extraction.edit(uuid(runId), uuid(itemId), { sourceVersionId: b.sourceVersionId, text: b.text, owner: b.owner, due: b.due, dueEarliest: b.dueEarliest, dueLatest: b.dueLatest, dueEvent: b.dueEvent }, userId);
   }
 }
