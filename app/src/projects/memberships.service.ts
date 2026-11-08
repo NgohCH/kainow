@@ -7,7 +7,7 @@ import { PG_POOL } from '../db/database.module';
 import { isCalendarDate } from '../extraction/due';
 import { type ProjectContext, ProjectAccess } from './access.service';
 import { canManageRole } from './matrix';
-import { type MembershipRow, type ProjectRole, membershipState, separationCheck } from './membership';
+import { type MembershipRow, type ProjectRole, membershipState, requiredRolesCheck, separationCheck } from './membership';
 
 export const PROJECT_ROLES: readonly ProjectRole[] = ['pm', 'deputy_pm', 'owner', 'sponsor', 'member'];
 
@@ -201,6 +201,15 @@ export class MembershipsService {
     const at = this.now();
     return this.tx(async (c) => {
       const { ctx, row } = await this.loadForChange(c, user, membershipId);
+      // Arrange a replacement before removing a required role (Product Summary §4); a Draft may be incomplete.
+      if (ctx.project.status !== 'draft') {
+        const before = requiredRolesCheck(ctx.rows, ctx.today, 'accepted').missing;
+        const after = requiredRolesCheck(ctx.rows.filter((r) => r.id !== row.id), ctx.today, 'accepted').missing;
+        const lost = after.filter((m) => !before.includes(m));
+        if (lost.length > 0) {
+          throw new ConflictException(`Arrange a replacement first. Without this appointment the project would be missing ${lost.join(' and ')}.`);
+        }
+      }
       await c.query(`UPDATE memberships SET revoked_at = $2, revoked_by = $3, revoke_reason = $4 WHERE id = $1`, [row.id, at, user.id, reason]);
       await this.recordChange(c, 'revoked', row, null, user.id, reason, at, ctx.project.id);
       return { membership: { id: row.id, state: 'revoked' } };

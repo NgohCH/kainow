@@ -123,6 +123,27 @@ describe('project memberships and role management', { skip: SKIP_NO_DB }, () => 
     assert.equal((await resume()).status, 200);
   });
 
+  test('a required role cannot be removed until a replacement is arranged, except in a Draft', async () => {
+    const id = await seedProject(t.pool, {
+      status: 'active',
+      members: [
+        { userId: pm.userId, role: 'pm' },
+        { userId: owner.userId, role: 'owner' },
+        { userId: member.userId, role: 'member' },
+      ],
+    });
+    const memberRow = (await t.pool.query(`SELECT id FROM memberships WHERE project_id = $1 AND role = 'member'`, [id])).rows[0].id;
+    const refused = await pm.request('POST', `/memberships/${memberRow}/revoke`, { reason: 'Left the team' });
+    assert.equal(refused.status, 409);
+    assert.equal(refused.body.message, 'Arrange a replacement first. Without this appointment the project would be missing a Member who is not the Project Manager.');
+    assert.equal((await appoint(pm, id, { userId: ids.x1, role: 'member', startsOn: '2026-11-12' })).status, 201, 'a Scheduled replacement counts');
+    assert.equal((await pm.request('POST', `/memberships/${memberRow}/revoke`, { reason: 'Left the team' })).status, 200);
+
+    const draft = await seedProject(t.pool, { members: [{ userId: pm.userId, role: 'pm' }, { userId: member.userId, role: 'member' }] });
+    const draftMember = (await t.pool.query(`SELECT id FROM memberships WHERE project_id = $1 AND role = 'member'`, [draft])).rows[0].id;
+    assert.equal((await pm.request('POST', `/memberships/${draftMember}/revoke`, { reason: 'Changed plan' })).status, 200);
+  });
+
   test('role managers stay as named while Deferred or Closed', async () => {
     const id = await seedProject(t.pool, { status: 'closed', members: [{ userId: pm.userId, role: 'pm' }, { userId: member.userId, role: 'member' }] });
     const refused = await appoint(member, id, { userId: ids.x1, role: 'member' });

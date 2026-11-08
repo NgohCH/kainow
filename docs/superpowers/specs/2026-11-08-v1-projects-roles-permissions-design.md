@@ -41,6 +41,7 @@ Dates follow the documents: membership starts at 00:00 UTC+8 on its start date; 
 - **Required roles** for a project: exactly one PM; at least one Member who is a different person from the PM; at least one Owner or Sponsor. At most one Owner; any number of Sponsors and Deputy PMs.
 - **Gates.** Draft may be incomplete. Draft → Planned needs the required roles accepted (Scheduled or Active memberships count). Planned → Active, Draft → Active (fast track) and Deferred/Closed → Active need the required roles Active and separation valid.
 - **Small teams.** A project with six or fewer distinct people holding non-revoked, non-expired memberships may combine PM, Owner and Sponsor in one person. At seven or more, PM, Owner and Sponsor must be different people. An appointment or acceptance that would make the seventh person while a combination exists is refused with the reason.
+- **Removing a required role.** Outside Draft, revoking an appointment that would leave a required role unfilled (counting Scheduled replacements) is refused: "Arrange a replacement first." Natural expiry still ends access.
 - **Missing accountability.** On an Active project whose required roles are not all Active, the project is flagged; approving or rejecting proposals is refused; existing records stay readable and role repairs stay allowed. Access is never extended to cover the gap.
 - **No silent changes.** Expiry ends access on its date even for a required role. Reopening does not revive expired memberships or invitations.
 
