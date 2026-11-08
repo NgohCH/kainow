@@ -155,6 +155,30 @@ export class InvitationsService {
     return { ...result, delivered };
   }
 
+  /**
+   * A Member invitation issued inside the caller's transaction (authorising a task for someone not yet in the
+   * project). Reuses an open invitation to the same address; the email is sent by calling `deliver` after commit.
+   */
+  async issueMemberInvitation(c: PoolClient, projectId: string, email: string, actorId: string, startsOn: string, at: Date) {
+    if (!(await this.org.isEligible(email))) throw new BadRequestException('That address is not in an eligible organisation domain.');
+    const waiting = (
+      await c.query(
+        `SELECT id FROM invitations WHERE project_id = $1 AND email = $2 AND role = 'member' AND kind = 'role' AND status = 'invited' AND expires_at > $3`,
+        [projectId, email, at],
+      )
+    ).rows[0];
+    if (waiting) return { id: waiting.id as string, deliver: async () => true };
+    const name = (await c.query(`SELECT name FROM projects WHERE id = $1`, [projectId])).rows[0].name as string;
+    const issued = await this.issue(
+      c,
+      { project_id: projectId, email, display_name: null, role: 'member', starts_on: startsOn, expires_on: null, invited_by: actorId },
+      name,
+      at,
+    );
+    await writeAudit(c, { at, action: 'invitation.issued', actorUserId: actorId, subjectType: 'project', subjectId: projectId, detail: { invitationId: issued.id, role: 'member', forTask: true } });
+    return { id: issued.id, deliver: () => this.deliver(email, issued.token, name, 'member', issued.expiresAt) };
+  }
+
   private async loadForManager(c: PoolClient, user: AuthUser, invitationId: string, via: 'invitation' | 'appointment' = 'invitation') {
     if (!UUID.test(invitationId)) throw new NotFoundException();
     const r = (await c.query(`SELECT ${COLUMNS} FROM invitations WHERE id = $1 FOR UPDATE`, [invitationId])).rows[0] as InvitationRow | undefined;

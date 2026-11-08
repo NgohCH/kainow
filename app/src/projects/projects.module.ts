@@ -15,6 +15,6 @@ import { ProjectsService } from './projects.service';
 @Module({
   controllers: [OrganisationController, ProjectsController, MembersController, InvitationsController, GrantsController],
   providers: [ProjectAccess, OrganisationService, ProjectsService, MembershipsService, InvitationsService, HoldsService, GrantsService],
-  exports: [ProjectAccess, OrganisationService],
+  exports: [ProjectAccess, OrganisationService, InvitationsService],
 })
 export class ProjectsModule {}
