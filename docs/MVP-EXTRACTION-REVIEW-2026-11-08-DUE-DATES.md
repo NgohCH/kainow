@@ -50,10 +50,33 @@ Checked in the review screen of the running install: an action that needs a date
 
 ## Findings
 
-1. **Bundled sub-actions.** When one row lists sub-actions i, ii, iii with their own owners and dates, the model keeps them as one proposal, and now copies the due wording as written, which the reader does not split. Such items are refused for approval until a reviewer sets a date. Splitting them into one proposal each (an earlier finding) would fix both.
+1. **Bundled sub-actions.** When one row lists sub-actions i, ii, iii with their own owners and dates, the model kept them as one proposal and copied the due wording as written, which the reader did not split. Addressed in the third run below.
 2. **Decisions to questions.** Nine fewer decisions and two more questions is consistent with the new rule, but the items differ from run to run, so this needs the Product Owner's check of each question.
 3. **Few possible answers.** Only 3 of 20 questions came with possible answers. Most questions in these minutes are open ("which central body should coordinate?") rather than either-or.
-4. **Bahasa Melayu deadline words** ("sebelum", "menjelang", "minggu depan") are not read.
+4. **Bahasa Melayu deadline words** ("sebelum", "menjelang", "minggu depan") were not read. Addressed in the third run below.
+
+## Third run: one proposal per sub-action (same day)
+
+Changes since the second run: the prompt asks for one item per sub-action when a row lists several (i, ii, iii); the reader also reads Bahasa Melayu deadline words, bundled date lists ("6, 9 and 11 November respectively", "21 & 28 Oct"), "29 February" without a year, "the following week" and a date in brackets; a reviewer can mark the model's event as not applying.
+
+Synthetic notes: all three at 100% supported and 100% captured (10, 12 and 8 items).
+
+| | Second run | Third run |
+| --- | --- | --- |
+| Proposals | 177 | 205 |
+| Quotes found word for word | 177 of 177 | 205 of 205 |
+| Decisions | 29 | 28 |
+| Open questions (with possible answers) | 20 (3) | 22 (5) |
+| Actions | 104 | 130 |
+| Actions still bundling several sub-actions | 6 | 0 |
+| Action dues read as a day or range | 20 | 44 |
+| Action dues waiting on a named event | 11 | 14 |
+| Needs a date: no due in the notes | 44 | 49 |
+| Needs a date: relative wording or no year, notes give no meeting date | 14 | 15 |
+| Needs a date: a period or repeat | 9 | 8 |
+| Needs a date: wording not read | 6 | 0 |
+
+The rise in actions comes almost all from the minutes with a sub-action table (22 actions became 38, of which 35 now read as dates). The sheet for this run is `real-notes-review-2026-11-08-run3.csv`, outside the repository, with no marks yet.
 
 ## Limits
 
