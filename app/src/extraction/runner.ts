@@ -1,7 +1,8 @@
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import type { Clock } from '../auth/tokens';
-import { can } from '../auth/permissions';
+import { type MembershipRow, effectiveRoles, todayUtc8 } from '../projects/membership';
+import { type ProjectStatus, decide } from '../projects/matrix';
 import { uuidv7 } from '../common/uuid7';
 import { estimateMaxCostMicroMyr } from '../spend/cost';
 import type { SpendService } from '../spend/spend.service';
@@ -40,6 +41,25 @@ interface RunRow {
 export class ExtractionRunner {
   constructor(private readonly d: RunnerDeps) {}
 
+  /** The same project rule as when the run was requested, checked again now: roles Active today, project open. */
+  private async mayStillRun(run: RunRow): Promise<boolean> {
+    const p = await this.d.pool.query<{ project_id: string | null; status: ProjectStatus | null }>(
+      `SELECT s.project_id, p.status FROM source_versions v JOIN sources s ON s.id = v.source_id
+         LEFT JOIN projects p ON p.id = s.project_id WHERE v.id = $1`,
+      [run.source_version_id],
+    );
+    const project = p.rows[0];
+    if (!project?.project_id || !project.status) return false;
+    const m = await this.d.pool.query<MembershipRow>(
+      `SELECT user_id AS "userId", role, to_char(starts_on, 'YYYY-MM-DD') AS "startsOn", to_char(expires_on, 'YYYY-MM-DD') AS "expiresOn",
+              revoked_at AS "revokedAt"
+         FROM memberships WHERE project_id = $1 AND user_id = $2`,
+      [project.project_id, run.requested_by],
+    );
+    const roles = effectiveRoles(m.rows, run.requested_by, todayUtc8(this.d.clock()));
+    return decide({ action: 'extraction.run', roles, status: project.status }).allowed;
+  }
+
   async process(runId: string, attemptNo: number, isLastAttempt: boolean): Promise<RunOutcome> {
     const { pool, spend } = this.d;
     const { rows } = await pool.query<RunRow>(
@@ -70,8 +90,8 @@ export class ExtractionRunner {
       await spend.markUncertain(e.id, 'the worker stopped before the outcome was known');
     }
 
-    // The person may have been disabled, or lost the right, since they asked (A11).
-    if (run.user_status !== 'active' || !can(run.user_role, 'extraction.run')) {
+    // The person may have been disabled, or lost the right in the note's project, since they asked (A11).
+    if (run.user_status !== 'active' || !(await this.mayStillRun(run))) {
       return this.finish(run, 'blocked', 'requester_not_allowed', 'The person who asked is no longer allowed to run extractions.');
     }
 

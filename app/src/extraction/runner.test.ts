@@ -10,6 +10,7 @@ import { MVP_SPEND_SETTINGS } from '../spend/mvp-settings';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { FakeClock } from '../testing/fakes';
 import { UsersService } from '../users/users.service';
+import { seedProject } from '../testing/projects';
 import { ModelBadResponse, ModelCallError, type ModelClient, type ModelRequest, type ModelResult, type RawItem } from './model';
 import { ExtractionRunner } from './runner';
 
@@ -38,6 +39,7 @@ describe('extraction runner', { skip: SKIP_NO_DB }, () => {
   let spend: SpendService;
   let userId: string;
   let versionId: string;
+  let projectId: string;
   const migrationsDir = loadDatabaseConfig({ DATABASE_URL: 'x' }).migrationsDir;
 
   before(() => {
@@ -49,7 +51,7 @@ describe('extraction runner', { skip: SKIP_NO_DB }, () => {
 
   async function addVersion(text: string): Promise<string> {
     const sourceId = uuidv7();
-    await pool.query('INSERT INTO sources (id, title, created_by, created_at) VALUES ($1, $2, $3, $4)', [sourceId, 'T', userId, clock.now()]);
+    await pool.query('INSERT INTO sources (id, title, created_by, created_at, project_id) VALUES ($1, $2, $3, $4, $5)', [sourceId, 'T', userId, clock.now(), projectId]);
     const id = uuidv7();
     await pool.query(
       `INSERT INTO source_versions (id, source_id, version_no, origin, text_content, text_sha256, char_count, created_by, created_at)
@@ -79,6 +81,7 @@ describe('extraction runner', { skip: SKIP_NO_DB }, () => {
     spend = new SpendService(pool, clock.now);
     userId = (await new UsersService(pool, clock.now).create({ email: 'admin@example.org', displayName: 'Admin' })).id;
     await new SpendSettingsService(pool, clock.now).apply(MVP_SPEND_SETTINGS, userId);
+    projectId = await seedProject(pool, { members: [{ userId, role: 'pm' }] });
     versionId = await addVersion(NOTES);
   });
 
@@ -190,6 +193,23 @@ describe('extraction runner', { skip: SKIP_NO_DB }, () => {
     const model = new FakeModel(() => answer([]));
     assert.equal(await runner(model).process(id, 1, false), 'blocked');
     assert.equal((await run(id)).failure_code, 'requester_not_allowed');
+    assert.equal(model.calls.length, 0);
+  });
+
+  test('a requester who no longer holds a role that may run extractions in the project is blocked', async () => {
+    const id = await newRun();
+    await pool.query('UPDATE memberships SET revoked_at = now() WHERE project_id = $1', [projectId]);
+    const model = new FakeModel(() => answer([]));
+    assert.equal(await runner(model).process(id, 1, false), 'blocked');
+    assert.equal((await run(id)).failure_code, 'requester_not_allowed');
+    assert.equal(model.calls.length, 0);
+  });
+
+  test('a run on a Deferred project is blocked', async () => {
+    const id = await newRun();
+    await pool.query("UPDATE projects SET status = 'deferred' WHERE id = $1", [projectId]);
+    const model = new FakeModel(() => answer([]));
+    assert.equal(await runner(model).process(id, 1, false), 'blocked');
     assert.equal(model.calls.length, 0);
   });
 

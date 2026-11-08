@@ -92,7 +92,7 @@ export class NotesService {
     return title.trim();
   }
 
-  async createSource(input: { title?: unknown; content: NewContent; actorUserId: string }): Promise<{ source: SourceSummary; version: VersionSummary }> {
+  async createSource(input: { projectId: string; title?: unknown; content: NewContent; actorUserId: string }): Promise<{ source: SourceSummary; version: VersionSummary }> {
     const prepared = await this.prepare(input.content);
     const title = this.checkTitle(input.title ?? (prepared.filename ? prepared.filename.replace(/\.[^.]*$/, '') || prepared.filename : undefined));
     const at = this.now();
@@ -100,7 +100,9 @@ export class NotesService {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query('INSERT INTO sources (id, title, created_by, created_at) VALUES ($1, $2, $3, $4)', [sourceId, title, input.actorUserId, at]);
+      await client.query('INSERT INTO sources (id, title, created_by, created_at, project_id) VALUES ($1, $2, $3, $4, $5)', [
+        sourceId, title, input.actorUserId, at, input.projectId,
+      ]);
       const version = await this.insertVersion(client, sourceId, 1, prepared, input.actorUserId, at);
       await writeAudit(client, {
         at,
@@ -195,13 +197,15 @@ export class NotesService {
     return rows[0];
   }
 
-  async list(): Promise<SourceSummary[]> {
+  /** The notes of one project. Notes from before projects belong to none and are never listed. */
+  async list(projectId: string): Promise<SourceSummary[]> {
     const { rows } = await this.pool.query<SourceSummary>(
       `SELECT s.id, s.title, s.created_at AS "createdAt",
               max(v.version_no)::int AS "latestVersion", count(v.id)::int AS "versionCount"
          FROM sources s JOIN source_versions v ON v.source_id = s.id
-        WHERE s.status = 'active'
+        WHERE s.status = 'active' AND s.project_id = $1
         GROUP BY s.id ORDER BY s.created_at DESC, s.id DESC`,
+      [projectId],
     );
     return rows;
   }

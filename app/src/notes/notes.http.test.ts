@@ -7,6 +7,7 @@ import { createApp } from '../bootstrap';
 import { loadConfig } from '../config';
 import { runMigrations } from '../db/migrate';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
+import { seedWorkingProject } from '../testing/projects';
 import { CaptureSender, FakeClock, testEnv } from '../testing/fakes';
 import { makeDocx, makePdf, makeZip } from '../testing/files';
 import { UsersService } from '../users/users.service';
@@ -15,6 +16,7 @@ import { MAX_TEXT_CHARS, MAX_UPLOAD_BYTES } from './text';
 const EMAIL = 'admin@example.org';
 
 describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
+  let projectId: string;
   let app: INestApplication;
   let pool: Pool;
   let base: string;
@@ -40,6 +42,7 @@ describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
     });
     cookie = (verify.headers.getSetCookie()[0] ?? '').split(';')[0];
     csrf = ((await verify.json()) as { csrfToken: string }).csrfToken;
+    projectId = await seedWorkingProject(pool, (await pool.query('SELECT id FROM users WHERE email = $1', [EMAIL])).rows[0].id);
   });
   afterEach(async () => {
     await app?.close();
@@ -67,19 +70,19 @@ describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
 
   test('every notes route needs a signed-in person', async () => {
     const id = '0197c3a0-0000-7000-8000-000000000000';
-    assert.equal((await json('POST', '/notes', { title: 't', text: 'x' }, false)).status, 401);
-    assert.equal((await json('GET', '/notes', undefined, false)).status, 401);
+    assert.equal((await json('POST', `/projects/${projectId}/notes`, { title: 't', text: 'x' }, false)).status, 401);
+    assert.equal((await json('GET', `/projects/${projectId}/notes`, undefined, false)).status, 401);
     assert.equal((await json('GET', `/notes/${id}`, undefined, false)).status, 401);
     assert.equal((await json('POST', `/notes/${id}/versions`, { text: 'x' }, false)).status, 401);
     assert.equal((await json('GET', `/notes/${id}/versions/1`, undefined, false)).status, 401);
     assert.equal((await json('GET', `/notes/${id}/versions/1/original`, undefined, false)).status, 401);
     const form = new FormData();
     form.set('file', new Blob(['hello']), 'a.txt');
-    assert.equal((await fetch(`${base}/notes/upload`, { method: 'POST', body: form })).status, 401);
+    assert.equal((await fetch(`${base}/projects/${projectId}/notes/upload`, { method: 'POST', body: form })).status, 401);
   });
 
   test('pasted notes are stored as normalised version 1 and can be read back', async () => {
-    const created = await json('POST', '/notes', { title: '  Weekly sync ', text: 'Ali: ship Friday\r\nSam: café' });
+    const created = await json('POST', `/projects/${projectId}/notes`, { title: '  Weekly sync ', text: 'Ali: ship Friday\r\nSam: café' });
     assert.equal(created.status, 201);
     assert.equal(created.body.source.title, 'Weekly sync');
     assert.equal(created.body.version.versionNo, 1);
@@ -92,12 +95,12 @@ describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.equal(v.body.version.text, 'Ali: ship Friday\nSam: café');
     const one = await json('GET', `/notes/${sourceId}`);
     assert.equal(one.body.versions.length, 1);
-    const list = await json('GET', '/notes');
+    const list = await json('GET', `/projects/${projectId}/notes`);
     assert.deepEqual(list.body.sources.map((s: any) => [s.title, s.latestVersion, s.versionCount]), [['Weekly sync', 1, 1]]);
   });
 
   test('a changed text is a new version, an identical one is refused, and old versions stay as they were', async () => {
-    const { body } = await json('POST', '/notes', { title: 'T', text: 'first' });
+    const { body } = await json('POST', `/projects/${projectId}/notes`, { title: 'T', text: 'first' });
     const id = body.source.id;
     const v2 = await json('POST', `/notes/${id}/versions`, { text: 'second' });
     assert.equal(v2.status, 201);
@@ -109,7 +112,7 @@ describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
   });
 
   test('two people adding a version at the same moment get different numbers', async () => {
-    const { body } = await json('POST', '/notes', { title: 'T', text: 'base' });
+    const { body } = await json('POST', `/projects/${projectId}/notes`, { title: 'T', text: 'base' });
     const id = body.source.id;
     const results = await Promise.all(['a', 'b', 'c', 'd'].map((t) => json('POST', `/notes/${id}/versions`, { text: t })));
     assert.ok(results.every((r) => r.status === 201));
@@ -124,7 +127,7 @@ describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
       ['sync.pdf', makePdf(['Ali will email Sam.']), /Ali will email Sam\./],
     ];
     for (const [name, bytes, re] of files) {
-      const created = await upload('/notes/upload', name, bytes);
+      const created = await upload(`/projects/${projectId}/notes/upload`, name, bytes);
       assert.equal(created.status, 201, `${name}: ${JSON.stringify(created.body)}`);
       assert.equal(created.body.source.title, name.replace(/\.[^.]+$/, ''));
       const { id } = created.body.source;
@@ -140,7 +143,7 @@ describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
   });
 
   test('an upload can be a new version of existing notes, and a title can be given', async () => {
-    const first = await upload('/notes/upload', 'a.txt', Buffer.from('one'), 'Board meeting');
+    const first = await upload(`/projects/${projectId}/notes/upload`, 'a.txt', Buffer.from('one'), 'Board meeting');
     assert.equal(first.body.source.title, 'Board meeting');
     const id = first.body.source.id;
     const second = await upload(`/notes/${id}/versions/upload`, 'b.docx', makeDocx(['two']));
@@ -150,7 +153,7 @@ describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
   });
 
   test('a pasted version has no original to download', async () => {
-    const { body } = await json('POST', '/notes', { title: 'T', text: 'x' });
+    const { body } = await json('POST', `/projects/${projectId}/notes`, { title: 'T', text: 'x' });
     assert.equal((await fetch(`${base}/notes/${body.source.id}/versions/1/original`, { headers: { Cookie: cookie, 'X-CSRF-Token': csrf } })).status, 404);
   });
 
@@ -165,44 +168,44 @@ describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
       ['bomb.docx', makeZip([{ name: 'word/document.xml', data: Buffer.alloc(60 * 1024 * 1024, 0x20) }]), 400, /too large|too much/],
     ];
     for (const [name, bytes, status, re] of cases) {
-      const r = await upload('/notes/upload', name, bytes);
+      const r = await upload(`/projects/${projectId}/notes/upload`, name, bytes);
       assert.equal(r.status, status, `${name}: ${JSON.stringify(r.body)}`);
       assert.match(JSON.stringify(r.body), re, name);
     }
-    const tooBig = await upload('/notes/upload', 'big.txt', Buffer.alloc(MAX_UPLOAD_BYTES + 1, 0x61));
+    const tooBig = await upload(`/projects/${projectId}/notes/upload`, 'big.txt', Buffer.alloc(MAX_UPLOAD_BYTES + 1, 0x61));
     assert.equal(tooBig.status, 413);
-    assert.deepEqual((await json('GET', '/notes')).body.sources, []);
+    assert.deepEqual((await json('GET', `/projects/${projectId}/notes`)).body.sources, []);
   });
 
   test('a request needs exactly one of pasted text or a file', async () => {
     const form = new FormData();
     form.set('title', 'No file');
-    const res = await fetch(`${base}/notes/upload`, { method: 'POST', headers: { Cookie: cookie, 'X-CSRF-Token': csrf }, body: form });
+    const res = await fetch(`${base}/projects/${projectId}/notes/upload`, { method: 'POST', headers: { Cookie: cookie, 'X-CSRF-Token': csrf }, body: form });
     assert.equal(res.status, 400);
-    assert.equal((await json('POST', '/notes', { title: 'T' })).status, 400);
-    assert.equal((await json('POST', '/notes', { title: 'T', text: 5 })).status, 400);
+    assert.equal((await json('POST', `/projects/${projectId}/notes`, { title: 'T' })).status, 400);
+    assert.equal((await json('POST', `/projects/${projectId}/notes`, { title: 'T', text: 5 })).status, 400);
   });
 
   test('titles are required and limited', async () => {
     for (const title of [undefined, '', '   ', 'x'.repeat(201), 5]) {
-      assert.equal((await json('POST', '/notes', { title, text: 'x' })).status, 400, JSON.stringify(title));
+      assert.equal((await json('POST', `/projects/${projectId}/notes`, { title, text: 'x' })).status, 400, JSON.stringify(title));
     }
   });
 
   test('long pasted notes work up to the limit, and not beyond it', async () => {
-    const atLimit = await json('POST', '/notes', { title: 'Long', text: 'a'.repeat(MAX_TEXT_CHARS) });
+    const atLimit = await json('POST', `/projects/${projectId}/notes`, { title: 'Long', text: 'a'.repeat(MAX_TEXT_CHARS) });
     assert.equal(atLimit.status, 201);
     assert.equal(atLimit.body.version.charCount, MAX_TEXT_CHARS);
-    const over = await json('POST', '/notes', { title: 'Longer', text: 'a'.repeat(MAX_TEXT_CHARS + 1) });
+    const over = await json('POST', `/projects/${projectId}/notes`, { title: 'Longer', text: 'a'.repeat(MAX_TEXT_CHARS + 1) });
     assert.equal(over.status, 400);
-    const huge = await json('POST', '/notes', { title: 'Huge', text: 'a'.repeat(5 * 1024 * 1024) });
+    const huge = await json('POST', `/projects/${projectId}/notes`, { title: 'Huge', text: 'a'.repeat(5 * 1024 * 1024) });
     assert.equal(huge.status, 413);
   });
 
   test('ids and version numbers that make no sense are a plain 404', async () => {
     assert.equal((await json('GET', '/notes/not-an-id')).status, 404);
     assert.equal((await json('GET', '/notes/0197c3a0-0000-7000-8000-000000000000')).status, 404);
-    const { body } = await json('POST', '/notes', { title: 'T', text: 'x' });
+    const { body } = await json('POST', `/projects/${projectId}/notes`, { title: 'T', text: 'x' });
     for (const n of ['0', '-1', 'abc', '1.5', '99999999999']) {
       assert.equal((await json('GET', `/notes/${body.source.id}/versions/${n}`)).status, 404, n);
     }
@@ -211,9 +214,9 @@ describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
 
   test('the audit trail records what was imported but never the note text', async () => {
     const secret = 'The merger price is 4.2 million';
-    const { body } = await json('POST', '/notes', { title: 'Confidential', text: secret });
+    const { body } = await json('POST', `/projects/${projectId}/notes`, { title: 'Confidential', text: secret });
     await json('POST', `/notes/${body.source.id}/versions`, { text: secret + ' (revised)' });
-    await upload('/notes/upload', 'x.docx', makeDocx([secret + ' upload']));
+    await upload(`/projects/${projectId}/notes/upload`, 'x.docx', makeDocx([secret + ' upload']));
     const { rows } = await pool.query("SELECT action, detail FROM audit_events WHERE action LIKE 'note.%' ORDER BY occurred_at, id");
     assert.deepEqual(rows.map((r) => r.action).sort(), ['note.created', 'note.created', 'note.version_added']);
     assert.ok(!JSON.stringify(rows).includes('merger'));
@@ -223,7 +226,7 @@ describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
   });
 
   test('a stored version cannot be changed or deleted, even by direct database access', async () => {
-    const { body } = await json('POST', '/notes', { title: 'T', text: 'original' });
+    const { body } = await json('POST', `/projects/${projectId}/notes`, { title: 'T', text: 'original' });
     await assert.rejects(pool.query("UPDATE source_versions SET text_content = 'edited'"), /immutable/);
     await assert.rejects(pool.query('DELETE FROM source_versions'), /immutable/);
     await assert.rejects(pool.query('TRUNCATE source_versions'), /immutable|cannot truncate/);

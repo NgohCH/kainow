@@ -55,3 +55,19 @@ export async function seedProject(
   }
   return id;
 }
+
+/**
+ * An Active project where `userId` is Project Manager and Owner, with a separate Member so no required role is
+ * missing. For tests of note, extraction and review features that are not about project rules.
+ */
+export async function seedWorkingProject(pool: Pool, userId: string): Promise<string> {
+  const other = await seedUser(pool, `member-${uuidv7().slice(-12)}@example.org`);
+  return seedProject(pool, {
+    status: 'active',
+    members: [
+      { userId, role: 'pm' },
+      { userId, role: 'owner' },
+      { userId: other, role: 'member' },
+    ],
+  });
+}
