@@ -5,7 +5,7 @@ import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { isCalendarDate } from '../extraction/due';
-import { type ProjectContext, ProjectAccess } from './access.service';
+import { type ProjectContext, ProjectAccess, managesRoles } from './access.service';
 import { type ClosureOutcome, STAGES, checkTransition } from './lifecycle';
 import { membershipState, requiredRolesCheck, separationCheck } from './membership';
 import { type ProjectStatus, PROJECT_STATUSES } from './matrix';
@@ -128,7 +128,7 @@ export class ProjectsService {
     for (const id of ids) {
       const ctx = await this.access.context(user, id);
       const p = await this.summary(id);
-      projects.push({ ...p, myRoles: ctx.roles, missingAccountability: ctx.missingAccountability });
+      projects.push({ ...p, myRoles: ctx.roles, missingAccountability: ctx.missingAccountability, onHold: managesRoles(ctx) && ctx.onHold });
     }
     projects.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
     if (user.role !== 'enterprise_administrator') return { projects };
@@ -222,11 +222,13 @@ export class ProjectsService {
         startsOn: m.startsOn,
         expiresOn: m.expiresOn,
         state: membershipState(m, ctx.today),
+        ...(managesRoles(ctx) && membershipState(m, ctx.today) === 'on_hold' ? { holdReason: m.holdReason ?? null } : {}),
       })),
       myRoles: ctx.roles,
       isAdmin: ctx.isAdmin,
       missingAccountability: ctx.missingAccountability,
       missingRoles: ctx.missingRoles,
+      onHold: managesRoles(ctx) && ctx.onHold,
     };
   }
 

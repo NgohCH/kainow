@@ -29,6 +29,12 @@ export class CaptureSender implements CodeSender {
     this.invitations.push({ email, link });
   }
 
+  readonly holdAlerts: { email: string; projectName: string; link: string }[] = [];
+
+  async sendHoldAlert(email: string, projectName: string, link: string): Promise<void> {
+    this.holdAlerts.push({ email, projectName, link });
+  }
+
   lastInvitation(email: string): string {
     const found = [...this.invitations].reverse().find((s) => s.email === email);
     if (!found) throw new Error(`no invitation was sent to ${email}`);

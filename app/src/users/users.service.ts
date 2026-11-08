@@ -1,10 +1,13 @@
-import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable, Logger, NotFoundException, Optional } from '@nestjs/common';
 import type { Pool } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { normaliseEmail } from '../auth/auth.service';
-import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
+import { CLOCK, CODE_SENDER, type AuthUser, type Clock, type CodeSender } from '../auth/tokens';
+import { APP_CONFIG, type AppConfig } from '../config';
+import { alertRecipients, holdMembershipsOf } from '../projects/holds';
+import { todayUtc8 } from '../projects/membership';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -13,6 +16,8 @@ export class UsersService {
   constructor(
     @Inject(PG_POOL) private readonly pool: Pool,
     @Inject(CLOCK) private readonly clock: Clock,
+    @Optional() @Inject(CODE_SENDER) private readonly sender?: CodeSender,
+    @Optional() @Inject(APP_CONFIG) private readonly config?: AppConfig,
   ) {}
 
   /** MVP: every user is an Enterprise Administrator (decision R03). */
@@ -67,13 +72,14 @@ export class UsersService {
       throw new NotFoundException();
     }
     const now = this.clock();
+    const alerts: Array<{ email: string; projectId: string; projectName: string }> = [];
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
       const admins = await client.query<{ id: string }>(
         `SELECT id FROM users WHERE role = 'enterprise_administrator' AND status = 'active' ORDER BY id FOR UPDATE`,
       );
-      const target = await client.query<{ status: string }>('SELECT status FROM users WHERE id = $1', [id]);
+      const target = await client.query<{ status: string; role: string }>('SELECT status, role FROM users WHERE id = $1', [id]);
       if (!target.rows[0]) {
         throw new NotFoundException();
       }
@@ -81,19 +87,34 @@ export class UsersService {
         await client.query('COMMIT');
         return;
       }
-      if (admins.rows.length <= 1) {
+      if (target.rows[0].role === 'enterprise_administrator' && admins.rows.length <= 1) {
         throw new ConflictException('The last active administrator cannot be disabled');
       }
       await client.query(`UPDATE users SET status = 'disabled', updated_at = $2 WHERE id = $1`, [id, now]);
       await client.query('UPDATE sessions SET revoked_at = $2 WHERE user_id = $1 AND revoked_at IS NULL', [id, now]);
       await client.query('UPDATE login_codes SET consumed_at = $2 WHERE user_id = $1 AND consumed_at IS NULL', [id, now]);
-      await writeAudit(client, { at: now, action: 'user.disabled', actorUserId, subjectType: 'user', subjectId: id });
+      // Current project memberships go On Hold for investigation (V1.0 account lifecycle §4).
+      const today = todayUtc8(now);
+      const held = await holdMembershipsOf(client, id, actorUserId, now, today);
+      for (const h of held) {
+        for (const email of await alertRecipients(client, h.projectId, id, today)) alerts.push({ email, ...h });
+      }
+      await writeAudit(client, { at: now, action: 'user.disabled', actorUserId, subjectType: 'user', subjectId: id, detail: { heldProjects: held.length } });
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
       throw err;
     } finally {
       client.release();
+    }
+    // Alerts go out after the change is committed; a failed email does not undo the disable.
+    if (this.sender) {
+      const appUrl = this.config?.appUrl ?? 'http://localhost:3000';
+      for (const a of alerts) {
+        await this.sender
+          .sendHoldAlert(a.email, a.projectName, `${appUrl}/#/projects/${a.projectId}/people`)
+          .catch((err: Error) => new Logger('UsersService').warn(`Hold alert to a project manager was not sent: ${err.message}`));
+      }
     }
   }
 

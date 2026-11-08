@@ -10,6 +10,7 @@ const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface MembershipRecord extends MembershipRow {
   id: string;
+  holdReason?: string | null;
   displayName: string;
   email: string;
 }
@@ -24,6 +25,13 @@ export interface ProjectContext {
   /** An Active project whose required roles are not all Active today. */
   missingAccountability: boolean;
   missingRoles: string[];
+  /** A membership in this project is On Hold and needs investigating. */
+  onHold: boolean;
+}
+
+/** People who manage roles here (or the Administrator) see holds and their reasons. */
+export function managesRoles(ctx: ProjectContext): boolean {
+  return ctx.isAdmin || ctx.roles.some((r) => r === 'pm' || r === 'owner' || r === 'sponsor');
 }
 
 type Db = Pool | PoolClient;
@@ -55,6 +63,7 @@ export class ProjectAccess {
     const m = await db.query(
       `SELECT m.id, m.user_id AS "userId", m.role, to_char(m.starts_on, 'YYYY-MM-DD') AS "startsOn",
               to_char(m.expires_on, 'YYYY-MM-DD') AS "expiresOn", m.revoked_at AS "revokedAt",
+              m.held_at AS "heldAt", m.restored_at AS "restoredAt", m.hold_reason AS "holdReason",
               u.display_name AS "displayName", u.email
          FROM memberships m JOIN users u ON u.id = m.user_id
         WHERE m.project_id = $1 ORDER BY m.starts_on, m.id`,
@@ -73,6 +82,7 @@ export class ProjectAccess {
       today,
       missingAccountability: missing,
       missingRoles: missing ? required.missing : [],
+      onHold: rows.some((r) => membershipState(r, today) === 'on_hold'),
     };
   }
 
