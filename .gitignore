@@ -1,0 +1,4 @@
+# Install settings: holds the database password, AUTH_SECRET and the AI key.
+.env
+# Backups made with the steps in INSTALL.md.
+*.dump

@@ -2,11 +2,11 @@
 
 This starts Kainow with Docker Compose: a PostgreSQL database, the Kainow server (which also serves the review screen) and the background worker that talks to the AI. It is for one computer, reached at `http://localhost:3000`. There is no HTTPS and nothing is reachable from other computers.
 
-**Status: this package has not been built or run with Docker yet, and the Product Owner has deferred that first test to later.** The sandbox it was written in has no Docker daemon and cannot reach Docker Hub. What was checked instead: the compose file validates (`docker compose config`), and the exact contents of the final image (production dependencies, compiled code, migrations, the built screen) were assembled in a clean folder and run against PostgreSQL 16: migrate, create the administrator, sign in, open the screen, run the worker. If a step below fails on your computer, the first build is the most likely place, and I want to hear about it.
+**Status: first built and run on 8 November 2026** on Windows 11, with Docker Desktop 29.9.2 (WSL 2 engine) and Compose 5.6.1. These steps worked as written: the build, the migrations, creating the administrator, saving the spend settings, signing in at `http://localhost:3000` in a browser, uploading a Word document, the Windows backup, and every step of "Check that it works" below. One extraction of a synthetic note with the real `gpt-6.1-sol` returned 11 proposals, all quotes found, for MYR 0.06. If a step fails on your computer, I want to hear about it.
 
 ## Windows
 
-This guide was written on Linux and the PowerShell lines have not been run on Windows. The repository now forces Linux line endings (`.gitattributes`), so a Windows checkout does not break files inside the containers. If you cloned before that was added and see odd errors such as `\r` in a message, clone again. Use Docker Desktop with the WSL 2 engine (its default).
+The PowerShell lines in this guide were run in Windows PowerShell 5.1 on 8 November 2026 and work as written. The repository now forces Linux line endings (`.gitattributes`), so a Windows checkout does not break files inside the containers. If you cloned before that was added and see odd errors such as `\r` in a message, clone again. Use Docker Desktop with the WSL 2 engine (its default).
 
 ## What you need
 
@@ -64,6 +64,8 @@ This guide was written on Linux and the PowerShell lines have not been run on Wi
    ```
    docker compose logs api --tail 20
    ```
+
+   A new code is made at most once a minute. If you ask again sooner, the screen looks the same but no new code is made, so use the latest code in the log.
 
 ## Check that it works
 
