@@ -1,4 +1,5 @@
 import type { Usage } from '../spend/cost';
+import { isCalendarDate } from './due';
 
 export const ITEM_KINDS = ['decision', 'action', 'question', 'risk'] as const;
 export type ItemKind = (typeof ITEM_KINDS)[number];
@@ -8,7 +9,15 @@ export interface RawItem {
   text: string;
   owner: string | null;
   due: string | null;
+  due_event: string | null;
+  alternatives: string[];
   source_quote: string;
+}
+
+/** The model's answer: the meeting date the notes state (or null) and the proposed items. */
+export interface ModelAnswer {
+  meetingDate: string | null;
+  items: RawItem[];
 }
 
 export interface ModelRequest {
@@ -19,8 +28,7 @@ export interface ModelRequest {
   timeoutMs: number;
 }
 
-export interface ModelResult {
-  items: RawItem[];
+export interface ModelResult extends ModelAnswer {
   usage: Usage;
 }
 
@@ -59,19 +67,22 @@ const SCHEMA = {
   schema: {
     type: 'object',
     additionalProperties: false,
-    required: ['items'],
+    required: ['meeting_date', 'items'],
     properties: {
+      meeting_date: { type: ['string', 'null'] },
       items: {
         type: 'array',
         items: {
           type: 'object',
           additionalProperties: false,
-          required: ['kind', 'text', 'owner', 'due', 'source_quote'],
+          required: ['kind', 'text', 'owner', 'due', 'due_event', 'alternatives', 'source_quote'],
           properties: {
             kind: { type: 'string', enum: [...ITEM_KINDS] },
             text: { type: 'string' },
             owner: { type: ['string', 'null'] },
             due: { type: ['string', 'null'] },
+            due_event: { type: ['string', 'null'] },
+            alternatives: { type: 'array', items: { type: 'string' } },
             source_quote: { type: 'string' },
           },
         },
@@ -81,9 +92,14 @@ const SCHEMA = {
 };
 
 export const MAX_ITEMS = 200;
+export const MAX_ALTERNATIVES = 4;
 
-/** Checks the model's JSON. Anything off is a bad response; nothing is repaired or guessed. */
-export function parseItems(content: unknown, usage: Usage): RawItem[] {
+/**
+ * Checks the model's JSON. Anything off is a bad response; nothing is repaired or guessed. A meeting date
+ * that is not a real day is dropped (null), not refused. The newer fields may be absent from an answer
+ * (read as null or an empty list), but a wrong type is a bad response.
+ */
+export function parseAnswer(content: unknown, usage: Usage): ModelAnswer {
   let data: unknown;
   try {
     data = JSON.parse(String(content));
@@ -95,10 +111,13 @@ export function parseItems(content: unknown, usage: Usage): RawItem[] {
     throw new ModelBadResponse('The answer did not contain a usable list of items', usage);
   }
   const optional = (v: unknown): string | null | undefined => (v === null ? null : typeof v === 'string' ? v : undefined);
-  return list.map((raw, i) => {
+  const meetingDate = (data as { meeting_date?: unknown }).meeting_date;
+  const items = list.map((raw, i) => {
     const o = (raw ?? {}) as Record<string, unknown>;
     const owner = optional(o.owner);
     const due = optional(o.due);
+    const dueEvent = o.due_event === undefined ? null : optional(o.due_event);
+    const alternatives = o.alternatives === undefined ? [] : o.alternatives;
     if (
       !(ITEM_KINDS as readonly unknown[]).includes(o.kind) ||
       typeof o.text !== 'string' ||
@@ -106,12 +125,19 @@ export function parseItems(content: unknown, usage: Usage): RawItem[] {
       typeof o.source_quote !== 'string' ||
       o.source_quote === '' ||
       owner === undefined ||
-      due === undefined
+      due === undefined ||
+      dueEvent === undefined ||
+      !Array.isArray(alternatives) ||
+      !alternatives.every((a) => typeof a === 'string')
     ) {
       throw new ModelBadResponse(`Item ${i + 1} in the answer was malformed`, usage);
     }
-    return { kind: o.kind as ItemKind, text: o.text, owner, due, source_quote: o.source_quote };
+    const kind = o.kind as ItemKind;
+    const answers =
+      kind === 'question' ? (alternatives as string[]).map((a) => a.trim()).filter((a) => a !== '').slice(0, MAX_ALTERNATIVES) : [];
+    return { kind, text: o.text, owner, due, due_event: dueEvent, alternatives: answers, source_quote: o.source_quote };
   });
+  return { meetingDate: isCalendarDate(meetingDate) ? meetingDate : null, items };
 }
 
 /** Calls the OpenAI chat completions API with a strict JSON schema. Needs a key; the sandbox cannot reach it. */
@@ -176,6 +202,6 @@ export class OpenAiModelClient implements ModelClient {
     if (choice?.message?.refusal) {
       throw new ModelBadResponse('The model declined to answer', usage);
     }
-    return { items: parseItems(choice?.message?.content, usage), usage };
+    return { ...parseAnswer(choice?.message?.content, usage), usage };
   }
 }

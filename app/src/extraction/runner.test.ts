@@ -10,7 +10,7 @@ import { MVP_SPEND_SETTINGS } from '../spend/mvp-settings';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { FakeClock } from '../testing/fakes';
 import { UsersService } from '../users/users.service';
-import { ModelBadResponse, ModelCallError, type ModelClient, type ModelRequest, type ModelResult } from './model';
+import { ModelBadResponse, ModelCallError, type ModelClient, type ModelRequest, type ModelResult, type RawItem } from './model';
 import { ExtractionRunner } from './runner';
 
 const NOTES = 'Weekly sync.\nWe agreed to ship on Friday.\nAli will email Sam by Monday.\nok. ok.\nRisk: the vendor may be late.';
@@ -25,7 +25,12 @@ class FakeModel implements ModelClient {
   }
 }
 
-const answer = (items: ModelResult['items']): ModelResult => ({ items, usage: USAGE });
+type FakeItem = Omit<RawItem, 'due_event' | 'alternatives'> & Partial<Pick<RawItem, 'due_event' | 'alternatives'>>;
+const answer = (items: FakeItem[], meetingDate: string | null = null): ModelResult => ({
+  meetingDate,
+  items: items.map((i) => ({ due_event: null, alternatives: [], ...i })),
+  usage: USAGE,
+});
 
 describe('extraction runner', { skip: SKIP_NO_DB }, () => {
   let pool: Pool;
@@ -109,6 +114,27 @@ describe('extraction runner', { skip: SKIP_NO_DB }, () => {
     assert.equal(BigInt(entry.amount_micro_myr), 164_000n, 'the example extraction costs MYR 0.164');
     assert.equal(model.calls.length, 1);
     assert.equal(model.calls[0].modelId, 'gpt-6.1-sol');
+  });
+
+  test('saves the meeting date on the run and due_event and alternatives on each item', async () => {
+    const model = new FakeModel(() =>
+      answer(
+        [
+          { kind: 'question', text: 'Ship Friday or wait?', owner: null, due: null, source_quote: 'We agreed to ship on Friday.', alternatives: ['Ship Friday', 'Wait'] },
+          { kind: 'action', text: 'Ali emails Sam', owner: 'Ali', due: null, due_event: 'after the vendor replies', source_quote: 'Ali will email Sam by Monday.' },
+        ],
+        '2026-11-04',
+      ),
+    );
+    const id = await newRun();
+    assert.equal(await runner(model).process(id, 1, false), 'succeeded');
+    const r = (await pool.query(`SELECT to_char(meeting_date, 'YYYY-MM-DD') AS meeting_date FROM extraction_runs WHERE id = $1`, [id])).rows[0];
+    assert.equal(r.meeting_date, '2026-11-04');
+    const items = (await pool.query('SELECT due_event, alternatives FROM extraction_items WHERE run_id = $1 ORDER BY position', [id])).rows;
+    assert.deepEqual(items[0].alternatives, ['Ship Friday', 'Wait']);
+    assert.equal(items[0].due_event, null);
+    assert.equal(items[1].due_event, 'after the vendor replies');
+    assert.deepEqual(items[1].alternatives, []);
   });
 
   test('a note with a credential is never sent and costs nothing', async () => {

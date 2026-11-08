@@ -20,7 +20,7 @@ import { ExtractionRunner } from './runner';
 
 const EMAIL = 'admin@example.org';
 const USAGE = { inputTokens: 10_000, cachedInputTokens: 0, outputTokens: 2_000 };
-const ITEM = { kind: 'decision' as const, text: 'Ship Friday', owner: null, due: null, source_quote: 'We agreed to ship on Friday.' };
+const ITEM = { kind: 'decision' as const, text: 'Ship Friday', owner: null, due: null, due_event: null, alternatives: [], source_quote: 'We agreed to ship on Friday.' };
 
 describe('extraction over HTTP', { skip: SKIP_NO_DB }, () => {
   let app: INestApplication;
@@ -159,7 +159,7 @@ describe('extraction over HTTP', { skip: SKIP_NO_DB }, () => {
         maxInFlight = Math.max(maxInFlight, inFlight);
         await new Promise((r) => setTimeout(r, delayMs));
         inFlight--;
-        return { items: [ITEM], usage: USAGE };
+        return { meetingDate: null, items: [ITEM], usage: USAGE };
       },
     };
 

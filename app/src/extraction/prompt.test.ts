@@ -26,3 +26,12 @@ test('the prompt asks for the things the human review found missing', () => {
   assert.match(p, /owner[^.]*not[^.]*(approves|approver)/i, 'owner is not the approver');
   assert.match(p, /due[^.]*deadline[^.]*not[^.]*(date of the meeting|event)/i, 'event dates');
 });
+
+test('the prompt asks for the meeting date, due wording and events, and clearly worded questions', () => {
+  const p = EXTRACTION_SYSTEM_PROMPT;
+  assert.match(p, /meeting_date/);
+  assert.match(p, /due_event/);
+  assert.match(p, /decision only when the notes make clear/i);
+  assert.match(p, /propose it as a question/i);
+  assert.match(p, /alternatives/);
+});

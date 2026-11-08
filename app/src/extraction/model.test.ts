@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { findCredentials } from './credentials';
-import { ModelBadResponse, ModelCallError, OpenAiModelClient, parseItems } from './model';
+import { ModelBadResponse, ModelCallError, OpenAiModelClient, parseAnswer } from './model';
 
 const USAGE = { inputTokens: 1, cachedInputTokens: 0, outputTokens: 1 };
 const REQ = { modelId: 'gpt-6.1-sol', system: 's', user: 'u', maxOutputTokens: 100, timeoutMs: 1000 };
@@ -39,7 +39,7 @@ test('ordinary meeting talk is not flagged', () => {
 });
 
 test('the answer is checked item by item and nothing is repaired', () => {
-  assert.equal(parseItems(JSON.stringify({ items: [ITEM] }), USAGE).length, 1);
+  assert.equal(parseAnswer(JSON.stringify({ items: [ITEM] }), USAGE).items.length, 1);
   const bad: unknown[] = [
     'not json',
     JSON.stringify({}),
@@ -52,7 +52,7 @@ test('the answer is checked item by item and nothing is repaired', () => {
     JSON.stringify({ items: [null] }),
   ];
   for (const content of bad) {
-    assert.throws(() => parseItems(content, USAGE), (e: unknown) => e instanceof ModelBadResponse && e.usage === USAGE, String(content));
+    assert.throws(() => parseAnswer(content, USAGE), (e: unknown) => e instanceof ModelBadResponse && e.usage === USAGE, String(content));
   }
 });
 
@@ -116,4 +116,41 @@ test('an answer cut off at the limit or refused is a bad response that is still 
   await assert.rejects(new OpenAiModelClient('k', 'https://example.test/v1', reply(cut)).extract(REQ), (e: unknown) => e instanceof ModelBadResponse && e.usage.outputTokens === 20);
   const refused = { ...ok({}), choices: [{ finish_reason: 'stop', message: { content: null, refusal: 'no' } }] };
   await assert.rejects(new OpenAiModelClient('k', 'https://example.test/v1', reply(refused)).extract(REQ), (e: unknown) => e instanceof ModelBadResponse);
+});
+
+test('parseAnswer returns the meeting date and the new item fields', () => {
+  const q = { ...ITEM, kind: 'question', due_event: 'approval by the Dean', alternatives: ['Go ahead', 'Wait'] };
+  const a = parseAnswer(JSON.stringify({ meeting_date: '2026-11-04', items: [q] }), USAGE);
+  assert.equal(a.meetingDate, '2026-11-04');
+  assert.equal(a.items[0].due_event, 'approval by the Dean');
+  assert.deepEqual(a.items[0].alternatives, ['Go ahead', 'Wait']);
+});
+
+test('a meeting date that is not a real day is stored as null, not refused', () => {
+  for (const meeting_date of ['2026-02-30', '4 Nov 2026', null]) {
+    assert.equal(parseAnswer(JSON.stringify({ meeting_date, items: [ITEM] }), USAGE).meetingDate, null, String(meeting_date));
+  }
+  assert.equal(parseAnswer(JSON.stringify({ items: [ITEM] }), USAGE).meetingDate, null, 'absent');
+});
+
+test('alternatives are trimmed, blanks dropped, capped at 4, and empty for kinds other than question', () => {
+  const alternatives = [' A ', '', 'B', '  ', 'C', 'D', 'E'];
+  const [q, d] = parseAnswer(JSON.stringify({ items: [{ ...ITEM, kind: 'question', alternatives }, { ...ITEM, alternatives: ['X', 'Y'] }] }), USAGE).items;
+  assert.deepEqual(q.alternatives, ['A', 'B', 'C', 'D']);
+  assert.deepEqual(d.alternatives, []);
+  const plain = parseAnswer(JSON.stringify({ items: [ITEM] }), USAGE).items[0];
+  assert.equal(plain.due_event, null);
+  assert.deepEqual(plain.alternatives, []);
+});
+
+test('a malformed due_event or alternatives is a bad response', () => {
+  for (const extra of [{ due_event: 5 }, { alternatives: 'x' }, { alternatives: [1, 2] }]) {
+    const content = JSON.stringify({ items: [{ ...ITEM, ...extra }] });
+    assert.throws(() => parseAnswer(content, USAGE), (e: unknown) => e instanceof ModelBadResponse && e.usage === USAGE, content);
+  }
+});
+
+test('a good OpenAI answer passes the meeting date through', async () => {
+  const client = new OpenAiModelClient('key', 'https://example.test/v1', reply(ok({ meeting_date: '2026-11-04', items: [ITEM] })));
+  assert.equal((await client.extract(REQ)).meetingDate, '2026-11-04');
 });
