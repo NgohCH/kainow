@@ -25,3 +25,6 @@ export function uuidv7(nowMs: number = Date.now()): string {
 export function uuidv7Timestamp(id: string): number {
   return parseInt(id.replace(/-/g, '').slice(0, 12), 16);
 }
+
+/** A canonical UUID (any version). Every id from a path or body is checked with this before reaching the database. */
+export const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;

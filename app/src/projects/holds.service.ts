@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Inject, Inj
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
-import { uuidv7 } from '../common/uuid7';
+import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { type ProjectContext, ProjectAccess } from './access.service';
 import { canManageRole } from './matrix';
@@ -10,7 +10,6 @@ import { membershipState } from './membership';
 import { checkMembershipsAfter } from './memberships.service';
 import { OrganisationService } from './organisation.service';
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
 
 /**

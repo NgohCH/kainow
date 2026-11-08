@@ -1,13 +1,13 @@
 import { ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
+import { UUID } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { type MembershipRow, type ProjectRole, effectiveRoles, membershipState, requiredRolesCheck, todayUtc8 } from './membership';
 import { type GrantKind, type GrantRow, grantGivesAccess } from './grants';
 import { GRANT_ACTIONS, GRANT_READ_ONLY, type ProjectAction, type ProjectStatus, decide } from './matrix';
 
 export const NOT_FOUND = 'Project not found';
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface MembershipRecord extends MembershipRow {
   id: string;

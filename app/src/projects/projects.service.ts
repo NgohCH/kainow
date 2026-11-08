@@ -2,17 +2,17 @@ import { BadRequestException, ConflictException, ForbiddenException, Inject, Inj
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
-import { uuidv7 } from '../common/uuid7';
+import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { isCalendarDate } from '../extraction/due';
 import { type ProjectContext, ProjectAccess, managesGrants, managesRoles } from './access.service';
 import { archiveState } from './archive';
+import { OrganisationService } from './organisation.service';
 import { grantState } from './grants';
 import { type ClosureOutcome, STAGES, checkTransition } from './lifecycle';
-import { membershipState, requiredRolesCheck, separationCheck } from './membership';
+import { type MembershipRow, membershipState, requiredRolesCheck, separationCheck } from './membership';
 import { type ProjectStatus, PROJECT_STATUSES } from './matrix';
 
-const UUID_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** The documents' optional default substages; projects may leave them unused. */
 export const SUBSTAGES: Readonly<Record<string, readonly string[]>> = {
@@ -45,6 +45,7 @@ export class ProjectsService {
     @Inject(PG_POOL) private readonly pool: Pool,
     @Inject(CLOCK) private readonly now: Clock,
     private readonly access: ProjectAccess,
+    private readonly org: OrganisationService,
   ) {}
 
   /** Checks a full or partial set of project details. Missing keys keep `current` values. */
@@ -62,7 +63,7 @@ export class ProjectsService {
     }
     const active = async (id: unknown) =>
       typeof id === 'string' &&
-      /^[0-9a-f-]{36}$/i.test(id) &&
+      UUID.test(id) &&
       ((await db.query(`SELECT 1 FROM departments WHERE id = $1 AND status = 'active'`, [id])).rowCount ?? 0) > 0;
     // A department retired later stays on the projects that already use it; only ones being added must be active.
     const kept = (id: unknown) => current !== undefined && (id === current.owningDepartmentId || current.contributingDepartmentIds.includes(id as string));
@@ -90,6 +91,10 @@ export class ProjectsService {
       const first = ((await client.query(`SELECT 1 FROM projects LIMIT 1`)).rowCount ?? 0) === 0;
       const isAdmin = user.role === 'enterprise_administrator';
       if (first && !isAdmin) throw new ForbiddenException('An Enterprise Administrator creates the first project.');
+      // Later projects are created by eligible existing users; eligibility is checked again now (V1.0 D01).
+      if (!isAdmin && !(await this.org.isEligible(user.email))) {
+        throw new ForbiddenException('Your email domain is no longer eligible; ask an Administrator.');
+      }
       const d = await this.cleanDetails(client, input);
       id = uuidv7(at.getTime());
       await client.query(
@@ -146,18 +151,28 @@ export class ProjectsService {
     projects.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
     if (user.role !== 'enterprise_administrator') return { projects };
     const { rows } = await this.pool.query(
-      `SELECT p.id, p.name, p.status, d.name AS "owningDepartment" FROM projects p JOIN departments d ON d.id = p.owning_department_id ORDER BY lower(p.name), p.id`,
+      `SELECT p.id, p.name, p.status, d.name AS "owningDepartment",
+              COALESCE(json_agg(json_build_object(
+                'displayName', u.display_name, 'role', m.role, 'startsOn', to_char(m.starts_on, 'YYYY-MM-DD'),
+                'expiresOn', to_char(m.expires_on, 'YYYY-MM-DD'), 'revokedAt', m.revoked_at, 'heldAt', m.held_at, 'restoredAt', m.restored_at
+              ) ORDER BY m.starts_on, m.id) FILTER (WHERE m.id IS NOT NULL), '[]') AS members
+         FROM projects p JOIN departments d ON d.id = p.owning_department_id
+         LEFT JOIN memberships m ON m.project_id = p.id LEFT JOIN users u ON u.id = m.user_id
+        GROUP BY p.id, d.name ORDER BY lower(p.name), p.id`,
     );
-    const all = [];
-    for (const r of rows) {
-      const ctx = await this.access.load(r.id, user);
-      all.push({
-        ...r,
-        roleHolders: (ctx?.rows ?? [])
-          .map((m) => ({ displayName: m.displayName, role: m.role, state: membershipState(m, ctx!.today) }))
-          .filter((m) => m.state === 'active' || m.state === 'scheduled'),
-      });
-    }
+    const today = this.access.today();
+    const all = rows.map(({ members, ...r }) => ({
+      ...r,
+      roleHolders: (members as Array<MembershipRow & { displayName: string; heldAt: string | null; restoredAt: string | null; revokedAt: string | null }>)
+        .map((m) => ({
+          ...m,
+          revokedAt: m.revokedAt ? new Date(m.revokedAt) : null,
+          heldAt: m.heldAt ? new Date(m.heldAt) : null,
+          restoredAt: m.restoredAt ? new Date(m.restoredAt) : null,
+        }))
+        .map((m) => ({ displayName: m.displayName, role: m.role, state: membershipState(m, today) }))
+        .filter((m) => m.state === 'active' || m.state === 'scheduled'),
+    }));
     return { projects, all };
   }
 
@@ -299,7 +314,7 @@ export class ProjectsService {
       const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
       if (reason === '') throw new BadRequestException('A reason is required.');
       const to = input.departmentId;
-      if (typeof to !== 'string' || !UUID_ID.test(to)) throw new BadRequestException('Choose an active department.');
+      if (typeof to !== 'string' || !UUID.test(to)) throw new BadRequestException('Choose an active department.');
       const dept = (await client.query(`SELECT id FROM departments WHERE id = $1 AND status = 'active'`, [to])).rows[0];
       if (!dept) throw new BadRequestException('Choose an active department.');
       const from = (await client.query(`SELECT owning_department_id AS d FROM projects WHERE id = $1`, [id])).rows[0].d as string;

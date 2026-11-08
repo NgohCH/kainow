@@ -3,7 +3,7 @@ import { createHash, randomBytes } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, CODE_SENDER, type AuthUser, type Clock, type CodeSender } from '../auth/tokens';
-import { uuidv7 } from '../common/uuid7';
+import { UUID, uuidv7 } from '../common/uuid7';
 import { APP_CONFIG, type AppConfig } from '../config';
 import { PG_POOL } from '../db/database.module';
 import { ProjectAccess } from './access.service';
@@ -37,6 +37,7 @@ interface InvitationRow {
 
 const OUTGOING_ROLES = ['deputy_pm', 'member', 'leave'] as const;
 const HANDOVER_GONE = 'This handover is no longer valid.';
+const ALREADY_ENDED = 'That membership would already have ended.';
 
 const COLUMNS = `id, project_id, email, display_name, role, to_char(starts_on, 'YYYY-MM-DD') AS starts_on,
   to_char(expires_on, 'YYYY-MM-DD') AS expires_on, invited_by, issued_at, expires_at, status, kind, outgoing_membership_id, outgoing_role`;
@@ -105,11 +106,14 @@ export class InvitationsService {
     return { id, token, expiresAt };
   }
 
-  private async deliver(email: string, token: string, projectName: string, role: ProjectRole, expiresAt: Date) {
+  /** Sends the link; false when the email could not be sent, so the manager can send it again. */
+  private async deliver(email: string, token: string, projectName: string, role: ProjectRole, expiresAt: Date): Promise<boolean> {
     try {
       await this.sender.sendInvitation(email, `${this.config.appUrl}/#/invitations/${token}`, projectName, ROLE_LABEL[role], expiresAt);
+      return true;
     } catch {
       console.error('An invitation email could not be delivered');
+      return false;
     }
   }
 
@@ -126,6 +130,12 @@ export class InvitationsService {
       if (!v.allowed) throw new ForbiddenException(v.reason);
       if (!(await this.org.isEligible(email))) throw new BadRequestException('That address is not in an eligible organisation domain.');
       const { startsOn, expiresOn } = cleanDates(ctx.project.createdOn, input.startsOn, input.expiresOn);
+      if (expiresOn !== null && expiresOn < ctx.today) throw new BadRequestException(ALREADY_ENDED);
+      const waiting = await c.query(
+        `SELECT 1 FROM invitations WHERE project_id = $1 AND email = $2 AND role = $3 AND kind = 'role' AND status = 'invited' AND expires_at > $4`,
+        [projectId, email, role, at],
+      );
+      if (waiting.rowCount) throw new ConflictException('An invitation is already waiting; send it again instead.');
       const existing = (await c.query(`SELECT id FROM users WHERE email = $1`, [email])).rows[0];
       // A new Owner or Project Manager replaces the current one when the invitation is accepted.
       if (existing) checkNewAppointment(ctx, { userId: existing.id, role, startsOn, expiresOn, revokedAt: null });
@@ -141,18 +151,18 @@ export class InvitationsService {
       const row = (await c.query(`SELECT ${COLUMNS} FROM invitations WHERE id = $1`, [issued.id])).rows[0] as InvitationRow;
       return { invitation: this.view(row, at) };
     });
-    await this.deliver(email, out!.token, out!.name, role, out!.expiresAt);
-    return result;
+    const delivered = await this.deliver(email, out!.token, out!.name, role, out!.expiresAt);
+    return { ...result, delivered };
   }
 
-  private async loadForManager(c: PoolClient, user: AuthUser, invitationId: string) {
-    if (!/^[0-9a-f-]{36}$/i.test(invitationId)) throw new NotFoundException();
+  private async loadForManager(c: PoolClient, user: AuthUser, invitationId: string, via: 'invitation' | 'appointment' = 'invitation') {
+    if (!UUID.test(invitationId)) throw new NotFoundException();
     const r = (await c.query(`SELECT ${COLUMNS} FROM invitations WHERE id = $1 FOR UPDATE`, [invitationId])).rows[0] as InvitationRow | undefined;
     if (!r) throw new NotFoundException();
     const ctx = await this.access.context(user, r.project_id, c, true);
     const outgoing = r.kind === 'handover' ? ctx.rows.find((m) => m.id === r.outgoing_membership_id) : undefined;
     if (outgoing && outgoing.userId === user.id) return { r, ctx };
-    const v = canManageRole({ target: r.role, roles: ctx.roles, isAdmin: ctx.isAdmin, status: ctx.project.status, via: 'invitation' });
+    const v = canManageRole({ target: r.role, roles: ctx.roles, isAdmin: ctx.isAdmin, status: ctx.project.status, via });
     if (!v.allowed) throw new ForbiddenException(v.reason);
     return { r, ctx };
   }
@@ -172,14 +182,14 @@ export class InvitationsService {
       const row = (await c.query(`SELECT ${COLUMNS} FROM invitations WHERE id = $1`, [issued.id])).rows[0] as InvitationRow;
       return { invitation: this.view(row, at) };
     });
-    await this.deliver(out!.email, out!.token, out!.name, out!.role, out!.expiresAt);
-    return result;
+    const delivered = await this.deliver(out!.email, out!.token, out!.name, out!.role, out!.expiresAt);
+    return { ...result, delivered };
   }
 
   async revoke(user: AuthUser, invitationId: string) {
     const at = this.now();
     return this.tx(async (c) => {
-      const { r } = await this.loadForManager(c, user, invitationId);
+      const { r } = await this.loadForManager(c, user, invitationId, 'appointment');
       if (r.status !== 'invited') throw new ConflictException('Only an unanswered invitation can be revoked.');
       await c.query(`UPDATE invitations SET status = 'revoked', responded_at = $2 WHERE id = $1`, [r.id, at]);
       await writeAudit(c, { at, action: 'invitation.revoked', actorUserId: user.id, subjectType: 'project', subjectId: r.project_id, detail: { invitationId: r.id } });
@@ -218,6 +228,7 @@ export class InvitationsService {
       }
       if (!(await this.org.isEligible(r.email))) throw new ConflictException('That address is not in an eligible organisation domain.');
       if (r.kind === 'handover') return this.acceptHandover(c, ctx, r, user, at);
+      if (r.expires_on !== null && r.expires_on < ctx.today) throw new ConflictException(ALREADY_ENDED);
       const candidate = { userId: user.id, role: r.role, startsOn: r.starts_on, expiresOn: r.expires_on, revokedAt: null };
       checkNewAppointment(ctx, candidate);
       const membershipId = await this.memberships.insertAppointment(c, ctx, candidate, user.id, 'Accepted an invitation', at);
@@ -265,8 +276,8 @@ export class InvitationsService {
       const row = (await c.query(`SELECT ${COLUMNS} FROM invitations WHERE id = $1`, [issued.id])).rows[0] as InvitationRow;
       return { invitation: this.view(row, at) };
     });
-    await this.deliver(email, out!.token, out!.name, 'pm', out!.expiresAt);
-    return result;
+    const delivered = await this.deliver(email, out!.token, out!.name, 'pm', out!.expiresAt);
+    return { ...result, delivered };
   }
 
   /** The switch, in one transaction: outgoing PM revoked ("Handed over"), replacement PM from today, chosen role appointed. */

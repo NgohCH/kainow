@@ -2,13 +2,12 @@ import { BadRequestException, ConflictException, ForbiddenException, Inject, Inj
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
-import { uuidv7 } from '../common/uuid7';
+import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { isCalendarDate } from '../extraction/due';
 import { type ProjectContext, ProjectAccess, managesGrants } from './access.service';
 import { GRANT_KINDS, type GrantKind, type GrantRow, defaultGrantEnd, grantSpanOk, grantState, mayDecide } from './grants';
 
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const NOT_MANAGER = 'Only an Enterprise Administrator, the Owner or a Sponsor can manage Audit and Oversight access.';
 const SPAN = 'Access can be granted for at most 90 days at a time.';
 const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '');

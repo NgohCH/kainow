@@ -25,7 +25,13 @@ export class CaptureSender implements CodeSender {
 
   readonly invitations: { email: string; link: string }[] = [];
 
+  failNextInvitation = false;
+
   async sendInvitation(email: string, link: string): Promise<void> {
+    if (this.failNextInvitation) {
+      this.failNextInvitation = false;
+      throw new Error('mail server unavailable');
+    }
     this.invitations.push({ email, link });
   }
 
