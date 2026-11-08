@@ -35,6 +35,7 @@ describe('human proposals', { skip: SKIP_NO_DB }, () => {
     assert.equal(listed.length, 1);
     assert.equal(listed[0].label, 'Human proposal — no discussion source');
     assert.equal(listed[0].proposedBy, 'mem');
+    assert.deepEqual([listed[0].dueReading.state, listed[0].dueReading.latest], ['exact', '2026-11-30'], 'the written due is read so the form can pre-fill it');
     const a = await owner.request('POST', `/proposals/${r.body.proposal.id}/authorise`, { assigneeId: ids.mem, dueOn: '2026-11-30' });
     assert.equal(a.status, 201, JSON.stringify(a.body));
     assert.equal(a.body.record.kind, 'task');

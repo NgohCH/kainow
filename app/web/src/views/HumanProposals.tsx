@@ -1,5 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
-import { ApiError, api } from '../api.ts';
+import { ApiError, api, type DueReading } from '../api.ts';
 import { formatWhen } from '../format.ts';
 import { AuthoriseForm, type Person } from './AuthoriseForm.tsx';
 
@@ -16,6 +16,7 @@ interface Proposal {
   rejectReason: string | null;
   label: string;
   record: { kind: string; id: string } | null;
+  dueReading: DueReading;
 }
 
 const KIND_LABEL: Record<Kind, string> = { action: 'Action', decision: 'Decision', question: 'Question', risk: 'Risk' };
@@ -141,7 +142,7 @@ export function HumanProposals({
                   kind={p.kind}
                   text={p.text}
                   owner={p.owner}
-                  due={null}
+                  due={p.dueReading}
                   people={people}
                   meId={meId}
                   onSubmit={async (body) => {

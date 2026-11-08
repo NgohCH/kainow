@@ -4,11 +4,11 @@ import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
-import { isCalendarDate } from '../extraction/due';
+import { isCalendarDate, readDue } from '../extraction/due';
 import { type ApprovedItem, ExtractionService } from '../extraction/extraction.service';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { InvitationsService } from '../projects/invitations.service';
-import { membershipState } from '../projects/membership';
+import { membershipState, todayUtc8 } from '../projects/membership';
 import { type QuestionAction, type RiskAction, SEVERITIES, type Severity, questionTransition, riskTransition } from './lifecycles';
 import { TASK_ACTIONS, type TaskAction, type TaskStatus, ancestorsToReopen, parentMayComplete, taskIndicators, taskTransition } from './tasks';
 
@@ -269,7 +269,11 @@ export class RecordsService {
       [projectId],
     );
     const out = [];
-    for (const r of rows) out.push({ ...r, label: HUMAN_LABEL, record: await this.existingRecord(this.pool, { proposalId: r.id }) });
+    for (const r of rows) {
+      // The written due, read against the day it was proposed (UTC+8), so the Authorise form can pre-fill the date.
+      const dueReading = readDue({ due: r.due, dueEvent: null, meetingDate: todayUtc8(new Date(r.proposedAt)) });
+      out.push({ ...r, dueReading, label: HUMAN_LABEL, record: await this.existingRecord(this.pool, { proposalId: r.id }) });
+    }
     return { proposals: out };
   }
 
