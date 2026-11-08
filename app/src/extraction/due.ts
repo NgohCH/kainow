@@ -58,7 +58,7 @@ const MONTHS: Record<string, number> = {
 };
 const MONTH = `(${Object.keys(MONTHS).sort((a, b) => b.length - a.length).join('|')})`;
 const WEEKDAYS = ['sunday', 'monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday'];
-const NUMBER_WORDS: Record<string, number> = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
+const NUMBER_WORDS: Record<string, number> = { a: 1, an: 1, one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10 };
 const COUNT = `(\\d{1,3}|${Object.keys(NUMBER_WORDS).join('|')})`;
 
 const re = (src: string) => new RegExp(`^${src}$`);
@@ -77,9 +77,23 @@ const P = {
   immediate: re(`(immediate|immediately|asap)`),
   within: re(`within ${COUNT} (days?|weeks?)`),
   next: re(`next ${COUNT} (days?|weeks?)`),
-  period: /^(every|throughout|ongoing)\b/,
+  nextWeek: /^next week$/,
+  nextMonth: /^next month$/,
+  nextWeekday: re(`next (${WEEKDAYS.join('|')})`),
+  period: /^(every|throughout|ongoing|once (a|an|every|per)\b)/,
   event: /^(after|upon|before|during|following|once|next|subject to|on completion)\b/,
+  /**
+   * An event word followed straight away by something that looks like a date ("before 30 Nov", "before June
+   * rollout", "next year"). Such wording is date wording that could not be read, never an event: an event
+   * lets an action be approved with no date.
+   */
+  eventLooksLikeDate: new RegExp(
+    `^(after|upon|before|during|following|once|next|subject to) (\\d|the \\d|${MONTH}\\b|(end|mid|early|late)\\b|(week|month|year|quarter|semester|term)\\b)`,
+  ),
 };
+
+/** "by" and "on" before a date or a weekday add nothing: "By 30 November", "on Friday". */
+const LEADING_BY = new RegExp(`^(by|on) (?=\\d|${MONTH}\\b|(${WEEKDAYS.join('|')})\\b|(end|mid|early|late|next|within)\\b)`);
 
 /** True for a real day written 'YYYY-MM-DD'. */
 export function isCalendarDate(v: unknown): v is string {
@@ -186,7 +200,11 @@ function readPart(s: string, meeting: string | null): Part {
   }
   if ((m = P.monthSpan.exec(s))) {
     const [, from, to, year] = m;
-    return inYear(year, meeting, (y) => [iso(y, MONTHS[from], 1), iso(y, MONTHS[to], lastDay(y, MONTHS[to]))]);
+    // "November-January" runs into the next year.
+    return inYear(year, meeting, (y) => {
+      const y2 = MONTHS[to] < MONTHS[from] ? y + 1 : y;
+      return [iso(y, MONTHS[from], 1), iso(y2, MONTHS[to], lastDay(y2, MONTHS[to]))];
+    });
   }
   if ((m = P.month.exec(s))) {
     const [, month, year] = m;
@@ -211,15 +229,57 @@ function readPart(s: string, meeting: string | null): Part {
     const n = days(count(m[1]), m[2]);
     return relative(meeting, (meet) => [addDays(meet, 1), addDays(meet, n)]);
   }
+  if (P.nextWeek.test(s)) {
+    return relative(meeting, (meet) => {
+      const monday = addDays(meet, daysToNextMonday(meet));
+      return [monday, addDays(monday, 6)];
+    });
+  }
+  if (P.nextMonth.test(s)) {
+    return relative(meeting, (meet) => {
+      const [y, mo] = meet.split('-').map(Number);
+      const ny = mo === 12 ? y + 1 : y;
+      const nm = mo === 12 ? 1 : mo + 1;
+      return [iso(ny, nm, 1), iso(ny, nm, lastDay(ny, nm))];
+    });
+  }
+  if ((m = P.nextWeekday.exec(s))) {
+    // That weekday in the week (Monday to Sunday) after the meeting's week.
+    const target = WEEKDAYS.indexOf(m[1]);
+    return relative(meeting, (meet) => {
+      const v = addDays(meet, daysToNextMonday(meet) + ((target + 6) % 7));
+      return [v, v];
+    });
+  }
   if (P.period.test(s)) return { kind: 'needs', reason: REASON.period };
+  if (/^before end( of)? /.test(s)) return readPart(s.replace(/^before /, ''), meeting);
+  if (/^during /.test(s)) {
+    const inner = readPart(s.replace(/^during /, ''), meeting);
+    if (inner.kind === 'date') return inner;
+  }
+  if (P.eventLooksLikeDate.test(s)) return unknown();
   if (P.event.test(s)) return { kind: 'event' };
   return unknown();
+}
+
+function daysToNextMonday(day: string): number {
+  const [y, m, d] = day.split('-').map(Number);
+  const weekday = new Date(Date.UTC(y, m - 1, d)).getUTCDay();
+  return (8 - weekday) % 7 || 7;
 }
 
 const tidy = (s: string): string => s.replace(/\s+/g, ' ').trim();
 /** Drops a leading "Label:" and a trailing "for the …". */
 const core = (s: string): string => tidy(s).replace(/^[^:]+:\s*/, '').replace(/ for (the|a|an) .*$/i, '');
-const lower = (s: string): string => core(s).toLowerCase().replace(/[–—]/g, '-');
+/** Lower case, plain dashes, no trailing full stop or commas, no ordinal endings ("30th"), no leading "by"/"on". */
+const lower = (s: string): string =>
+  core(s)
+    .toLowerCase()
+    .replace(/[–—]/g, '-')
+    .replace(/[.,;:!]+$/, '')
+    .replace(/,/g, '')
+    .replace(/\b(\d{1,2})(st|nd|rd|th)\b/g, '$1')
+    .replace(LEADING_BY, '');
 
 function reading(over: Partial<DueReading> & { state: DueState }): DueReading {
   return { earliest: null, latest: null, event: null, reason: null, note: null, usedMeetingDate: false, ...over };
@@ -253,5 +313,7 @@ export function readDue(input: DueInput, reviewer?: ReviewerDue | null): DueRead
   const part = readPart(lower(wording), input.meetingDate);
   if (part.kind === 'date') return fromDates(part.earliest, part.latest, part.used);
   if (part.kind === 'event') return reading({ state: 'event', event: dueEvent ?? core(wording) });
+  // Wording that cannot be read ("TBC") still waits on the event the model named, if it named one.
+  if (part.reason === REASON.unknown && dueEvent) return reading({ state: 'event', event: dueEvent });
   return reading({ state: 'needs_date', reason: part.reason });
 }

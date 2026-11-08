@@ -176,6 +176,12 @@ export class ExtractionService {
     return { run: run.rows[0], source: src.rows[0], items: await this.withOccurrences(run.rows[0].sourceVersionId, shaped) };
   }
 
+  /** The due inputs of one item as they stand now (wording, model's event, latest reviewer due). */
+  private async dueInputsOf(q: Queryable, itemId: string): Promise<DueRow> {
+    const { rows } = await q.query(`SELECT ${DUE_COLUMNS} FROM extraction_items i ${LATEST_EDIT} WHERE i.id = $1`, [itemId]);
+    return rows[0];
+  }
+
   /** The meeting date in force for a run: the reviewer's latest for its version, else the model's, else none. */
   private async meetingDateFor(q: Queryable, runId: string): Promise<{ meetingDate: string | null; meetingDateSource: 'notes' | 'reviewer' | 'none' }> {
     const { rows } = await q.query(
@@ -277,9 +283,8 @@ export class ExtractionService {
     try {
       await client.query('BEGIN');
       const found = await client.query(
-        `SELECT i.id, i.source_version_id, i.quote_matches, i.review_status, i.kind, r.status AS run_status, ${DUE_COLUMNS}
+        `SELECT i.id, i.source_version_id, i.quote_matches, i.review_status, i.kind, r.status AS run_status
            FROM extraction_items i JOIN extraction_runs r ON r.id = i.run_id
-           ${LATEST_EDIT}
           WHERE i.id = $1 AND i.run_id = $2 FOR UPDATE OF i`,
         [itemId, runId],
       );
@@ -307,8 +312,10 @@ export class ExtractionService {
           throw new BadRequestException('This quote appears once, so occurrence can only be 0 or left out');
         }
         if (item.kind === 'action') {
+          // Read after the lock, in its own statement, so an edit that committed while we waited is seen.
+          const due = await this.dueInputsOf(client, itemId);
           const { meetingDate } = await this.meetingDateFor(client, runId);
-          if (dueReadingOf(item, meetingDate).state === 'needs_date') throw new ConflictException(NEEDS_DATE_MESSAGE);
+          if (dueReadingOf(due, meetingDate).state === 'needs_date') throw new ConflictException(NEEDS_DATE_MESSAGE);
         }
       }
       await client.query(
@@ -357,18 +364,20 @@ export class ExtractionService {
     try {
       await client.query('BEGIN');
       const found = await client.query(
-        `SELECT i.id, i.source_version_id, i.review_status, r.status AS run_status,
-                COALESCE(e.text, i.text) AS text,
-                CASE WHEN e.id IS NULL THEN i.owner ELSE e.owner END AS owner,
-                ${DUE_COLUMNS}
+        `SELECT i.id, i.source_version_id, i.review_status, r.status AS run_status
            FROM extraction_items i
            JOIN extraction_runs r ON r.id = i.run_id
-           ${LATEST_EDIT}
           WHERE i.id = $1 AND i.run_id = $2 FOR UPDATE OF i`,
         [itemId, runId],
       );
-      const item = found.rows[0];
-      if (!item) throw new NotFoundException();
+      if (!found.rows[0]) throw new NotFoundException();
+      // The wording in force is read after the lock, in its own statement, so a concurrent edit is seen.
+      const current = await client.query(
+        `SELECT COALESCE(e.text, i.text) AS text, CASE WHEN e.id IS NULL THEN i.owner ELSE e.owner END AS owner, ${DUE_COLUMNS}
+           FROM extraction_items i ${LATEST_EDIT} WHERE i.id = $1`,
+        [itemId],
+      );
+      const item = { ...found.rows[0], ...current.rows[0] };
       if (item.run_status !== 'succeeded') throw new ConflictException('The extraction has not finished');
       if (item.source_version_id !== input.sourceVersionId) {
         throw new ConflictException('This proposal is for a different version of the notes than the one you reviewed');

@@ -213,6 +213,29 @@ describe('due readings, meeting dates and the approval rule', { skip: SKIP_NO_DB
     }
   });
 
+  test('an approval that waited for an edit uses the due the edit left', async () => {
+    await edit('friday', { text: 'T', due: 'Friday', dueEarliest: '2026-11-10', dueLatest: '2026-11-12' });
+    const client = await pool.connect();
+    try {
+      // Another reviewer's edit, holding the item's lock, clears the dates.
+      await client.query('BEGIN');
+      await client.query('SELECT id FROM extraction_items WHERE id = $1 FOR UPDATE', [item.friday]);
+      const userId = (await client.query('SELECT id FROM users')).rows[0].id;
+      await client.query(
+        `INSERT INTO extraction_item_edits (id, item_id, text, due, edited_by, edited_at) VALUES ($1, $2, 'T', 'Friday', $3, '2026-11-20T00:00:00Z')`,
+        [uuidv7(), item.friday, userId],
+      );
+      const pending = approve('friday');
+      await new Promise((r) => setTimeout(r, 400));
+      await client.query('COMMIT');
+      const r = await pending;
+      assert.equal(r.status, 409);
+      assert.equal(r.body.message, NEEDS_DATE);
+    } finally {
+      client.release();
+    }
+  });
+
   test('changing only the due counts as a change', async () => {
     const r = await edit('friday', { text: 'T', due: 'Friday', dueEarliest: '2026-11-10' });
     assert.equal(r.status, 200);
