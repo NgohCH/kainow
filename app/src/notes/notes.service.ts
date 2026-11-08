@@ -210,9 +210,9 @@ export class NotesService {
     return rows;
   }
 
-  async get(sourceId: string): Promise<{ source: Pick<SourceSummary, 'id' | 'title' | 'createdAt'>; versions: VersionSummary[] }> {
-    const src = await this.pool.query<{ id: string; title: string; createdAt: Date }>(
-      `SELECT id, title, created_at AS "createdAt" FROM sources WHERE id = $1 AND status = 'active'`,
+  async get(sourceId: string): Promise<{ source: Pick<SourceSummary, 'id' | 'title' | 'createdAt'> & { projectId: string }; versions: VersionSummary[] }> {
+    const src = await this.pool.query<{ id: string; title: string; createdAt: Date; projectId: string }>(
+      `SELECT id, title, created_at AS "createdAt", project_id AS "projectId" FROM sources WHERE id = $1 AND status = 'active'`,
       [sourceId],
     );
     if (src.rowCount === 0) throw new NotFoundException();

@@ -145,3 +145,91 @@ export interface Item {
   edited?: boolean;
   original?: { text: string; owner: string | null; due: string | null };
 }
+
+// --- Projects (V1.0 sub-project 1) ---
+import type { ClosureOutcome, MembershipState, ProjectRole, ProjectStatus } from './projects.ts';
+
+export interface Department {
+  id: string;
+  name: string;
+  status: 'active' | 'retired';
+}
+
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  status: ProjectStatus;
+  owningDepartment: string;
+  stage: { stage: string; substage: string | null } | null;
+  myRoles: ProjectRole[];
+  missingAccountability: boolean;
+}
+
+export interface AdminProjectRow {
+  id: string;
+  name: string;
+  status: ProjectStatus;
+  owningDepartment: string;
+  roleHolders: Array<{ displayName: string; role: ProjectRole; state: MembershipState }>;
+}
+
+export interface Membership {
+  id: string;
+  userId: string;
+  displayName: string;
+  email: string;
+  role: ProjectRole;
+  startsOn: string;
+  expiresOn: string | null;
+  state: MembershipState;
+}
+
+export interface InvitationRow {
+  id: string;
+  email: string;
+  role: ProjectRole;
+  startsOn: string;
+  expiresOn: string | null;
+  issuedAt: string;
+  expiresAt: string;
+  status: 'invited' | 'accepted' | 'declined' | 'revoked' | 'expired';
+}
+
+export interface StagePeriod {
+  stage: string;
+  substage: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  reason: string | null;
+}
+
+export interface Transition {
+  from: ProjectStatus;
+  to: ProjectStatus;
+  reason: string | null;
+  outcome: ClosureOutcome | null;
+  fastTrack: boolean;
+  at: string;
+  actor: string;
+}
+
+export interface Project {
+  id: string;
+  name: string;
+  purpose: string;
+  plannedEnd: string | null;
+  status: ProjectStatus;
+  closureOutcome: ClosureOutcome | null;
+  createdAt: string;
+  owningDepartment: { id: string; name: string };
+  contributingDepartments: Array<{ id: string; name: string }>;
+  stage: StagePeriod | null;
+  stagePeriods: StagePeriod[];
+  transitions: Transition[];
+  memberships: Membership[];
+  invitations: InvitationRow[];
+  myRoles: ProjectRole[];
+  isAdmin: boolean;
+  missingAccountability: boolean;
+  missingRoles: string[];
+}

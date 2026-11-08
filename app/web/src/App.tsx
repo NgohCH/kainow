@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { ApiError, api, setCsrfToken, type User } from './api.ts';
+import { Invitation } from './views/Invitation.tsx';
 import { NoteDetail } from './views/NoteDetail.tsx';
-import { Notes } from './views/Notes.tsx';
+import { Departments, Domains } from './views/Organisation.tsx';
 import { People } from './views/People.tsx';
+import { ProjectPage } from './views/ProjectPage.tsx';
+import { Projects } from './views/Projects.tsx';
 import { Review } from './views/Review.tsx';
 import { Spending } from './views/Spending.tsx';
 
@@ -42,7 +45,7 @@ function SpendMeter() {
   );
 }
 
-function SignIn({ onSignedIn }: { onSignedIn: (u: User) => void }) {
+export function SignIn({ onSignedIn }: { onSignedIn: (u: User) => void }) {
   const [step, setStep] = useState<'email' | 'code'>('email');
   const [email, setEmail] = useState('');
   const [code, setCode] = useState('');
@@ -140,10 +143,26 @@ export function App() {
   }, []);
 
   if (user === undefined) return <p className="loading">Loading</p>;
-  if (user === null) return <SignIn onSignedIn={setUser} />;
+  // An invitation link works before sign-in: it shows the invitation and then asks the person to sign in.
+  const invitation = /^#\/invitations\/([A-Za-z0-9_-]{20,})$/.exec(hash);
+  if (user === null) return invitation ? <Invitation token={invitation[1]} user={null} onSignedIn={setUser} /> : <SignIn onSignedIn={setUser} />;
 
+  const isAdmin = user.role === 'enterprise_administrator';
   const note = /^#\/notes\/([0-9a-f-]{36})(?:\/v\/(\d+))?$/i.exec(hash);
   const run = /^#\/runs\/([0-9a-f-]{36})$/i.exec(hash);
+  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes))?$/i.exec(hash);
+  const adminPage = /^#\/(people|spending|departments|domains)$/.exec(hash)?.[1];
+
+  let page;
+  if (invitation) page = <Invitation token={invitation[1]} user={user} onSignedIn={setUser} />;
+  else if (isAdmin && adminPage === 'people') page = <People meId={user.id} />;
+  else if (isAdmin && adminPage === 'spending') page = <Spending />;
+  else if (isAdmin && adminPage === 'departments') page = <Departments />;
+  else if (isAdmin && adminPage === 'domains') page = <Domains />;
+  else if (run) page = <Review runId={run[1]} />;
+  else if (note) page = <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} />;
+  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} tab={(project[2] as 'people' | 'notes' | undefined) ?? 'overview'} />;
+  else page = <Projects isAdmin={isAdmin} />;
 
   return (
     <>
@@ -151,9 +170,15 @@ export function App() {
       <header className="bar">
         <a className="wordmark" href="#/">Kainow</a>
         <nav aria-label="Main" className="mainnav">
-          <a href="#/" aria-current={!/^#\/(people|spending)/.test(hash) ? 'page' : undefined}>Notes</a>
-          <a href="#/people" aria-current={hash === '#/people' ? 'page' : undefined}>People</a>
-          <a href="#/spending" aria-current={hash === '#/spending' ? 'page' : undefined}>AI spending</a>
+          <a href="#/" aria-current={!adminPage ? 'page' : undefined}>Projects</a>
+          {isAdmin && (
+            <>
+              <a href="#/people" aria-current={adminPage === 'people' ? 'page' : undefined}>Administrators</a>
+              <a href="#/departments" aria-current={adminPage === 'departments' ? 'page' : undefined}>Departments</a>
+              <a href="#/domains" aria-current={adminPage === 'domains' ? 'page' : undefined}>Domains</a>
+              <a href="#/spending" aria-current={adminPage === 'spending' ? 'page' : undefined}>AI spending</a>
+            </>
+          )}
         </nav>
         <SpendMeter />
         <span className="who">
@@ -162,7 +187,7 @@ export function App() {
         </span>
       </header>
       <div id="main">
-        {hash === '#/people' ? <People meId={user.id} /> : hash === '#/spending' ? <Spending /> : run ? <Review runId={run[1]} /> : note ? <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} /> : <Notes />}
+        {page}
       </div>
       <footer className="foot">Times are shown in UTC+8.</footer>
     </>

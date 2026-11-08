@@ -5,7 +5,7 @@ import { formatWhen, plural } from '../format.ts';
 import { Intake } from './Intake.tsx';
 
 interface Detail {
-  source: { id: string; title: string; createdAt: string };
+  source: { id: string; title: string; createdAt: string; projectId: string };
   versions: VersionSummary[];
 }
 
@@ -70,12 +70,12 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
     }
   }
 
-  if (error && !detail) return <main className="page narrow"><p role="alert" className="error">{error}</p><a href="#/">Back to notes</a></main>;
+  if (error && !detail) return <main className="page narrow"><p role="alert" className="error">{error}</p><a href="#/">All projects</a></main>;
   if (!detail || !version) return <p className="loading">Loading</p>;
 
   return (
     <main className="page">
-      <p><a href="#/">All notes</a></p>
+      <p><a href={`#/projects/${detail.source.projectId}/notes`}>Back to the project's notes</a></p>
       <h1>{detail.source.title}</h1>
       <nav aria-label="Versions" className="versions">
         {detail.versions.map((v) => (
