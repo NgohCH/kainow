@@ -3,6 +3,7 @@ import { AnySignedInUser } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
 import { RecordsService } from './records.service';
+import { TASK_ACTIONS, type TaskAction } from './tasks';
 
 const body = (b: unknown): Record<string, unknown> => (b && typeof b === 'object' ? (b as Record<string, unknown>) : {});
 const who = (req: HttpRequest): AuthUser => {
@@ -64,6 +65,29 @@ export class RecordsController {
   @HttpCode(200)
   rejectProposal(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest) {
     return this.records.rejectProposal(who(req), id, body(b));
+  }
+
+  @Get('records/tasks/:id')
+  @AnySignedInUser()
+  task(@Param('id') id: string, @Req() req: HttpRequest) {
+    return this.records.getTask(who(req), id);
+  }
+
+  /** { title, assigneeId, dueOn, reason } */
+  @Post('records/tasks/:id/subtasks')
+  @AnySignedInUser()
+  @HttpCode(201)
+  subtask(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest) {
+    return this.records.addSubtask(who(req), id, body(b));
+  }
+
+  /** { note?, overrideReason? } — action is start, block, unblock, complete or reopen. */
+  @Post('records/tasks/:id/:action')
+  @AnySignedInUser()
+  @HttpCode(200)
+  taskAction(@Param('id') id: string, @Param('action') action: string, @Body() b: unknown, @Req() req: HttpRequest) {
+    if (!TASK_ACTIONS.includes(action as TaskAction)) throw new NotFoundException();
+    return this.records.taskAction(who(req), id, action as TaskAction, body(b));
   }
 
   @Get('projects/:id/records')

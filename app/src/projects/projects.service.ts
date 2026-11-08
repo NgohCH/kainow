@@ -146,6 +146,12 @@ export class ProjectsService {
         missingAccountability: ctx.missingAccountability,
         onHold: managesRoles(ctx) && ctx.onHold,
         ...(await this.archiveOf(this.pool, id, ctx.project.status, ctx.today)),
+        myOpenTasks: (
+          await this.pool.query(
+            `SELECT count(*)::int AS n FROM tasks WHERE project_id = $1 AND assignee_id = $2 AND status NOT IN ('completed', 'cancelled')`,
+            [id, user.id],
+          )
+        ).rows[0].n as number,
       });
     }
     projects.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));

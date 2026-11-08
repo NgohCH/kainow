@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -10,7 +10,7 @@ import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { InvitationsService } from '../projects/invitations.service';
 import { membershipState } from '../projects/membership';
 import { SEVERITIES, type Severity } from './lifecycles';
-import { type TaskStatus, taskIndicators } from './tasks';
+import { TASK_ACTIONS, type TaskAction, type TaskStatus, ancestorsToReopen, parentMayComplete, taskIndicators, taskTransition } from './tasks';
 
 export const MISSING_ACCOUNTABILITY = 'The project is missing a required role, so proposals cannot be approved until it is repaired.';
 export const NEEDS_ASSIGNEE = 'A task needs one assignee and a due date before it can be authorised.';
@@ -315,13 +315,123 @@ export class RecordsService {
     });
   }
 
+  /** A refused change becomes 400 (missing input), 403 (not this person's to make) or 409 (state or rule). */
+  static refusal(reason: string): never {
+    if (reason === 'A note is required.' || reason.startsWith('Write ')) throw new BadRequestException(reason);
+    if (reason.startsWith('Only ')) throw new ForbiddenException(reason);
+    throw new ConflictException(reason);
+  }
+
+  /** Loads a task's project (a participant or grant holder may read it; changes are checked by the rules). */
+  private async taskContext(c: PoolClient | Pool, user: AuthUser, taskId: string, lock: boolean) {
+    if (!UUID.test(taskId)) throw new NotFoundException();
+    const row = (await c.query(`SELECT project_id FROM tasks WHERE id = $1`, [taskId])).rows[0];
+    if (!row) throw new NotFoundException();
+    const ctx = await this.access.authorize(user, 'project.view', row.project_id, c, lock);
+    const task = (
+      await c.query(
+        `SELECT id, parent_id AS "parentId", depth, assignee_id AS "assigneeId", status, to_char(due_on, 'YYYY-MM-DD') AS "dueOn"
+           FROM tasks WHERE id = $1 ${lock ? 'FOR UPDATE' : ''}`,
+        [taskId],
+      )
+    ).rows[0] as { id: string; parentId: string | null; depth: number; assigneeId: string; status: TaskStatus; dueOn: string };
+    return { ctx, task };
+  }
+
+  /** Start, block, unblock, complete or reopen one task (V1.0 task lifecycle §3, §5). */
+  async taskAction(user: AuthUser, taskId: string, action: TaskAction, input: Record<string, unknown>) {
+    const note = typeof input.note === 'string' ? input.note.trim() : null;
+    const overrideReason = typeof input.overrideReason === 'string' && input.overrideReason.trim() !== '' ? input.overrideReason.trim() : null;
+    const at = this.now();
+    return this.tx(async (c) => {
+      const { ctx, task } = await this.taskContext(c, user, taskId, true);
+      const verdict = taskTransition({
+        action,
+        status: task.status,
+        actor: { isAssignee: task.assigneeId === user.id, roles: ctx.roles },
+        projectStatus: ctx.project.status,
+        assigneeActive: isActiveIn(ctx, task.assigneeId),
+        note,
+      });
+      if (!verdict.allowed) RecordsService.refusal(verdict.reason);
+      let override = false;
+      if (action === 'complete') {
+        const children = (await c.query(`SELECT status FROM tasks WHERE parent_id = $1`, [task.id])).rows.map((r) => r.status as TaskStatus);
+        const parentRule = parentMayComplete(children, overrideReason, ctx.roles);
+        if (!parentRule.allowed) RecordsService.refusal(parentRule.reason);
+        override = parentRule.override;
+      }
+      const change = async (id: string, from: TaskStatus, to: TaskStatus, kind: string, why: string | null, overrideWhy: string | null) => {
+        await c.query(`UPDATE tasks SET status = $2 WHERE id = $1`, [id, to]);
+        await c.query(
+          `INSERT INTO task_events (id, task_id, kind, from_status, to_status, note, override_reason, actor_id, at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+          [uuidv7(at.getTime()), id, kind, from, to, why, overrideWhy, user.id, at],
+        );
+      };
+      const KIND: Record<TaskAction, string> = { start: 'started', block: 'blocked', unblock: 'unblocked', complete: 'completed', reopen: 'reopened' };
+      await change(task.id, task.status, verdict.to, KIND[action], note, override ? overrideReason : null);
+      if (action === 'reopen') {
+        // A reopened subtask reopens its completed parent (and grandparent) in the same action.
+        const chain: Array<{ id: string; status: TaskStatus }> = [];
+        let parentId = task.parentId;
+        while (parentId) {
+          const p = (await c.query(`SELECT id, parent_id, status FROM tasks WHERE id = $1 FOR UPDATE`, [parentId])).rows[0];
+          chain.push({ id: p.id, status: p.status });
+          parentId = p.parent_id;
+        }
+        for (const id of ancestorsToReopen(chain)) await change(id, 'completed', 'in_progress', 'reopened', note, null);
+      }
+      await writeAudit(c, { at, action: `task.${KIND[action]}`, actorUserId: user.id, subjectType: 'project', subjectId: ctx.project.id, detail: { taskId: task.id } });
+      return { task: { id: task.id, status: verdict.to } };
+    });
+  }
+
+  /** The Project Manager or a Deputy splits a task by adding a subtask (two levels at most), with a reason. */
+  async addSubtask(user: AuthUser, parentId: string, input: Record<string, unknown>) {
+    const title = typeof input.title === 'string' ? input.title.trim() : '';
+    const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
+    if (title === '') throw new BadRequestException('Give the subtask a title.');
+    if (reason === '') throw new BadRequestException('A reason is required.');
+    const at = this.now();
+    return this.tx(async (c) => {
+      const { ctx, task } = await this.taskContext(c, user, parentId, true);
+      if (!ctx.roles.includes('pm') && !ctx.roles.includes('deputy_pm')) throw new ForbiddenException('Only the Project Manager or a Deputy can add a subtask.');
+      if (ctx.project.status !== 'active') throw new ConflictException('Tasks change only while the project is Active.');
+      if (task.depth >= 2) throw new ConflictException('Subtasks go at most two levels deep.');
+      if (!isProjectPerson(ctx, input.assigneeId)) throw new BadRequestException(NEEDS_ASSIGNEE);
+      const dueOn = this.dueOf(input.dueOn);
+      const id = await this.insertTask(
+        c, ctx,
+        { parentId: task.id, depth: task.depth + 1, title, assigneeId: input.assigneeId as string, ownerAsWritten: null, dueOn, invitationId: null, origin: null },
+        user, at, reason,
+      );
+      await writeAudit(c, { at, action: 'task.subtask_added', actorUserId: user.id, subjectType: 'project', subjectId: ctx.project.id, detail: { taskId: id, parentId: task.id } });
+      return { task: { id, parentId: task.id, depth: task.depth + 1 } };
+    });
+  }
+
+  /** One task with its history and source quote. */
+  async getTask(user: AuthUser, taskId: string) {
+    const { ctx, task } = await this.taskContext(this.pool, user, taskId, false);
+    const list = await this.listFor(ctx, user);
+    const view = list.tasks.find((t) => t.id === task.id);
+    const history = (
+      await this.pool.query(
+        `SELECT e.kind, e.from_status AS "from", e.to_status AS "to", e.note, e.override_reason AS "overrideReason", u.display_name AS actor, e.at
+           FROM task_events e JOIN users u ON u.id = e.actor_id WHERE e.task_id = $1 AND e.kind <> 'authorised' ORDER BY e.at, e.id`,
+        [taskId],
+      )
+    ).rows;
+    return { task: view, history };
+  }
+
   /** Every record of a project, for participants and grant holders (V1.0: read follows project access). */
   async list(user: AuthUser, projectId: string) {
     const ctx = await this.access.authorize(user, 'project.view', projectId);
-    return this.listFor(ctx);
+    return this.listFor(ctx, user);
   }
 
-  async listFor(ctx: ProjectContext) {
+  async listFor(ctx: ProjectContext, user: AuthUser) {
     const tasks = (
       await this.pool.query(
         `SELECT t.id, t.parent_id AS "parentId", t.depth, t.title, t.assignee_id AS "assigneeId", u.display_name AS "assigneeName",
@@ -334,7 +444,7 @@ export class RecordsService {
            LEFT JOIN invitations i ON i.id = t.invitation_id
            LEFT JOIN extraction_items x ON x.id = t.origin_item_id
           WHERE t.project_id = $1
-          ORDER BY t.authorised_at, t.depth, t.id`,
+          ORDER BY t.due_on, t.authorised_at, t.id`,
         [ctx.project.id],
       )
     ).rows;
@@ -356,7 +466,30 @@ export class RecordsService {
         today: ctx.today,
       }),
       source: t.quote ? { quote: t.quote as string } : null,
+      // What this viewer may do now (notes are asked for when they act).
+      mayAct: TASK_ACTIONS.filter(
+        (action) =>
+          taskTransition({
+            action,
+            status: t.status,
+            actor: { isAssignee: t.assigneeId === user.id, roles: ctx.roles },
+            projectStatus: ctx.project.status,
+            assigneeActive: isActiveIn(ctx, t.assigneeId),
+            note: 'x',
+          }).allowed,
+      ),
     }));
-    return { tasks: view, decisions: [] as unknown[], questions: [] as unknown[], risks: [] as unknown[] };
+    // Top-level tasks by due date, each followed by its subtasks (and theirs).
+    const byParent = new Map<string | null, typeof view>();
+    for (const v of view) byParent.set(v.parentId, [...(byParent.get(v.parentId) ?? []), v]);
+    const ordered: typeof view = [];
+    const walk = (parent: string | null) => {
+      for (const v of byParent.get(parent) ?? []) {
+        ordered.push(v);
+        walk(v.id);
+      }
+    };
+    walk(null);
+    return { tasks: ordered, decisions: [] as unknown[], questions: [] as unknown[], risks: [] as unknown[] };
   }
 }
