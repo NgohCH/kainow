@@ -366,9 +366,9 @@ function GrantRow({ g, manager, act }: { g: Grant; manager: boolean; act: Act })
               <button onClick={() => setMode('decline')}>Decline</button>
             </>
           )}
-          {['scheduled', 'active', 'expired', 'suspended'].includes(g.state) && <button onClick={() => setMode('extend')}>Extend</button>}
+          {!g.self && ['scheduled', 'active', 'expired', 'suspended'].includes(g.state) && <button onClick={() => setMode('extend')}>Extend</button>}
           {['scheduled', 'active'].includes(g.state) && <button onClick={() => setMode('suspend')}>Suspend</button>}
-          {g.state === 'suspended' && <button onClick={() => setMode('restore')}>Restore</button>}
+          {!g.self && g.state === 'suspended' && <button onClick={() => setMode('restore')}>Restore</button>}
           {g.state !== 'revoked' && g.state !== 'declined' && <button className="reject" onClick={() => setMode('revoke')}>Revoke</button>}
         </div>
       )}

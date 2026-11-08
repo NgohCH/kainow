@@ -76,6 +76,12 @@ export class UsersService {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      // Every project change locks its project row first; disabling locks the same rows, in id order and before
+      // the account, so it never slips past a restore, appointment or acceptance in progress (or they past it).
+      await client.query(
+        `SELECT id FROM projects WHERE id IN (SELECT project_id FROM memberships WHERE user_id = $1) ORDER BY id FOR UPDATE`,
+        [id],
+      );
       const admins = await client.query<{ id: string }>(
         `SELECT id FROM users WHERE role = 'enterprise_administrator' AND status = 'active' ORDER BY id FOR UPDATE`,
       );

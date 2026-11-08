@@ -178,3 +178,35 @@ describe('findings and restoring from hold', { skip: SKIP_NO_DB }, () => {
     assert.equal(row.state, 'revoked');
   });
 });
+
+describe('disabling an account waits for project changes in progress', { skip: SKIP_NO_DB }, () => {
+  let t: TestApp;
+  afterEach(async () => {
+    await t?.close();
+  });
+
+  test('a disable cannot slip past a project change that holds the project', async () => {
+    t = await startTestApp();
+    await seedUser(t.pool, 'admin@example.org', 'enterprise_administrator');
+    const pmId = await seedUser(t.pool, 'pm@example.org');
+    const memId = await seedUser(t.pool, 'mem@example.org');
+    const projectId = await seedProject(t.pool, { members: [{ userId: pmId, role: 'pm' }, { userId: memId, role: 'member' }] });
+    const admin = await t.signIn('admin@example.org');
+    // Another change to this project (a restore, an appointment, an acceptance) is in progress and holds the project row.
+    const other = await t.pool.connect();
+    try {
+      await other.query('BEGIN');
+      await other.query('SELECT id FROM projects WHERE id = $1 FOR UPDATE', [projectId]);
+      const disabling = admin.request('POST', `/users/${memId}/disable`);
+      await new Promise((r) => setTimeout(r, 700));
+      const status = (await t.pool.query(`SELECT status FROM users WHERE id = $1`, [memId])).rows[0].status;
+      assert.equal(status, 'active', 'the disable waits for the project change to finish');
+      await other.query('COMMIT');
+      assert.equal((await disabling).status, 204);
+    } finally {
+      other.release();
+    }
+    const held = (await t.pool.query(`SELECT held_at IS NOT NULL AS h FROM memberships WHERE project_id = $1 AND user_id = $2`, [projectId, memId])).rows[0].h;
+    assert.equal(held, true);
+  });
+});

@@ -207,6 +207,8 @@ export interface Grant {
   revokeReason: string | null;
   /** This viewer may approve or decline it (a manager who is neither the grantee nor the recorder). */
   mayDecide: boolean;
+  /** The viewer's own access: they may not extend or restore it. */
+  self: boolean;
 }
 
 export interface Finding {

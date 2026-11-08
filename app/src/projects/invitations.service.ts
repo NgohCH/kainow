@@ -227,6 +227,9 @@ export class InvitationsService {
         throw new ConflictException('Invitations cannot be accepted while the project is Deferred or Closed.');
       }
       if (!(await this.org.isEligible(r.email))) throw new ConflictException('That address is not in an eligible organisation domain.');
+      // The account may have been disabled after this request was let in; check again now the project is locked.
+      const account = (await c.query(`SELECT status FROM users WHERE id = $1`, [user.id])).rows[0];
+      if (account?.status === 'disabled') throw new ForbiddenException('This account is disabled.');
       if (r.kind === 'handover') return this.acceptHandover(c, ctx, r, user, at);
       if (r.expires_on !== null && r.expires_on < ctx.today) throw new ConflictException(ALREADY_ENDED);
       const candidate = { userId: user.id, role: r.role, startsOn: r.starts_on, expiresOn: r.expires_on, revokedAt: null };

@@ -357,7 +357,8 @@ export class ProjectsService {
         const state = grantState(ctx.grants.find((g) => g.id === r.id)!, ctx.today);
         // Only a manager who is neither the grantee nor the recorder decides a waiting request.
         const mayDecide = all && state === 'requested' && r.user.id !== viewer && requestedById !== viewer;
-        return { ...r, state, mayDecide };
+        // 'self': the viewer's own access, which they may not extend or restore.
+        return { ...r, state, mayDecide, self: r.user.id === viewer };
       })
       .filter((r) => all || r.user.id === viewer);
   }

@@ -144,3 +144,34 @@ describe('Audit and Oversight grants', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual((await pm.request('GET', `/projects/${projectId}`)).body.project.grants.map((g: { kind: string }) => g.kind), ['oversight'], 'the PM sees only their own');
   });
 });
+
+describe('nobody restores their own access', { skip: SKIP_NO_DB }, () => {
+  let t: TestApp;
+  afterEach(async () => {
+    await t?.close();
+  });
+
+  test('an Administrator cannot lift the suspension of their own grant', async () => {
+    t = await startTestApp();
+    const adminId = await seedUser(t.pool, 'admin@example.org', 'enterprise_administrator');
+    const ownerId = await seedUser(t.pool, 'owner@example.org');
+    const sponsorId = await seedUser(t.pool, 'sponsor@example.org');
+    const pmId = await seedUser(t.pool, 'pm@example.org');
+    const projectId = await seedProject(t.pool, {
+      status: 'active',
+      members: [{ userId: pmId, role: 'pm' }, { userId: ownerId, role: 'owner' }, { userId: sponsorId, role: 'sponsor' }],
+    });
+    const owner = await t.signIn('owner@example.org');
+    const sponsor = await t.signIn('sponsor@example.org');
+    const admin = await t.signIn('admin@example.org');
+    const gid = (await owner.request('POST', `/projects/${projectId}/grants`, { userId: adminId, kind: 'audit', purpose: 'Review', scope: 'All', startsOn: '2026-11-09' })).body.grant.id;
+    await sponsor.request('POST', `/grants/${gid}/approve`, {});
+    assert.equal((await owner.request('POST', `/grants/${gid}/suspend`, { reason: 'Pending review' })).status, 200);
+    const own = await admin.request('POST', `/grants/${gid}/restore`, { reason: 'Mine' });
+    assert.equal(own.status, 403);
+    assert.equal(own.body.message, 'Nobody can restore their own access.');
+    const view = (await admin.request('GET', `/projects/${projectId}`)).body.project.grants.find((g: { id: string }) => g.id === gid);
+    assert.equal(view.self, true, 'the page can hide Restore and Extend on your own access');
+    assert.equal((await owner.request('POST', `/grants/${gid}/restore`, { reason: 'Reviewed' })).status, 200);
+  });
+});

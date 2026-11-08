@@ -165,6 +165,7 @@ export class GrantsService {
     const at = this.now();
     return this.tx(async (c) => {
       const { g, ctx } = await this.load(c, user, grantId);
+      if (g.userId === user.id) throw new ForbiddenException('Nobody can restore their own access.');
       if (g.revokedAt) throw new ConflictException('This access was revoked; record a new request instead.');
       if (!g.suspendedAt) throw new ConflictException('This access is not suspended.');
       await c.query(`UPDATE access_grants SET suspended_at = NULL, suspended_by = NULL, suspend_reason = NULL WHERE id = $1`, [g.id]);
