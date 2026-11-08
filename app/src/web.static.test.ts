@@ -23,7 +23,7 @@ test('the web app is served without sign-in, with strict headers, and the API st
     assert.match(csp, /default-src 'self'/);
     assert.match(csp, /frame-ancestors 'none'/);
     assert.equal(page.headers.get('x-content-type-options'), 'nosniff');
-    assert.equal((await fetch(`${base}/notes`)).status, 401);
+    assert.equal((await fetch(`${base}/projects`)).status, 401);
     assert.equal((await fetch(`${base}/ai/spend`)).status, 401);
   } finally {
     await app.close();
