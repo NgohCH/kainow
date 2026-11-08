@@ -8,6 +8,7 @@ import { HealthController } from './health/health.controller';
 import { ExtractionModule } from './extraction/extraction.module';
 import type { ExtractionQueue } from './extraction/queue';
 import { NotesModule } from './notes/notes.module';
+import { ProjectsModule } from './projects/projects.module';
 import { SpendModule } from './spend/spend.module';
 
 @Global()
@@ -41,6 +42,7 @@ export class AppModule {
         DatabaseModule,
         AuthModule.register({ codeSender: options.codeSender }),
         SpendModule,
+        ProjectsModule,
         NotesModule,
         ExtractionModule.register(options.extractionQueue),
       ],

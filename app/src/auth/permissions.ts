@@ -12,6 +12,7 @@ export const ACTIONS = [
   'ai.settings.manage',
   'spend.view',
   'audit.view',
+  'organisation.manage',
 ] as const;
 
 export type Action = (typeof ACTIONS)[number];
