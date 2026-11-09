@@ -86,6 +86,26 @@ describe('replacing and withdrawing decisions', { skip: SKIP_NO_DB }, () => {
   const records = async (c: Client) => (await c.request('GET', `/projects/${projectId}/records`)).body;
   const flags = async () => (await t.pool.query(`SELECT * FROM review_flags ORDER BY record_kind, raised_at, id`)).rows;
 
+  test('a client cannot write what was dropped', async () => {
+    const old = await decision();
+    const a = await task();
+    const fake = { kind: 'task', id: uuidv7() };
+    const r = await submit(owner, 'withdraw_decision', old, { reason: 'Changed course', affected: [{ kind: 'task', id: a }], dropped: [fake] });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.equal(r.body.request.terms.dropped, undefined, 'not stored at submit');
+    const rev = await owner.request('POST', `/changes/${r.body.request.id}/revise`, {
+      terms: { reason: 'Changed course again', affected: [{ kind: 'task', id: a }], dropped: [fake] }, reason: 'Wording',
+    });
+    assert.equal(rev.status, 200, JSON.stringify(rev.body));
+    assert.equal(rev.body.request.terms.dropped, undefined, 'not stored at revise');
+    const stored = (await t.pool.query(`SELECT terms FROM change_request_versions WHERE request_id = $1`, [r.body.request.id])).rows;
+    assert.ok(stored.every((v) => v.terms.dropped === undefined));
+    const ok = await owner.request('POST', `/changes/${r.body.request.id}/approve`, { version: 2 });
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    const audit = (await t.pool.query(`SELECT detail FROM audit_events WHERE action = 'decision.withdrawn'`)).rows[0].detail;
+    assert.deepEqual(audit.dropped, []);
+  });
+
   test('replacing a decision links the two and flags the chosen work', async () => {
     const old = await decision();
     const a = await task();

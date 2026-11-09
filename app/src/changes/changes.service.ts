@@ -81,6 +81,12 @@ export const isClosureBatch = (batchId: string | null | undefined, projectId: st
 const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
 const objectOf = (v: unknown): Record<string, unknown> | null => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : null);
 
+/** Terms as a client wrote them, without what only the server works out (the work dropped since it was chosen). */
+const clientTerms = (terms: Record<string, unknown>): Record<string, unknown> => {
+  const { dropped: _serverOnly, ...rest } = terms;
+  return rest;
+};
+
 /** People holding an Active Owner or Sponsor membership today: the ones who may approve (each counts once). */
 export const eligibleApprovers = (ctx: ProjectContext): string[] => [
   ...new Set(ctx.rows.filter((m) => (m.role === 'owner' || m.role === 'sponsor') && membershipState(m, ctx.today) === 'active').map((m) => m.userId)),
@@ -240,7 +246,7 @@ export class ChangesService {
     if (!TARGET_KINDS.includes(input.targetKind)) throw new BadRequestException('Choose what the change is for.');
     const handler = this.handler(input.kind);
     if (!handler || !(handler.targetKinds ?? [handler.targetKind]).includes(input.targetKind)) throw new BadRequestException('This kind of change cannot be proposed here.');
-    const terms = objectOf(input.terms) ?? {};
+    const terms = clientTerms(objectOf(input.terms) ?? {});
     const at = this.now();
     const ctx = await this.actor(c, user, projectId);
     const target = await this.lockTarget(c, input.targetKind, input.targetId, projectId);
@@ -407,8 +413,9 @@ export class ChangesService {
 
   /** { terms, reason } by the submitter while pending: a new version; earlier approvals no longer count. */
   async revise(user: AuthUser, requestId: string, input: { terms?: unknown; reason?: unknown }) {
-    const terms = objectOf(input.terms);
-    if (!terms) throw new BadRequestException('Write the revised terms.');
+    const given = objectOf(input.terms);
+    if (!given) throw new BadRequestException('Write the revised terms.');
+    const terms = clientTerms(given);
     const reason = text(input.reason);
     if (reason === '') throw new BadRequestException('Write a reason for the change.');
     const at = this.now();
