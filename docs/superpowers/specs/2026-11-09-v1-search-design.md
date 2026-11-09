@@ -223,3 +223,19 @@ Guard:
 - Searching uploaded originals beyond their extracted text.
 - An Administrator analytics event for searches; searches leave no trace containing the search text.
 - Searching discussion, outputs, finance or resources, which join with their own sub-projects under §5.
+
+## 12. Measured
+
+Measured on 2026-11-09 through `SearchService.search` (one test user in all 50 projects), against PostgreSQL 16 in a Docker `postgres:16` container on a Windows developer laptop. This is not production hardware, and the product's 5 second statement timeout was left as it is.
+
+Data: 50 projects, 1,000 notes, 1,972 note versions (1 to 3 each, about 8,000 words each, 15.8 million words in all, from a generated vocabulary of 4,000 words), 6,000 tasks, 6,000 proposals, and 1,000 each of decisions, questions and risks. `ANALYZE` was run after seeding. Median and worst of 5 runs:
+
+| Search | Median | Worst | Result |
+|---|---|---|---|
+| One rare word (`zygomorphic`, in one note) | 1,256 ms | 1,287 ms | 1 hit |
+| Two common words (`budget vendor`) | 2,900 ms | 2,935 ms | 600 hits |
+| A 3-letter word (`ore`) | 1,181 ms | 1,204 ms | 7,200 hits |
+| An 8-word phrase (one common word among rare ones) | over 5,000 ms | over 5,000 ms | all 5 runs timed out (503); about 6,100 ms when allowed to finish |
+| Two common words inside one project | 2,084 ms | 2,101 ms | 20 hits |
+
+**The aim of under 1 second was not met, and no trigram index was used.** `EXPLAIN (ANALYZE, BUFFERS)` shows a `Seq Scan on source_versions` filtered by `text_content ~~* ALL (...)` in every search, and no `Bitmap Index Scan on search_source_versions_trgm`. The other searched tables were scanned sequentially too, but they are small and cost a few milliseconds each. PostgreSQL does not use a GIN trigram index for `ILIKE ALL (array)`. With `enable_seqscan` off the plan still did not use the index. The same table with the words written as separate `ILIKE ... AND ILIKE ...` conditions does use `Bitmap Index Scan on search_source_versions_trgm` and took about 1 ms for the rare word. No product code or index was changed for this check; the options go to the Product Owner.
