@@ -21,6 +21,7 @@ import {
 import type { Person } from './AuthoriseForm.tsx';
 import { type RequestView } from '../changes.ts';
 import { ChangeRequestPanel, useRequests } from './ChangeRequest.tsx';
+import { useFocusItem } from './useFocusItem.ts';
 import { AddSubtaskForm, AmendForm, CancelForm, FollowUpForm, SupersedeForm, WithdrawForm, type WorkContext } from './ChangeForms.tsx';
 
 interface ReviewFlag {
@@ -95,7 +96,7 @@ interface Records {
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
 /** The project's authorised work: tasks (with subtasks), questions, decisions and risks. */
-export function Work({ projectId, people, canPropose, canClear }: { projectId: string; people: Person[]; canPropose: boolean; canClear: boolean }) {
+export function Work({ projectId, people, canPropose, canClear, focusId }: { projectId: string; people: Person[]; canPropose: boolean; canClear: boolean; focusId?: string }) {
   const [records, setRecords] = useState<Records | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -105,6 +106,7 @@ export function Work({ projectId, people, canPropose, canClear }: { projectId: s
     reloadRequests();
   }, [projectId, reloadRequests]);
   useEffect(load, [load]);
+  useFocusItem(focusId, records !== null);
 
   /** Sends one change and reloads; shows the server's reason when it is refused. */
   const act = useCallback(
@@ -318,7 +320,7 @@ function TaskRow({
   const mayFollowUp = canPropose && t.status === 'cancelled';
   const cancel = () => setOpen(null);
   return (
-    <li className={`work-item depth-${t.depth}`}>
+    <li id={`item-${t.id}`} tabIndex={-1} className={`work-item depth-${t.depth}`}>
       <div>
         <strong>{t.title}</strong>{' '}
         <span className={`badge status-${t.status}`}>{TASK_STATUS_LABEL[t.status]}</span>
@@ -404,7 +406,7 @@ function DecisionRow({ d, work, propose }: { d: DecisionView; work: WorkContext;
     return ok;
   };
   return (
-    <li className="work-item">
+    <li id={`item-${d.id}`} tabIndex={-1} className="work-item">
       <strong>{d.statement}</strong>{' '}
       <span className={`badge ${d.status === 'active' ? 'badge-approved' : 'badge-pending'}`}>{DECISION_STATUS[d.status] ?? d.status}</span>
       {d.changeWaiting && <span className="badge badge-pending">Change waiting</span>}
@@ -439,7 +441,7 @@ function QuestionRow({ q, act, canClear }: { q: QuestionView; act: Act; canClear
   const [open, setOpen] = useState<QuestionAction | null>(null);
   const [value, setValue] = useState('');
   return (
-    <li className="work-item">
+    <li id={`item-${q.id}`} tabIndex={-1} className="work-item">
       <div>
         <strong>{q.text}</strong> <span className="badge badge-pending">{QUESTION_STATUS_LABEL[q.status]}</span>
       </div>
@@ -495,7 +497,7 @@ function RiskRow({ r, people, act, canClear }: { r: RiskView; people: Person[]; 
   const [reviewOn, setReviewOn] = useState(r.reviewOn ?? '');
   const showFields = open === 'mitigate' || open === 'update' || open === 'accept';
   return (
-    <li className="work-item">
+    <li id={`item-${r.id}`} tabIndex={-1} className="work-item">
       <div>
         <strong>{r.description}</strong> <span className="badge badge-pending">{RISK_STATUS_LABEL[r.status]}</span>{' '}
         <span className="badge">{SEVERITY_LABEL[r.severity]}</span>
