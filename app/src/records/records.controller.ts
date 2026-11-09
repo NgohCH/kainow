@@ -2,7 +2,7 @@ import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Req, R
 import { AnySignedInUser } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
-import { RecordsService } from './records.service';
+import { type Authorised, RecordsService } from './records.service';
 import type { QuestionAction, RiskAction } from './lifecycles';
 import { TASK_ACTIONS, type TaskAction } from './tasks';
 
@@ -13,6 +13,17 @@ const who = (req: HttpRequest): AuthUser => {
   return user;
 };
 
+/** 201 { record, delivered? } when made now, 200 { record } when made before, 202 { request } while it waits for approvers. */
+const answer = (a: Authorised, res: { status: (n: number) => void }) => {
+  if ('waiting' in a) {
+    res.status(202);
+    return { request: a.request };
+  }
+  const { created, ...out } = a;
+  res.status(created ? 201 : 200);
+  return out;
+};
+
 /** Authorised records. Access is decided per project by ProjectAccess inside the service. */
 @Controller()
 export class RecordsController {
@@ -20,7 +31,7 @@ export class RecordsController {
 
   /**
    * Authorise one proposal into its record. 201 when created; 200 with the existing record when the proposal
-   * was already authorised (a repeated click). Body by kind: task { assigneeId | inviteEmail, dueOn, subtasks? },
+   * was already authorised (a repeated click); 202 with the request when more approvers are needed. Body by kind: task { assigneeId | inviteEmail, dueOn, subtasks? },
    * question { requesterId? }, risk { severity, responsibleId?, reviewOn? }, decision { rationale? }.
    */
   @Post('extractions/:runId/items/:itemId/authorise')
@@ -32,9 +43,7 @@ export class RecordsController {
     @Req() req: HttpRequest,
     @Res({ passthrough: true }) res: { status: (n: number) => void },
   ) {
-    const { created, ...out } = await this.records.authoriseItem(who(req), runId, itemId, body(b));
-    res.status(created ? 201 : 200);
-    return out;
+    return answer(await this.records.authoriseItem(who(req), runId, itemId, body(b)), res);
   }
 
   /** A person's own proposal: { kind: 'action' | 'decision' | 'question' | 'risk', text, owner?, due? } */
@@ -51,13 +60,11 @@ export class RecordsController {
     return this.records.proposals(who(req), id);
   }
 
-  /** Same body as authorising an extraction proposal; 201 when created, 200 when already authorised. */
+  /** Same body as authorising an extraction proposal; 201 when created, 200 when already authorised, 202 when waiting. */
   @Post('proposals/:id/authorise')
   @AnySignedInUser()
   async authoriseProposal(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest, @Res({ passthrough: true }) res: { status: (n: number) => void }) {
-    const { created, ...out } = await this.records.authoriseProposal(who(req), id, body(b));
-    res.status(created ? 201 : 200);
-    return out;
+    return answer(await this.records.authoriseProposal(who(req), id, body(b)), res);
   }
 
   /** { reason } */

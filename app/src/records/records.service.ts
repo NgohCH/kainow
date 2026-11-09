@@ -3,9 +3,11 @@ import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID, uuidv7 } from '../common/uuid7';
+import { type RequestView, ChangesService } from '../changes/changes.service';
+import { AlreadyAuthorised, authoriseProposalHandler } from '../changes/handlers';
 import { PG_POOL } from '../db/database.module';
 import { isCalendarDate, readDue } from '../extraction/due';
-import { type ApprovedItem, ExtractionService } from '../extraction/extraction.service';
+import { ExtractionService } from '../extraction/extraction.service';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { InvitationsService } from '../projects/invitations.service';
 import { GRANT_READ_ONLY } from '../projects/matrix';
@@ -24,6 +26,9 @@ export interface Created {
   record: { kind: RecordKind; id: string; subtaskIds?: string[] };
   delivered?: boolean;
 }
+
+/** What authorising a proposal answers: the record (made now, or already), or the request still waiting for approvers. */
+export type Authorised = (Created & { created: boolean }) | { request: RequestView; created: false; waiting: true };
 
 /** What a human proposal or an approved extraction item contributes to a record. */
 export interface Content {
@@ -51,7 +56,10 @@ export class RecordsService {
     private readonly access: ProjectAccess,
     private readonly extraction: ExtractionService,
     private readonly invitations: InvitationsService,
-  ) {}
+    private readonly changes: ChangesService,
+  ) {
+    changes.register(authoriseProposalHandler({ records: this, extraction }));
+  }
 
   async tx<T>(work: (c: PoolClient) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
@@ -82,30 +90,31 @@ export class RecordsService {
     return rows[0] ? { kind: rows[0].kind, id: rows[0].id } : null;
   }
 
-  /** Authorise one extraction proposal: approve it and create its record, once (V1.0 proposals §7). */
-  async authoriseItem(user: AuthUser, runId: string, itemId: string, body: Record<string, unknown>): Promise<Created & { created: boolean }> {
+  /** Authorise one extraction proposal: approve it and create its record, once (V1.0 proposals §7), through an authorise_proposal request. */
+  async authoriseItem(user: AuthUser, runId: string, itemId: string, body: Record<string, unknown>): Promise<Authorised> {
     if (!UUID.test(itemId)) throw new NotFoundException();
     const projectId = await this.access.projectOfRun(runId);
-    const at = this.now();
-    let deliver: (() => Promise<boolean>) | null = null;
-    const result = await this.tx(async (c) => {
-      const ctx = await this.authoriser(c, user, projectId);
-      const existing = await this.existingRecord(c, { itemId });
-      if (existing) return { record: existing, created: false };
-      const approved: ApprovedItem = await this.extraction.approveInTx(c, runId, itemId, { sourceVersionId: body.sourceVersionId, occurrence: body.occurrence }, user.id, at);
-      const made = await this.createFrom(c, ctx, { itemId }, approved, body, user, at);
-      deliver = made.deliver;
-      return { record: made.record, created: true };
-    });
-    const delivered = deliver ? await (deliver as () => Promise<boolean>)() : undefined;
-    return { ...result, ...(delivered !== undefined ? { delivered } : {}) };
+    const item = (await this.pool.query(`SELECT run_id FROM extraction_items WHERE id = $1`, [itemId])).rows[0];
+    if (!item || item.run_id !== runId) throw new NotFoundException();
+    return this.authoriseThrough(user, projectId, 'extraction_item', itemId, body);
   }
 
-  /** Owner or Sponsor, project Planned or Active, no required role missing; the project row is locked. */
-  async authoriser(c: PoolClient, user: AuthUser, projectId: string): Promise<ProjectContext> {
-    const ctx = await this.access.authorize(user, 'proposal.review', projectId, c, true);
-    if (ctx.missingAccountability) throw new ConflictException(MISSING_ACCOUNTABILITY);
-    return ctx;
+  /**
+   * The authoriser's click submits an authorise_proposal request and is its first approval. When that completes the
+   * count the record is made at once (2a's 201); otherwise the request waits for more approvers (202). A proposal
+   * that already has its record answers with it (200).
+   */
+  private async authoriseThrough(user: AuthUser, projectId: string, targetKind: 'extraction_item' | 'human_proposal', targetId: string, body: Record<string, unknown>): Promise<Authorised> {
+    try {
+      const out = await this.changes.submit(user, projectId, { kind: 'authorise_proposal', targetKind, targetId, terms: body }, { approveNow: true });
+      if (out.applied?.record) {
+        return { record: out.applied.record, created: true, ...(out.applied.delivered !== undefined ? { delivered: out.applied.delivered } : {}) };
+      }
+      return { request: out.request, created: false, waiting: true };
+    } catch (err) {
+      if (err instanceof AlreadyAuthorised) return { record: err.record, created: false };
+      throw err;
+    }
   }
 
   /** Resolve a task assignee: a project person, or an eligible email (account made Invited, invitation issued). */
@@ -296,23 +305,11 @@ export class RecordsService {
     return p as { id: string; project_id: string; kind: Content['kind']; text: string; owner: string | null; review_status: string };
   }
 
-  async authoriseProposal(user: AuthUser, proposalId: string, body: Record<string, unknown>): Promise<Created & { created: boolean }> {
-    const at = this.now();
-    let deliver: (() => Promise<boolean>) | null = null;
-    const result = await this.tx(async (c) => {
-      const peek = await this.lockProposal(c, proposalId);
-      const ctx = await this.authoriser(c, user, peek.project_id);
-      const p = (await c.query(`SELECT review_status FROM human_proposals WHERE id = $1 FOR UPDATE`, [proposalId])).rows[0];
-      const existing = await this.existingRecord(c, { proposalId });
-      if (existing) return { record: existing, created: false };
-      if (p.review_status === 'rejected') throw new ConflictException('This proposal was rejected.');
-      const made = await this.createFrom(c, ctx, { proposalId }, { kind: peek.kind, text: peek.text, owner: peek.owner }, body, user, at);
-      await c.query(`UPDATE human_proposals SET review_status = 'approved', reviewed_by = $2, reviewed_at = $3 WHERE id = $1`, [proposalId, user.id, at]);
-      deliver = made.deliver;
-      return { record: made.record, created: true };
-    });
-    const delivered = deliver ? await (deliver as () => Promise<boolean>)() : undefined;
-    return { ...result, ...(delivered !== undefined ? { delivered } : {}) };
+  async authoriseProposal(user: AuthUser, proposalId: string, body: Record<string, unknown>): Promise<Authorised> {
+    if (!UUID.test(proposalId)) throw new NotFoundException();
+    const p = (await this.pool.query(`SELECT project_id FROM human_proposals WHERE id = $1`, [proposalId])).rows[0];
+    if (!p) throw new NotFoundException();
+    return this.authoriseThrough(user, p.project_id, 'human_proposal', proposalId, body);
   }
 
   async rejectProposal(user: AuthUser, proposalId: string, input: Record<string, unknown>) {

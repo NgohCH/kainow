@@ -1,6 +1,7 @@
 import { Module, type DynamicModule, type Provider } from '@nestjs/common';
 import { ExtractionController } from './extraction.controller';
 import { ExtractionService } from './extraction.service';
+import { ChangesModule } from '../changes/changes.module';
 import { ProjectsModule } from '../projects/projects.module';
 import { RecordsController } from '../records/records.controller';
 import { RecordsService } from '../records/records.service';
@@ -13,6 +14,6 @@ export class ExtractionModule {
     const providers: Provider[] = queue
       ? [{ provide: EXTRACTION_QUEUE, useValue: queue }]
       : [PgBossExtractionQueue, { provide: EXTRACTION_QUEUE, useExisting: PgBossExtractionQueue }];
-    return { module: ExtractionModule, imports: [ProjectsModule], controllers: [ExtractionController, RecordsController], providers: [ExtractionService, RecordsService, ...providers] };
+    return { module: ExtractionModule, imports: [ProjectsModule, ChangesModule], controllers: [ExtractionController, RecordsController], providers: [ExtractionService, RecordsService, ...providers] };
   }
 }

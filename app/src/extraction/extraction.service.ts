@@ -455,6 +455,11 @@ export class ExtractionService {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      // A pending authorisation of this item is taken before the item, in the order approving takes them.
+      await client.query(
+        `SELECT id FROM change_requests WHERE target_kind = 'extraction_item' AND target_id = $1 AND status = 'pending' FOR UPDATE`,
+        [itemId],
+      );
       const found = await client.query(
         `SELECT i.id, i.source_version_id, i.review_status, r.status AS run_status
            FROM extraction_items i
@@ -503,6 +508,22 @@ export class ExtractionService {
           `UPDATE extraction_items SET review_status = 'pending', chosen_occurrence = NULL, reviewed_by = NULL, reviewed_at = NULL WHERE id = $1`,
           [itemId],
         );
+      }
+      // Approvals were given on the old wording: a pending authorisation is set aside and starts again (spec §3.3).
+      const superseded = await client.query(
+        `UPDATE change_requests SET status = 'superseded', decided_by = $2, decided_at = $3
+          WHERE target_kind = 'extraction_item' AND target_id = $1 AND status = 'pending' RETURNING id, project_id`,
+        [itemId, actorUserId, at],
+      );
+      for (const r of superseded.rows) {
+        await writeAudit(client, {
+          at,
+          action: 'change.superseded',
+          actorUserId,
+          subjectType: 'change_request',
+          subjectId: r.id,
+          detail: { projectId: r.project_id, itemId },
+        });
       }
       // The audit trail names what changed, never the wording itself.
       await writeAudit(client, {
