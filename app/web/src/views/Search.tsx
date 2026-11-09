@@ -1,4 +1,4 @@
-import { type FormEvent, useEffect, useState } from 'react';
+import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import { go } from '../App.tsx';
 import { accessLabel, roleLabel, STATUS_LABEL } from '../projects.ts';
@@ -15,11 +15,13 @@ import {
   type SearchResult,
 } from '../search.ts';
 
+export const isSearchHash = (hash: string): boolean => hash === '#/search' || hash.startsWith('#/search?');
+
 const PROJECT_ROUTE = /^#\/projects\/([0-9a-f-]{36})/i;
 
 /** The search box in the header. On a project page it searches that project only. */
 export function HeaderSearch({ hash }: { hash: string }) {
-  const onSearch = hash.startsWith('#/search');
+  const onSearch = isSearchHash(hash);
   const current = onSearch ? parseSearchHash(hash).q : '';
   const [value, setValue] = useState(current);
   useEffect(() => setValue(current), [current]);
@@ -33,7 +35,7 @@ export function HeaderSearch({ hash }: { hash: string }) {
   }
 
   return (
-    <form role="search" className="header-search" onSubmit={submit}>
+    <form role="search" aria-label="Search your projects" className="header-search" onSubmit={submit}>
       <label className="visually-hidden" htmlFor="header-search-input">Search your projects</label>
       <input id="header-search-input" type="search" placeholder="Search your projects" autoComplete="off" value={value} onChange={(e) => setValue(e.target.value)} />
     </form>
@@ -83,6 +85,11 @@ export function Search({ hash }: { hash: string }) {
   const [more, setMore] = useState(false);
   const [error, setError] = useState<{ status: number; message: string } | null>(null);
   const words = searchWords(state.q);
+  // Fixed on arrival, so ticking a filter never collapses or re-opens the box under the person's hands.
+  const [filtersOpenAtStart] = useState(state.kinds.length > 0 || state.archived);
+  // The address a response must still belong to; a late "Show more" answer for an old search is dropped.
+  const current = useRef(hash);
+  current.current = hash;
 
   useEffect(() => {
     setExtra([]);
@@ -136,16 +143,18 @@ export function Search({ hash }: { hash: string }) {
   }
 
   async function showMore(p: SearchProject) {
+    const started = hash;
     setMore(true);
     try {
       const r = await api.get<SearchResponse>(
         searchPath({ q: state.q, kinds: state.kinds, archived: state.archived, project: p.id, offset: p.results.length + extra.length }),
       );
+      if (current.current !== started) return;
       setExtra((e) => [...e, ...(r.projects.find((x) => x.id === p.id)?.results ?? [])]);
     } catch (e) {
-      setError(failure(e));
+      if (current.current === started) setError(failure(e));
     } finally {
-      setMore(false);
+      if (current.current === started) setMore(false);
     }
   }
 
@@ -158,7 +167,7 @@ export function Search({ hash }: { hash: string }) {
   return (
     <main className="search-page">
       <h1>Search</h1>
-      <form role="search" aria-label="Search page" onSubmit={submit} className="stack search-form">
+      <form role="search" aria-label="Search" onSubmit={submit} className="stack search-form">
         <label>
           Words to find
           <input
@@ -173,7 +182,7 @@ export function Search({ hash }: { hash: string }) {
         <button className="primary" disabled={draft.trim() === ''}>Search</button>
       </form>
 
-      <details className="search-filters" open={state.kinds.length > 0 || state.archived}>
+      <details className="search-filters" open={filtersOpenAtStart}>
         <summary>Filters</summary>
         <fieldset>
           <legend>What to find</legend>
@@ -202,16 +211,16 @@ export function Search({ hash }: { hash: string }) {
         </p>
       )}
 
-      {loading && <p className="loading">Searching</p>}
+      {loading && <p className="loading" role="status">Searching</p>}
       {unavailable && error && <p role="alert" className="error"><strong>Unavailable.</strong> {error.message}</p>}
       {error && !unavailable && !badInput && <p role="alert" className="error">{error.message}</p>}
 
+      <p aria-live="polite" className="count">
+        {data && !loading ? (total === 0 ? 'No matches in the projects you can see.' : `${total} ${total === 1 ? 'match' : 'matches'}`) : ''}
+      </p>
       {data && !loading && (
         <>
           <p className="meta">{searchedLine(data.searched)}</p>
-          <p aria-live="polite" className="count">
-            {total === 0 ? 'No matches in the projects you can see.' : `${total} ${total === 1 ? 'match' : 'matches'}`}
-          </p>
           {data.projects.map((p) => {
             const shown = [...p.results, ...(state.project === p.id ? extra : [])];
             const access = accessText(p);

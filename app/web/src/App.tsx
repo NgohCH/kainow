@@ -13,7 +13,7 @@ import { People } from './views/People.tsx';
 import { ProjectPage } from './views/ProjectPage.tsx';
 import { Projects } from './views/Projects.tsx';
 import { Review } from './views/Review.tsx';
-import { HeaderSearch, Search } from './views/Search.tsx';
+import { HeaderSearch, isSearchHash, Search } from './views/Search.tsx';
 import { Spending } from './views/Spending.tsx';
 
 function useHash(): string {
@@ -236,7 +236,7 @@ export function App() {
   const note = /^#\/notes\/([0-9a-f-]{36})(?:\/v\/(\d+))?$/i.exec(hash);
   const run = /^#\/runs\/([0-9a-f-]{36})$/i.exec(hash);
   const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work|closing|deadline-review)(?:\/([0-9a-f-]{36}))?)?$/i.exec(hash);
-  const searching = hash.startsWith('#/search');
+  const searching = isSearchHash(hash);
   const adminPage = /^#\/(people|spending|departments|domains|organisation|approvals)$/.exec(hash)?.[1];
 
   let page;
