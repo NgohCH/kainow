@@ -83,3 +83,11 @@ test('the closing summary says how many items still need a disposition', async (
   const three = [1, 2, 3].map((n) => ({ kind: 'task', id: String(n), why: 'x' }));
   assert.equal(closureSummary({ ready: false, missing: three }), '3 items still need a disposition.');
 });
+
+test('the waiting-requests line says so plainly when the count is unknown', async () => {
+  const { waitingRequestsText } = await import('./changes.ts');
+  assert.equal(waitingRequestsText(0), 'No requests are waiting, so this changes nothing already in progress.');
+  assert.equal(waitingRequestsText(1), '1 request is waiting and will be affected.');
+  assert.equal(waitingRequestsText(4), '4 requests are waiting and will be affected.');
+  assert.equal(waitingRequestsText(null), 'The number of waiting requests could not be loaded; Keep is the safe choice.');
+});

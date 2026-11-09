@@ -162,3 +162,10 @@ export function closureSummary(readiness: Pick<Readiness, 'ready' | 'missing'>):
   if (readiness.ready && n === 0) return 'Ready to close.';
   return n === 1 ? '1 item still needs a disposition.' : `${n} items still need a disposition.`;
 }
+
+/** What a policy change does to requests already waiting; null when the count could not be loaded. */
+export function waitingRequestsText(n: number | null): string {
+  if (n === null) return 'The number of waiting requests could not be loaded; Keep is the safe choice.';
+  if (n === 0) return 'No requests are waiting, so this changes nothing already in progress.';
+  return `${n} ${n === 1 ? 'request is' : 'requests are'} waiting and will be affected.`;
+}

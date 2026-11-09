@@ -1,5 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { ApiError, api } from '../api.ts';
+import { waitingRequestsText } from '../changes.ts';
 import { formatWhen } from '../format.ts';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
@@ -28,14 +29,13 @@ interface ProjectPolicy {
 
 const FIELD: Record<string, string> = { required: 'Approvals needed', projects_may_override: 'Projects may set their own count', projectsMayOverride: 'Projects may set their own count' };
 const fieldLabel = (f: string) => FIELD[f] ?? f;
-const pendingText = (n: number) => (n === 0 ? 'No requests are waiting, so this changes nothing already in progress.' : `${n} ${n === 1 ? 'request is' : 'requests are'} waiting and will be affected.`);
 
 /** Choose to keep or restart the requests already waiting. Keep is preselected. */
-function PendingChoice({ pending, value, onChange }: { pending: number; value: 'keep' | 'restart'; onChange: (v: 'keep' | 'restart') => void }) {
+function PendingChoice({ pending, value, onChange }: { pending: number | null; value: 'keep' | 'restart'; onChange: (v: 'keep' | 'restart') => void }) {
   return (
     <fieldset>
       <legend>Requests already waiting</legend>
-      <p className="meta" role="status">{pendingText(pending)}</p>
+      <p className="meta" role="status">{waitingRequestsText(pending)}</p>
       <label className="choice">
         <input type="radio" name="pending" checked={value === 'keep'} onChange={() => onChange('keep')} />
         Keep them as they are, with the approvals they have
@@ -130,8 +130,7 @@ export function ApprovalSettings() {
               <input type="checkbox" checked={override} onChange={(e) => setOverride(e.target.checked)} />
               Let a project's Owners and Sponsors set their own count
             </label>
-            <PendingChoice pending={impact ?? 0} value={pending} onChange={setPending} />
-            {impact === null && <p className="meta">The number of waiting requests could not be loaded.</p>}
+            <PendingChoice pending={impact} value={pending} onChange={setPending} />
             <label>
               Reason for the change
               <textarea required rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />
@@ -206,7 +205,7 @@ export function ProjectApprovals({ projectId }: { projectId: string }) {
               ))}
             </select>
           </label>
-          <PendingChoice pending={waiting ?? 0} value={pending} onChange={setPending} />
+          <PendingChoice pending={waiting} value={pending} onChange={setPending} />
           <label>
             Reason for the change
             <textarea required rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />

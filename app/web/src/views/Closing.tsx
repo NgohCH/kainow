@@ -308,7 +308,7 @@ function CloseForm({ project, view, act }: { project: Project; view: ClosureView
           );
         })}
         {!allowed && outcomes.includes('delivered') && (
-          <p id="delivered-why" className="meta">Delivered needs every task finished or cancelled and the objectives confirmed as met.</p>
+          <p id="delivered-why" className="meta">Delivered is not available while a task is kept outstanding or a question left unresolved affects delivery acceptance. It also needs the objectives confirmed as met.</p>
         )}
       </fieldset>
       {outcome === 'delivered' && (
