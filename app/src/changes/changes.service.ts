@@ -17,6 +17,7 @@ export const NOT_ELIGIBLE = 'Only an Owner or Sponsor of this project can approv
 export const STALE_VERSION = 'This change was revised; review the new version.';
 export const NOT_PENDING = 'This change is no longer waiting for authorisation.';
 export const NOT_EDITABLE = 'This change cannot be edited while approving.';
+export const HANDOVER_WITHDRAW = 'Only the person who offered this risk can withdraw the hand-over; the receiving project declines it.';
 export const notEnough = (need: number, have: number) => `Not enough approvers: needs ${need}, the project has ${have}.`;
 
 const KINDS: readonly ChangeKind[] = [
@@ -401,6 +402,7 @@ export class ChangesService {
     const at = this.now();
     return this.tx(async (c) => {
       const { ctx, request } = await this.load(c, user, requestId, true);
+      if (request.kind === 'risk_handover' && request.submittedBy !== user.id) throw new ForbiddenException(HANDOVER_WITHDRAW);
       if (request.submittedBy !== user.id && !ctx.roles.includes('pm')) {
         throw new ForbiddenException('Only the person who proposed this change or the Project Manager can withdraw it.');
       }
@@ -491,7 +493,8 @@ export class ChangesService {
       ...(offer ? { offer } : {}),
       mayApprove: pending && eligible && why === null && !approvals.some((a) => a.userId === user.id),
       mayRevise: pending && r.submittedBy === user.id,
-      mayWithdraw: pending && (r.submittedBy === user.id || ctx.roles.includes('pm')),
+      // The receiving project declines a hand-over (an Owner or Sponsor rejects it); only the offerer withdraws it.
+      mayWithdraw: pending && (r.submittedBy === user.id || (r.kind !== 'risk_handover' && ctx.roles.includes('pm'))),
       why,
       batchId: r.batchId,
     };

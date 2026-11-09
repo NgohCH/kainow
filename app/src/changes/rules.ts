@@ -66,11 +66,20 @@ export function closureReadiness(input: {
   questions: Array<{ id: string; status: string }>;
   risks: Array<{ id: string; status: string; reviewOn: string | null }>;
   dispositions: Array<{ recordKind: string; recordId: string; disposition: string; affectsDelivery: boolean }>;
-  pendingRequests: Array<{ kind: string; targetId: string; status: string }>;
+  /** The closure's cancellations and hand-overs, oldest first (the last for a target is its latest). */
+  pendingRequests: Array<{ kind: string; targetId: string; status: string; reason?: string | null }>;
 }): { ready: boolean; missing: Item[]; deliveredAllowed: boolean } {
   const missing: Item[] = [];
   const find = (kind: string, id: string) =>
     input.dispositions.find((d) => d.recordKind === kind && d.recordId === id);
+  const latest = (kind: string, id: string) => input.pendingRequests.filter((r) => r.kind === kind && r.targetId === id).at(-1);
+  /** Why the disposition is not in effect: how its latest request ended, or that it is waiting. */
+  const ended = (kind: string, id: string, waiting: string, rejected: string, withdrawn: string) => {
+    const r = latest(kind, id);
+    if (r?.status === 'rejected') return `${rejected}: ${r.reason ?? ''}`;
+    if (r?.status === 'withdrawn') return `${withdrawn}: ${r.reason ?? ''}`;
+    return waiting;
+  };
 
   const check = (kind: string, id: string, status: string) => {
     const d = find(kind, id);
@@ -79,12 +88,12 @@ export function closureReadiness(input: {
       return;
     }
     if (d.disposition === 'cancel' && kind === 'task' && status !== 'cancelled') {
-      missing.push({ kind, id, why: 'Cancellation waiting for authorisation' });
+      missing.push({ kind, id, why: ended('cancel_task', id, 'Cancellation waiting for authorisation', 'Cancellation rejected', 'Cancellation withdrawn') });
     } else if (d.disposition === 'handover') {
       const done = input.pendingRequests.some(
         (r) => r.kind === 'risk_handover' && r.targetId === id && r.status === 'authorised',
       );
-      if (!done) missing.push({ kind, id, why: 'Hand-over waiting for acceptance' });
+      if (!done) missing.push({ kind, id, why: ended('risk_handover', id, 'Hand-over waiting for acceptance', 'Declined by the receiving project', 'Hand-over withdrawn') });
     }
   };
 

@@ -71,11 +71,20 @@ export async function loadClosure(db: Db, projectId: string) {
   const riskIds = risks.map((r) => r.id);
   const handovers = (
     await db.query(
-      `SELECT kind, target_id AS "targetId", status FROM change_requests WHERE kind = 'risk_handover' AND target_kind = 'risk' AND target_id = ANY($1::uuid[])`,
+      `SELECT kind, target_id AS "targetId", status, reason FROM change_requests
+        WHERE kind = 'risk_handover' AND target_kind = 'risk' AND target_id = ANY($1::uuid[]) ORDER BY submitted_at, id`,
       [riskIds],
     )
-  ).rows as Array<{ kind: string; targetId: string; status: string }>;
-  return { tasks, questions, risks, dispositions, handovers };
+  ).rows as Array<{ kind: string; targetId: string; status: string; reason: string | null }>;
+  // The closure batch's cancellations (the batch is named by the project's own id).
+  const cancellations = (
+    await db.query(
+      `SELECT kind, target_id AS "targetId", status, reason FROM change_requests
+        WHERE kind = 'cancel_task' AND target_kind = 'task' AND project_id = $1 AND batch_id = $1 ORDER BY submitted_at, id`,
+      [projectId],
+    )
+  ).rows as Array<{ kind: string; targetId: string; status: string; reason: string | null }>;
+  return { tasks, questions, risks, dispositions, handovers, cancellations };
 }
 
 /** closureReadiness over what is open now; dispositions of records finished since they were chosen do not count. */
@@ -93,7 +102,7 @@ export function readinessOf(loaded: Awaited<ReturnType<typeof loadClosure>>) {
     questions: loaded.questions,
     risks,
     dispositions: loaded.dispositions.filter((d) => open.has(`${d.recordKind}:${d.recordId}`)),
-    pendingRequests: loaded.handovers,
+    pendingRequests: [...loaded.handovers, ...loaded.cancellations],
   });
 }
 

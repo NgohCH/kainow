@@ -17,6 +17,8 @@ interface Item {
   id: string;
   disposition: Disposition | null;
   pendingRequest: { id: string; kind: string; batchId: string | null } | null;
+  /** Why the item still stops Close, as the server words it (for example a declined hand-over and its reason). */
+  why: string | null;
   title?: string;
   depth?: number;
   status: string;
@@ -196,6 +198,9 @@ function ItemRow({ item, kind, view, project, run, targets }: { item: Item; kind
       )}
       {item.pendingRequest && (
         <p className="meta" role="status">A request for this is waiting for authorisation. Choosing again withdraws it.</p>
+      )}
+      {current && !item.pendingRequest && item.why && (
+        <p className="warn" role="status">{item.why}</p>
       )}
       {view.mayPrepare && !editing && <button onClick={() => setEditing(true)}>{current ? 'Change the disposition' : 'Choose a disposition'}</button>}
       {view.mayPrepare && editing && (

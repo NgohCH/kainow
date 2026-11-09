@@ -84,6 +84,7 @@ export class ClosureService {
   async view(user: AuthUser, projectId: string) {
     const ctx = await this.access.authorize(user, 'project.view', projectId);
     const loaded = await loadClosure(this.pool, projectId);
+    const readiness = readinessOf(loaded);
     const all = [...loaded.tasks.map((x) => x.id), ...loaded.questions.map((x) => x.id), ...loaded.risks.map((x) => x.id)];
     const pending = (
       await this.pool.query(
@@ -95,12 +96,15 @@ export class ClosureService {
       rows.map((r) => {
         const d = loaded.dispositions.find((x) => x.recordKind === kind && x.recordId === r.id);
         const p = pending.find((x) => x.targetId === r.id);
+        const missing = readiness.missing.find((m) => m.kind === kind && m.id === r.id);
         return {
           ...r,
           disposition: d
             ? { disposition: d.disposition, reason: d.reason, affectsDelivery: d.affectsDelivery, handoverProjectId: d.handoverProjectId, chosenBy: d.chosenBy, chosenAt: d.chosenAt }
             : null,
           pendingRequest: p ? { id: p.id, kind: p.kind, projectId: p.projectId, batchId: p.batchId } : null,
+          /** Why this item still stops Close (a declined hand-over or a rejected cancellation says so), else null. */
+          why: missing?.why ?? null,
         };
       });
     const delegation = await openDelegation(this.pool, projectId);
@@ -110,7 +114,7 @@ export class ClosureService {
         questions: with_('question', loaded.questions.filter(openQuestion)),
         risks: with_('risk', loaded.risks.filter(openRisk)),
       },
-      readiness: readinessOf(loaded),
+      readiness,
       delegation: delegation ? { pm: delegation.pm, pmUserId: delegation.pmUserId, by: delegation.by, reason: delegation.reason, at: delegation.at } : null,
       mayPrepare: ctx.roles.length > 0 && (await ClosureService.mayPrepare(this.pool, ctx, user.id)),
     };

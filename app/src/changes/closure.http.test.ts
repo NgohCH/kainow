@@ -178,6 +178,30 @@ describe('closure accounting and delegated closure', { skip: SKIP_NO_DB }, () =>
     assert.equal(closed.status, 200, JSON.stringify(closed.body));
   });
 
+  test('a rejected or withdrawn closure cancellation is shown with its reason', async () => {
+    await setCount(2);
+    const a = await task();
+    const b = await task();
+    const first = await dispose(owner, 'task', a, 'cancel', 'Out of scope');
+    assert.equal(first.status, 201, JSON.stringify(first.body));
+    t.clock.advanceSeconds(60);
+    const rejected = await sponsor.request('POST', `/changes/${first.body.request.id}/reject`, { reason: 'Still needed' });
+    assert.equal(rejected.status, 200, JSON.stringify(rejected.body));
+    const second = await dispose(owner, 'task', b, 'cancel', 'Duplicate');
+    t.clock.advanceSeconds(60);
+    assert.equal((await pm.request('POST', `/changes/${second.body.request.id}/withdraw`, { reason: 'Not a duplicate' })).status, 200);
+    const v = await view(owner);
+    const whyOf = (id: string) => v.readiness.missing.find((m: { id: string }) => m.id === id)?.why;
+    assert.equal(whyOf(a), 'Cancellation rejected: Still needed');
+    assert.equal(whyOf(b), 'Cancellation withdrawn: Not a duplicate');
+    const item = v.items.tasks.find((x: { id: string }) => x.id === a);
+    assert.deepEqual([item.why, item.pendingRequest, item.disposition.disposition], ['Cancellation rejected: Still needed', null, 'cancel']);
+    // Choosing again starts a new cancellation, which is waiting again.
+    t.clock.advanceSeconds(60);
+    assert.equal((await dispose(owner, 'task', a, 'cancel', 'Out of scope after all')).status, 201);
+    assert.equal((await view(owner)).readiness.missing.find((m: { id: string }) => m.id === a).why, 'Cancellation waiting for authorisation');
+  });
+
   test('questions and risks take their dispositions at close', async () => {
     const q1 = await question('open');
     const q2 = await question('answered');

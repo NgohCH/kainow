@@ -157,11 +157,23 @@ describe('handing a risk to another project at closure', { skip: SKIP_NO_DB }, (
     assert.equal(declined.body.request.status, 'rejected');
     const refused = await close(owner);
     assert.equal(refused.status, 409);
-    assert.deepEqual(refused.body.missing, [{ kind: 'risk', id: riskId, why: WAITING }]);
+    const declinedWhy = 'Declined by the receiving project: We have no capacity';
+    assert.deepEqual(refused.body.missing, [{ kind: 'risk', id: riskId, why: declinedWhy }]);
+    const shown = (await owner.request('GET', `/projects/${origin}/closure`)).body.items.risks.find((x: { id: string }) => x.id === riskId);
+    assert.deepEqual([shown.why, shown.disposition.disposition], [declinedWhy, 'handover'], 'the disposition stays; the closer chooses again');
     t.clock.advanceSeconds(60);
     assert.equal((await dispose(owner, 'final_accept')).status, 201);
     assert.equal((await close(owner)).status, 200);
     assert.equal((await risksOf(rOwner, receiver)).length, 0);
+  });
+
+  test("the receiving project's PM cannot withdraw an incoming hand-over", async () => {
+    assert.equal((await offer()).status, 201);
+    const [r] = await incoming(rPm);
+    assert.equal(r.mayWithdraw, false);
+    const w = await rPm.request('POST', `/changes/${r.id}/withdraw`, { reason: 'Not ours' });
+    assert.deepEqual([w.status, w.body.message], [403, 'Only the person who offered this risk can withdraw the hand-over; the receiving project declines it.']);
+    assert.equal((await t.pool.query(`SELECT status FROM change_requests WHERE id = $1`, [r.id])).rows[0].status, 'pending');
   });
 
   test('the receiving project must be active', async () => {
