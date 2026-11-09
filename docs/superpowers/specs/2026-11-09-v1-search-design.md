@@ -226,16 +226,18 @@ Guard:
 
 ## 12. Measured
 
-Measured on 2026-11-10 through `SearchService.search` (one test user in all 50 projects), after the per-word `ILIKE` fix, against PostgreSQL 16 in a Docker `postgres:16` container on a Windows developer laptop. This is not production hardware, and the product's 5 second statement timeout was left as it is. The first measurement (with `ILIKE ALL` over an array) missed the aim because PostgreSQL cannot serve that shape from a trigram index; the numbers below are after the fix.
+Measured on 2026-11-10 through `SearchService.search` (one test user in all 50 projects), with the search transaction running `SET LOCAL enable_seqscan = off`, against PostgreSQL 16 in a Docker `postgres:16` container on a Windows developer laptop. This is not production hardware, and the product's 5 second statement timeout was left as it is.
 
-Data: 50 projects, 1,000 notes, 2,011 note versions (1 to 3 each, about 8,000 words each, 16.1 million words in all, from a generated vocabulary of 4,000 words), 6,000 tasks, 6,000 proposals, and 1,000 each of decisions, questions and risks. `ANALYZE` was run after seeding. Median and worst of 5 runs:
+Earlier measurements, for the record: with `ILIKE ALL` over an array the trigram indexes could not be used and every search scanned the note text sequentially (rare word 1.3 s, common words 2.9 s, the 8-word phrase timed out); with one `ILIKE` per word the other tables used their indexes, but the planner still chose a sequential scan of the note text because it is stored out of line (TOAST) and the table looks tiny (rare word 1.3 s, phrase timed out).
+
+Data: 50 projects, 1,000 notes, 2,018 note versions (1 to 3 each, about 8,000 words each, 16.1 million words in all, from a generated vocabulary of 4,000 words), 6,000 tasks, 6,000 proposals, and 1,000 each of decisions, questions and risks. `ANALYZE` was run after seeding. Median and worst of 5 runs:
 
 | Search | Median | Worst | Result |
 |---|---|---|---|
-| One rare word (`zygomorphic`, in one note) | 1,268 ms | 1,295 ms | 1 hit |
-| Two common words (`budget vendor`) | 2,949 ms | 2,996 ms | 600 hits |
-| A 3-letter word (`ore`) | 1,197 ms | 1,206 ms | 7,200 hits |
-| An 8-word phrase (two common words among rare ones) | over 5,000 ms | over 5,000 ms | all 5 runs timed out (503); about 5,900 ms when allowed to finish |
-| Two common words inside one project | 2,090 ms | 2,120 ms | 20 hits |
+| One rare word (`zygomorphic`, in one note) | 207 ms | 239 ms | 1 hit |
+| Two common words (`budget vendor`) | 2,941 ms | 3,002 ms | 600 hits |
+| A 3-letter word (`ore`) | 1,216 ms | 1,257 ms | 7,200 hits |
+| An 8-word phrase (two common words among rare ones) | 4,784 ms | 4,866 ms | 152 hits |
+| Two common words inside one project | 2,119 ms | 2,129 ms | 20 hits |
 
-**The aim of under 1 second was still not met.** The per-word fix changed the plans for tasks and proposals (`Bitmap Index Scan on search_tasks_trgm` and `search_human_proposals_trgm` now appear), but the note text is still read by `Seq Scan on source_versions` for the rare word, the common words, the phrase and the one-project search; only the 3-letter word uses `Bitmap Index Scan on search_source_versions_trgm`, and it still takes about 1.1 s because every note matches. A plain `text_content ILIKE '%zygomorphic%'` on that table also chooses the sequential scan (1,172 ms) with default planner settings. The planner sees a heap of only 42 pages because the note text is stored out of line (TOAST), so it prices the scan at about 67 and ignores the cost of reading and decompressing 100 MB of text; it prices the index plan higher. Nothing was tuned for this check; the options go to the Product Owner.
+`EXPLAIN (ANALYZE, BUFFERS)` now shows `Bitmap Index Scan on search_source_versions_trgm` for note text, and the matching indexes on tasks, proposals, decisions, questions and risks, in every search. The rare word runs its statement in 5 ms. **The aim of under 1 second is met only for the rare word.** The other four are over it because the words are in nearly every one of the 2,018 versions of this generated text, so the index cannot narrow the candidates and PostgreSQL reads and re-checks every 8,000-word note (about 2 s of the 3 s for the common words), then builds snippets for the first 10 hits of each of 30 projects. Real notes, which do not all contain the same words, will narrow more. Nothing was tuned for this check; the options go to the Product Owner.
