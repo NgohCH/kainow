@@ -10,6 +10,8 @@ import {
   searchPath,
   SEARCH_KINDS,
   searchWords,
+  snippetRepeatsTitle,
+  statusLabel,
   type SearchProject,
   type SearchResponse,
   type SearchResult,
@@ -63,8 +65,8 @@ function ResultItem({ r, words }: { r: SearchResult; words: string[] }) {
         <span className="badge">{KIND_LABELS[r.kind]}</span>
         {ai && <span className="badge ai-label">AI proposed</span>}{' '}
         <strong><Marked text={r.title} words={words} /></strong>
-        {r.status && <span className="meta inline"> · {r.status}</span>}
-        {r.snippet && <span className="snippet"><Marked text={r.snippet} words={words} /></span>}
+        {r.status && <span className="meta inline"> · {statusLabel(r.kind, r.status)}</span>}
+        {r.snippet && !snippetRepeatsTitle(r.title, r.snippet) && <span className="snippet"><Marked text={r.snippet} words={words} /></span>}
         {r.matchNote && <span className="meta snippet">{r.matchNote}</span>}
       </a>
     </li>

@@ -1,4 +1,6 @@
 // Cross-project search: the shapes the API returns, and the small pure helpers the search page uses.
+import { DECISION_STATUS_LABEL, QUESTION_STATUS_LABEL, REVIEW_STATUS_LABEL, RISK_STATUS_LABEL, TASK_STATUS_LABEL } from './records.ts';
+import { STATUS_LABEL as PROJECT_STATUS_LABEL } from './projects.ts';
 
 export type SearchKind = 'project' | 'person' | 'note' | 'ai_proposal' | 'human_proposal' | 'task' | 'decision' | 'question' | 'risk';
 
@@ -40,6 +42,28 @@ export const KIND_LABELS: Record<SearchKind, string> = {
 };
 
 export const SEARCH_KINDS = Object.keys(KIND_LABELS) as SearchKind[];
+
+const STATUS_LABELS: Partial<Record<SearchKind, Record<string, string>>> = {
+  project: PROJECT_STATUS_LABEL,
+  task: TASK_STATUS_LABEL,
+  decision: DECISION_STATUS_LABEL,
+  question: QUESTION_STATUS_LABEL,
+  risk: RISK_STATUS_LABEL,
+  ai_proposal: REVIEW_STATUS_LABEL,
+  human_proposal: REVIEW_STATUS_LABEL,
+};
+
+/** A result's status in the words the rest of the app uses; an unknown pair is shown as it came. */
+export function statusLabel(kind: string, status: string): string {
+  return STATUS_LABELS[kind as SearchKind]?.[status] ?? status;
+}
+
+/** True when the snippet only repeats the title (case and spacing aside), so it need not be shown. */
+export function snippetRepeatsTitle(title: string, snippet: string | null): boolean {
+  if (snippet === null) return false;
+  const norm = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+  return norm(snippet) === norm(title);
+}
 
 /** The words of a phrase, the way the server reads it: split on spaces, one-character words dropped, at most 8. */
 export function searchWords(q: string): string[] {

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { highlight, parseSearchHash, searchedLine, searchPath, searchWords } from './search.ts';
+import { highlight, parseSearchHash, searchedLine, searchPath, searchWords, snippetRepeatsTitle, statusLabel } from './search.ts';
 
 test('highlight marks each word, ignoring case', () => {
   assert.deepEqual(highlight('Choose Vendor in Penang', ['vendor', 'pen']), [
@@ -51,4 +51,26 @@ test('parseSearchHash defaults', () => {
 test('searchedLine pluralises', () => {
   assert.equal(searchedLine(1), 'Searched 1 project you can currently see');
   assert.equal(searchedLine(7), 'Searched 7 projects you can currently see');
+});
+
+test('statusLabel uses the words the rest of the app uses', () => {
+  assert.equal(statusLabel('task', 'not_started'), 'Not Started');
+  assert.equal(statusLabel('task', 'in_progress'), 'In Progress');
+  assert.equal(statusLabel('decision', 'superseded'), 'Superseded');
+  assert.equal(statusLabel('question', 'answered'), 'Answered');
+  assert.equal(statusLabel('risk', 'mitigating'), 'Mitigating');
+  assert.equal(statusLabel('project', 'deferred'), 'Deferred');
+  assert.equal(statusLabel('ai_proposal', 'pending'), 'Not reviewed');
+  assert.equal(statusLabel('human_proposal', 'rejected'), 'Rejected');
+});
+
+test('statusLabel falls back to the raw value', () => {
+  assert.equal(statusLabel('task', 'odd_state'), 'odd_state');
+  assert.equal(statusLabel('mystery', 'pending'), 'pending');
+});
+
+test('snippetRepeatsTitle ignores case and spacing', () => {
+  assert.equal(snippetRepeatsTitle('Choose  vendor', 'choose vendor '), true);
+  assert.equal(snippetRepeatsTitle('Choose vendor', 'Choose vendor for Penang'), false);
+  assert.equal(snippetRepeatsTitle('x', null), false);
 });

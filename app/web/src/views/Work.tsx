@@ -2,6 +2,7 @@ import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import { formatWhen } from '../format.ts';
 import {
+  DECISION_STATUS_LABEL,
   QUESTION_STATUS_LABEL,
   type QuestionAction,
   type QuestionStatus,
@@ -396,7 +397,6 @@ function TaskRow({
   );
 }
 
-const DECISION_STATUS: Record<string, string> = { active: 'Active', superseded: 'Superseded', withdrawn: 'Withdrawn' };
 
 function DecisionRow({ d, work, propose }: { d: DecisionView; work: WorkContext; propose: Propose }) {
   const [open, setOpen] = useState<'supersede' | 'withdraw' | null>(null);
@@ -408,7 +408,7 @@ function DecisionRow({ d, work, propose }: { d: DecisionView; work: WorkContext;
   return (
     <li id={`item-${d.id}`} tabIndex={-1} className="work-item">
       <strong>{d.statement}</strong>{' '}
-      <span className={`badge ${d.status === 'active' ? 'badge-approved' : 'badge-pending'}`}>{DECISION_STATUS[d.status] ?? d.status}</span>
+      <span className={`badge ${d.status === 'active' ? 'badge-approved' : 'badge-pending'}`}>{DECISION_STATUS_LABEL[d.status] ?? d.status}</span>
       {d.changeWaiting && <span className="badge badge-pending">Change waiting</span>}
       <span className="meta">
         {' '}

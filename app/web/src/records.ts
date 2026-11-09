@@ -20,6 +20,9 @@ export const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
 };
 export const QUESTION_STATUS_LABEL: Record<QuestionStatus, string> = { open: 'Open', answered: 'Answered', resolved: 'Resolved', withdrawn: 'Withdrawn' };
 export const RISK_STATUS_LABEL: Record<RiskStatus, string> = { open: 'Open', mitigating: 'Mitigating', resolved: 'Resolved', accepted: 'Accepted' };
+export const DECISION_STATUS_LABEL: Record<string, string> = { active: 'Active', superseded: 'Superseded', withdrawn: 'Withdrawn' };
+/** A proposal's review state, as the review screen words it. */
+export const REVIEW_STATUS_LABEL = { pending: 'Not reviewed', approved: 'Approved', rejected: 'Rejected' } as const;
 export const SEVERITY_LABEL: Record<Severity, string> = { low: 'Low', medium: 'Medium', high: 'High', critical: 'Critical' };
 
 export const TASK_ACTION_LABEL: Record<TaskAction, string> = { start: 'Start', block: 'Block', unblock: 'Unblock', complete: 'Complete', reopen: 'Reopen' };
