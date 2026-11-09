@@ -19,6 +19,7 @@ The Product Owner's request: Owners, Sponsors and Members who belong to several 
 | Archived projects | Off by default; an "Include archived projects" option adds them, labelled Archived. |
 | Earlier wording | Searched too, labelled: earlier note versions, earlier proposal wording, task titles before an amendment. |
 | Approach | One database view over the live tables with trigram indexes, access applied at query time (no copied index). |
+| Search time limit | 10 seconds per search (raised from 5 on 10 November 2026, after measuring §12); a search that takes longer answers "Search took too long. Try more specific words." |
 
 ## 3. Which projects are searched
 
@@ -67,7 +68,7 @@ Not searched:
 
 **Phrase.** `q` is trimmed and NFC-normalised, then split on whitespace into at most 8 words. One-character words are dropped. At least one remaining word must have 3 or more characters, otherwise the response is 400 "Type at least one word of 3 or more letters." `q` longer than 200 characters gets a 400. Each word is escaped (`\`, `%`, `_`) and becomes the pattern `%word%`. A row matches when its text matches every pattern with `ILIKE`, written as one condition per word, ANDed (`text ILIKE $7 AND text ILIKE $8 …`, one bound parameter per pattern). A GIN trigram index cannot serve `ILIKE ALL` over an array, so that form would scan every table.
 
-**One statement** over `search_documents`, run under `SET LOCAL statement_timeout = '5s'` in a read-only transaction:
+**One statement** over `search_documents`, run under `SET LOCAL statement_timeout = '10s'` in a read-only transaction:
 
 1. Keep rows whose `project_id` is in the readable ids, whose `kind` is in the requested kinds, and whose `source_id` passes the note predicate (§5).
 2. Keep rows matching every pattern.
@@ -226,7 +227,7 @@ Guard:
 
 ## 12. Measured
 
-Measured on 2026-11-10 through `SearchService.search` (one test user in all 50 projects), with the search transaction running `SET LOCAL enable_seqscan = off`, against PostgreSQL 16 in a Docker `postgres:16` container on a Windows developer laptop. This is not production hardware, and the product's 5 second statement timeout was left as it is.
+Measured on 2026-11-10 through `SearchService.search` (one test user in all 50 projects), with the search transaction running `SET LOCAL enable_seqscan = off`, against PostgreSQL 16 in a Docker `postgres:16` container on a Windows developer laptop. This is not production hardware, with the 5 second statement timeout then in force. The Product Owner raised it to 10 seconds afterwards (10 November 2026) rather than tune further.
 
 Earlier measurements, for the record: with `ILIKE ALL` over an array the trigram indexes could not be used and every search scanned the note text sequentially (rare word 1.3 s, common words 2.9 s, the 8-word phrase timed out); with one `ILIKE` per word the other tables used their indexes, but the planner still chose a sequential scan of the note text because it is stored out of line (TOAST) and the table looks tiny (rare word 1.3 s, phrase timed out).
 

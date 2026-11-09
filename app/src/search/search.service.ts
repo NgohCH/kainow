@@ -142,7 +142,7 @@ interface Readable {
 @Injectable()
 export class SearchService {
   /** Statement timeout for one search, in milliseconds. Public so tests may lower it. */
-  timeoutMs = 5000;
+  timeoutMs = 10_000;
 
   constructor(
     @Inject(PG_POOL) private readonly pool: Pool,
