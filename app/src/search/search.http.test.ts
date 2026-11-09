@@ -271,6 +271,25 @@ describe('cross-project search', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(r.body.projects.map((p: Project) => [p.id, p.archived]), [[harbour, true]]);
   });
 
+  test('a Closed and archived project reached through project= needs archived=1', async () => {
+    await t.pool.query(`UPDATE projects SET status = 'closed', closure_outcome = 'abandoned' WHERE id = $1`, [harbour]);
+    await t.pool.query(`INSERT INTO project_transitions (id, project_id, from_status, to_status, actor_id, at) VALUES ($1, $2, 'active', 'closed', $3, '2026-11-05T00:00:00Z')`, [
+      uuidv7(),
+      harbour,
+      ids.pm,
+    ]);
+    await t.pool.query(`INSERT INTO project_archive_events (id, project_id, kind, actor_id, reason, at) VALUES ($1, $2, 'archived', $3, 'Done', '2026-11-06T00:00:00Z')`, [
+      uuidv7(),
+      harbour,
+      ids.owner,
+    ]);
+    const without = await search(member, q('kestrel', `&project=${harbour}`));
+    assert.equal(without.status, 200);
+    assert.deepEqual(without.body.projects, []);
+    const withIt = await search(member, q('kestrel', `&project=${harbour}&archived=1`));
+    assert.deepEqual(withIt.body.projects.map((p: Project) => [p.id, p.archived]), [[harbour, true]]);
+  });
+
   test('an unreadable project filter answers like no matches', async () => {
     for (const project of [bridge, 'not-a-uuid', uuidv7()]) {
       const r = await search(member, q('kestrel', `&project=${project}`));
@@ -298,9 +317,9 @@ describe('cross-project search', { skip: SKIP_NO_DB }, () => {
     const found = await projectsOf(member, q('PENANG vend'));
     assert.deepEqual(found[0].results.map((r) => [r.kind, r.title]), [['decision', 'Choose vendor in Penang']]);
     assert.deepEqual(await projectsOf(member, q('penang harbourx')), []);
-    await question(harbour, 'Sediakan laporan mesyuarat JKR');
-    const malay = await projectsOf(member, q('Mesyuarat jkr'));
-    assert.deepEqual(malay[0].results.map((r) => [r.kind, r.title]), [['question', 'Sediakan laporan mesyuarat JKR']]);
+    await question(harbour, 'Sediakan laporan mesyuarat PKX');
+    const malay = await projectsOf(member, q('Mesyuarat pkx'));
+    assert.deepEqual(malay[0].results.map((r) => [r.kind, r.title]), [['question', 'Sediakan laporan mesyuarat PKX']]);
   });
 
   test('words across two fields of one item', async () => {
@@ -374,6 +393,12 @@ describe('cross-project search', { skip: SKIP_NO_DB }, () => {
     const short = await note(pm, harbour, 'Short', 'turbine short');
     const [p2] = await projectsOf(member, q('turbine short'));
     assert.deepEqual(p2.results.map((r) => [r.id, r.snippet]), [[short.sourceId, 'turbine short']]);
+  });
+
+  test('the snippet is centred on the first word of 3 or more characters', async () => {
+    await note(pm, harbour, 'Far apart', `of ${'a'.repeat(400)} vendor ${'b'.repeat(400)}`);
+    const [p] = await projectsOf(member, q('of vendor', '&kinds=note'));
+    assert.ok((p.results[0].snippet as string).includes('vendor'), p.results[0].snippet as string);
   });
 
   test('earlier wording', async () => {
@@ -508,10 +533,26 @@ describe('cross-project search', { skip: SKIP_NO_DB }, () => {
   });
 
   test('a timeout gives 503', async () => {
-    await note(pm, harbour, 'Huge', 'lorem ipsum '.repeat(Math.ceil(200_000 / 12)));
-    // Eight words, none present, so every pattern scans the 200,000 characters: reliably over 1 ms.
-    const phrase = q('dolor sit amet consectetur adipiscing elit sed eiusmod');
-    assert.deepEqual((await search(member, phrase)).body, { searched: 1, projects: [] }, 'answers within the normal limit');
+    // 200 notes of about 50,000 characters each, all containing the searched words. With sequential scans off the
+    // trigram index finds a candidate quickly only when no note has the words; here every note is a candidate, so
+    // the recheck must read and ILIKE-match 200 large texts, which takes far longer than the 1 ms limit below.
+    await t.pool.query(
+      `INSERT INTO sources (id, title, created_by, created_at, project_id)
+       SELECT gen_random_uuid(), 'Slow ' || g, $1, now(), $2 FROM generate_series(1, 200) g`,
+      [ids.pm, harbour],
+    );
+    await t.pool.query(
+      `INSERT INTO source_versions (id, source_id, version_no, origin, text_content, text_sha256, char_count, created_by, created_at)
+       SELECT gen_random_uuid(), s.id, 1, 'paste', x.text, md5(x.text), length(x.text), $1, now()
+         FROM sources s
+         CROSS JOIN LATERAL (SELECT string_agg(md5(s.id::text || g), ' ') || ' dolor sit amet consectetur' AS text FROM generate_series(1, 1500) g) x
+        WHERE s.title LIKE 'Slow %'`,
+      [ids.pm],
+    );
+    const phrase = q('dolor amet consectetur');
+    const normal = await search(member, phrase);
+    assert.equal(normal.status, 200, 'answers within the normal limit');
+    assert.ok(normal.body.projects.length > 0);
     t.app.get(SearchService).timeoutMs = 1;
     const r = await search(member, phrase);
     assert.equal(r.status, 503, JSON.stringify(r.body));

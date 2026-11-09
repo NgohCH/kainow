@@ -165,7 +165,7 @@ export class SearchService {
     if (ids.length === 0) return { searched, projects: [] };
 
     const today = this.access.today();
-    const rows = await this.run(buildSearchStatement({ ids, kinds, patterns, today, first: words[0], scoped: project !== null, offset }));
+    const rows = await this.run(buildSearchStatement({ ids, kinds, patterns, today, first: words.find((w) => [...w].length >= 3) as string, scoped: project !== null, offset }));
     return { searched, projects: this.build(rows, readable) };
   }
 

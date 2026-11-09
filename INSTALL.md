@@ -100,6 +100,8 @@ The PowerShell lines in this guide were run in Windows PowerShell 5.1 on 8 Novem
 
 Notes added before projects existed (before 8 November 2026) stay in the database but are not shown.
 
+Cross-project search adds migration 0019, which creates the `pg_trgm` extension. That needs the CREATE privilege on the database; under the provided Compose setup the database user already has it. The migration also builds its search indexes while it runs, which can take a while on a large existing database, so expect `docker compose up -d --build` to wait for it.
+
 ## Everyday use
 
 | To | Run |
