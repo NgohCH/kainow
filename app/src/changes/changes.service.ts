@@ -77,7 +77,7 @@ export interface RequestView {
 export type Deliver = () => Promise<boolean>;
 
 /** A project's closure batch is identified by the project's own id (one batch per project). */
-export const isClosureBatch = (batchId: string | null | undefined, projectId: string) => !!batchId && batchId === projectId;
+export const isClosureBatch = (batchId: string | null | undefined, projectId: string) => !!batchId && batchId.toLowerCase() === projectId.toLowerCase();
 
 /** Text in a body field, trimmed; '' when absent. */
 const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '');

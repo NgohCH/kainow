@@ -1,5 +1,6 @@
 import { BadRequestException, Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Query, Req } from '@nestjs/common';
 import { AnySignedInUser } from '../auth/access';
+import { UUID } from '../common/uuid7';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
 import { ChangesService } from './changes.service';
@@ -32,8 +33,14 @@ export class ChangesController {
   @HttpCode(201)
   submit(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest) {
     const x = body(b);
-    // The closure batch (named by the project's own id) is set only by closing, never by a client.
-    if (x.batchId === id) throw new BadRequestException(CLOSURE_BATCH_ONLY);
+    // A batch is a uuid, compared in lower case. The closure batch (named by the project's own id) is set only by
+    // closing, never by a client.
+    let batchId: string | null = null;
+    if (x.batchId !== undefined && x.batchId !== null) {
+      if (typeof x.batchId !== 'string' || !UUID.test(x.batchId)) throw new BadRequestException('Choose a valid batch.');
+      batchId = x.batchId.toLowerCase();
+      if (batchId === id.toLowerCase()) throw new BadRequestException(CLOSURE_BATCH_ONLY);
+    }
     return this.changes.submit(
       who(req),
       id,
@@ -42,7 +49,7 @@ export class ChangesController {
         targetKind: x.targetKind as TargetKind,
         targetId: typeof x.targetId === 'string' ? x.targetId : '',
         terms: (x.terms ?? {}) as Record<string, unknown>,
-        batchId: typeof x.batchId === 'string' ? x.batchId : null,
+        batchId,
         reason: typeof x.reason === 'string' ? x.reason : null,
       },
       { approveNow: x.approve === true },

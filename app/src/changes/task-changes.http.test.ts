@@ -82,6 +82,15 @@ describe('amending and cancelling tasks', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual([r.status, r.body.message], [400, 'A cancellation for closing is prepared on the Closing screen.']);
     assert.equal((await t.pool.query(`SELECT count(*)::int AS n FROM change_requests`)).rows[0].n, 0);
     assert.equal((await row(id)).status, 'not_started');
+    const upper = await owner.request('POST', `/projects/${projectId}/changes`, {
+      kind: 'cancel_task', targetKind: 'task', targetId: id, terms: { reason: 'Not needed', subtasks: {} }, batchId: projectId.toUpperCase(),
+    });
+    assert.deepEqual([upper.status, upper.body.message], [400, 'A cancellation for closing is prepared on the Closing screen.'], 'whatever the letter case');
+    const junk = await owner.request('POST', `/projects/${projectId}/changes`, {
+      kind: 'cancel_task', targetKind: 'task', targetId: id, terms: { reason: 'Not needed', subtasks: {} }, batchId: 'not-a-batch',
+    });
+    assert.equal(junk.status, 400, 'a batch is a uuid');
+    assert.equal((await t.pool.query(`SELECT count(*)::int AS n FROM change_requests`)).rows[0].n, 0);
   });
 
   test('a Member who is not the assignee cannot propose', async () => {
