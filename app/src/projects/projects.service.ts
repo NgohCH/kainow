@@ -460,6 +460,8 @@ export class ProjectsService {
         }
       }
       await client.query(`UPDATE projects SET status = $2, closure_outcome = $3 WHERE id = $1`, [id, to, to === 'closed' ? outcome : null]);
+      // Outstanding tasks need a new authorised date before they restart (spec §7).
+      const marked = to === 'deferred' || to === 'closed' ? ((await client.query(`SELECT mark_deadline_review($1, $2) AS n`, [id, user.id])).rows[0].n as number) : 0;
       await client.query(
         `INSERT INTO project_transitions (id, project_id, from_status, to_status, actor_id, reason, closure_outcome, fast_track, at)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
@@ -475,7 +477,7 @@ export class ProjectsService {
         actorUserId: user.id,
         subjectType: 'project',
         subjectId: id,
-        detail: { from, to, ...(to === 'closed' ? { outcome, objectivesMet, ...(delegatedPm ? { delegatedPm } : {}) } : {}) },
+        detail: { from, to, ...(marked > 0 ? { markedForDeadlineReview: marked } : {}), ...(to === 'closed' ? { outcome, objectivesMet, ...(delegatedPm ? { delegatedPm } : {}) } : {}) },
       });
       await client.query('COMMIT');
     } catch (err) {

@@ -6,6 +6,7 @@ import { UUID, uuidv7 } from '../common/uuid7';
 import { type RequestView, ChangesService } from '../changes/changes.service';
 import { AlreadyAuthorised, authoriseProposalHandler } from '../changes/handlers';
 import { decisionHandlers } from '../changes/decision-handlers';
+import { deadlineHandlers } from '../changes/deadline-handlers';
 import { handoverHandler } from '../changes/handover-handler';
 import { taskHandlers } from '../changes/task-handlers';
 import { PG_POOL } from '../db/database.module';
@@ -40,6 +41,10 @@ export interface Content {
   owner: string | null;
 }
 
+export const NEEDS_NEW_DATE = 'This task needs a new authorised due date first.';
+/** The task actions refused on a task marked for deadline review. */
+const MARKED_REFUSES: readonly TaskAction[] = ['start', 'unblock', 'complete'];
+
 type Origin = { itemId: string } | { proposalId: string };
 const originColumns = (o: Origin) => ('itemId' in o ? { item: o.itemId, proposal: null } : { item: null, proposal: o.proposalId });
 
@@ -65,6 +70,7 @@ export class RecordsService {
     for (const h of taskHandlers({ records: this })) changes.register(h);
     for (const h of decisionHandlers()) changes.register(h);
     changes.register(handoverHandler());
+    for (const h of deadlineHandlers()) changes.register(h);
   }
 
   async tx<T>(work: (c: PoolClient) => Promise<T>): Promise<T> {
@@ -396,6 +402,10 @@ export class RecordsService {
         note,
       });
       if (!verdict.allowed) RecordsService.refusal(verdict.reason);
+      // A task marked for deadline review needs a new authorised date before it starts, resumes or completes (spec §7).
+      if (MARKED_REFUSES.includes(action) && (await c.query(`SELECT deadline_review_required FROM tasks WHERE id = $1`, [task.id])).rows[0].deadline_review_required) {
+        RecordsService.refusal(NEEDS_NEW_DATE);
+      }
       let override = false;
       if (action === 'complete') {
         const children = (await c.query(`SELECT status FROM tasks WHERE parent_id = $1`, [task.id])).rows.map((r) => r.status as TaskStatus);
@@ -404,7 +414,7 @@ export class RecordsService {
         override = parentRule.override;
       }
       const change = async (id: string, from: TaskStatus, to: TaskStatus, kind: string, why: string | null, overrideWhy: string | null) => {
-        await c.query(`UPDATE tasks SET status = $2 WHERE id = $1`, [id, to]);
+        await c.query(`UPDATE tasks SET status = $2, completed_at = CASE WHEN $2 = 'completed' THEN $3::timestamptz ELSE NULL END WHERE id = $1`, [id, to, at]);
         await c.query(
           `INSERT INTO task_events (id, task_id, kind, from_status, to_status, note, override_reason, actor_id, at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
           [uuidv7(at.getTime()), id, kind, from, to, why, overrideWhy, user.id, at],
@@ -555,7 +565,8 @@ export class RecordsService {
                 x.quote, p.status AS "parentStatus",
                 CASE WHEN fo.id IS NULL THEN NULL ELSE json_build_object('id', fo.id, 'title', fo.title) END AS follows,
                 (SELECT json_build_object('id', n.id, 'title', n.title) FROM tasks n WHERE n.follows_task_id = t.id ORDER BY n.authorised_at, n.id LIMIT 1) AS "followedBy",
-                EXISTS (SELECT 1 FROM change_requests r WHERE r.target_kind = 'task' AND r.target_id = t.id AND r.status = 'pending') AS "changeWaiting"
+                EXISTS (SELECT 1 FROM change_requests r WHERE r.target_kind = 'task' AND r.target_id = t.id AND r.status = 'pending') AS "changeWaiting",
+                t.deadline_review_required AS "deadlineReviewRequired"
            FROM tasks t JOIN users u ON u.id = t.assignee_id
            LEFT JOIN tasks p ON p.id = t.parent_id
            LEFT JOIN tasks fo ON fo.id = t.follows_task_id
@@ -582,6 +593,7 @@ export class RecordsService {
         assigneeActive: isActiveIn(ctx, t.assigneeId),
         invitationStatus: t.invitationStatus,
         today: ctx.today,
+        deadlineReviewRequired: t.deadlineReviewRequired,
       }),
       source: t.quote ? { quote: t.quote as string } : null,
       changeWaiting: t.changeWaiting as boolean,
@@ -591,6 +603,7 @@ export class RecordsService {
       // What this viewer may do now (notes are asked for when they act).
       mayAct: ctx.roles.length === 0 || t.status === 'cancelled' ? [] : TASK_ACTIONS.filter(
         (action) =>
+          !(t.deadlineReviewRequired && MARKED_REFUSES.includes(action)) &&
           taskTransition({
             action,
             status: t.status,

@@ -3,6 +3,7 @@ import { AnySignedInUser } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
 import { ChangesService } from './changes.service';
+import { DeadlineService } from './deadline.service';
 import { FlagsService } from './flags.service';
 import type { TargetKind } from './handlers';
 import type { ChangeKind } from './rules';
@@ -20,6 +21,7 @@ export class ChangesController {
   constructor(
     private readonly changes: ChangesService,
     private readonly flags: FlagsService,
+    private readonly deadline: DeadlineService,
   ) {}
 
   /** { kind, targetKind, targetId, terms, reason?, batchId?, approve? } — `approve: true` also approves it, for an Owner or Sponsor. */
@@ -47,6 +49,29 @@ export class ChangesController {
   @AnySignedInUser()
   async list(@Param('id') id: string, @Req() req: HttpRequest) {
     return { requests: await this.changes.list(who(req), id) };
+  }
+
+  /** The marked tasks of a Deferred, Closed or Active project, for the Project Manager or a Deputy. */
+  @Get('projects/:id/deadline-review')
+  @AnySignedInUser()
+  deadlineReview(@Param('id') id: string, @Req() req: HttpRequest) {
+    return this.deadline.view(who(req), id);
+  }
+
+  /** { tasks: [{ taskId, dueOn }] } — one deadline_review request per task, in one batch. */
+  @Post('projects/:id/deadline-review')
+  @AnySignedInUser()
+  @HttpCode(201)
+  submitDeadlineReview(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest) {
+    return this.deadline.submit(who(req), id, body(b));
+  }
+
+  /** Approves every waiting request of the batch that the signed-in Owner or Sponsor may approve. */
+  @Post('changes/batch/:batchId/approve')
+  @AnySignedInUser()
+  @HttpCode(200)
+  approveBatch(@Param('batchId') batchId: string, @Req() req: HttpRequest) {
+    return this.deadline.approveBatch(who(req), batchId);
   }
 
   /** { note } by the Project Manager or a Deputy. */

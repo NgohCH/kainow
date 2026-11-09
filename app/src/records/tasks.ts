@@ -79,10 +79,13 @@ export function taskIndicators(input: {
   assigneeActive: boolean;
   invitationStatus: 'invited' | 'declined' | 'expired' | 'revoked' | 'accepted' | 'replaced' | null;
   today: string;
-}): { overdue: boolean; awaitingMembership: boolean; invitation: string | null; dueAfterParent: boolean } {
+  /** Marked when the project was deferred or closed: the task shows this instead of Overdue until it has a new authorised date. */
+  deadlineReviewRequired?: boolean;
+}): { overdue: boolean; awaitingMembership: boolean; invitation: string | null; dueAfterParent: boolean; deadlineReviewRequired: boolean } {
   const finished = input.status === 'completed' || input.status === 'cancelled';
   return {
-    overdue: !finished && input.today > input.dueOn,
+    overdue: !finished && !input.deadlineReviewRequired && input.today > input.dueOn,
+    deadlineReviewRequired: !finished && !!input.deadlineReviewRequired,
     awaitingMembership: !input.assigneeActive,
     invitation: input.assigneeActive ? null : input.invitationStatus,
     dueAfterParent: input.parentDueOn !== null && input.dueOn > input.parentDueOn,
