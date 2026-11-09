@@ -81,12 +81,12 @@ export class RecordsController {
     return this.records.getTask(who(req), id);
   }
 
-  /** { title, assigneeId, dueOn, reason } */
-  @Post('records/tasks/:id/subtasks')
+  /** { text, owner?, due? } — proposes a follow-up task for a cancelled one (a people's proposal). */
+  @Post('records/tasks/:id/follow-up')
   @AnySignedInUser()
   @HttpCode(201)
-  subtask(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest) {
-    return this.records.addSubtask(who(req), id, body(b));
+  followUp(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest) {
+    return this.records.followUp(who(req), id, body(b));
   }
 
   /** { note?, overrideReason? } — action is start, block, unblock, complete or reopen. */

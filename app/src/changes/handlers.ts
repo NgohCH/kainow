@@ -76,10 +76,10 @@ const AUTHORISE_TERMS = [
 ] as const;
 
 /** Runs `work` and undoes whatever it wrote, keeping its refusal. */
-async function dryRun(c: PoolClient, work: () => Promise<unknown>): Promise<void> {
+export async function dryRun<T>(c: PoolClient, work: () => Promise<T>): Promise<T> {
   await c.query('SAVEPOINT change_validate');
   try {
-    await work();
+    return await work();
   } finally {
     await c.query('ROLLBACK TO SAVEPOINT change_validate');
     await c.query('RELEASE SAVEPOINT change_validate');

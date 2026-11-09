@@ -5,6 +5,7 @@ import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { type RequestView, ChangesService } from '../changes/changes.service';
 import { AlreadyAuthorised, authoriseProposalHandler } from '../changes/handlers';
+import { taskHandlers } from '../changes/task-handlers';
 import { PG_POOL } from '../db/database.module';
 import { isCalendarDate, readDue } from '../extraction/due';
 import { ExtractionService } from '../extraction/extraction.service';
@@ -59,6 +60,7 @@ export class RecordsService {
     private readonly changes: ChangesService,
   ) {
     changes.register(authoriseProposalHandler({ records: this, extraction }));
+    for (const h of taskHandlers({ records: this })) changes.register(h);
   }
 
   async tx<T>(work: (c: PoolClient) => Promise<T>): Promise<T> {
@@ -118,7 +120,7 @@ export class RecordsService {
   }
 
   /** Resolve a task assignee: a project person, or an eligible email (account made Invited, invitation issued). */
-  private async assignee(c: PoolClient, ctx: ProjectContext, user: AuthUser, body: Record<string, unknown>, at: Date) {
+  async assignee(c: PoolClient, ctx: ProjectContext, user: AuthUser, body: Record<string, unknown>, at: Date) {
     if (body.assigneeId !== undefined && body.assigneeId !== null && body.assigneeId !== '') {
       if (!isProjectPerson(ctx, body.assigneeId)) throw new BadRequestException(NEEDS_ASSIGNEE);
       return { userId: body.assigneeId as string, invitationId: null as string | null, deliver: null as null | (() => Promise<boolean>) };
@@ -150,15 +152,15 @@ export class RecordsService {
     return { userId, invitationId: inv.id, deliver: inv.deliver };
   }
 
-  private dueOf(v: unknown): string {
+  dueOf(v: unknown): string {
     if (typeof v !== 'string' || !isCalendarDate(v)) throw new BadRequestException(NEEDS_ASSIGNEE);
     return v;
   }
 
-  private async insertTask(
+  async insertTask(
     c: PoolClient,
     ctx: ProjectContext,
-    t: { parentId: string | null; depth: number; title: string; assigneeId: string; ownerAsWritten: string | null; dueOn: string; invitationId: string | null; origin: Origin | null },
+    t: { parentId: string | null; depth: number; title: string; assigneeId: string; ownerAsWritten: string | null; dueOn: string; invitationId: string | null; origin: Origin | null; followsTaskId?: string | null },
     user: AuthUser,
     at: Date,
     note: string | null,
@@ -166,9 +168,9 @@ export class RecordsService {
     const id = uuidv7(at.getTime());
     const o = t.origin ? originColumns(t.origin) : { item: null, proposal: null };
     await c.query(
-      `INSERT INTO tasks (id, project_id, parent_id, depth, title, assignee_id, owner_as_written, due_on, invitation_id, origin_item_id, origin_proposal_id, authorised_by, authorised_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-      [id, ctx.project.id, t.parentId, t.depth, t.title, t.assigneeId, t.ownerAsWritten, t.dueOn, t.invitationId, o.item, o.proposal, user.id, at],
+      `INSERT INTO tasks (id, project_id, parent_id, depth, title, assignee_id, owner_as_written, due_on, invitation_id, origin_item_id, origin_proposal_id, authorised_by, authorised_at, follows_task_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+      [id, ctx.project.id, t.parentId, t.depth, t.title, t.assigneeId, t.ownerAsWritten, t.dueOn, t.invitationId, o.item, o.proposal, user.id, at, t.followsTaskId ?? null],
     );
     await c.query(`INSERT INTO task_events (id, task_id, kind, to_status, note, actor_id, at) VALUES ($1, $2, 'authorised', 'not_started', $3, $4, $5)`, [
       uuidv7(at.getTime()), id, note, user.id, at,
@@ -195,9 +197,12 @@ export class RecordsService {
         const who = await this.assignee(c, ctx, user, body, at);
         const dueOn = this.dueOf(body.dueOn);
         deliver = who.deliver;
+        const follows = 'proposalId' in origin
+          ? ((await c.query(`SELECT follows_task_id FROM human_proposals WHERE id = $1`, [origin.proposalId])).rows[0]?.follows_task_id as string | null) ?? null
+          : null;
         const taskId = await this.insertTask(
           c, ctx,
-          { parentId: null, depth: 0, title: content.text, assigneeId: who.userId, ownerAsWritten: content.owner, dueOn, invitationId: who.invitationId, origin },
+          { parentId: null, depth: 0, title: content.text, assigneeId: who.userId, ownerAsWritten: content.owner, dueOn, invitationId: who.invitationId, origin, followsTaskId: follows },
           user, at, null,
         );
         const subtaskIds: string[] = [];
@@ -280,11 +285,31 @@ export class RecordsService {
     });
   }
 
+  /** A cancelled task offers a follow-up: a people's proposal that, once authorised, becomes a task linked to it (spec 4.3). */
+  async followUp(user: AuthUser, taskId: string, input: Record<string, unknown>) {
+    const text = typeof input.text === 'string' ? input.text.trim() : '';
+    if (text === '' || text.length > 2000) throw new BadRequestException('Write the proposal (up to 2000 characters).');
+    const opt = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? v.trim().slice(0, 200) : null);
+    const at = this.now();
+    return this.tx(async (c) => {
+      const { ctx, task } = await this.taskContext(c, user, taskId, true);
+      await this.access.authorize(user, 'proposal.submit', ctx.project.id, c, true);
+      if (task.status !== 'cancelled') throw new ConflictException('A follow-up task can be proposed only for a cancelled task.');
+      const id = uuidv7(at.getTime());
+      await c.query(
+        `INSERT INTO human_proposals (id, project_id, kind, text, owner, due, proposed_by, proposed_at, follows_task_id) VALUES ($1, $2, 'action', $3, $4, $5, $6, $7, $8)`,
+        [id, ctx.project.id, text, opt(input.owner), opt(input.due), user.id, at, task.id],
+      );
+      await writeAudit(c, { at, action: 'proposal.submitted', actorUserId: user.id, subjectType: 'project', subjectId: ctx.project.id, detail: { proposalId: id, kind: 'action', followsTaskId: task.id } });
+      return { proposal: { id, kind: 'action', text, followsTaskId: task.id } };
+    });
+  }
+
   async proposals(user: AuthUser, projectId: string) {
     await this.access.authorize(user, 'project.view', projectId);
     const { rows } = await this.pool.query(
       `SELECT h.id, h.kind, h.text, h.owner, h.due, u.display_name AS "proposedBy", h.proposed_at AS "proposedAt",
-              h.review_status AS "reviewStatus", h.reject_reason AS "rejectReason"
+              h.review_status AS "reviewStatus", h.reject_reason AS "rejectReason", h.follows_task_id AS "followsTaskId"
          FROM human_proposals h JOIN users u ON u.id = h.proposed_by WHERE h.project_id = $1 ORDER BY h.proposed_at, h.id`,
       [projectId],
     );
@@ -399,30 +424,6 @@ export class RecordsService {
     });
   }
 
-  /** The Project Manager or a Deputy splits a task by adding a subtask (two levels at most), with a reason. */
-  async addSubtask(user: AuthUser, parentId: string, input: Record<string, unknown>) {
-    const title = typeof input.title === 'string' ? input.title.trim() : '';
-    const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
-    if (title === '') throw new BadRequestException('Give the subtask a title.');
-    if (reason === '') throw new BadRequestException('A reason is required.');
-    const at = this.now();
-    return this.tx(async (c) => {
-      const { ctx, task } = await this.taskContext(c, user, parentId, true);
-      if (!ctx.roles.includes('pm') && !ctx.roles.includes('deputy_pm')) throw new ForbiddenException('Only the Project Manager or a Deputy can add a subtask.');
-      if (ctx.project.status !== 'active') throw new ConflictException('Tasks change only while the project is Active.');
-      if (task.depth >= 2) throw new ConflictException('Subtasks go at most two levels deep.');
-      if (!isProjectPerson(ctx, input.assigneeId)) throw new BadRequestException(NEEDS_ASSIGNEE);
-      const dueOn = this.dueOf(input.dueOn);
-      const id = await this.insertTask(
-        c, ctx,
-        { parentId: task.id, depth: task.depth + 1, title, assigneeId: input.assigneeId as string, ownerAsWritten: null, dueOn, invitationId: null, origin: null },
-        user, at, reason,
-      );
-      await writeAudit(c, { at, action: 'task.subtask_added', actorUserId: user.id, subjectType: 'project', subjectId: ctx.project.id, detail: { taskId: id, parentId: task.id } });
-      return { task: { id, parentId: task.id, depth: task.depth + 1 } };
-    });
-  }
-
   /** Loads a question or risk with its project under lock; anyone who may read the project gets this far. */
   private async recordContext(c: PoolClient, user: AuthUser, table: 'questions' | 'risks', id: string) {
     if (!UUID.test(id)) throw new NotFoundException();
@@ -526,7 +527,7 @@ export class RecordsService {
     const view = list.tasks.find((t) => t.id === task.id);
     const history = (
       await this.pool.query(
-        `SELECT e.kind, e.from_status AS "from", e.to_status AS "to", e.note, e.override_reason AS "overrideReason", u.display_name AS actor, e.at
+        `SELECT e.kind, e.from_status AS "from", e.to_status AS "to", e.note, e.override_reason AS "overrideReason", e.detail, u.display_name AS actor, e.at
            FROM task_events e JOIN users u ON u.id = e.actor_id WHERE e.task_id = $1 ORDER BY e.at, e.id`,
         [taskId],
       )
@@ -547,9 +548,13 @@ export class RecordsService {
                 t.owner_as_written AS "ownerAsWritten", to_char(t.due_on, 'YYYY-MM-DD') AS "dueOn", t.status,
                 to_char(p.due_on, 'YYYY-MM-DD') AS "parentDueOn",
                 CASE WHEN i.id IS NULL THEN NULL WHEN i.status = 'invited' AND i.expires_at <= now() THEN 'expired' ELSE i.status END AS "invitationStatus",
-                x.quote
+                x.quote, p.status AS "parentStatus",
+                CASE WHEN fo.id IS NULL THEN NULL ELSE json_build_object('id', fo.id, 'title', fo.title) END AS follows,
+                (SELECT json_build_object('id', n.id, 'title', n.title) FROM tasks n WHERE n.follows_task_id = t.id ORDER BY n.authorised_at, n.id LIMIT 1) AS "followedBy",
+                EXISTS (SELECT 1 FROM change_requests r WHERE r.target_kind = 'task' AND r.target_id = t.id AND r.status = 'pending') AS "changeWaiting"
            FROM tasks t JOIN users u ON u.id = t.assignee_id
            LEFT JOIN tasks p ON p.id = t.parent_id
+           LEFT JOIN tasks fo ON fo.id = t.follows_task_id
            LEFT JOIN invitations i ON i.id = t.invitation_id
            LEFT JOIN extraction_items x ON x.id = t.origin_item_id
           WHERE t.project_id = $1
@@ -575,8 +580,12 @@ export class RecordsService {
         today: ctx.today,
       }),
       source: t.quote ? { quote: t.quote as string } : null,
+      changeWaiting: t.changeWaiting as boolean,
+      parentCancelled: t.parentStatus === 'cancelled' && t.status !== 'cancelled' && t.status !== 'completed',
+      follows: (t.follows ?? null) as { id: string; title: string } | null,
+      followedBy: (t.followedBy ?? null) as { id: string; title: string } | null,
       // What this viewer may do now (notes are asked for when they act).
-      mayAct: ctx.roles.length === 0 ? [] : TASK_ACTIONS.filter(
+      mayAct: ctx.roles.length === 0 || t.status === 'cancelled' ? [] : TASK_ACTIONS.filter(
         (action) =>
           taskTransition({
             action,
