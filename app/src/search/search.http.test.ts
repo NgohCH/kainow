@@ -5,7 +5,7 @@ import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 import { SEARCH_KINDS, type SearchKind, parsePhrase } from './query';
-import { SearchService, buildSearchStatement } from './search.service';
+import { SearchService, applySearchSettings, buildSearchStatement } from './search.service';
 
 /** The kinds seeded by `seedAllKinds` and so checked by every access test below. */
 const ACCESS_COVERED: SearchKind[] = ['project', 'person', 'note', 'ai_proposal', 'human_proposal', 'task', 'decision', 'question', 'risk'];
@@ -533,16 +533,20 @@ describe('cross-project search', { skip: SKIP_NO_DB }, () => {
     const extra = await seedProject(t.pool, { name: 'Quay Lights', status: 'active', members: [{ userId: ids.pm, role: 'pm' }] });
     await note(pm, extra, 'Quay note', 'Pump turbine survey.');
     await task(extra, 'Pump turbine order');
-    // Enough other notes and tasks that a project-by-project scan costs more than the trigram index.
+    // Enough other notes and tasks that a project-by-project scan costs more than the trigram index. Each note is
+    // about 6,600 characters that do not compress well, so its text goes to TOAST and the table's heap stays small:
+    // the case where the planner, left to itself, wrongly prefers a sequential scan.
     await t.pool.query(
       `INSERT INTO sources (id, title, created_by, created_at, project_id)
-       SELECT gen_random_uuid(), 'Bulk ' || g, $1, now(), $2 FROM generate_series(1, 3000) g`,
+       SELECT gen_random_uuid(), 'Bulk ' || g, $1, now(), $2 FROM generate_series(1, 1000) g`,
       [ids.pm, harbour],
     );
     await t.pool.query(
       `INSERT INTO source_versions (id, source_id, version_no, origin, text_content, text_sha256, char_count, created_by, created_at)
-       SELECT gen_random_uuid(), s.id, 1, 'paste', 'Minutes of ' || s.title || ' about cables, fences and drains.', md5(s.title), 40, $1, now()
-         FROM sources s WHERE s.title LIKE 'Bulk %'`,
+       SELECT gen_random_uuid(), s.id, 1, 'paste', x.text, md5(x.text), length(x.text), $1, now()
+         FROM sources s
+         CROSS JOIN LATERAL (SELECT string_agg(md5(s.id::text || g), ' ') AS text FROM generate_series(1, 200) g) x
+        WHERE s.title LIKE 'Bulk %'`,
       [ids.pm],
     );
     await t.pool.query(
@@ -556,7 +560,8 @@ describe('cross-project search', { skip: SKIP_NO_DB }, () => {
     const client = await t.pool.connect();
     try {
       await client.query('BEGIN READ ONLY');
-      await client.query('SET LOCAL enable_seqscan = off');
+      // The service's own transaction settings, nothing added here.
+      await applySearchSettings(client, t.app.get(SearchService).timeoutMs);
       const plan = (await client.query(`EXPLAIN ${statement.text}`, statement.values)).rows.map((r) => r['QUERY PLAN']).join('\n');
       await client.query('ROLLBACK');
       assert.match(plan, /search_source_versions_trgm/);

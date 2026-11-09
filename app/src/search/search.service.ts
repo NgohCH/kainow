@@ -1,5 +1,5 @@
 import { Inject, Injectable, ServiceUnavailableException } from '@nestjs/common';
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import type { AuthUser } from '../auth/tokens';
 import { UUID } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
@@ -105,6 +105,18 @@ SELECT c.project_id AS "projectId", p.name AS "projectName", c.kind, c.item_id A
   return { text, values: [ids, kinds, today, first, scoped, offset, ...patterns] };
 }
 
+/**
+ * Settings for the search's read-only transaction; must run inside it (SET LOCAL).
+ *
+ * enable_seqscan is off on purpose: note text lives in TOAST, so source_versions looks like a few heap pages and a
+ * sequential scan looks cheap to the planner, while really it reads every note (about 1.2 s at 1,000 notes against
+ * under 1 ms through search_source_versions_trgm). Do not remove it without measuring at scale (spec §12).
+ */
+export async function applySearchSettings(client: PoolClient, timeoutMs: number): Promise<void> {
+  await client.query(`SET LOCAL statement_timeout = ${Math.max(1, Math.floor(timeoutMs))}`);
+  await client.query('SET LOCAL enable_seqscan = off');
+}
+
 interface Row {
   projectId: string;
   projectName: string;
@@ -175,7 +187,7 @@ export class SearchService {
     let broken: Error | undefined;
     try {
       await client.query('BEGIN READ ONLY');
-      await client.query(`SET LOCAL statement_timeout = ${Math.max(1, Math.floor(this.timeoutMs))}`);
+      await applySearchSettings(client, this.timeoutMs);
       const { rows } = await client.query(statement.text, statement.values);
       await client.query('COMMIT');
       return rows as Row[];
