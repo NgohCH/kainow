@@ -20,3 +20,20 @@ export const SHAPE_HELP: Record<LogoShape, string> = {
   wide: 'Wide logo: PNG or JPEG, 2 to 6 times as wide as it is high, at least 40 pixels high, up to 512 KB. Used on the sign-in page, emails and reports.',
   square: 'Square logo: PNG or JPEG, square, at least 64 × 64 pixels, up to 512 KB. Used in the page header and the browser tab.',
 };
+
+export type PreviewPlace = { label: string; width: number; height: number };
+
+/** Where each logo shape appears, with the box it is drawn in there (the same boxes the server uses). */
+export function previewPlaces(shape: LogoShape): PreviewPlace[] {
+  return shape === 'wide'
+    ? [
+        { label: 'Sign-in page', width: 160, height: 56 },
+        { label: 'Emails and reports', width: 120, height: 40 },
+        { label: 'Page header, when there is no square logo', width: 96, height: 32 },
+      ]
+    : [
+        { label: 'Page header and browser tab', width: 32, height: 32 },
+        { label: 'Sign-in page, when there is no wide logo', width: 72, height: 72 },
+        { label: 'Emails and reports, when there is no wide logo', width: 48, height: 48 },
+      ];
+}

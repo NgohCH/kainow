@@ -73,6 +73,16 @@ describe('setup invitation', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual((await t.anonymous('GET', '/setup/not-a-real-token')).body, { state: 'expired', email: null });
   });
 
+  test('once the setup link has expired, its invited person cannot sign in and become an Administrator', async () => {
+    await issue('first@example.org');
+    t.clock.advanceSeconds(7 * 24 * 3600 + 1);
+    assert.equal((await t.anonymous('POST', '/auth/request-code', { email: 'first@example.org' })).status, 202, 'the same answer as always');
+    assert.equal(t.sender.sent.filter((m) => m.email === 'first@example.org').length, 0, 'no code is sent');
+    await assert.rejects(t.signIn('first@example.org'));
+    const user = (await t.pool.query("SELECT status FROM users WHERE email = 'first@example.org'")).rows[0];
+    assert.equal(user.status, 'invited', 'still not an active Administrator');
+  });
+
   test('setup is closed once any Administrator is active', async () => {
     await seedUser(t.pool, 'admin@example.org', 'enterprise_administrator');
     assert.equal(await refusal(issue('first@example.org')), CLOSED);

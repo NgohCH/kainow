@@ -1,6 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { ApiError, api } from '../api.ts';
-import { type LogoShape, type OrganisationProfile as Profile, SHAPE_HELP, logoUploadError } from '../branding.ts';
+import { type LogoShape, type OrganisationProfile as Profile, SHAPE_HELP, logoUploadError, previewPlaces } from '../branding.ts';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 
@@ -88,11 +88,21 @@ export function LogoUploads({ profile, onChanged }: { profile: Profile; onChange
           <div key={shape} className="logo-upload">
             <p className="meta">{SHAPE_HELP[shape]}</p>
             {logo ? (
-              <img
-                className={`logo-preview logo-preview-${shape}`}
-                src={api.url(`/organisation/logos/${shape}/preview?v=${encodeURIComponent(logo.uploadedAt)}`)}
-                alt={`${label} as uploaded`}
-              />
+              <ul className="logo-previews" aria-label={`${label} as it will appear`}>
+                {previewPlaces(shape).map((place) => (
+                  <li key={place.label}>
+                    <span className="preview-box" style={{ width: place.width, height: place.height }}>
+                      <img
+                        src={api.url(`/organisation/logos/${shape}/preview?v=${encodeURIComponent(logo.uploadedAt)}`)}
+                        width={place.width}
+                        height={place.height}
+                        alt={`${label} in the ${place.label.toLowerCase()}`}
+                      />
+                    </span>
+                    <span className="meta">{place.label}</span>
+                  </li>
+                ))}
+              </ul>
             ) : (
               <p className="meta">No {label.toLowerCase()} yet.</p>
             )}
