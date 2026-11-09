@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, test } from 'node:test';
 import { uuidv7 } from '../common/uuid7';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
+import { PolicyService } from './policy.service';
 import { seedProject, seedUser } from '../testing/projects';
 
 describe('the approval policy', { skip: SKIP_NO_DB }, () => {
@@ -184,5 +185,23 @@ describe('the approval policy', { skip: SKIP_NO_DB }, () => {
     await t.pool.query(`UPDATE change_requests SET status = 'withdrawn' WHERE id = $1`, [done]);
     assert.deepEqual((await admin.request('GET', '/approval-policy/impact')).body, { pending: 1 });
     assert.equal((await owner.request('GET', '/approval-policy/impact')).status, 403);
+  });
+
+  test('a request decided before the restart reached it is left untouched', async () => {
+    const req = await pendingRequest(2);
+    await t.pool.query(`UPDATE change_requests SET status = 'authorised' WHERE id = $1`, [req]);
+    const client = await t.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const done = await t.app.get(PolicyService).restart(client, req, projectId, 3, ids.admin, new Date());
+      await client.query('COMMIT');
+      assert.equal(done, false);
+    } finally {
+      client.release();
+    }
+    const row = (await t.pool.query(`SELECT version, required_approvals AS req, status FROM change_requests WHERE id = $1`, [req])).rows[0];
+    assert.deepEqual([row.version, row.req, row.status], [1, 2, 'authorised']);
+    const versions = (await t.pool.query(`SELECT count(*)::int AS n FROM change_request_versions WHERE request_id = $1`, [req])).rows[0].n;
+    assert.equal(versions, 1);
   });
 });

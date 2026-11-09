@@ -191,16 +191,24 @@ export class PolicyService {
     });
   }
 
-  /** A new version with the same terms and the new count; approvals given on earlier versions no longer count. */
-  private async restart(c: PoolClient, requestId: string, projectId: string, required: number, actorId: string, at: Date): Promise<void> {
-    const cur = (await c.query(`SELECT version FROM change_requests WHERE id = $1 FOR UPDATE`, [requestId])).rows[0].version as number;
+  /**
+   * A new version with the same terms and the new count; approvals given on earlier versions no longer count.
+   * Locks the request and does nothing (returns false) unless it is still pending, so a request decided in the
+   * meantime is never rewritten.
+   */
+  async restart(c: PoolClient, requestId: string, projectId: string, required: number, actorId: string, at: Date): Promise<boolean> {
+    const locked = await c.query(`SELECT version FROM change_requests WHERE id = $1 AND status = 'pending' FOR UPDATE`, [requestId]);
+    if (!locked.rows[0]) return false;
+    const cur = locked.rows[0].version as number;
     const next = cur + 1;
-    await c.query(
+    const copied = await c.query(
       `INSERT INTO change_request_versions (request_id, version, terms, reason, author_id, at)
        SELECT request_id, $3, terms, $4, $5, $6 FROM change_request_versions WHERE request_id = $1 AND version = $2`,
       [requestId, cur, next, RESTART_REASON, actorId, at],
     );
+    if (copied.rowCount !== 1) throw new Error(`Request ${requestId} has no version ${cur} to restart from`);
     await c.query(`UPDATE change_requests SET version = $2, required_approvals = $3 WHERE id = $1`, [requestId, next, required]);
     await writeAudit(c, { at, action: 'change.review_restarted', actorUserId: actorId, subjectType: 'project', subjectId: projectId, detail: { requestId, version: next, required } });
+    return true;
   }
 }
