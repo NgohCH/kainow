@@ -96,6 +96,8 @@ The PowerShell lines in this guide were run in Windows PowerShell 5.1 on 8 Novem
 
 8. Optional, as the Administrator: under **People**, disable the Member's account. The project now says "A member is On Hold — investigation needed" and the Project Manager gets an email (or a line in `docker compose logs api`). Enable the account again, then as the Project Manager or Owner record a finding on the People tab and choose **Restore**.
 
+9. Optional, as the Administrator: under **Approvals** (in the top bar) you can raise the number of Owners or Sponsors who must approve a change from 1 to 2 or 3, and choose whether projects may set their own number. Nothing new needs installing for changes, closing or the deadline review; the update applies its two new migrations (0017, 0018) when you run `docker compose up -d --build`.
+
 Notes added before projects existed (before 8 November 2026) stay in the database but are not shown.
 
 ## Everyday use

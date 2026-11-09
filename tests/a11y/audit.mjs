@@ -124,9 +124,9 @@ for (const [who, role] of [[user, 'owner'], [memberId, 'member']]) {
   await db.query("insert into memberships (id, project_id, user_id, role, starts_on) values ($1, $2, $3, $4, (now() at time zone 'Asia/Kuala_Lumpur')::date)", [randomUUID(), recordsId, who, role]);
 }
 await db.query("update projects set status = 'active' where id = $1", [recordsId]);
-const origin = async (kind) => {
+const origin = async (kind, inProject = recordsId) => {
   const id = randomUUID();
-  await db.query("insert into human_proposals (id, project_id, kind, text, proposed_by, proposed_at, review_status, reviewed_by, reviewed_at) values ($1, $2, $3, 'x', $4, now(), 'approved', $4, now())", [id, recordsId, kind, user]);
+  await db.query("insert into human_proposals (id, project_id, kind, text, proposed_by, proposed_at, review_status, reviewed_by, reviewed_at) values ($1, $2, $3, 'x', $4, now(), 'approved', $4, now())", [id, inProject, kind, user]);
   return id;
 };
 const parentTask = randomUUID();
@@ -137,8 +137,99 @@ await db.query("insert into questions (id, project_id, text, requester_id, statu
 await db.query("insert into question_answers (id, question_id, answer, author_id, at) values ($1, $2, 'Until March', $3, now())", [randomUUID(), questionId, user]);
 await db.query("insert into decisions (id, project_id, statement, rationale, origin_proposal_id, authorised_by, authorised_at) values ($1, $2, 'Move to the new system', 'Cheaper', $3, $4, now())", [randomUUID(), recordsId, await origin('decision'), user]);
 await db.query("insert into risks (id, project_id, description, severity, responsible_id, review_on, status, origin_proposal_id, authorised_by, authorised_at) values ($1, $2, 'The vendor may be late', 'high', $3, (now() at time zone 'Asia/Kuala_Lumpur')::date + 20, 'mitigating', $4, $3, now())", [randomUUID(), recordsId, user, await origin('risk')]);
+
+// Sub-project 2b: an approval count of 2, requests waiting and applied, review flags, closing and the deadline review.
+const must = (label, r) => {
+  if (r.statusCode) throw new Error(`${label}: ${JSON.stringify(r)}`);
+  return r;
+};
+if (!must('policy', await api('POST', '/approval-policy', { required: 2, projectsMayOverride: true, reason: 'Access check', pending: 'keep' }))) throw new Error('no policy');
+const second = 'sponsor2.a11y@example.org';
+const secondId = randomUUID();
+await db.query("insert into users (id, email, display_name, role) values ($1, $2, 'Second Sponsor', 'member')", [secondId, second]);
+const addDays = (n) => new Date(Date.now() + 8 * 3600e3 + n * 86400e3).toISOString().slice(0, 10);
+const addMember = (projectId, who, role) => db.query("insert into memberships (id, project_id, user_id, role, starts_on) values ($1, $2, $3, $4, (now() at time zone 'Asia/Kuala_Lumpur')::date)", [randomUUID(), projectId, who, role]);
+await addMember(recordsId, secondId, 'sponsor');
+const mkTask = async (projectId, title, due, status = 'not_started') => {
+  const id = randomUUID();
+  await db.query("insert into tasks (id, project_id, depth, title, assignee_id, due_on, status, authorised_by, authorised_at) values ($1, $2, 0, $3, $4, $5, $6, $4, now())", [id, projectId, title, user, due, status]);
+  return id;
+};
+const mkQuestion = async (projectId, text) => {
+  const id = randomUUID();
+  await db.query("insert into questions (id, project_id, text, requester_id, status, origin_proposal_id, authorised_by, authorised_at) values ($1, $2, $3, $4, 'open', $5, $4, now())", [id, projectId, text, user, await origin('question', projectId)]);
+  return id;
+};
+const mkRisk = async (projectId, description) => {
+  const id = randomUUID();
+  await db.query("insert into risks (id, project_id, description, severity, responsible_id, review_on, status, origin_proposal_id, authorised_by, authorised_at) values ($1, $2, $3, 'medium', $4, $5, 'open', $6, $4, now())", [id, projectId, description, user, addDays(30), await origin('risk', projectId)]);
+  return id;
+};
+const mkDecision = async (projectId, statement) => {
+  const id = randomUUID();
+  await db.query("insert into decisions (id, project_id, statement, rationale, origin_proposal_id, authorised_by, authorised_at) values ($1, $2, $3, 'Cheaper', $4, $5, now())", [id, projectId, statement, await origin('decision', projectId), user]);
+  return id;
+};
+// Work tab: tasks and decisions with requests waiting (0 of 2 and 1 of 2), and one replacement applied with review flags raised.
+const amendTask = await mkTask(recordsId, 'Order the scanners', addDays(10));
+const cancelTask = await mkTask(recordsId, 'Book the training room', addDays(12));
+const flaggedTask = await mkTask(recordsId, 'Migrate the catalogue', addDays(15));
+const flaggedQuestion = await mkQuestion(recordsId, 'Which supplier hosts the archive?');
+const flaggedRisk = await mkRisk(recordsId, 'The archive host may raise its price');
+const waitingDecision = await mkDecision(recordsId, 'Use the red labels');
+const replacedDecision = await mkDecision(recordsId, 'Use supplier Alpha');
+// Closing: one project not ready, one ready (with the Project Manager allowed to close), and a Deferred one for the deadline review.
+const projectWith = async (name) => {
+  const id = must(name, await api('POST', '/projects', { name, purpose: 'Check the closing screens.', owningDepartmentId: department.id })).project.id;
+  await addMember(id, user, 'owner');
+  await db.query("update projects set status = 'active' where id = $1", [id]);
+  return id;
+};
+const closeA = await projectWith('Closing not ready');
+await mkTask(closeA, 'Finish the handbook', addDays(20), 'in_progress');
+await mkQuestion(closeA, 'Who owns the handbook?');
+await mkRisk(closeA, 'The printer may be unavailable');
+const closeB = await projectWith('Closing ready');
+const keptTask = await mkTask(closeB, 'Print the posters', addDays(20));
+const leftQuestion = await mkQuestion(closeB, 'Is the hall free in May?');
+const acceptedRisk = await mkRisk(closeB, 'Rain on the day');
+const reviewProject = await projectWith('Deadline review check');
+await mkTask(reviewProject, 'Paint the hall', addDays(5), 'in_progress');
+await mkTask(reviewProject, 'Hang the banners', addDays(6));
+const reviewedTask = await mkTask(reviewProject, 'Collect the keys', addDays(7));
 await db.end();
-const waiting = await api('POST', `/projects/${recordsId}/proposals`, { kind: 'action', text: 'Book the launch room', owner: 'Ann and Ben', due: 'by 30 November 2026' });
+
+const amended = must('amend', await api('POST', `/projects/${recordsId}/changes`, { kind: 'amend_task', targetKind: 'task', targetId: amendTask, terms: { dueOn: addDays(20), reason: 'Waiting on a supplier' }, approve: true }));
+must('cancel', await api('POST', `/projects/${recordsId}/changes`, { kind: 'cancel_task', targetKind: 'task', targetId: cancelTask, terms: { reason: 'The room is no longer needed', subtasks: {} } }));
+must('replace waiting', await api('POST', `/projects/${recordsId}/changes`, { kind: 'supersede_decision', targetKind: 'decision', targetId: waitingDecision, terms: { statement: 'Use the blue labels', rationale: 'They scan better', reason: 'A test found the red ones unreadable', affected: [] } }));
+const replacement = must('replace', await api('POST', `/projects/${recordsId}/changes`, {
+  kind: 'supersede_decision', targetKind: 'decision', targetId: replacedDecision,
+  terms: { statement: 'Use supplier Beta', rationale: 'Alpha withdrew', reason: 'Alpha withdrew their offer', affected: [{ kind: 'task', id: flaggedTask }, { kind: 'question', id: flaggedQuestion }, { kind: 'risk', id: flaggedRisk }] },
+  approve: true,
+}));
+{
+  await new Promise((r) => setTimeout(r, 300));
+  const before = readFileSync(API_LOG, 'utf8').length;
+  await fetch(`${base}/auth/request-code`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: second }) });
+  await new Promise((r) => setTimeout(r, 500));
+  const code2 = [...readFileSync(API_LOG, 'utf8').slice(before).matchAll(new RegExp(second.replace(/\./g, '\\.') + ': (\\d{6})', 'g'))].pop()[1];
+  const v2 = await fetch(`${base}/auth/verify`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: second, code: code2 }) });
+  const cookie2 = v2.headers.get('set-cookie').split(';')[0];
+  const csrf2 = (await v2.json()).csrfToken;
+  const done = await fetch(`${base}/changes/${replacement.request.id}/approve`, { method: 'POST', headers: { 'content-type': 'application/json', cookie: cookie2, 'x-csrf-token': csrf2 }, body: JSON.stringify({ version: replacement.request.version ?? 1 }) }).then((r) => r.json());
+  must('second approval', done);
+  if (done.request?.status !== 'authorised') throw new Error('replacement not applied: ' + JSON.stringify(done));
+}
+// Closing not ready: nothing chosen. Closing ready: every item has a disposition, and the Project Manager may close.
+const dispose = (projectId, recordKind, recordId, disposition, reason, extra = {}) => api('POST', `/projects/${projectId}/closure/dispositions`, { recordKind, recordId, disposition, reason, ...extra }).then((r) => must("disposition", r));
+await dispose(closeB, 'task', keptTask, 'keep', 'Operations will finish it');
+await dispose(closeB, 'question', leftQuestion, 'unresolved', 'Nobody can answer it yet', { affectsDelivery: false });
+await dispose(closeB, 'risk', acceptedRisk, 'final_accept', 'The exposure is acceptable');
+must('delegation', await api('POST', `/projects/${closeB}/closure/delegation`, { reason: 'The Project Manager knows the work' }));
+// Deadline review: defer, then send one new date for authorisation so a request is waiting beside the form.
+must('defer', await api('POST', `/projects/${reviewProject}/transition`, { to: 'deferred', reason: 'Funding paused' }));
+must('deadline review', await api('POST', `/projects/${reviewProject}/deadline-review`, { tasks: [{ taskId: reviewedTask, dueOn: addDays(30) }] }));
+const waiting =await api('POST', `/projects/${recordsId}/proposals`, { kind: 'action', text: 'Book the launch room', owner: 'Ann and Ben', due: 'by 30 November 2026' });
 if (!waiting.proposal) throw new Error('proposal not recorded: ' + JSON.stringify(waiting));
 // The invitation link is written to the API log (LOG_SIGN_IN_CODES); read it after the invitation was sent.
 await new Promise((r) => setTimeout(r, 300));
@@ -190,6 +281,12 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
     ['domains', '#/domains'],
     ['organisation (name and logos)', '#/organisation'],
     ['spending', '#/spending'],
+    ['approvals settings (organisation count, override, history)', '#/approvals'],
+    ['closing, not ready', `#/projects/${closeA}/closing`],
+    ['closing, ready (the Project Manager allowed to close)', `#/projects/${closeB}/closing`],
+    ['deadline review (waiting request and new due dates)', `#/projects/${reviewProject}/deadline-review`],
+    ['deferred project overview (deadline review link)', `#/projects/${reviewProject}`],
+    ['overview with closing, delegation and project approvals', `#/projects/${closeB}`],
   ];
   for (const [label, hash] of screens) {
     await page.goto(`${base}/${hash}`, { waitUntil: 'networkidle0' });
@@ -225,6 +322,13 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
     ['task complete form open', `#/projects/${recordsId}/work`, 'Complete'],
     ['risk accept form open', `#/projects/${recordsId}/work`, 'Accept exposure'],
     ['task history open', `#/projects/${recordsId}/work`, 'History'],
+    ['amend task form open', `#/projects/${recordsId}/work`, 'Propose a change'],
+    ['cancel task form open', `#/projects/${recordsId}/work`, 'Propose cancellation'],
+    ['decision replacement form open', `#/projects/${recordsId}/work`, 'Propose a replacement'],
+    ['review flag clear form open', `#/projects/${recordsId}/work`, 'Clear'],
+    ['request reject form open', `#/projects/${recordsId}/work`, 'Reject'],
+    ['closing disposition form open', `#/projects/${closeA}/closing`, 'Choose a disposition'],
+    ['deadline review, finished-during-the-pause form open', `#/projects/${reviewProject}/deadline-review`, 'This work was finished during the pause'],
   ]) {
     await page.goto(`${base}/${hash}`, { waitUntil: 'networkidle0' });
     await page.reload({ waitUntil: 'networkidle0' });

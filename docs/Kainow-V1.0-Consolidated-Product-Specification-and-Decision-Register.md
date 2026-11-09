@@ -314,6 +314,7 @@ All entries below were explicitly accepted in this conversation. Wording summari
 | D69 | Audit/Oversight default thirty days, required end, configured maximum, independent extension approval. |
 | D70 | Administrator-approved verified eligible email change; stable identity/history and invalidated sessions/codes. |
 | D71 | Organisation registration at onboarding (9 November 2026): each installation registers its organisation's name, at least one email domain and at least one department before first use, and until then only setup is open. Until then Kainow shows its own default name and logos; afterwards the organisation's name and any wide or square logo an Enterprise Administrator uploads replace them, on the page header, sign-in page, emails, and reports and formal outputs. The product contains no organisation's name or domain. The first Administrator is created through the one-time setup invitation, which closes once accepted. |
+| D72 | Delegated closure (9 November 2026): An Owner or Sponsor may delegate preparing and performing a project's closure to its PM, with a recorded reason, revocable by any Owner or Sponsor and ending when the PM changes or the project closes. The delegated PM records dispositions, submits cancellations, offers risk hand-overs, chooses the outcome and closes. Approval of cancellations, final risk acceptance and acceptance of handed-over risks remain Owner/Sponsor acts. Owners and Sponsors are notified when the PM closes. |
 
 ## 15. Supersession and reconciliation notes
 
