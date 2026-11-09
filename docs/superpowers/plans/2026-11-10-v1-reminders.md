@@ -51,8 +51,8 @@
 2. **A person who is both PM and the assignee of an overdue Member-level subtask's parent** must not receive a parent-deadline escalation about their own task as the only recipient; Owners/Sponsors receive it (Task 6 routing test).
 3. **A holiday added or removed after a trigger was recorded** never re-sends or re-schedules that trigger, only untriggered ones move (Task 8 sweep test).
 4. **The worker down for three days across a weekend** produces one email per recipient per project, with only the 1-day reminder for a task whose 7-day and 1-day reminders both came due (Task 8 catch-up test).
-6. **A PM away while an Owner's task escalates** (recipients PM + other Sponsors): the Sponsors still get it and no cover adds the Owner who is the assignee (Task 6).
 5. **An account disabled between the sweep and the email attempt** gets `cancelled` with reason `recipient no longer eligible`, never sent (Task 7).
+6. **A PM away while an Owner's task escalates** (recipients PM + other Sponsors): the Sponsors still get it and no cover adds the Owner who is the assignee (Task 6).
 
 ---
 
@@ -239,7 +239,7 @@ Rules (spec §4): reminder skipped when `reminderAt < dueSetAt`; `past_due_set` 
   2. For each trigger due, in its own transaction: `INSERT … ON CONFLICT (key) DO NOTHING RETURNING id`; if a row came back, decide its outcome (`skipped_paused` when `fireAt` precedes the project's latest return to Active from Deferred/Closed; `no_recipient`; `cancelled_ineligible` when every recipient fails `isEligible`; else `sent`), write `notifications` rows. Obsolete reminders are recorded `skipped_obsolete`.
   3. Unavailable-assignee triggers from open tasks whose assignee is not a holder (cause = hold, membership or declined/expired/revoked invitation id).
   4. Resumption summaries for each `project_transitions` row to `active` from `deferred`/`closed` without a recorded `project:<id>:resumed:<transition id>` key.
-  5. Mailing (`notifications/mailing.ts`, `mailDue(db, now): Promise<number>`): for each (person, project) with `notifications.outbox_id IS NULL`, skip if the person is away today or chose `off` (rows stay unemailed; for `off` they are marked `outbox_id = NULL` permanently by never being picked, since `off` rows are excluded by preference); otherwise send when the choice allows now: `immediate` → any unemailed rows; `daily_urgent_immediate` → urgent unemailed rows now, all unemailed rows at the project's 09:00 slot on a working day; `daily` → all at the 09:00 slot. One `writeOutbox` per (person, project) with `relevance.items`, set `outbox_id` on the rows carried, then `nudge()`. Rows that fired while the choice was `off` are never emailed later (they carry `detail.email_off = true` at creation).
+  5. Mailing (`notifications/mailing.ts`, `mailDue(db, now): Promise<number>`). Notifications created while the person's choice for the project is `off` get `detail.email_off = true` and are never emailed. For each (person, project) with unemailed rows (`outbox_id IS NULL` and not `email_off`), skip while the person is away today; otherwise send when the choice allows: `immediate` → now; `daily_urgent_immediate` → urgent rows now, all rows at the project's 09:00 slot on a working day; `daily` → all rows at that slot. One `writeOutbox` per (person, project) with `relevance.items`, set `outbox_id` on the rows it carries, then `nudge()`.
   6. Insert the `sweep_runs` row.
 - `GET /projects/:id/escalation-flags` (in `notifications.controller.ts`, project viewers) lists tasks whose current-episode overdue trigger is `no_recipient` and still overdue.
 
