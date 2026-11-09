@@ -9,6 +9,7 @@ import { GRANT_READ_ONLY, type ProjectStatus } from '../projects/matrix';
 import { membershipState } from '../projects/membership';
 import { ChangesService, type Deliver, type RequestView } from './changes.service';
 import { RECEIVING_NOT_ACTIVE } from './handover-handler';
+import { kindAllowedIn } from './rules';
 import { endDelegation, loadClosure, openDelegation, openQuestion, openRisk, openTask, readinessOf } from './closure';
 
 export const FINAL_ACCEPT_OS = 'Only an Owner or Sponsor can accept a risk with no further review.';
@@ -176,6 +177,9 @@ export class ClosureService {
         );
         request = submitted.request;
       } else if (disposition === 'handover') {
+        if (!kindAllowedIn('risk_handover', ctx.project.status, 'submit')) {
+          throw new ConflictException(`This change cannot be proposed while the project is ${ctx.project.status[0].toUpperCase()}${ctx.project.status.slice(1)}.`);
+        }
         if (typeof input.handoverProjectId !== 'string' || input.handoverProjectId === '') throw new BadRequestException('Choose the project to receive the risk.');
         if (input.handoverProjectId === projectId) throw new ConflictException(NOT_THIS_PROJECT);
         // Only a project the closer can see; any other is answered as if it did not exist.

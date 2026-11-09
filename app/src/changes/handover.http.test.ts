@@ -235,4 +235,17 @@ describe('handing a risk to another project at closure', { skip: SKIP_NO_DB }, (
     const refused = await rPm.request('POST', `/changes/${r.id}/approve`, { version: r.version, terms: terms() });
     assert.equal(refused.status, 403);
   });
+  test('a Planned project cannot hand a risk over', async () => {
+    const planned = await seedProject(t.pool, {
+      status: 'planned',
+      members: [{ userId: ids.pm, role: 'pm' }, { userId: ids.owner, role: 'owner' }, { userId: ids.sponsor, role: 'sponsor' }],
+    });
+    const plannedRisk = await risk(planned);
+    const refused = await owner.request('POST', `/projects/${planned}/closure/dispositions`, {
+      recordKind: 'risk', recordId: plannedRisk, disposition: 'handover', reason: 'Operations will own it', handoverProjectId: receiver,
+    });
+    assert.deepEqual([refused.status, refused.body.message], [409, 'This change cannot be proposed while the project is Planned.']);
+    assert.equal((await t.pool.query(`SELECT count(*)::int AS n FROM change_requests WHERE kind = 'risk_handover'`)).rows[0].n, 0);
+    assert.equal((await t.pool.query(`SELECT count(*)::int AS n FROM closure_dispositions WHERE project_id = $1`, [planned])).rows[0].n, 0);
+  });
 });
