@@ -93,6 +93,7 @@ export function Search({ hash }: { hash: string }) {
 
   useEffect(() => {
     setExtra([]);
+    setMore(false);
     setError(null);
     if (state.q.trim() === '') {
       setData(null);
