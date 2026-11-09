@@ -63,12 +63,14 @@ The onboarding screen is one page with four sections, each saved as it is comple
 - Files are stored in the database as received; no server-side resizing. Each place draws the logo inside a fixed box, scaled to fit without stretching.
 - Each logo is uploaded, replaced or removed on its own, before or after setup, by an Enterprise Administrator.
 
-**Where each is used** (first choice, then the fallback; with neither, the name alone and no empty box):
+**Defaults until the organisation's own are in place.** Kainow ships its own default branding: the name **Kainow** and a default wide and square Kainow logo, kept with the product (not in the database). Until setup is finished, every place shows the defaults, including the sign-in page, the setup page and the setup invitation email. Logos uploaded during onboarding appear only in the onboarding previews until **Finish setup**. At Finish setup, the organisation's name replaces the default name and each uploaded logo replaces its default; a shape not uploaded keeps the Kainow default until one is. Removing an uploaded logo later brings that shape's default back.
+
+**Where each is used** (first choice, then the fallback; the organisation's own logo is preferred over a default of either shape):
 
 | Place | First choice | Fallback |
 |---|---|---|
 | Page header | Square in 32 × 32 | Wide in 96 × 32 |
-| Browser tab icon | Square | Kainow's own icon |
+| Browser tab icon | Square | Square (Kainow default) |
 | Sign-in and setup pages | Wide in 160 × 56 | Square in 72 × 72 |
 | Emails | Wide in 120 × 40 | Square in 48 × 48 |
 | Reports and formal outputs | Wide in 120 × 40 | Square in 48 × 48 |
@@ -77,8 +79,8 @@ The header shows the logo, then the organisation name, then the Kainow wordmark 
 
 ## 6. Where the name and logos reach
 
-- **Public branding read:** `GET /organisation/branding` returns `{ registered, name, logos: { wide: {url,width,height} | null, square: … } }`, and `GET /organisation/logo/:shape` returns the image with its type and a cache validator. These are public because the sign-in page needs them before anyone signs in. The organisation's name and logos are not confidential; nothing else about the organisation is public.
-- **Emails:** every email (sign-in codes, member and setup invitations, hold alerts, and later emails) becomes multipart: a plain-text part that opens with the organisation name, and an HTML part with the chosen logo embedded as an inline attachment and the name beside it, ending `Sent by Kainow for <organisation name>.` Before registration (the setup invitation itself) the name and logo are left out.
+- **Public branding read:** `GET /organisation/branding` returns `{ registered, name, logos: { wide: {url,width,height,isDefault}, square: … } }` — the defaults until setup is finished — and `GET /organisation/logo/:shape` returns the image in use (uploaded or default) with its type and a cache validator. These are public because the sign-in page needs them before anyone signs in. The organisation's name and logos are not confidential; nothing else about the organisation is public.
+- **Emails:** every email (sign-in codes, member and setup invitations, hold alerts, and later emails) becomes multipart: a plain-text part that opens with the organisation name, and an HTML part with the chosen logo embedded as an inline attachment and the name beside it, ending `Sent by Kainow for <organisation name>.` Before registration (the setup invitation itself) the Kainow default name and logo are used, and the closing line is `Sent by Kainow.`
 - **Reports and formal outputs:** none exist yet. This work adds one shared letterhead helper returning the organisation name and chosen logo for a given place; later sub-projects (exports, reports, external outputs) must use it. Its footer line is `<organisation name> · page N of M`.
 
 ## 7. After setup
@@ -103,13 +105,14 @@ Audit entries (`writeAudit`): `setup.invitation_issued`, `setup.invitation_super
 
 - Unit: image sniffing and sizing for PNG and JPEG (including a renamed SVG and a truncated file), shape rules, the fallback table.
 - HTTP: the setup command's open/closed rules and supersede; link states (valid, used, expired, superseded); the gate (each allowed route and a sample of refused ones, before and after Finish setup); Finish setup's three refusals; logo upload limits and refusals; branding reads before and after registration; the last-domain and last-department guards; audit entries.
-- Email: the multipart message carries the name and the inline logo; text-only when nothing is registered.
+- Email: the multipart message carries the name and the inline logo; before setup it carries the Kainow defaults.
+- Branding switch: before Finish setup every place returns the defaults even with logos uploaded; after it, the organisation's name and uploaded logos; a shape never uploaded, or removed, returns its default.
 - Web: header and sign-in rendering with each logo combination; accessibility pass with the onboarding screen and both logo states (logos need alt text: the organisation name).
 - The Docker install walk-through: a fresh install from the setup command to My Projects, and an upgrade of the existing install meeting onboarding.
 
 ## 11. Decision Register entry (to add)
 
-**Organisation registration at onboarding (9 November 2026).** Each installation registers its organisation's name, at least one email domain and at least one department before first use; until then only setup is open. An Enterprise Administrator may add a wide and a square logo. The name and logo appear on the page header, sign-in page, emails, and reports and formal outputs. The product contains no organisation's name or domain. The first Administrator is created through the one-time setup invitation, which closes once accepted.
+**Organisation registration at onboarding (9 November 2026).** Each installation registers its organisation's name, at least one email domain and at least one department before first use; until then only setup is open. Until then Kainow shows its own default name and logos; afterwards the organisation's name and any wide or square logo an Enterprise Administrator uploads replace them. The name and logo appear on the page header, sign-in page, emails, and reports and formal outputs. The product contains no organisation's name or domain. The first Administrator is created through the one-time setup invitation, which closes once accepted.
 
 ## 12. Out of scope
 
