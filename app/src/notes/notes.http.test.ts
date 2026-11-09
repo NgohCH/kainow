@@ -7,7 +7,7 @@ import { createApp } from '../bootstrap';
 import { loadConfig } from '../config';
 import { runMigrations } from '../db/migrate';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
-import { seedWorkingProject } from '../testing/projects';
+import { seedWorkingProject, seedOrganisation } from '../testing/projects';
 import { CaptureSender, FakeClock, testEnv } from '../testing/fakes';
 import { makeDocx, makePdf, makeZip } from '../testing/files';
 import { UsersService } from '../users/users.service';
@@ -30,6 +30,7 @@ describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
     pool = new Pool({ connectionString: config.databaseUrl });
     await resetPublicSchema(pool);
     await runMigrations(pool, config.migrationsDir);
+    await seedOrganisation(pool);
     await new UsersService(pool, clock.now).create({ email: EMAIL, displayName: 'Admin' });
     app = await createApp(config, { codeSender: sender, clock: clock.now, logger: false });
     await app.listen(0);

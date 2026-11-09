@@ -10,7 +10,7 @@ import { MVP_SPEND_SETTINGS } from '../spend/mvp-settings';
 import { SpendService } from '../spend/spend.service';
 import { SpendSettingsService } from '../spend/spend.settings';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
-import { seedWorkingProject } from '../testing/projects';
+import { seedWorkingProject, seedOrganisation } from '../testing/projects';
 import { CaptureSender, FakeClock, testEnv } from '../testing/fakes';
 import { QUEUES, startQueues } from '../worker/queues';
 import { registerAiWorker } from '../worker/ai-worker';
@@ -49,6 +49,7 @@ describe('extraction over HTTP', { skip: SKIP_NO_DB }, () => {
     pool = new Pool({ connectionString: config.databaseUrl });
     await resetPublicSchema(pool);
     await runMigrations(pool, config.migrationsDir);
+    await seedOrganisation(pool);
     userId = (await new UsersService(pool, clock.now).create({ email: EMAIL, displayName: 'Admin' })).id;
     await new SpendSettingsService(pool, clock.now).apply(MVP_SPEND_SETTINGS, userId);
     app = await createApp(config, { codeSender: sender, clock: clock.now, logger: false, extractionQueue });
