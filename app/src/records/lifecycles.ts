@@ -16,7 +16,7 @@ type Verdict<S> = { allowed: true; to: S } | { allowed: false; reason: string };
 const refuse = (reason: string) => ({ allowed: false as const, reason });
 const has = (roles: ProjectRole[], ...want: ProjectRole[]) => roles.some((r) => want.includes(r));
 const blank = (s: string | null) => s === null || s.trim() === '';
-const NOT_ACTIVE = 'Records change only while the project is Active.';
+export const NOT_ACTIVE = 'Records change only while the project is Active.';
 const NOTE = 'A note is required.';
 
 export function questionTransition(input: {

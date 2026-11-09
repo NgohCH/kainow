@@ -231,6 +231,21 @@ describe('replacing and withdrawing decisions', { skip: SKIP_NO_DB }, () => {
     assert.equal(missing.status, 404);
   });
 
+  test('a flag cannot be cleared unless the project is Active', async () => {
+    const old = await decision();
+    const a = await task();
+    await submit(owner, 'withdraw_decision', old, { reason: 'x', affected: [{ kind: 'task', id: a }] }, true);
+    const flag = (await flags())[0].id;
+    for (const status of ['deferred', 'closed', 'planned']) {
+      await t.pool.query(`UPDATE projects SET status = $2 WHERE id = $1`, [projectId, status]);
+      const r = await pm.request('POST', `/review-flags/${flag}/clear`, { note: 'Looked' });
+      assert.deepEqual([status, r.status, r.body.message], [status, 409, 'Records change only while the project is Active.']);
+    }
+    assert.equal((await flags())[0].cleared_at, null);
+    await t.pool.query(`UPDATE projects SET status = 'active' WHERE id = $1`, [projectId]);
+    assert.equal((await pm.request('POST', `/review-flags/${flag}/clear`, { note: 'Looked' })).status, 200);
+  });
+
   test('a Deputy can clear a flag', async () => {
     const old = await decision();
     const a = await task();

@@ -6,6 +6,7 @@ import { UUID } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { ProjectAccess } from '../projects/access.service';
 import { GRANT_READ_ONLY } from '../projects/matrix';
+import { NOT_ACTIVE } from '../records/lifecycles';
 
 export const CANNOT_CLEAR = 'Only the Project Manager or a Deputy can clear a review flag.';
 export const FLAG_CLEARED = 'This flag is already cleared.';
@@ -33,6 +34,7 @@ export class FlagsService {
       if (!ctx || (ctx.roles.length === 0 && ctx.grantKinds.length === 0)) throw new NotFoundException();
       if (ctx.roles.length === 0) throw new ForbiddenException(GRANT_READ_ONLY);
       if (!ctx.roles.some((r) => r === 'pm' || r === 'deputy_pm')) throw new ForbiddenException(CANNOT_CLEAR);
+      if (ctx.project.status !== 'active') throw new ConflictException(NOT_ACTIVE);
       if (text === '') throw new BadRequestException(NOTE_NEEDED);
       const flag = (await client.query(`SELECT id, cleared_at, record_kind, record_id FROM review_flags WHERE id = $1 FOR UPDATE`, [flagId])).rows[0];
       if (flag.cleared_at) throw new ConflictException(FLAG_CLEARED);
