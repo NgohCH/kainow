@@ -7,6 +7,7 @@ import { isCalendarDate } from '../extraction/due';
 import type { ProjectContext } from '../projects/access.service';
 import { RecordsService } from '../records/records.service';
 import { type ChangeHandler, type Row, dryRun } from './handlers';
+import { checkReplacementDate } from './rules';
 
 export const NOTHING_CHANGED = 'Change at least one of the wording, the assignee or the due date.';
 export const TASK_FINISHED = 'A completed or cancelled task cannot be changed; propose a follow-up task instead.';
@@ -87,8 +88,15 @@ export function taskHandlers(deps: { records: RecordsService }): ChangeHandler[]
       }
       if (!isBlank(terms.dueOn)) {
         const dueOn = dueOf(terms.dueOn);
-        // A date already past is allowed: the task is then overdue at once.
-        if (dueOn !== target.dueOn) out.dueOn = dueOn;
+        // A date already past is allowed (the task is then overdue at once), except on a task waiting for a deadline
+        // review: its new date must satisfy the review's rules.
+        if (dueOn !== target.dueOn) {
+          if (target.deadline_review_required) {
+            const refusal = checkReplacementDate({ previous: target.dueOn, proposed: dueOn, today: ctx.today });
+            if (refusal) throw new ConflictException(refusal);
+          }
+          out.dueOn = dueOn;
+        }
       }
       if (Object.keys(out).length === 0) RecordsService.refusal(NOTHING_CHANGED);
       return { ...out, reason };
@@ -121,7 +129,11 @@ export function taskHandlers(deps: { records: RecordsService }): ChangeHandler[]
       if (title !== target.title) detail.title = { from: target.title, to: title };
       const dueOn = typeof terms.dueOn === 'string' ? terms.dueOn : (target.dueOn as string);
       if (dueOn !== target.dueOn) detail.dueOn = { from: target.dueOn, to: dueOn };
-      await c.query(`UPDATE tasks SET title = $2, assignee_id = $3, invitation_id = $4, due_on = $5 WHERE id = $1`, [target.id, title, assigneeId, invitationId, dueOn]);
+      // An authorised new due date is what a task waiting for a deadline review needs.
+      const reviewed = !!target.deadline_review_required && dueOn !== target.dueOn;
+      await c.query(`UPDATE tasks SET title = $2, assignee_id = $3, invitation_id = $4, due_on = $5, deadline_review_required = deadline_review_required AND NOT $6 WHERE id = $1`, [
+        target.id, title, assigneeId, invitationId, dueOn, reviewed,
+      ]);
       await c.query(
         `INSERT INTO task_events (id, task_id, kind, from_status, to_status, note, actor_id, at, detail) VALUES ($1, $2, 'amended', $3, $3, $4, $5, $6, $7)`,
         [uuidv7(at.getTime()), target.id, target.status, terms.reason, by.id, at, JSON.stringify(detail)],

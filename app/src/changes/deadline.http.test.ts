@@ -123,6 +123,25 @@ describe('deadline review and completion reconciliation', { skip: SKIP_NO_DB }, 
     assert.deepEqual([(await row(a)).status, (await row(b)).status, (await row(c)).status], ['not_started', 'in_progress', 'blocked']);
   });
 
+  test('an authorised amendment of the due date clears the mark', async () => {
+    const a = await task();
+    await defer();
+    await resume();
+    const amend = (dueOn: string) =>
+      ann.request('POST', `/projects/${projectId}/changes`, { kind: 'amend_task', targetKind: 'task', targetId: a, terms: { dueOn, reason: 'Funding back' } });
+    const past = await amend('2026-11-08');
+    assert.deepEqual([past.status, past.body.message], [409, 'Choose a date that is not in the past.']);
+    const r = await amend('2026-12-01');
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    t.clock.advanceSeconds(60);
+    const ok = await approve(owner, r.body.request.id);
+    assert.equal(ok.status, 200, JSON.stringify(ok.body));
+    assert.deepEqual([(await row(a)).due, (await row(a)).marked], ['2026-12-01', false]);
+    assert.equal((await events(a, 'amended')).length, 1);
+    const started = await act(ann, a, 'start', { note: 'Going ahead' });
+    assert.equal(started.status, 200, JSON.stringify(started.body));
+  });
+
   test('comments are still allowed', async () => {
     const a = await task();
     await defer();
