@@ -64,7 +64,7 @@ export async function loadClosure(db: Db, projectId: string) {
       `SELECT d.id, d.record_kind AS "recordKind", d.record_id AS "recordId", d.disposition, d.reason, d.affects_delivery AS "affectsDelivery",
               d.handover_project_id AS "handoverProjectId", d.chosen_by AS "chosenById", u.display_name AS "chosenBy", d.chosen_at AS "chosenAt"
          FROM closure_dispositions d JOIN users u ON u.id = d.chosen_by
-        WHERE d.project_id = $1 AND d.replaced_at IS NULL`,
+        WHERE d.project_id = $1 AND d.replaced_at IS NULL AND NOT d.final`,
       [projectId],
     )
   ).rows as DispositionRow[];
@@ -80,15 +80,18 @@ export async function loadClosure(db: Db, projectId: string) {
 
 /** closureReadiness over what is open now; dispositions of records finished since they were chosen do not count. */
 export function readinessOf(loaded: Awaited<ReturnType<typeof loadClosure>>) {
+  // A risk already handed over (accepted by the receiving project) needs nothing more from this project.
+  const handedOver = new Set(loaded.handovers.filter((h) => h.status === 'authorised').map((h) => h.targetId));
+  const risks = loaded.risks.filter((r) => !handedOver.has(r.id));
   const open = new Set([
     ...loaded.tasks.filter(openTask).map((t) => `task:${t.id}`),
     ...loaded.questions.filter(openQuestion).map((q) => `question:${q.id}`),
-    ...loaded.risks.filter(openRisk).map((r) => `risk:${r.id}`),
+    ...risks.filter(openRisk).map((r) => `risk:${r.id}`),
   ]);
   return closureReadiness({
     tasks: loaded.tasks,
     questions: loaded.questions,
-    risks: loaded.risks,
+    risks,
     dispositions: loaded.dispositions.filter((d) => open.has(`${d.recordKind}:${d.recordId}`)),
     pendingRequests: loaded.handovers,
   });
@@ -156,7 +159,7 @@ export async function finaliseClosure(c: PoolClient, projectId: string, actorId:
       applied.push(r.id);
     }
   }
-  await c.query(`UPDATE closure_dispositions SET final = true WHERE project_id = $1 AND replaced_at IS NULL`, [projectId]);
+  await c.query(`UPDATE closure_dispositions SET final = true WHERE project_id = $1 AND replaced_at IS NULL AND NOT final`, [projectId]);
   await writeAudit(c, { at, action: 'closure.finalised', actorUserId: actorId, subjectType: 'project', subjectId: projectId, detail: { applied } });
   await endDelegation(c, projectId, actorId, at, 'closed');
 }

@@ -6,6 +6,7 @@ import { UUID, uuidv7 } from '../common/uuid7';
 import { type RequestView, ChangesService } from '../changes/changes.service';
 import { AlreadyAuthorised, authoriseProposalHandler } from '../changes/handlers';
 import { decisionHandlers } from '../changes/decision-handlers';
+import { handoverHandler } from '../changes/handover-handler';
 import { taskHandlers } from '../changes/task-handlers';
 import { PG_POOL } from '../db/database.module';
 import { isCalendarDate, readDue } from '../extraction/due';
@@ -63,6 +64,7 @@ export class RecordsService {
     changes.register(authoriseProposalHandler({ records: this, extraction }));
     for (const h of taskHandlers({ records: this })) changes.register(h);
     for (const h of decisionHandlers()) changes.register(h);
+    changes.register(handoverHandler());
   }
 
   async tx<T>(work: (c: PoolClient) => Promise<T>): Promise<T> {
@@ -641,7 +643,11 @@ export class RecordsService {
     const risks = (
       await this.pool.query(
         `SELECT k.id, k.description, k.severity, k.status, k.mitigation, to_char(k.review_on, 'YYYY-MM-DD') AS "reviewOn",
-                CASE WHEN r.id IS NULL THEN NULL ELSE json_build_object('id', r.id, 'displayName', r.display_name) END AS responsible
+                CASE WHEN r.id IS NULL THEN NULL ELSE json_build_object('id', r.id, 'displayName', r.display_name) END AS responsible,
+                (SELECT json_build_object('projectId', e.detail->>'fromProjectId', 'name', e.detail->>'fromProjectName') FROM record_events e
+                  WHERE e.record_kind = 'risk' AND e.record_id = k.id AND e.kind = 'handed_over_from' ORDER BY e.at DESC, e.id DESC LIMIT 1) AS "handedOverFrom",
+                (SELECT json_build_object('projectId', e.detail->>'toProjectId', 'name', e.detail->>'toProjectName') FROM record_events e
+                  WHERE e.record_kind = 'risk' AND e.record_id = k.id AND e.kind = 'handed_over_to' ORDER BY e.at DESC, e.id DESC LIMIT 1) AS "handedOverTo"
            FROM risks k LEFT JOIN users r ON r.id = k.responsible_id WHERE k.project_id = $1 ORDER BY k.authorised_at, k.id`,
         [ctx.project.id],
       )

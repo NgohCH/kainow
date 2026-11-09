@@ -54,6 +54,10 @@ export interface ChangeHandler {
   editableOnApproval?: boolean;
   /** Which target kinds this handler accepts, when more than its `targetKind`. */
   targetKinds?: readonly TargetKind[];
+  /** True when the target belongs to another project than the request (risk hand-over: the closing project's risk). */
+  targetInOtherProject?: boolean;
+  /** The refusal (400) when the terms are not complete enough to approve, else null. Checked on every approval. */
+  readyToApprove?(terms: Record<string, unknown>): string | null;
 }
 
 /**

@@ -299,4 +299,21 @@ describe('closure accounting and delegated closure', { skip: SKIP_NO_DB }, () =>
     assert.equal((await close(owner, 'delivered', { objectivesMet: true })).status, 200);
     assert.equal((await t.pool.query(`SELECT status FROM questions WHERE id = $1`, [q])).rows[0].status, 'resolved');
   });
+  test('dispositions finalised at an earlier closure do not satisfy a later one', async () => {
+    const a = await task('in_progress');
+    await dispose(owner, 'task', a, 'keep', 'Operations will finish it');
+    assert.equal((await close(owner, 'partially_delivered')).status, 200);
+    t.clock.advanceSeconds(60);
+    const reopened = await owner.request('POST', `/projects/${projectId}/transition`, { to: 'active', reason: 'More work', stage: 'Execution' });
+    assert.equal(reopened.status, 200, JSON.stringify(reopened.body));
+    t.clock.advanceSeconds(60);
+    const refused = await close(owner, 'partially_delivered');
+    assert.equal(refused.status, 409, JSON.stringify(refused.body));
+    assert.deepEqual(refused.body.missing, [{ kind: 'task', id: a, why: 'No disposition yet' }]);
+    assert.equal((await view(owner)).items.tasks[0].disposition, null);
+    assert.equal((await dispose(owner, 'task', a, 'keep', 'Still with operations')).status, 201);
+    assert.equal((await close(owner, 'partially_delivered')).status, 200);
+    const rows = (await t.pool.query(`SELECT final, replaced_at IS NOT NULL AS replaced FROM closure_dispositions WHERE project_id = $1 ORDER BY chosen_at`, [projectId])).rows;
+    assert.deepEqual(rows, [{ final: true, replaced: false }, { final: true, replaced: false }]);
+  });
 });

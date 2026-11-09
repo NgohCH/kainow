@@ -8,11 +8,14 @@ import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { GRANT_READ_ONLY, type ProjectStatus } from '../projects/matrix';
 import { membershipState } from '../projects/membership';
 import { ChangesService, type Deliver, type RequestView } from './changes.service';
+import { RECEIVING_NOT_ACTIVE } from './handover-handler';
 import { endDelegation, loadClosure, openDelegation, openQuestion, openRisk, openTask, readinessOf } from './closure';
 
 export const FINAL_ACCEPT_OS = 'Only an Owner or Sponsor can accept a risk with no further review.';
 export const NOT_PREPARER = 'Only an Owner or Sponsor, or the Project Manager when they have allowed it, can prepare the closure.';
-export const RECEIVING_NOT_ACTIVE = 'The receiving project must be active.';
+export { RECEIVING_NOT_ACTIVE };
+export const NOT_THIS_PROJECT = 'Choose a project other than this one.';
+export const ALREADY_HANDED_OVER = 'This risk has already been handed over.';
 const DELEGATE_OS = 'Only an Owner or Sponsor can let the Project Manager close this project.';
 const REVOKE_OS = "Only an Owner or Sponsor can withdraw the Project Manager's permission to close.";
 const NOT_CLOSABLE = 'Closing can be prepared only while the project is Planned, Active or Deferred.';
@@ -130,6 +133,8 @@ export class ClosureService {
       if (!CLOSABLE.includes(ctx.project.status)) throw new ConflictException(NOT_CLOSABLE);
       if (!(await ClosureService.mayPrepare(c, ctx, user.id))) throw new ForbiddenException(NOT_PREPARER);
       if (disposition === 'final_accept' && !isOwnerOrSponsor(ctx)) throw new ForbiddenException(FINAL_ACCEPT_OS);
+      // Lock order matches an acceptance (request, then risk), so the two never wait on each other.
+      if (recordKind === 'risk') await c.query(`SELECT 1 FROM change_requests WHERE kind = 'risk_handover' AND target_id = $1 AND status = 'pending' FOR UPDATE`, [recordId]);
       const rec = (
         await c.query(`SELECT id, status, to_char(${recordKind === 'risk' ? 'review_on' : 'NULL::date'}, 'YYYY-MM-DD') AS "reviewOn" FROM ${TABLE[recordKind]} WHERE id = $1 AND project_id = $2 FOR UPDATE`, [
           recordId, projectId,
@@ -138,9 +143,14 @@ export class ClosureService {
       if (!rec) throw new NotFoundException();
       const open = recordKind === 'task' ? openTask(rec) : recordKind === 'question' ? openQuestion(rec) : openRisk(rec);
       if (!open) throw new ConflictException('This item is already finished.');
+      if (recordKind === 'risk') {
+        const done = await c.query(`SELECT 1 FROM change_requests WHERE kind = 'risk_handover' AND target_id = $1 AND status = 'authorised'`, [recordId]);
+        if (done.rowCount) throw new ConflictException(ALREADY_HANDED_OVER);
+      }
 
       let handoverProjectId: string | null = null;
       let request: RequestView | undefined;
+      let offer: { id: string; kind: string; status: string; projectId: string } | undefined;
       if (recordKind === 'task') {
         const waiting = await c.query(
           `SELECT 1 FROM change_requests WHERE kind = 'cancel_task' AND target_kind = 'task' AND target_id = $1 AND status = 'pending' AND batch_id = $2`,
@@ -166,17 +176,24 @@ export class ClosureService {
         );
         request = submitted.request;
       } else if (disposition === 'handover') {
-        handoverProjectId = typeof input.handoverProjectId === 'string' ? input.handoverProjectId : null;
-        const receiving =
-          handoverProjectId !== null && UUID.test(handoverProjectId) && handoverProjectId !== projectId
-            ? (await c.query(`SELECT status FROM projects WHERE id = $1`, [handoverProjectId])).rows[0]
-            : undefined;
+        if (typeof input.handoverProjectId !== 'string' || input.handoverProjectId === '') throw new BadRequestException('Choose the project to receive the risk.');
+        if (input.handoverProjectId === projectId) throw new ConflictException(NOT_THIS_PROJECT);
+        // Only a project the closer can see; any other is answered as if it did not exist.
+        if (!UUID.test(input.handoverProjectId) || !(await this.access.visibleProjectIds(user.id, c)).includes(input.handoverProjectId)) throw new NotFoundException();
+        handoverProjectId = input.handoverProjectId;
+        const receiving = (await c.query(`SELECT status FROM projects WHERE id = $1`, [handoverProjectId])).rows[0];
         if (receiving?.status !== 'active') throw new ConflictException(RECEIVING_NOT_ACTIVE);
-        // Task 8 submits the risk_handover request in the receiving project here.
+      }
+      if (recordKind === 'risk') {
+        // A new choice replaces any offer still waiting for the receiving project.
+        await this.changes.withdrawHandovers(c, user, recordId, 'The closing project chose another disposition.', at);
+        if (handoverProjectId !== null) {
+          offer = await this.changes.offerHandover(c, user, { riskId: recordId, fromProjectId: projectId, toProjectId: handoverProjectId, reason }, at);
+        }
       }
 
       await c.query(
-        `UPDATE closure_dispositions SET replaced_at = $4 WHERE project_id = $1 AND record_kind = $2 AND record_id = $3 AND replaced_at IS NULL`,
+        `UPDATE closure_dispositions SET replaced_at = $4 WHERE project_id = $1 AND record_kind = $2 AND record_id = $3 AND replaced_at IS NULL AND NOT final`,
         [projectId, recordKind, recordId, at],
       );
       const id = uuidv7(at.getTime());
@@ -191,11 +208,11 @@ export class ClosureService {
         actorUserId: user.id,
         subjectType: 'project',
         subjectId: projectId,
-        detail: { recordKind, recordId, disposition, ...(request ? { requestId: request.id } : {}) },
+        detail: { recordKind, recordId, disposition, ...(request ? { requestId: request.id } : {}), ...(offer ? { requestId: offer.id, handoverProjectId } : {}) },
       });
       return {
         disposition: { id, recordKind, recordId, disposition, reason, affectsDelivery, handoverProjectId },
-        ...(request ? { request } : {}),
+        ...(request ? { request } : offer ? { request: offer } : {}),
         readiness: readinessOf(await loadClosure(c, projectId)),
       };
     });

@@ -63,6 +63,8 @@ export interface RequestView {
   outcomeReason: string | null;
   submittedBy: string;
   submittedAt: Date;
+  /** For a risk hand-over: where the risk comes from and what it says. */
+  offer?: { fromProject: { id: string; name: string }; risk: { id: string; description: string; severity: string } };
   mayApprove: boolean;
   mayRevise: boolean;
   mayWithdraw: boolean;
@@ -150,9 +152,10 @@ export class ChangesService {
     return ctx;
   }
 
-  private async lockTarget(c: PoolClient, targetKind: TargetKind, targetId: string, projectId: string): Promise<Row> {
+  /** The target, locked. It belongs to `projectId`, unless the kind of change is made in another project (risk hand-over). */
+  private async lockTarget(c: PoolClient, targetKind: TargetKind, targetId: string, projectId: string, otherProject = false): Promise<Row> {
     const row = UUID.test(targetId) ? (await c.query(TARGET_SQL[targetKind], [targetId])).rows[0] : undefined;
-    if (!row || row.projectId !== projectId) throw new NotFoundException();
+    if (!row || (!otherProject && row.projectId !== projectId)) throw new NotFoundException();
     return { ...row, targetKind };
   }
 
@@ -299,10 +302,68 @@ export class ChangesService {
       if (input.terms !== undefined && !handler.editableOnApproval) throw new BadRequestException(NOT_EDITABLE);
       const why = ChangesService.blocked(ctx, request);
       if (why) throw new ConflictException(why);
-      const target = await this.lockTarget(c, request.targetKind, request.targetId, request.projectId);
-      const applied = await this.recordApproval(c, ctx, request, target, handler, user, at, later);
+      const target = await this.lockTarget(c, request.targetKind, request.targetId, request.projectId, handler.targetInOtherProject);
+      let current = request;
+      if (input.terms !== undefined) current = await this.reviseOnApproval(c, ctx, request, target, handler, user, input.terms, at);
+      if (handler.readyToApprove) {
+        const refusal = handler.readyToApprove(await this.termsOf(c, current.id, current.version));
+        if (refusal) throw new BadRequestException(refusal);
+      }
+      const applied = await this.recordApproval(c, ctx, current, target, handler, user, at, later);
       return { request: await this.view(c, ctx, user, await this.lockRequest(c, requestId)), ...(applied ? { applied } : {}) };
     });
+  }
+
+  /**
+   * The approver's own terms (the responsible person and review date of an accepted hand-over) change the request
+   * as a new version, written by the approver and approved in the same step; the proposer's reason carries over.
+   */
+  private async reviseOnApproval(c: PoolClient, ctx: ProjectContext, request: RequestRow, target: Row, handler: ChangeHandler, user: AuthUser, supplied: unknown, at: Date): Promise<RequestRow> {
+    const given = objectOf(supplied);
+    if (!given) throw new BadRequestException('Write the revised terms.');
+    const before = await this.termsOf(c, request.id, request.version);
+    const normalised = await handler.validate(c, ctx, target, { ...before, ...given }, user, at);
+    if (JSON.stringify(normalised) === JSON.stringify(before)) return request;
+    const reason = (await c.query(`SELECT reason FROM change_request_versions WHERE request_id = $1 AND version = $2`, [request.id, request.version])).rows[0].reason as string | null;
+    const next = request.version + 1;
+    await c.query(`INSERT INTO change_request_versions (request_id, version, terms, reason, author_id, at) VALUES ($1, $2, $3, $4, $5, $6)`, [
+      request.id, next, JSON.stringify(normalised), reason, user.id, at,
+    ]);
+    await c.query(`UPDATE change_requests SET version = $2 WHERE id = $1`, [request.id, next]);
+    await this.audit(c, at, 'revised', user.id, request, { version: next, byApprover: true });
+    return { ...request, version: next };
+  }
+
+  /**
+   * Offers a risk of a closing project to another project (called by closure in its transaction, with the closing
+   * project and the risk already locked): a pending risk_handover request in the receiving project.
+   */
+  async offerHandover(c: PoolClient, user: AuthUser, input: { riskId: string; fromProjectId: string; toProjectId: string; reason: string }, at: Date) {
+    const required = await this.policy.effectiveFor(c, input.toProjectId);
+    const id = uuidv7(at.getTime());
+    await c.query(
+      `INSERT INTO change_requests (id, project_id, kind, target_kind, target_id, batch_id, version, required_approvals, status, submitted_by, submitted_at)
+       VALUES ($1, $2, 'risk_handover', 'risk', $3, NULL, 1, $4, 'pending', $5, $6)`,
+      [id, input.toProjectId, input.riskId, required, user.id, at],
+    );
+    await c.query(`INSERT INTO change_request_versions (request_id, version, terms, reason, author_id, at) VALUES ($1, 1, $2, $3, $4, $5)`, [
+      id, JSON.stringify({ fromProjectId: input.fromProjectId }), input.reason, user.id, at,
+    ]);
+    await this.audit(c, at, 'submitted', user.id, { id, projectId: input.toProjectId }, {
+      kind: 'risk_handover', targetKind: 'risk', targetId: input.riskId, required, fromProjectId: input.fromProjectId,
+    });
+    return { id, kind: 'risk_handover' as const, status: 'pending' as const, projectId: input.toProjectId };
+  }
+
+  /** Withdraws the waiting hand-over offers for a risk (the closer chose something else). Returns how many. */
+  async withdrawHandovers(c: PoolClient, user: AuthUser, riskId: string, reason: string, at: Date): Promise<number> {
+    const { rows } = await c.query(
+      `UPDATE change_requests SET status = 'withdrawn', decided_by = $2, decided_at = $3, reason = $4
+        WHERE kind = 'risk_handover' AND target_id = $1 AND status = 'pending' RETURNING id, project_id AS "projectId", version`,
+      [riskId, user.id, at, reason],
+    );
+    for (const r of rows) await this.audit(c, at, 'withdrawn', user.id, r, { version: r.version, cause: 'disposition_changed' });
+    return rows.length;
   }
 
   /** { reason } by an Owner or Sponsor: ends the request. */
@@ -353,7 +414,7 @@ export class ChangesService {
       }
       const handler = this.handler(request.kind);
       if (!handler) throw new ConflictException('This kind of change cannot be revised yet.');
-      const target = await this.lockTarget(c, request.targetKind, request.targetId, request.projectId);
+      const target = await this.lockTarget(c, request.targetKind, request.targetId, request.projectId, handler.targetInOtherProject);
       const normalised = await handler.validate(c, ctx, target, terms, user, at);
       const next = request.version + 1;
       await c.query(`INSERT INTO change_request_versions (request_id, version, terms, reason, author_id, at) VALUES ($1, $2, $3, $4, $5, $6)`, [
@@ -390,6 +451,16 @@ export class ChangesService {
     const pending = r.status === 'pending';
     const why = ChangesService.blocked(ctx, r);
     const eligible = eligibleApprovers(ctx).includes(user.id);
+    let offer: RequestView['offer'];
+    if (r.kind === 'risk_handover') {
+      const o = (
+        await db.query(
+          `SELECT p.id AS "projectId", p.name, k.id AS "riskId", k.description, k.severity FROM risks k JOIN projects p ON p.id = k.project_id WHERE k.id = $1`,
+          [r.targetId],
+        )
+      ).rows[0];
+      if (o) offer = { fromProject: { id: o.projectId, name: o.name }, risk: { id: o.riskId, description: o.description, severity: o.severity } };
+    }
     return {
       id: r.id,
       kind: r.kind,
@@ -403,6 +474,7 @@ export class ChangesService {
       outcomeReason: r.reason,
       submittedBy: submitter,
       submittedAt: r.submittedAt,
+      ...(offer ? { offer } : {}),
       mayApprove: pending && eligible && why === null && !approvals.some((a) => a.userId === user.id),
       mayRevise: pending && r.submittedBy === user.id,
       mayWithdraw: pending && (r.submittedBy === user.id || ctx.roles.includes('pm')),
