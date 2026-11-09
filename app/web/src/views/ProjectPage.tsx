@@ -20,7 +20,7 @@ import {
 } from '../projects.ts';
 import { HumanProposals } from './HumanProposals.tsx';
 import { ProjectApprovals } from './ApprovalSettings.tsx';
-import { Closing, DelegationControl, type ClosureView } from './Closing.tsx';
+import { Closing, DelegationControl, type ClosedSummary, type ClosureView } from './Closing.tsx';
 import { DeadlineReview } from './DeadlineReview.tsx';
 import { Notes } from './Notes.tsx';
 import { Work } from './Work.tsx';
@@ -161,6 +161,7 @@ function Overview({ project, act }: { project: Project; act: Act }) {
   const [staging, setStaging] = useState(false);
   const [closure, setClosure] = useState<ClosureView | null>(null);
   const [markedTasks, setMarkedTasks] = useState(0);
+  const [atClosure, setAtClosure] = useState<ClosedSummary | null>(null);
   const [tick, setTick] = useState(0);
   const closable = ['planned', 'active', 'deferred'].includes(project.status);
   const isOS = project.myRoles.some((r) => r === 'owner' || r === 'sponsor');
@@ -169,6 +170,10 @@ function Overview({ project, act }: { project: Project; act: Act }) {
     if (!closable || project.myRoles.length === 0) return setClosure(null);
     api.get<ClosureView>(`/projects/${project.id}/closure`).then(setClosure, () => setClosure(null));
   }, [project.id, project.status, project.myRoles.length, closable, tick]);
+  useEffect(() => {
+    if (project.status !== 'closed') return setAtClosure(null);
+    api.get<ClosureView>(`/projects/${project.id}/closure`).then((v) => setAtClosure(v.closedSummary ?? null), () => setAtClosure(null));
+  }, [project.id, project.status]);
   useEffect(() => {
     if (!isPmOrDeputy || !['active', 'deferred', 'closed'].includes(project.status)) return setMarkedTasks(0);
     api.get<{ tasks: unknown[] }>(`/projects/${project.id}/deadline-review`).then((r) => setMarkedTasks(r.tasks.length), () => setMarkedTasks(0));
@@ -211,6 +216,35 @@ function Overview({ project, act }: { project: Project; act: Act }) {
           </dl>
         )}
       </section>
+
+      {atClosure && (atClosure.kept.length > 0 || atClosure.unresolved.length > 0) && (
+        <section aria-labelledby="at-closure-heading">
+          <h2 id="at-closure-heading">At closure</h2>
+          {atClosure.kept.length > 0 && (
+            <>
+              <h3>Tasks kept outstanding</h3>
+              <ul className="plain">
+                {atClosure.kept.map((k) => (
+                  <li key={k.id}><strong>{k.title}</strong>: {k.reason}</li>
+                ))}
+              </ul>
+            </>
+          )}
+          {atClosure.unresolved.length > 0 && (
+            <>
+              <h3>Questions left unresolved</h3>
+              <ul className="plain">
+                {atClosure.unresolved.map((q) => (
+                  <li key={q.id}>
+                    <strong>{q.text}</strong>: {q.reason}
+                    {q.affectsDelivery ? ' (affects delivery acceptance)' : ''}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </section>
+      )}
 
       {(options.length > 0 || canStage) && (
         <section aria-labelledby="change-heading">

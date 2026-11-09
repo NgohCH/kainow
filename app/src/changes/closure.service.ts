@@ -10,7 +10,7 @@ import { membershipState } from '../projects/membership';
 import { ChangesService, type Deliver, type RequestView } from './changes.service';
 import { RECEIVING_NOT_ACTIVE } from './handover-handler';
 import { kindAllowedIn } from './rules';
-import { endDelegation, loadClosure, openDelegation, openQuestion, openRisk, openTask, readinessOf } from './closure';
+import { closedSummary, endDelegation, loadClosure, openDelegation, openQuestion, openRisk, openTask, readinessOf } from './closure';
 
 export const FINAL_ACCEPT_OS = 'Only an Owner or Sponsor can accept a risk with no further review.';
 export const NOT_PREPARER = 'Only an Owner or Sponsor, or the Project Manager when they have allowed it, can prepare the closure.';
@@ -117,6 +117,8 @@ export class ClosureService {
       readiness,
       delegation: delegation ? { pm: delegation.pm, pmUserId: delegation.pmUserId, by: delegation.by, reason: delegation.reason, at: delegation.at } : null,
       mayPrepare: ctx.roles.length > 0 && (await ClosureService.mayPrepare(this.pool, ctx, user.id)),
+      /** For a Closed project: what its closure kept outstanding or left unresolved. */
+      closedSummary: ctx.project.status === 'closed' ? await closedSummary(this.pool, projectId) : null,
     };
   }
 

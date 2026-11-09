@@ -33,6 +33,12 @@ export interface ClosureView {
   readiness: Readiness & { deliveredAllowed: boolean };
   delegation: { pm: string; pmUserId: string; by: string; reason: string; at: string } | null;
   mayPrepare: boolean;
+  /** For a Closed project: what its closure kept outstanding or left unresolved. */
+  closedSummary: ClosedSummary | null;
+}
+export interface ClosedSummary {
+  kept: Array<{ id: string; title: string; reason: string }>;
+  unresolved: Array<{ id: string; text: string; reason: string; affectsDelivery: boolean }>;
 }
 
 const CHOICES: Record<Kind, Array<[string, string]>> = {

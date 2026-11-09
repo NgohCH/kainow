@@ -116,6 +116,32 @@ export async function assertClosureReady(c: PoolClient, projectId: string, input
   return readiness;
 }
 
+/**
+ * What the latest closure left behind: the tasks kept outstanding and the questions left unresolved, as its final
+ * dispositions recorded them (spec §6). Those of an earlier closure, before the project was reopened, are not shown.
+ */
+export async function closedSummary(db: Db, projectId: string) {
+  const rows = (
+    await db.query(
+      `WITH closes AS (SELECT at, row_number() OVER (ORDER BY at DESC, id DESC) AS n FROM project_transitions WHERE project_id = $1 AND to_status = 'closed')
+       SELECT d.record_kind AS "recordKind", d.record_id AS id, d.disposition, d.reason, d.affects_delivery AS "affectsDelivery",
+              t.title, q.text
+         FROM closure_dispositions d
+         LEFT JOIN tasks t ON d.record_kind = 'task' AND t.id = d.record_id
+         LEFT JOIN questions q ON d.record_kind = 'question' AND q.id = d.record_id
+        WHERE d.project_id = $1 AND d.final AND d.replaced_at IS NULL AND d.disposition IN ('keep', 'unresolved')
+          AND d.chosen_at <= coalesce((SELECT at FROM closes WHERE n = 1), 'infinity')
+          AND d.chosen_at > coalesce((SELECT at FROM closes WHERE n = 2), '-infinity')
+        ORDER BY d.chosen_at, d.id`,
+      [projectId],
+    )
+  ).rows as Array<{ recordKind: string; id: string; disposition: string; reason: string; affectsDelivery: boolean; title: string | null; text: string | null }>;
+  return {
+    kept: rows.filter((r) => r.disposition === 'keep').map((r) => ({ id: r.id, title: r.title as string, reason: r.reason })),
+    unresolved: rows.filter((r) => r.disposition === 'unresolved').map((r) => ({ id: r.id, text: r.text as string, reason: r.reason, affectsDelivery: r.affectsDelivery })),
+  };
+}
+
 /** The open delegation, if any. */
 export async function openDelegation(db: Db, projectId: string): Promise<DelegationRow | null> {
   const row = (

@@ -122,6 +122,22 @@ describe('closure accounting and delegated closure', { skip: SKIP_NO_DB }, () =>
     assert.equal((await close(owner, 'partially_delivered')).status, 200);
   });
 
+  test('a Closed project lists what was kept outstanding and left unresolved', async () => {
+    const a = await task('in_progress');
+    const q = await question('open');
+    const r = await risk();
+    assert.equal((await view(owner)).closedSummary, null, 'only once closed');
+    await dispose(owner, 'task', a, 'keep', 'Operations will finish it');
+    await dispose(owner, 'question', q, 'unresolved', 'The client has not confirmed', { affectsDelivery: true });
+    await dispose(owner, 'risk', r, 'final_accept', 'Small now');
+    assert.equal((await close(owner, 'partially_delivered')).status, 200);
+    const summary = (await view(ann)).closedSummary;
+    assert.deepEqual(summary, {
+      kept: [{ id: a, title: 'Task', reason: 'Operations will finish it' }],
+      unresolved: [{ id: q, text: 'Which vendor?', reason: 'The client has not confirmed', affectsDelivery: true }],
+    });
+  });
+
   test('an unresolved question affecting delivery rules out Delivered', async () => {
     const q = await question('answered');
     await dispose(owner, 'question', q, 'unresolved', 'The client has not confirmed', { affectsDelivery: true });
