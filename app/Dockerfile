@@ -27,6 +27,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
 COPY --from=api /build/dist ./dist
 COPY migrations ./migrations
+COPY assets ./assets
 COPY --from=web /build/web/dist ./web/dist
 USER node
 EXPOSE 3000
