@@ -2,6 +2,8 @@ import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { ApiError, api, type DueReading } from '../api.ts';
 import { formatWhen } from '../format.ts';
 import { AuthoriseForm, type Person } from './AuthoriseForm.tsx';
+import { ChangeRequestPanel, pendingAuthorisation, useRequests } from './ChangeRequest.tsx';
+import { waitingLine, type RequestView } from '../changes.ts';
 
 type Kind = 'action' | 'decision' | 'question' | 'risk';
 interface Proposal {
@@ -43,18 +45,20 @@ export function HumanProposals({
   const [authorising, setAuthorising] = useState<string | null>(null);
   const [rejecting, setRejecting] = useState<string | null>(null);
   const [reason, setReason] = useState('');
+  const { requests, reload: reloadRequests } = useRequests(projectId);
 
   const load = useCallback(() => {
     api.get<{ proposals: Proposal[] }>(`/projects/${projectId}/proposals`).then((r) => setProposals(r.proposals), (e: Error) => setError(e.message));
-  }, [projectId]);
+    reloadRequests();
+  }, [projectId, reloadRequests]);
   useEffect(load, [load]);
 
-  async function run(work: () => Promise<unknown>, done: string) {
+  async function run(work: () => Promise<unknown>, done: string | ((result: unknown) => string)) {
     setError(null);
     setNotice(null);
     try {
-      await work();
-      setNotice(done);
+      const result = await work();
+      setNotice(typeof done === 'string' ? done : done(result));
       load();
       return true;
     } catch (e) {
@@ -131,13 +135,16 @@ export function HumanProposals({
                 {p.reviewStatus === 'rejected' ? ` · rejected: ${p.rejectReason}` : ''}
                 {p.record ? ' · authorised (see the Work tab)' : ''}
               </span>
-              {canReview && p.reviewStatus === 'pending' && authorising !== p.id && rejecting !== p.id && (
+              {canReview && p.reviewStatus === 'pending' && authorising !== p.id && rejecting !== p.id && !pendingAuthorisation(requests, p.id) && (
                 <div className="decision">
                   <button className="approve" onClick={() => setAuthorising(p.id)}>Authorise</button>
                   <button className="reject" onClick={() => setRejecting(p.id)}>Reject</button>
                 </div>
               )}
-              {authorising === p.id && (
+              {p.reviewStatus === 'pending' && pendingAuthorisation(requests, p.id) && (
+                <ChangeRequestPanel request={pendingAuthorisation(requests, p.id) as RequestView} onChanged={(m) => void run(async () => undefined, m)} />
+              )}
+              {authorising === p.id && !pendingAuthorisation(requests, p.id) && (
                 <AuthoriseForm
                   kind={p.kind}
                   text={p.text}
@@ -146,7 +153,10 @@ export function HumanProposals({
                   people={people}
                   meId={meId}
                   onSubmit={async (body) => {
-                    const ok = await run(() => api.post(`/proposals/${p.id}/authorise`, body), 'Authorised: it is now on the Work tab.');
+                    const ok = await run(
+                      () => api.post<{ request?: RequestView }>(`/proposals/${p.id}/authorise`, body),
+                      (r) => ((r as { request?: RequestView }).request ? `${waitingLine((r as { request: RequestView }).request)}. Another Owner or Sponsor can approve it here.` : 'Authorised: it is now on the Work tab.'),
+                    );
                     if (ok) setAuthorising(null);
                     return ok;
                   }}

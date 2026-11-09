@@ -9,7 +9,7 @@ export interface Person {
 }
 
 type Kind = 'action' | 'decision' | 'question' | 'risk';
-const INVITE = '__invite__';
+export const INVITE = '__invite__';
 
 /** A person picker with "Invite by email" for tasks. Returns the body fields for that person. */
 function Assignee({
@@ -51,7 +51,7 @@ function Assignee({
   );
 }
 
-const who = (value: string, email: string) => (value === INVITE ? { inviteEmail: email } : { assigneeId: value });
+export const who = (value: string, email: string) => (value === INVITE ? { inviteEmail: email } : { assigneeId: value });
 
 /**
  * Authorising turns a proposal into its record. For an action: one accountable person and a due date, and

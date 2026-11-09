@@ -141,7 +141,7 @@ export function ProjectPage({ projectId, tab, meId }: { projectId: string; tab: 
         </>
       )}
       {tab === 'work' && contentAllowed && (
-        <Work projectId={project.id} people={people} canSplit={roles.some((r) => r === 'pm' || r === 'deputy_pm') && project.status === 'active'} />
+        <Work projectId={project.id} people={people} canPropose={roles.length > 0} canClear={roles.some((r) => r === 'pm' || r === 'deputy_pm')} />
       )}
     </main>
   );
