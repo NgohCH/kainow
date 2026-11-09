@@ -10,6 +10,9 @@ import type { AppConfig } from './config';
 /** Largest JSON body. Pasted notes can be up to 500,000 characters, which is about 2 MB in UTF-8. */
 export const JSON_BODY_LIMIT = '4mb';
 
+/** Largest image body: a little over the 512 KB logo limit, so the service gives the clear refusal. */
+export const LOGO_BODY_LIMIT = '600kb';
+
 /** One place builds the application, so the real server and the tests share the same limits. */
 export async function createApp(
   config: AppConfig,
@@ -21,6 +24,8 @@ export async function createApp(
     bodyParser: false,
   });
   app.useBodyParser('json', { limit: JSON_BODY_LIMIT });
+  // Logo uploads arrive as the image file itself; the service checks its contents and the 512 KB limit.
+  app.useBodyParser('raw', { type: ['image/png', 'image/jpeg'], limit: LOGO_BODY_LIMIT });
 
   // Everything is same-origin: the page, its scripts, its fonts and the API. Nothing is loaded from elsewhere.
   app.use((_req: unknown, res: { setHeader(name: string, value: string): void }, next: () => void) => {

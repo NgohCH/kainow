@@ -17,6 +17,8 @@ export interface Reply {
 export interface Client {
   userId: string;
   request(method: string, path: string, body?: unknown): Promise<Reply>;
+  /** Sends raw bytes (a file upload) with the given type. */
+  upload(method: string, path: string, body: Buffer, contentType: string): Promise<Reply>;
 }
 
 export interface TestApp {
@@ -73,6 +75,11 @@ export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opt
     return {
       userId: user.id,
       request: (method, path, body) => send(base, method, path, body, { Cookie: cookie, 'X-CSRF-Token': csrfToken }),
+      upload: async (method, path, body, contentType) => {
+        const res = await fetch(`${base}${path}`, { method, headers: { Cookie: cookie, 'X-CSRF-Token': csrfToken, 'Content-Type': contentType }, body: new Uint8Array(body) });
+        const text = await res.text();
+        return { status: res.status, body: text ? JSON.parse(text) : undefined };
+      },
     };
   }
 
