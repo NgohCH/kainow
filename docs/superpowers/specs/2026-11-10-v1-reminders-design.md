@@ -33,6 +33,8 @@ Notifications never change a task, risk, deadline, membership or approval, never
 | Uncertain email outcome | Resent automatically once, marked as a possible duplicate (§7.4). |
 | Delegation switches | All three off by default. |
 | Sweep time aim | Under 2 seconds per sweep on the seeded dataset of §12. |
+| Notice email timing | Each person chooses, per project, how notice emails reach them (§6.1). Default: one email a day per project, urgent notices immediately. Choices: daily with urgent immediately, every notice immediately, daily only, off (in-app only). Decided 10 November 2026. |
+| Personal holidays | Each person may record away dates; no notice emails or digests reach them on those dates, and the daily email after their return catches up. Escalations addressed to someone away (or with email off) also go to the next people in the routing (§5). Decided 10 November 2026. This is a Product Owner decision beyond Reminders §8 ("no personal opt-out policy … is established by this document"); in-app notices remain for everyone. |
 
 ## 3. Time and the working-day calendar
 
@@ -108,7 +110,7 @@ A trigger whose time fell while the project was Deferred or Closed is recorded a
 
 ### 4.8 Catch-up after downtime
 
-If the worker was down, the next sweep finds every trigger that came due. For each task only the latest reminder that is still relevant is sent; earlier reminders for that task are recorded `skipped_obsolete`. A reminder is no longer relevant once its task's deadline has passed. Everything that fires in one sweep is consolidated per recipient (§6), so a recipient gets one email, not a flood (Q02).
+If the worker was down, the next sweep finds every trigger that came due. For each task only the latest reminder that is still relevant is sent; earlier reminders for that task are recorded `skipped_obsolete`. A reminder is no longer relevant once its task's deadline has passed. Email is then consolidated per recipient and project according to each person's choice (§6.1), so nobody gets a flood (Q02).
 
 ## 5. Recipients
 
@@ -130,6 +132,7 @@ Rules that apply to every row:
 - When a person holds several of the roles the routing names, they are one recipient.
 - **Escalation is never sent to the assignee alone.** Recipients equal to the assignee are removed. When nobody is left, no message is sent, the trigger is recorded `no_recipient`, and the project page shows **"No independent escalation recipient"** with the task, for as long as that episode is overdue. No recipient is invented and the Administrator is never used for escalation (§9 of the Consolidated Specification).
 - **Unavailable assignee** fires when an open task's assignee no longer holds an Active role in the project (On Hold, expired, revoked) or the invitation the task is waiting on was declined, expired or revoked. The cause and its id (hold, membership or invitation) form the key, so each new cause alerts once.
+- **Cover while away or with email off.** When a recipient of an overdue escalation, a parent-deadline escalation or an unavailable-assignee alert is away (§6.1) on the day it fires, or has chosen "Off" for the project, the notice also goes to the next people in its routing who are not away: PM → every Owner and Sponsor; Owner or Sponsor → the PM and the other Owners and Sponsors; cover never adds the task's assignee and never adds the minimal Administrator fallback. The covering recipients are recorded on the trigger. If everyone in the chain is away or off, nobody extra is added; the original recipients still get the in-app notice.
 - **Resumption summary** fires once when a Deferred or Closed project returns to Active (not on a first activation from Draft or Planned). Each recipient's summary lists, filtered to what that person can read: tasks still marked "Deadline review required", tasks overdue on their current date, and risks whose review date has passed. Missed reminders are not replayed (D24).
 
 ## 6. In-app notifications and consolidation
@@ -138,8 +141,25 @@ Rules that apply to every row:
 - **Bell.** Every signed-in page has a bell in the main header with the unread count (hidden when zero, capped as "99+"). It refreshes on navigation and every 60 seconds while the page is visible. Its accessible name includes the count ("Notifications, 3 unread").
 - **Notifications page (`#/notifications`).** Newest first, 30 at a time with "Show more". Each entry shows the project, the summary, when it fired (UTC+8) and a link; "Mark read" per entry and "Mark all read". Opening the link marks the entry read.
 - **Access at display time.** Each entry is shown with its summary only while the person can still read the project; otherwise it shows "You no longer have access to this project" and no detail.
-- **Email.** All triggers that fire for one recipient in one sweep go into one email, grouped by project, one line per item with its link ("Kainow: 3 items need your attention"). Each trigger keeps its own history row, so separate triggers for the same task stay distinguishable (O12).
+- **Email.** Notice emails are one per person per project, timed by that person's choice (§6.1), one line per item with its link ("Kainow: 3 items need your attention in <project>"). Each trigger keeps its own history row, so separate triggers for the same task stay distinguishable (O12).
 - **Content of every notice.** Project name, record kind, title, due or review date, and a link. A link grants no access. Notes, discussion, rationale, mitigation and evidence are never included. The Administrator fallback contains only the project name.
+
+### 6.1 Email preferences and personal holidays
+
+Each person sets these for themselves in an **Email preferences** section of the Notifications page (no separate user-settings page, §11 of the Consolidated Specification). Nobody else can change them.
+
+| Choice (per project) | Behaviour |
+|---|---|
+| **Daily, urgent immediately** (default) | One email at the 09:00 slot on the project's working days, listing every non-urgent notice for that project not yet emailed. Urgent notices go out at the sweep that fires them, one email per project per sweep. |
+| **Every notice immediately** | One email per project per sweep that fires anything for the person. |
+| **Daily only** | Everything, urgent included, waits for the 09:00 email. |
+| **Off** | No notice emails for this project; in-app only. Nothing is caught up later. Cover (§5) applies. |
+
+- **Urgent** notices: overdue escalation, parent-deadline escalation, due date set in the past, unavailable assignee. Not urgent: reminders, risk review due and missed, the resumption summary.
+- **Away dates.** A person records date ranges (start and end date, UTC+8, optional note visible only to them). On an away date no notice email and no digest is sent to them; in-app notices still appear. The first daily email due after the away period includes every notice not yet emailed (for "Every notice immediately", the first sweep after the period sends that catch-up). Cover (§5) applies to escalations and alerts while away. Away dates never change deadlines, roles or access.
+- A notice is emailed once: each `notifications` row records the outbox email that carried it.
+- A change to a preference or away dates takes effect from the next sweep and is recorded with the time (no reason needed; it is the person's own setting).
+- Digests (§8) are not affected by these choices except away dates.
 
 ## 7. Email delivery
 
@@ -266,6 +286,7 @@ All new actions follow existing matrix rows; none is new authority.
 | View project delivery history | PM, Owner or Sponsor |
 | View organisation delivery history; Resend; Send test email | Enterprise Administrator |
 | Read and mark own notifications | The signed-in person (entries for projects no longer readable show no detail) |
+| Set own email preferences and away dates | The signed-in person, for projects where they hold a role |
 
 ## 11. Database and code
 
@@ -276,7 +297,9 @@ All new actions follow existing matrix rows; none is new authority.
 - `holidays`: id, `project_id` (null for organisation), date, name, added by/at, removed by/at; a unique current entry per scope and date.
 - `notification_settings_changes`: append-only (scope, project, field, old, new, reason, actor, at).
 - `notification_triggers`: id, `key` unique, kind, project, record kind and id, `fire_at`, `decided_at`, outcome (`sent`, `skipped_obsolete`, `skipped_paused`, `no_recipient`, `cancelled_ineligible`), recipients (`uuid[]`), detail (`jsonb`). Append-only.
-- `notifications`: id, user, trigger, project, kind, summary, link, `created_at`, `read_at`; index on (user, `read_at`, `created_at`).
+- `notifications`: id, user, trigger, project, kind, `urgent`, summary, link, `created_at`, `read_at`, `outbox_id` (the email that carried it, if any); index on (user, `read_at`, `created_at`) and on (user, project) where `outbox_id IS NULL`.
+- `email_preferences`: (user, project) primary key, choice (`daily_urgent_immediate`, `immediate`, `daily`, `off`), `updated_at`; no row means the default.
+- `away_periods`: id, user, `starts_on`, `ends_on`, note, `created_at`, `removed_at`.
 - `email_outbox`: as §7.2, with `first_failure_at`, `next_attempt_at`, `attempts`, `possible_duplicate`, `resend_of`; index on (status, `next_attempt_at`).
 - `email_attempts`: append-only (outbox row, attempt number, started, finished, outcome, SMTP code, error class).
 - `digest_runs`.
@@ -311,6 +334,7 @@ All new actions follow existing matrix rows; none is new authority.
 - **Outbox (fake transport):** retry times measured from the first failure; permanent failure; attempt count kept across a restart; cancellation when eligibility or relevance changes; an uncertain send resent once and marked as a possible duplicate, then left for an Administrator; the XOAUTH2 token requested once and reused until near expiry. Microsoft 365 is never called by tests.
 - **HTTP:** settings authority and delegation switches; bounds; preview; manual digest authority, content per recipient and Active-only; notifications list, unread count, mark read and the no-access display; delivery history visibility; Resend.
 - **Existing emails:** invitations, hold alerts and delegated-closure notices now arrive through the outbox with the same content.
+- **Preferences:** each of the four choices; urgent versus non-urgent timing; away dates suppressing notice emails and digests and the catch-up on return; cover to the next routing recipients while away or off, and no extra recipient when the whole chain is away.
 - **Web:** bell count and label, Notifications page states, settings form (effective value labels, read-only without delegation), digest preview.
 - **Names:** every invented name in tests and seed data is checked to be fictitious; no real organisation name or acronym (see the no-organisation-names rule).
 
@@ -321,7 +345,6 @@ Before claiming the sweep is cheap, it is timed on a seeded realistic dataset (2
 ## 13. Out of scope
 
 - Specific-time deadlines (tasks stay date-only).
-- Personal opt-outs from notifications (none is specified).
 - Repeated escalation after the first per episode, and other escalation sequences: configurable in the documents, but no bounds are approved.
 - Editable send time (09:00), date-only cutoff and routing.
 - Graph API sending and other email providers.
