@@ -11,7 +11,7 @@ import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { runMigrations } from './migrate';
 
 const realMigrations = loadDatabaseConfig({ DATABASE_URL: 'x' }).migrationsDir;
-const REAL_FILES = ['0001_identity_and_audit.sql', '0002_sign_in_throttle.sql', '0003_ai_spend.sql', '0004_notes.sql', '0005_extraction.sql', '0006_review.sql', '0007_user_spend_limit.sql', '0008_chosen_occurrence.sql', '0009_proposal_edits.sql', '0010_due_dates_and_alternatives.sql', '0011_ignore_model_event.sql', '0012_projects_roles.sql', '0013_roles_completion.sql', '0014_records.sql', '0015_record_event_detail.sql', '0016_organisation.sql', '0017_changes.sql', '0018_risk_handover.sql'];
+const REAL_FILES = ['0001_identity_and_audit.sql', '0002_sign_in_throttle.sql', '0003_ai_spend.sql', '0004_notes.sql', '0005_extraction.sql', '0006_review.sql', '0007_user_spend_limit.sql', '0008_chosen_occurrence.sql', '0009_proposal_edits.sql', '0010_due_dates_and_alternatives.sql', '0011_ignore_model_event.sql', '0012_projects_roles.sql', '0013_roles_completion.sql', '0014_records.sql', '0015_record_event_detail.sql', '0016_organisation.sql', '0017_changes.sql', '0018_risk_handover.sql', '0019_search.sql'];
 
 describe('migrations', { skip: SKIP_NO_DB }, () => {
   let pool: Pool;
