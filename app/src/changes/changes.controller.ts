@@ -1,4 +1,4 @@
-import { BadRequestException, Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Req } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Query, Req } from '@nestjs/common';
 import { AnySignedInUser } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
@@ -49,10 +49,11 @@ export class ChangesController {
     );
   }
 
+  /** ?status=pending lists only the waiting requests. */
   @Get('projects/:id/changes')
   @AnySignedInUser()
-  async list(@Param('id') id: string, @Req() req: HttpRequest) {
-    return { requests: await this.changes.list(who(req), id) };
+  async list(@Param('id') id: string, @Query('status') status: string | undefined, @Req() req: HttpRequest) {
+    return { requests: await this.changes.list(who(req), id, status) };
   }
 
   /** The marked tasks of a Deferred, Closed or Active project, for the Project Manager or a Deputy. */

@@ -4,12 +4,12 @@ import { type CurrentView, type RequestView, approvalsLine, kindLabel, termsRows
 import { formatWhen } from '../format.ts';
 import { AddSubtaskForm, AmendForm, CancelForm, SupersedeForm, type WorkContext, WithdrawForm } from './ChangeForms.tsx';
 
-/** A project's change requests (newest first), reloaded on demand. Failing to load them leaves the list empty. */
+/** A project's waiting change requests (newest first), reloaded on demand. Failing to load them leaves the list empty. */
 export function useRequests(projectId: string | undefined): { requests: RequestView[]; reload: () => void } {
   const [requests, setRequests] = useState<RequestView[]>([]);
   const reload = useCallback(() => {
     if (!projectId) return;
-    api.get<{ requests: RequestView[] }>(`/projects/${projectId}/changes`).then(
+    api.get<{ requests: RequestView[] }>(`/projects/${projectId}/changes?status=pending`).then(
       (r) => setRequests(r.requests),
       () => setRequests([]),
     );

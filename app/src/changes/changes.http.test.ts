@@ -192,6 +192,25 @@ describe('change requests', { skip: SKIP_NO_DB }, () => {
     assert.equal(await tasks(), 0);
   });
 
+  test('the list can be limited to waiting requests', async () => {
+    await setCount(3);
+    const first = (await authorise(owner)).body.request.id;
+    assert.equal((await sponsor.request('POST', `/changes/${first}/withdraw`, { reason: 'Wrong person' })).status, 403);
+    assert.equal((await owner.request('POST', `/changes/${first}/withdraw`, { reason: 'Wrong person' })).status, 200);
+    t.clock.advanceSeconds(60);
+    const second = (await authorise(owner)).body.request.id;
+    t.clock.advanceSeconds(60);
+    assert.equal((await approve(sponsor, second)).body.request.status, 'pending', 'two of three');
+    const all = (await sponsor2.request('GET', `/projects/${projectId}/changes`)).body.requests;
+    assert.deepEqual(all.map((r: { id: string }) => r.id), [second, first]);
+    const waiting = await sponsor2.request('GET', `/projects/${projectId}/changes?status=pending`);
+    assert.equal(waiting.status, 200, JSON.stringify(waiting.body));
+    assert.deepEqual(waiting.body.requests.map((r: { id: string; status: string }) => [r.id, r.status]), [[second, 'pending']]);
+    const [w] = waiting.body.requests;
+    assert.deepEqual([w.approvals.map((a: { name: string }) => a.name), w.submittedBy, w.terms.assigneeId, w.mayApprove], [['owner', 'sponsor'], 'owner', ids.ann, true]);
+    assert.equal((await sponsor2.request('GET', `/projects/${projectId}/changes?status=nonsense`)).status, 400);
+  });
+
   test('withdrawal by the submitter', async () => {
     await setCount(2);
     const id = (await authorise(owner)).body.request.id;

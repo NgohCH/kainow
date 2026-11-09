@@ -23,6 +23,7 @@ export const notEnough = (need: number, have: number) => `Not enough approvers: 
 const KINDS: readonly ChangeKind[] = [
   'authorise_proposal', 'amend_task', 'cancel_task', 'supersede_decision', 'withdraw_decision', 'deadline_review', 'reconcile_completion', 'risk_handover',
 ];
+const STATUSES: readonly RequestRow['status'][] = ['pending', 'authorised', 'rejected', 'withdrawn', 'superseded'];
 const TARGET_KINDS: readonly TargetKind[] = ['extraction_item', 'human_proposal', 'task', 'decision', 'risk'];
 const NOUN: Record<TargetKind, string> = { extraction_item: 'proposal', human_proposal: 'proposal', task: 'task', decision: 'decision', risk: 'risk' };
 const STATUS_LABEL: Record<ProjectStatus, string> = { draft: 'Draft', planned: 'Planned', active: 'Active', deferred: 'Deferred', closed: 'Closed' };
@@ -442,61 +443,88 @@ export class ChangesService {
     });
   }
 
-  /** Every request in the project, most recent first, with what the viewer may do. */
-  async list(user: AuthUser, projectId: string): Promise<RequestView[]> {
+  /** The project's requests (all, or those with one status), most recent first, with what the viewer may do. */
+  async list(user: AuthUser, projectId: string, status?: string): Promise<RequestView[]> {
+    if (status !== undefined && !STATUSES.includes(status as RequestRow['status'])) throw new BadRequestException('Choose a status: pending, authorised, rejected, withdrawn or superseded.');
     const ctx = await this.access.authorize(user, 'project.view', projectId);
-    const { rows } = await this.pool.query(`SELECT ${REQUEST_COLUMNS} FROM change_requests WHERE project_id = $1 ORDER BY submitted_at DESC, id DESC`, [projectId]);
-    const out: RequestView[] = [];
-    for (const r of rows as RequestRow[]) out.push(await this.view(this.pool, ctx, user, r));
-    return out;
+    const { rows } = await this.pool.query(
+      `SELECT ${REQUEST_COLUMNS} FROM change_requests WHERE project_id = $1 AND ($2::text IS NULL OR status = $2) ORDER BY submitted_at DESC, id DESC`,
+      [projectId, status ?? null],
+    );
+    return this.views(this.pool, ctx, user, rows as RequestRow[]);
   }
 
   /** One request as the viewer sees it. */
   async view(db: Pool | PoolClient, ctx: ProjectContext, user: AuthUser, r: RequestRow): Promise<RequestView> {
-    const version = (
-      await db.query(`SELECT terms, reason FROM change_request_versions WHERE request_id = $1 AND version = $2`, [r.id, r.version])
-    ).rows[0] as { terms: Record<string, unknown>; reason: string | null };
-    const approvals = (
+    return (await this.views(db, ctx, user, [r]))[0];
+  }
+
+  /** Requests as the viewer sees them: their current versions, approvals, submitters and hand-over offers, one query each. */
+  private async views(db: Pool | PoolClient, ctx: ProjectContext, user: AuthUser, rows: RequestRow[]): Promise<RequestView[]> {
+    if (rows.length === 0) return [];
+    const ids = rows.map((r) => r.id);
+    const versions = new Map<string, { terms: Record<string, unknown>; reason: string | null }>();
+    for (const v of (
       await db.query(
-        `SELECT a.approver_id AS "userId", u.display_name AS name, a.at FROM approvals a JOIN users u ON u.id = a.approver_id
-          WHERE a.request_id = $1 AND a.version = $2 ORDER BY a.at, a.id`,
-        [r.id, r.version],
+        `SELECT v.request_id AS "requestId", v.terms, v.reason FROM change_request_versions v JOIN change_requests r ON r.id = v.request_id AND r.version = v.version
+          WHERE v.request_id = ANY($1::uuid[])`,
+        [ids],
       )
-    ).rows as Array<{ userId: string; name: string; at: Date }>;
-    const submitter = (await db.query(`SELECT display_name FROM users WHERE id = $1`, [r.submittedBy])).rows[0].display_name as string;
-    const pending = r.status === 'pending';
-    const why = ChangesService.blocked(ctx, r);
-    const eligible = eligibleApprovers(ctx).includes(user.id);
-    let offer: RequestView['offer'];
-    if (r.kind === 'risk_handover') {
-      const o = (
-        await db.query(
-          `SELECT p.id AS "projectId", p.name, k.id AS "riskId", k.description, k.severity FROM risks k JOIN projects p ON p.id = k.project_id WHERE k.id = $1`,
-          [r.targetId],
-        )
-      ).rows[0];
-      if (o) offer = { fromProject: { id: o.projectId, name: o.name }, risk: { id: o.riskId, description: o.description, severity: o.severity } };
+    ).rows) versions.set(v.requestId, { terms: v.terms, reason: v.reason });
+    const approvals = new Map<string, Array<{ userId: string; name: string; at: Date }>>();
+    for (const a of (
+      await db.query(
+        `SELECT a.request_id AS "requestId", a.approver_id AS "userId", u.display_name AS name, a.at
+           FROM approvals a JOIN change_requests r ON r.id = a.request_id AND r.version = a.version JOIN users u ON u.id = a.approver_id
+          WHERE a.request_id = ANY($1::uuid[]) ORDER BY a.at, a.id`,
+        [ids],
+      )
+    ).rows) {
+      const list = approvals.get(a.requestId) ?? [];
+      list.push({ userId: a.userId, name: a.name, at: a.at });
+      approvals.set(a.requestId, list);
     }
-    return {
-      id: r.id,
-      kind: r.kind,
-      target: { kind: r.targetKind, id: r.targetId },
-      version: r.version,
-      status: r.status,
-      requiredApprovals: r.requiredApprovals,
-      approvals: approvals.map((a) => ({ name: a.name, at: a.at })),
-      terms: version.terms,
-      reason: version.reason,
-      outcomeReason: r.reason,
-      submittedBy: submitter,
-      submittedAt: r.submittedAt,
-      ...(offer ? { offer } : {}),
-      mayApprove: pending && eligible && why === null && !approvals.some((a) => a.userId === user.id),
-      mayRevise: pending && r.submittedBy === user.id,
-      // The receiving project declines a hand-over (an Owner or Sponsor rejects it); only the offerer withdraws it.
-      mayWithdraw: pending && (r.submittedBy === user.id || (r.kind !== 'risk_handover' && ctx.roles.includes('pm'))),
-      why,
-      batchId: r.batchId,
-    };
+    const names = new Map<string, string>(
+      (await db.query(`SELECT id, display_name FROM users WHERE id = ANY($1::uuid[])`, [[...new Set(rows.map((r) => r.submittedBy))]])).rows.map((u) => [u.id, u.display_name]),
+    );
+    const riskIds = [...new Set(rows.filter((r) => r.kind === 'risk_handover').map((r) => r.targetId))];
+    const offers = new Map<string, NonNullable<RequestView['offer']>>();
+    if (riskIds.length > 0) {
+      for (const o of (
+        await db.query(
+          `SELECT p.id AS "projectId", p.name, k.id AS "riskId", k.description, k.severity FROM risks k JOIN projects p ON p.id = k.project_id WHERE k.id = ANY($1::uuid[])`,
+          [riskIds],
+        )
+      ).rows) offers.set(o.riskId, { fromProject: { id: o.projectId, name: o.name }, risk: { id: o.riskId, description: o.description, severity: o.severity } });
+    }
+    const eligible = eligibleApprovers(ctx).includes(user.id);
+    return rows.map((r) => {
+      const version = versions.get(r.id) as { terms: Record<string, unknown>; reason: string | null };
+      const given = approvals.get(r.id) ?? [];
+      const pending = r.status === 'pending';
+      const why = ChangesService.blocked(ctx, r);
+      const offer = r.kind === 'risk_handover' ? offers.get(r.targetId) : undefined;
+      return {
+        id: r.id,
+        kind: r.kind,
+        target: { kind: r.targetKind, id: r.targetId },
+        version: r.version,
+        status: r.status,
+        requiredApprovals: r.requiredApprovals,
+        approvals: given.map((a) => ({ name: a.name, at: a.at })),
+        terms: version.terms,
+        reason: version.reason,
+        outcomeReason: r.reason,
+        submittedBy: names.get(r.submittedBy) as string,
+        submittedAt: r.submittedAt,
+        ...(offer ? { offer } : {}),
+        mayApprove: pending && eligible && why === null && !given.some((a) => a.userId === user.id),
+        mayRevise: pending && r.submittedBy === user.id,
+        // The receiving project declines a hand-over (an Owner or Sponsor rejects it); only the offerer withdraws it.
+        mayWithdraw: pending && (r.submittedBy === user.id || (r.kind !== 'risk_handover' && ctx.roles.includes('pm'))),
+        why,
+        batchId: r.batchId,
+      };
+    });
   }
 }

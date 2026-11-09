@@ -162,7 +162,7 @@ export function ProjectApprovals({ projectId }: { projectId: string }) {
       },
       (e) => setError(errText(e)),
     );
-    api.get<{ requests: Array<{ status: string }> }>(`/projects/${projectId}/changes`).then(
+    api.get<{ requests: Array<{ status: string }> }>(`/projects/${projectId}/changes?status=pending`).then(
       (r) => setWaiting(r.requests.filter((x) => x.status === 'pending').length),
       () => setWaiting(null),
     );
