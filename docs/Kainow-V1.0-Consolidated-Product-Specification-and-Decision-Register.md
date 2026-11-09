@@ -313,6 +313,7 @@ All entries below were explicitly accepted in this conversation. Wording summari
 | D68 | Controlled initial Administrator invitation, multiple Administrators and safeguarded recovery. |
 | D69 | Audit/Oversight default thirty days, required end, configured maximum, independent extension approval. |
 | D70 | Administrator-approved verified eligible email change; stable identity/history and invalidated sessions/codes. |
+| D71 | Organisation registration at onboarding (9 November 2026): each installation registers its organisation's name, at least one email domain and at least one department before first use, and until then only setup is open. Until then Kainow shows its own default name and logos; afterwards the organisation's name and any wide or square logo an Enterprise Administrator uploads replace them, on the page header, sign-in page, emails, and reports and formal outputs. The product contains no organisation's name or domain. The first Administrator is created through the one-time setup invitation, which closes once accepted. |
 
 ## 15. Supersession and reconciliation notes
 

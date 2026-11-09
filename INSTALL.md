@@ -47,11 +47,13 @@ The PowerShell lines in this guide were run in Windows PowerShell 5.1 on 8 Novem
 
    The first build downloads images and packages and takes a few minutes. The database migrates itself at every start.
 
-3. **Create the first Enterprise Administrator.**
+3. **Invite the first Enterprise Administrator.** This emails a one-time setup link (with `LOG_SIGN_IN_CODES=true` it is written to `docker compose logs api`). It works only while the installation has no Administrator, and closes for good once that person signs in. Running it again before then replaces the earlier link.
 
    ```
-   docker compose run --rm api node dist/users/create-admin-cli.js you@example.org "Your Name"
+   docker compose run --rm api node dist/users/setup-invite-cli.js you@example.org "Your Name"
    ```
+
+   For a demonstration only, `docker compose run --rm api node dist/users/seed-demo-cli.js` instead sets up a made-up "Example Organisation" (example.com) with the Administrator admin@example.com, on an empty database.
 
 4. **Save the approved AI spend settings** (model `gpt-6.1-sol`, USD 2.00 / 0.10 / 10.00 per million tokens, 1 USD = MYR 4.10, MYR 20 a month, no daily cap). Until you do this every AI request is refused:
 
@@ -59,7 +61,7 @@ The PowerShell lines in this guide were run in Windows PowerShell 5.1 on 8 Novem
    docker compose run --rm api node dist/spend/apply-mvp-settings-cli.js
    ```
 
-5. **Open `http://localhost:3000`** and sign in with the email you used. If you left `LOG_SIGN_IN_CODES=true`, read the code with:
+5. **Open the setup link** (or `http://localhost:3000`) and sign in with the email you used. If you left `LOG_SIGN_IN_CODES=true`, read the code with:
 
    ```
    docker compose logs api --tail 20
@@ -67,9 +69,14 @@ The PowerShell lines in this guide were run in Windows PowerShell 5.1 on 8 Novem
 
    A new code is made at most once a minute. If you ask again sooner, the screen looks the same but no new code is made, so use the latest code in the log.
 
-6. **Set up the organisation and the first project** (as the administrator):
-   - Under **Departments**, add at least one department. Every project belongs to one.
-   - Under **Domains**, add your organisation's email domain (for example `example.com`). Only addresses at these domains can be invited, and a domain alone admits nobody.
+6. **Set up your organisation.** Until this is done Kainow is closed to everything else and shows its own name and logo. On the **Set up your organisation** screen:
+   - Give the organisation's name.
+   - Add at least one email domain (for example `example.com`). Only addresses at these domains can be invited, and a domain alone admits nobody.
+   - Add at least one department. Every project belongs to one.
+   - Optionally add a wide logo and a square logo (PNG or JPEG, up to 512 KB each).
+   - Choose **Finish setup**. The organisation's name and logos then appear in the page header, on the sign-in page and in emails. They can be changed later on the **Organisation** screen.
+
+7. **Create the first project:**
    - Under **My Projects**, choose **New project**. It starts as a Draft.
    - On the project's **People** tab, invite a Project Manager and an Owner or Sponsor. The Project Manager then invites the Members. Each invitation is emailed (or, with `LOG_SIGN_IN_CODES=true`, written to `docker compose logs api`) as a link that expires after seven days.
 
