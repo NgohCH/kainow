@@ -48,33 +48,49 @@ const KIND_RANK = `CASE kind ${Object.entries(KIND_ORDER)
   .map(([k, n]) => `WHEN '${k}' THEN ${n}`)
   .join(' ')} END`;
 
+export interface SearchStatementInput {
+  ids: string[];
+  kinds: SearchKind[];
+  patterns: string[];
+  today: string;
+  first: string;
+  scoped: boolean;
+  offset: number;
+}
+
 /**
- * One statement over search_documents. $1 readable project ids, $2 kinds, $3 patterns, $4 today, $5 first word,
- * $6 whether one project is asked for, $7 offset within it.
+ * The one statement over search_documents. $1 readable project ids, $2 kinds, $3 today, $4 first word, $5 whether
+ * one project is asked for, $6 offset within it, then one parameter per pattern from $7. Each pattern is its own
+ * `ILIKE` condition, ANDed: a GIN trigram index can serve `text ILIKE $n` but not `ILIKE ALL` over an array.
+ * Only placeholders are generated here; every word stays a bound parameter.
  */
-const STATEMENT = `
+export function buildSearchStatement(input: SearchStatementInput): { text: string; values: unknown[] } {
+  const match = input.patterns.map((_, i) => `d.text ILIKE $${7 + i}::text`).join(' AND ');
+  const text = `
 WITH hits AS (
   SELECT d.* FROM search_documents d
    WHERE d.project_id = ANY($1::uuid[])
      AND d.kind = ANY($2::text[])
-     AND d.text ILIKE ALL($3::text[])
+     AND ${match}
      -- The one place that decides whether this person may read a note's content. Restricted note audiences (O09)
      -- and quarantine and logical deletion (sub-project 5) add their conditions here, so every result derived
      -- from a note (its text, its title, its AI proposals) obeys them.
      AND (d.source_id IS NULL OR EXISTS (SELECT 1 FROM sources s WHERE s.id = d.source_id AND s.status <> 'deleted'))
-     AND (d.kind <> 'person' OR d.ends_on IS NULL OR d.ends_on >= $4::date)
+     AND (d.kind <> 'person' OR d.ends_on IS NULL OR d.ends_on >= $3::date)
 ), best AS (
   SELECT DISTINCT ON (project_id, kind, item_id) * FROM hits
-   ORDER BY project_id, kind, item_id, is_current DESC, version_no DESC NULLS LAST, at DESC
+   -- Current wording first; among it, the item's own row (no match note) before a title or an answer row; then a
+   -- note's newest version, and the newest earlier wording.
+   ORDER BY project_id, kind, item_id, is_current DESC, (match_note IS NULL) DESC, version_no DESC NULLS LAST, at DESC
 ), ranked AS (
   SELECT b.*,
          row_number() OVER (PARTITION BY project_id ORDER BY ${KIND_RANK}, at DESC, item_id) AS rn,
          count(*) OVER (PARTITION BY project_id) AS total
     FROM best b
 ), chosen AS (
-  SELECT r.*, greatest(strpos(lower(r.text), lower($5::text)) - ${BEFORE}, 1) AS start
+  SELECT r.*, greatest(strpos(lower(r.text), lower($4::text)) - ${BEFORE}, 1) AS start
     FROM ranked r
-   WHERE CASE WHEN $6::boolean THEN r.rn > $7::bigint AND r.rn <= $7::bigint + ${PAGE} ELSE r.rn <= ${FIRST} END
+   WHERE CASE WHEN $5::boolean THEN r.rn > $6::bigint AND r.rn <= $6::bigint + ${PAGE} ELSE r.rn <= ${FIRST} END
 )
 SELECT c.project_id AS "projectId", p.name AS "projectName", c.kind, c.item_id AS "itemId", c.run_id AS "runId", c.version_no AS "versionNo",
        c.version_count AS "versionCount", c.is_current AS "isCurrent", c.match_note AS "matchNote", c.ref_title AS title,
@@ -85,6 +101,9 @@ SELECT c.project_id AS "projectId", p.name AS "projectName", c.kind, c.item_id A
          '\\s+', ' ', 'g') AS snippet
   FROM chosen c JOIN projects p ON p.id = c.project_id
  ORDER BY lower(p.name), p.id, c.rn`;
+  const { ids, kinds, today, first, scoped, offset, patterns } = input;
+  return { text, values: [ids, kinds, today, first, scoped, offset, ...patterns] };
+}
 
 interface Row {
   projectId: string;
@@ -134,7 +153,7 @@ export class SearchService {
     if (ids.length === 0) return { searched, projects: [] };
 
     const today = this.access.today();
-    const rows = await this.run(ids, kinds, patterns, today, words[0], project !== null, offset);
+    const rows = await this.run(buildSearchStatement({ ids, kinds, patterns, today, first: words[0], scoped: project !== null, offset }));
     return { searched, projects: this.build(rows, readable) };
   }
 
@@ -151,21 +170,25 @@ export class SearchService {
     return out;
   }
 
-  private async run(ids: string[], kinds: SearchKind[], patterns: string[], today: string, first: string, scoped: boolean, offset: number): Promise<Row[]> {
+  private async run(statement: { text: string; values: unknown[] }): Promise<Row[]> {
     const client = await this.pool.connect();
+    let broken: Error | undefined;
     try {
       await client.query('BEGIN READ ONLY');
       await client.query(`SET LOCAL statement_timeout = ${Math.max(1, Math.floor(this.timeoutMs))}`);
-      const { rows } = await client.query(STATEMENT, [ids, kinds, patterns, today, first, scoped, offset]);
+      const { rows } = await client.query(statement.text, statement.values);
       await client.query('COMMIT');
       return rows as Row[];
     } catch (err) {
-      await client.query('ROLLBACK').catch(() => undefined);
+      // A connection that cannot even roll back is discarded rather than returned to the pool.
+      await client.query('ROLLBACK').catch((e: Error) => {
+        broken = e;
+      });
       // Query cancelled by the statement timeout. The phrase never goes into the message.
       if ((err as { code?: string }).code === '57014') throw new ServiceUnavailableException(TIMED_OUT);
       throw err;
     } finally {
-      client.release();
+      client.release(broken);
     }
   }
 

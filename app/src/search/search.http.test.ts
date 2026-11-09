@@ -4,8 +4,8 @@ import { uuidv7 } from '../common/uuid7';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
-import { SEARCH_KINDS, type SearchKind } from './query';
-import { SearchService } from './search.service';
+import { SEARCH_KINDS, type SearchKind, parsePhrase } from './query';
+import { SearchService, buildSearchStatement } from './search.service';
 
 /** The kinds seeded by `seedAllKinds` and so checked by every access test below. */
 const ACCESS_COVERED: SearchKind[] = ['project', 'person', 'note', 'ai_proposal', 'human_proposal', 'task', 'decision', 'question', 'risk'];
@@ -517,6 +517,53 @@ describe('cross-project search', { skip: SKIP_NO_DB }, () => {
     assert.equal(r.status, 503, JSON.stringify(r.body));
     assert.equal(r.body.message, TOO_LONG);
     assert.ok(!JSON.stringify(r.body).includes('dolor'));
+  });
+
+  test('a question matching both itself and an answer shows as the question', async () => {
+    const qid = await question(harbour, 'Which crane do we hire?');
+    await t.pool.query(`INSERT INTO question_answers (id, question_id, answer, author_id, at) VALUES ($1, $2, 'Hire the smaller crane', $3, now())`, [uuidv7(), qid, ids.pm]);
+    const [p] = await projectsOf(member, q('crane hire'));
+    assert.deepEqual(p.results.map((r) => [r.id, r.matchNote, r.snippet]), [[qid, null, 'Which crane do we hire?']]);
+    const both = await note(pm, harbour, 'Crane hire', 'Crane hire agreed.');
+    const [n] = await projectsOf(member, q('crane hire', '&kinds=note'));
+    assert.deepEqual(n.results.map((r) => [r.id, r.matchNote, r.snippet]), [[both.sourceId, null, 'Crane hire agreed.']], 'the version text beats the title');
+  });
+
+  test("the service's statement can use the trigram indexes", async () => {
+    const extra = await seedProject(t.pool, { name: 'Quay Lights', status: 'active', members: [{ userId: ids.pm, role: 'pm' }] });
+    await note(pm, extra, 'Quay note', 'Pump turbine survey.');
+    await task(extra, 'Pump turbine order');
+    // Enough other notes and tasks that a project-by-project scan costs more than the trigram index.
+    await t.pool.query(
+      `INSERT INTO sources (id, title, created_by, created_at, project_id)
+       SELECT gen_random_uuid(), 'Bulk ' || g, $1, now(), $2 FROM generate_series(1, 3000) g`,
+      [ids.pm, harbour],
+    );
+    await t.pool.query(
+      `INSERT INTO source_versions (id, source_id, version_no, origin, text_content, text_sha256, char_count, created_by, created_at)
+       SELECT gen_random_uuid(), s.id, 1, 'paste', 'Minutes of ' || s.title || ' about cables, fences and drains.', md5(s.title), 40, $1, now()
+         FROM sources s WHERE s.title LIKE 'Bulk %'`,
+      [ids.pm],
+    );
+    await t.pool.query(
+      `INSERT INTO tasks (id, project_id, depth, title, assignee_id, due_on, authorised_by, authorised_at)
+       SELECT gen_random_uuid(), $1, 0, 'Bulk task ' || g, $2, '2026-11-30', $2, now() FROM generate_series(1, 5000) g`,
+      [harbour, ids.pm],
+    );
+    await t.pool.query('VACUUM ANALYZE');
+    const { words, patterns } = parsePhrase('turbine pump');
+    const statement = buildSearchStatement({ ids: [harbour, bridge, extra], kinds: [...SEARCH_KINDS], patterns, today: '2026-11-09', first: words[0], scoped: false, offset: 0 });
+    const client = await t.pool.connect();
+    try {
+      await client.query('BEGIN READ ONLY');
+      await client.query('SET LOCAL enable_seqscan = off');
+      const plan = (await client.query(`EXPLAIN ${statement.text}`, statement.values)).rows.map((r) => r['QUERY PLAN']).join('\n');
+      await client.query('ROLLBACK');
+      assert.match(plan, /search_source_versions_trgm/);
+      assert.match(plan, /search_tasks_trgm/);
+    } finally {
+      client.release();
+    }
   });
 
   // --- Guard ---

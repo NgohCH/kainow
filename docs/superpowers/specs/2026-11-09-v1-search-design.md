@@ -65,13 +65,13 @@ Not searched:
 
 ## 6. The query
 
-**Phrase.** `q` is trimmed and NFC-normalised, then split on whitespace into at most 8 words. One-character words are dropped. At least one remaining word must have 3 or more characters, otherwise the response is 400 "Type at least one word of 3 or more letters." `q` longer than 200 characters gets a 400. Each word is escaped (`\`, `%`, `_`) and becomes the pattern `%word%`. A row matches when its text matches every pattern with `ILIKE` (`text ILIKE ALL($patterns)`).
+**Phrase.** `q` is trimmed and NFC-normalised, then split on whitespace into at most 8 words. One-character words are dropped. At least one remaining word must have 3 or more characters, otherwise the response is 400 "Type at least one word of 3 or more letters." `q` longer than 200 characters gets a 400. Each word is escaped (`\`, `%`, `_`) and becomes the pattern `%word%`. A row matches when its text matches every pattern with `ILIKE`, written as one condition per word, ANDed (`text ILIKE $7 AND text ILIKE $8 …`, one bound parameter per pattern). A GIN trigram index cannot serve `ILIKE ALL` over an array, so that form would scan every table.
 
 **One statement** over `search_documents`, run under `SET LOCAL statement_timeout = '5s'` in a read-only transaction:
 
 1. Keep rows whose `project_id` is in the readable ids, whose `kind` is in the requested kinds, and whose `source_id` passes the note predicate (§5).
 2. Keep rows matching every pattern.
-3. One result per item (`kind`, `item_id`): prefer a current-wording row over an earlier-wording row, then the newest earlier row. Note title and note text rows belong to the same item.
+3. One result per item (`kind`, `item_id`): prefer a current-wording row over an earlier-wording row and, among current rows, the item's own text over its title or an answer (so a question matching both itself and an answer has no match note), then the newest earlier row. Note title and note text rows belong to the same item.
 4. Snippet: about 160 characters of the matched row's text around the first occurrence of the first matching word, cut on character boundaries, with "…" where text was cut. Person results have no snippet.
 5. Per project: the total count of results and the first 10 in order (§7). With a `project` filter: 50 results from `offset`.
 6. At most 30 projects in the response.
