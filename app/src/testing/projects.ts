@@ -71,3 +71,12 @@ export async function seedWorkingProject(pool: Pool, userId: string): Promise<st
     ],
   });
 }
+
+/** Registers a finished organisation directly, as onboarding would; tests that exercise onboarding start without one. */
+export async function seedOrganisation(pool: Pool, name = 'Example Organisation'): Promise<void> {
+  await pool.query(
+    `INSERT INTO organisation (id, name, registered_at, updated_at) VALUES (1, $1, now(), now())
+     ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name, registered_at = now()`,
+    [name],
+  );
+}
