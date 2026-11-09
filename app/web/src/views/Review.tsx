@@ -184,11 +184,12 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
       if (e.key === 'j' && idx < items.length - 1) select(items[idx + 1].id, true);
       else if (e.key === 'k' && idx > 0) select(items[idx - 1].id, true);
       else if (current && e.key === 'a' && view?.permissions.approve && canApprove(current, pick) && !current.record) setAuthorising(current.id);
-      else if (current && e.key === 'r' && view?.permissions.reject) void decide(current, 'rejected');
+      // While an authorisation waits for more approvers, its panel's Reject is the way to reject.
+      else if (current && e.key === 'r' && view?.permissions.reject && !pendingAuthorisation(requests, current.id)) void decide(current, 'rejected');
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [items, selected, current, select, decide, pick, view]);
+  }, [items, selected, current, select, decide, pick, view, requests]);
 
   if (error && !view) return <main className="page narrow"><p role="alert" className="error">{error}</p><a href="#/">Back to notes</a></main>;
   if (!view) return <p className="loading">Loading</p>;
@@ -447,7 +448,7 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                   Authorise
                 </button>
                 )}
-                {view.permissions.reject && !item.record && (
+                {view.permissions.reject && !item.record && !pendingAuthorisation(requests, item.id) && (
                 <button className="reject" disabled={saving.has(item.id) || item.reviewStatus === 'rejected'} onClick={() => void decide(item, 'rejected')}>
                   Reject
                 </button>

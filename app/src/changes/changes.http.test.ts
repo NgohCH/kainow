@@ -157,6 +157,41 @@ describe('change requests', { skip: SKIP_NO_DB }, () => {
     assert.equal(await tasks(), 0);
   });
 
+  test('rejecting an AI proposal ends its pending authorisation', async () => {
+    await setCount(2);
+    const id = (await authorise(owner)).body.request.id;
+    t.clock.advanceSeconds(60);
+    const r = await sponsor.request('POST', `/extractions/${runId}/items/${itemId}/review`, { decision: 'rejected', sourceVersionId: versionId });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const req = (await t.pool.query(`SELECT status, decided_by, reason FROM change_requests WHERE id = $1`, [id])).rows[0];
+    assert.deepEqual([req.status, req.decided_by], ['rejected', ids.sponsor]);
+    assert.ok(req.reason);
+    assert.equal((await t.pool.query(`SELECT count(*)::int AS n FROM audit_events WHERE action = 'change.rejected' AND subject_id = $1`, [id])).rows[0].n, 1);
+    const late = await approve(sponsor2, id);
+    assert.deepEqual([late.status, late.body.message], [409, 'This change is no longer waiting for authorisation.']);
+    assert.equal((await t.pool.query(`SELECT review_status FROM extraction_items WHERE id = $1`, [itemId])).rows[0].review_status, 'rejected');
+    assert.equal(await tasks(), 0);
+    const fresh = await authorise(sponsor2);
+    assert.deepEqual([fresh.status, fresh.body.message], [409, 'This proposal was rejected.']);
+  });
+
+  test("rejecting a people's proposal ends its pending authorisation", async () => {
+    await setCount(2);
+    const proposal = (await pm.request('POST', `/projects/${projectId}/proposals`, { kind: 'action', text: 'Book the room', owner: 'Ann', due: 'by 30 November 2026' })).body.proposal.id;
+    const a = await owner.request('POST', `/proposals/${proposal}/authorise`, { assigneeId: ids.ann, dueOn: '2026-11-30' });
+    assert.equal(a.status, 202, JSON.stringify(a.body));
+    const id = a.body.request.id;
+    t.clock.advanceSeconds(60);
+    const r = await sponsor.request('POST', `/proposals/${proposal}/reject`, { reason: 'Already booked' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const req = (await t.pool.query(`SELECT status, decided_by, reason FROM change_requests WHERE id = $1`, [id])).rows[0];
+    assert.deepEqual(req, { status: 'rejected', decided_by: ids.sponsor, reason: 'Already booked' });
+    const late = await approve(sponsor2, id);
+    assert.deepEqual([late.status, late.body.message], [409, 'This change is no longer waiting for authorisation.']);
+    assert.equal((await t.pool.query(`SELECT review_status FROM human_proposals WHERE id = $1`, [proposal])).rows[0].review_status, 'rejected');
+    assert.equal(await tasks(), 0);
+  });
+
   test('withdrawal by the submitter', async () => {
     await setCount(2);
     const id = (await authorise(owner)).body.request.id;

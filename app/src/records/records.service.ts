@@ -6,6 +6,7 @@ import { UUID, uuidv7 } from '../common/uuid7';
 import { type RequestView, ChangesService } from '../changes/changes.service';
 import { AlreadyAuthorised, authoriseProposalHandler } from '../changes/handlers';
 import { decisionHandlers } from '../changes/decision-handlers';
+import { lockPendingAuthorisation, rejectPendingAuthorisation } from '../changes/end-pending';
 import { deadlineHandlers } from '../changes/deadline-handlers';
 import { handoverHandler } from '../changes/handover-handler';
 import { taskHandlers } from '../changes/task-handlers';
@@ -354,9 +355,11 @@ export class RecordsService {
     return this.tx(async (c) => {
       const peek = await this.lockProposal(c, proposalId);
       await this.access.authorize(user, 'proposal.review', peek.project_id, c, true);
+      await lockPendingAuthorisation(c, 'human_proposal', proposalId);
       const p = (await c.query(`SELECT review_status FROM human_proposals WHERE id = $1 FOR UPDATE`, [proposalId])).rows[0];
       if (p.review_status !== 'pending') throw new ConflictException('Only a proposal waiting for review can be rejected.');
       await c.query(`UPDATE human_proposals SET review_status = 'rejected', reviewed_by = $2, reviewed_at = $3, reject_reason = $4 WHERE id = $1`, [proposalId, user.id, at, reason]);
+      await rejectPendingAuthorisation(c, 'human_proposal', proposalId, user.id, at, reason);
       await writeAudit(c, { at, action: 'proposal.rejected', actorUserId: user.id, subjectType: 'project', subjectId: peek.project_id, detail: { proposalId } });
       return { proposal: { id: proposalId, reviewStatus: 'rejected' } };
     });

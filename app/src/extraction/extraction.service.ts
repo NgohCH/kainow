@@ -3,6 +3,7 @@ import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type Clock } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
+import { PROPOSAL_REJECTED_REASON, lockPendingAuthorisation, rejectPendingAuthorisation } from '../changes/end-pending';
 import { PG_POOL } from '../db/database.module';
 import { locateQuote } from '../notes/text';
 import { type DueReading, type ReviewerDue, isCalendarDate, readDue } from './due';
@@ -314,6 +315,7 @@ export class ExtractionService {
       if (input.decision === 'approved') {
         await this.approveInTx(client, runId, itemId, input, actorUserId, at);
       } else {
+        await lockPendingAuthorisation(client, 'extraction_item', itemId);
         const item = await this.lockForReview(client, runId, itemId, input.sourceVersionId);
         await this.refuseIfAuthorised(client, itemId);
         await client.query(
@@ -328,6 +330,7 @@ export class ExtractionService {
           subjectId: itemId,
           detail: { runId, sourceVersionId: item.source_version_id, previousStatus: item.review_status },
         });
+        await rejectPendingAuthorisation(client, 'extraction_item', itemId, actorUserId, at, PROPOSAL_REJECTED_REASON);
       }
       await client.query('COMMIT');
     } catch (err) {
