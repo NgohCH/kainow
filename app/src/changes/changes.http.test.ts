@@ -171,8 +171,22 @@ describe('change requests', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual([late.status, late.body.message], [409, 'This change is no longer waiting for authorisation.']);
     assert.equal((await t.pool.query(`SELECT review_status FROM extraction_items WHERE id = $1`, [itemId])).rows[0].review_status, 'rejected');
     assert.equal(await tasks(), 0);
+    // An Owner may change their mind on a rejected AI proposal: a fresh authorisation starts a new request.
     const fresh = await authorise(sponsor2);
-    assert.deepEqual([fresh.status, fresh.body.message], [409, 'This proposal was rejected.']);
+    assert.equal(fresh.status, 202, JSON.stringify(fresh.body));
+    assert.notEqual(fresh.body.request.id, id);
+    assert.equal(fresh.body.request.status, 'pending');
+  });
+
+  test('a rejected AI proposal can still be authorised', async () => {
+    const r = await sponsor.request('POST', `/extractions/${runId}/items/${itemId}/review`, { decision: 'rejected', sourceVersionId: versionId });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    t.clock.advanceSeconds(60);
+    const a = await authorise(owner);
+    assert.equal(a.status, 201, JSON.stringify(a.body));
+    assert.equal(a.body.record.kind, 'task');
+    assert.equal((await t.pool.query(`SELECT review_status FROM extraction_items WHERE id = $1`, [itemId])).rows[0].review_status, 'approved');
+    assert.equal(await tasks(), 1);
   });
 
   test("rejecting a people's proposal ends its pending authorisation", async () => {
@@ -190,6 +204,8 @@ describe('change requests', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual([late.status, late.body.message], [409, 'This change is no longer waiting for authorisation.']);
     assert.equal((await t.pool.query(`SELECT review_status FROM human_proposals WHERE id = $1`, [proposal])).rows[0].review_status, 'rejected');
     assert.equal(await tasks(), 0);
+    const again = await owner.request('POST', `/proposals/${proposal}/authorise`, { assigneeId: ids.ann, dueOn: '2026-11-30' });
+    assert.deepEqual([again.status, again.body.message], [409, 'This proposal was rejected.'], "a people's proposal stays rejected");
   });
 
   test('the list can be limited to waiting requests', async () => {

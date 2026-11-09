@@ -115,7 +115,8 @@ export function authoriseProposalHandler(deps: { records: RecordsService; extrac
     async validate(c, ctx, target, terms, user, at) {
       const existing = await deps.records.existingRecord(c, origin(target));
       if (existing) throw new AlreadyAuthorised(existing);
-      if (target.reviewStatus === 'rejected') throw new ConflictException('This proposal was rejected.');
+      // A people's proposal stays rejected; an Owner may change their mind on a rejected AI proposal (2a).
+      if (target.targetKind === 'human_proposal' && target.reviewStatus === 'rejected') throw new ConflictException('This proposal was rejected.');
       const out: Record<string, unknown> = {};
       for (const k of AUTHORISE_TERMS) if (terms[k] !== undefined) out[k] = terms[k];
       // The same checks as creating the record, with nothing kept: the refusal and its wording are exactly 2a's.
