@@ -91,7 +91,7 @@ On the Organisation screen an Enterprise Administrator can rename the organisati
 
 Migration `0016_organisation.sql`:
 
-- `organisation` — exactly one row when registered (`id smallint PRIMARY KEY CHECK (id = 1)`), `name`, `registered_by`, `registered_at`, `updated_by`, `updated_at`.
+- `organisation` — at most one row (`id smallint PRIMARY KEY CHECK (id = 1)`), created when the name is first saved during onboarding: `name`, `registered_by` and `registered_at` (both empty until Finish setup), `updated_by`, `updated_at`.
 - `organisation_logos` — `shape` (`'wide' | 'square'`, primary key), `content bytea`, `mime`, `width`, `height`, `byte_size`, `uploaded_by`, `uploaded_at`.
 - `setup_invitations` — `id`, `user_id`, `email`, `token_hash` (unique), `created_at`, `expires_at`, `accepted_at`, `superseded_at`; a partial unique index allows only one open invitation.
 
