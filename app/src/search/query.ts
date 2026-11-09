@@ -28,7 +28,7 @@ export function parsePhrase(q: unknown): { words: string[]; patterns: string[] }
   if (typeof q !== 'string') throw new BadRequestException(NEEDS_WORD);
   const trimmed = q.trim();
   if (trimmed.length > MAX_LENGTH) throw new BadRequestException(`Search is limited to ${MAX_LENGTH} characters.`);
-  const words = trimmed.normalize('NFC').split(/\s+/).filter((w) => w !== '').slice(0, MAX_WORDS);
+  const words = trimmed.normalize('NFC').split(/\s+/).filter((w) => [...w].length >= 2).slice(0, MAX_WORDS);
   if (!words.some((w) => [...w].length >= MIN_WORD)) throw new BadRequestException(NEEDS_WORD);
   const patterns = words.map((w) => `%${w.replace(ESCAPED, (c) => BS + c)}%`);
   return { words, patterns };

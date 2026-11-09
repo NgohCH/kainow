@@ -32,8 +32,10 @@ test('parsePhrase keeps the first eight words', () => {
 });
 
 test('parsePhrase normalises to NFC', () => {
-  const r = parsePhrase('café plan');
-  assert.equal(r.words[0], 'café');
+  const decomposed = 'cafe' + String.fromCharCode(0x301) + ' plan';
+  const composed = 'caf' + String.fromCharCode(0xe9);
+  assert.notEqual(decomposed.split(' ')[0], composed);
+  assert.equal(parsePhrase(decomposed).words[0], composed);
 });
 
 test('parseKinds', () => {
@@ -66,4 +68,11 @@ test('hrefFor', () => {
   assert.equal(hrefFor({ ...base, kind: 'ai_proposal', runId: 'R' }), '#/runs/R');
   assert.equal(hrefFor({ ...base, kind: 'human_proposal' }), '#/projects/P/notes/I');
   for (const k of ['task', 'decision', 'question', 'risk'] as const) assert.equal(hrefFor({ ...base, kind: k }), '#/projects/P/work/I');
+});
+
+test('parsePhrase drops one-character words before keeping eight', () => {
+  assert.deepEqual(parsePhrase('a vendor').words, ['vendor']);
+  assert.deepEqual(parsePhrase('a vendor').patterns, ['%vendor%']);
+  const r = parsePhrase('a b c d e f g h vendor');
+  assert.deepEqual(r.words, ['vendor']);
 });
