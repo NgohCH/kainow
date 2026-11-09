@@ -11,6 +11,7 @@ import type { ExtractionQueue } from './extraction/queue';
 import { NotesModule } from './notes/notes.module';
 import { OrganisationModule } from './organisation/organisation.module';
 import { ProjectsModule } from './projects/projects.module';
+import { SearchModule } from './search/search.module';
 import { SpendModule } from './spend/spend.module';
 
 @Global()
@@ -49,6 +50,7 @@ export class AppModule {
         NotesModule,
         ExtractionModule.register(options.extractionQueue),
         ChangesModule,
+        SearchModule,
       ],
       controllers: [HealthController],
     };
