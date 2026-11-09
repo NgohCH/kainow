@@ -5,6 +5,7 @@ import { ClockModule } from './common/clock.module';
 import { APP_CONFIG, type AppConfig } from './config';
 import { DatabaseModule } from './db/database.module';
 import { HealthController } from './health/health.controller';
+import { ChangesModule } from './changes/changes.module';
 import { ExtractionModule } from './extraction/extraction.module';
 import type { ExtractionQueue } from './extraction/queue';
 import { NotesModule } from './notes/notes.module';
@@ -47,6 +48,7 @@ export class AppModule {
         ProjectsModule,
         NotesModule,
         ExtractionModule.register(options.extractionQueue),
+        ChangesModule,
       ],
       controllers: [HealthController],
     };
