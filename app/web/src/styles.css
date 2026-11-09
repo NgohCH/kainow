@@ -142,7 +142,7 @@ button.reject:not(:disabled):hover { background: var(--rust-wash); }
 }
 
 /* Admin screens */
-.mainnav { display: flex; gap: 1rem; }
+.mainnav { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; }
 .mainnav a { text-decoration: none; padding: 0.25rem 0; border-bottom: 3px solid transparent; }
 .mainnav a[aria-current='page'] { border-bottom-color: var(--teal); font-weight: 600; }
 .people > li { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.75rem 0.25rem; }
