@@ -15,6 +15,10 @@ export class LogCodeSender implements CodeSender {
   async sendHoldAlert(email: string, projectName: string, link: string): Promise<void> {
     console.log(`[hold alert, development only] ${email}: "${projectName}" ${link}`);
   }
+
+  async sendSetupInvitation(email: string, link: string, expiresAt: Date): Promise<void> {
+    console.log(`[setup invitation, development only] ${email}: until ${expiresAt.toISOString()}: ${link}`);
+  }
 }
 
 /** Sends the code by email. This is the only email the MVP sends; other email is deferred. */
@@ -63,6 +67,18 @@ export class SmtpCodeSender implements CodeSender {
 ` +
         `Open the project's People tab to record a finding and restore or remove the membership:
 ${link}`,
+    });
+  }
+
+  async sendSetupInvitation(email: string, link: string, expiresAt: Date): Promise<void> {
+    await this.transport.sendMail({
+      from: this.from,
+      to: email,
+      subject: 'Set up Kainow',
+      text:
+        `You have been asked to set up Kainow as its first Enterprise Administrator.\n\n` +
+        `Open this link and sign in with the code Kainow emails you; you will then set up your organisation:\n${link}\n\n` +
+        `The link works once and expires on ${expiresAt.toISOString().slice(0, 16).replace('T', ' ')} UTC.`,
     });
   }
 }
