@@ -75,3 +75,11 @@ test('a due date is past only when before today in Malaysia', () => {
   assert.equal(isPastDay('2026-11-10', now), false);
   assert.equal(isPastDay('', now), false);
 });
+
+test('the closing summary says how many items still need a disposition', async () => {
+  const { closureSummary } = await import('./changes.ts');
+  assert.equal(closureSummary({ ready: true, missing: [] }), 'Ready to close.');
+  assert.equal(closureSummary({ ready: false, missing: [{ kind: 'task', id: 'a', why: 'x' }] }), '1 item still needs a disposition.');
+  const three = [1, 2, 3].map((n) => ({ kind: 'task', id: String(n), why: 'x' }));
+  assert.equal(closureSummary({ ready: false, missing: three }), '3 items still need a disposition.');
+});

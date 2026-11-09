@@ -5,6 +5,7 @@ import { Invitation } from './views/Invitation.tsx';
 import { Letterhead, LogoImage } from './views/Letterhead.tsx';
 import { NoteDetail } from './views/NoteDetail.tsx';
 import { BeingSetUp, Onboarding } from './views/Onboarding.tsx';
+import { ApprovalSettings } from './views/ApprovalSettings.tsx';
 import { Departments, Domains } from './views/Organisation.tsx';
 import { OrganisationScreen } from './views/OrganisationProfile.tsx';
 import { Setup } from './views/Setup.tsx';
@@ -233,8 +234,8 @@ export function App() {
   }
   const note = /^#\/notes\/([0-9a-f-]{36})(?:\/v\/(\d+))?$/i.exec(hash);
   const run = /^#\/runs\/([0-9a-f-]{36})$/i.exec(hash);
-  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work))?$/i.exec(hash);
-  const adminPage = /^#\/(people|spending|departments|domains|organisation)$/.exec(hash)?.[1];
+  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work|closing|deadline-review))?$/i.exec(hash);
+  const adminPage = /^#\/(people|spending|departments|domains|organisation|approvals)$/.exec(hash)?.[1];
 
   let page;
   if (invitation) page = <Invitation token={invitation[1]} user={user} onSignedIn={setUser} />;
@@ -243,9 +244,10 @@ export function App() {
   else if (isAdmin && adminPage === 'departments') page = <Departments />;
   else if (isAdmin && adminPage === 'domains') page = <Domains />;
   else if (isAdmin && adminPage === 'organisation') page = <OrganisationScreen onBrandingChanged={loadBranding} />;
+  else if (isAdmin && adminPage === 'approvals') page = <ApprovalSettings />;
   else if (run) page = <Review runId={run[1]} meId={user.id} />;
   else if (note) page = <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} />;
-  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | undefined) ?? 'overview'} />;
+  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | 'closing' | 'deadline-review' | undefined) ?? 'overview'} />;
   else page = <Projects isAdmin={isAdmin} />;
 
   return (
@@ -261,6 +263,7 @@ export function App() {
               <a href="#/people" aria-current={adminPage === 'people' ? 'page' : undefined}>Administrators</a>
               <a href="#/departments" aria-current={adminPage === 'departments' ? 'page' : undefined}>Departments</a>
               <a href="#/organisation" aria-current={adminPage === 'organisation' ? 'page' : undefined}>Organisation</a>
+              <a href="#/approvals" aria-current={adminPage === 'approvals' ? 'page' : undefined}>Approvals</a>
               <a href="#/domains" aria-current={adminPage === 'domains' ? 'page' : undefined}>Domains</a>
               <a href="#/spending" aria-current={adminPage === 'spending' ? 'page' : undefined}>AI spending</a>
             </>

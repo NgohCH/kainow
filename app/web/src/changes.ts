@@ -149,3 +149,16 @@ export const todayUtc8 = (now: number = Date.now()): string => new Date(now + 8 
 
 /** A due date before today (UTC+8) is allowed, but the form warns that the task will be overdue at once. */
 export const isPastDay = (day: string, now: number = Date.now()): boolean => day !== '' && day < todayUtc8(now);
+
+export interface Readiness {
+  ready: boolean;
+  missing: Array<{ kind: string; id: string; why: string }>;
+  deliveredAllowed?: boolean;
+}
+
+/** One line on whether Close may go ahead. */
+export function closureSummary(readiness: Pick<Readiness, 'ready' | 'missing'>): string {
+  const n = readiness.missing.length;
+  if (readiness.ready && n === 0) return 'Ready to close.';
+  return n === 1 ? '1 item still needs a disposition.' : `${n} items still need a disposition.`;
+}

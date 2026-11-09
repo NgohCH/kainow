@@ -285,4 +285,5 @@ export interface Project {
   grants: Grant[];
   archived: boolean;
   archivedAutomatically: boolean;
+  openReviewFlags?: number;
 }
