@@ -1,6 +1,7 @@
 import { Module, type DynamicModule } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
 import { APP_CONFIG, type AppConfig } from '../config';
+import { OrganisationState } from '../organisation/state';
 import { UsersController } from '../users/users.controller';
 import { UsersService } from '../users/users.service';
 import { AuthController } from './auth.controller';
@@ -25,6 +26,7 @@ export class AuthModule {
       providers: [
         AuthService,
         UsersService,
+        OrganisationState,
         { provide: APP_GUARD, useClass: AuthGuard },
         {
           provide: CODE_SENDER,
@@ -32,7 +34,7 @@ export class AuthModule {
           useFactory: (config: AppConfig) => options.codeSender ?? createCodeSender(config.codeDelivery),
         },
       ],
-      exports: [AuthService, UsersService, CODE_SENDER],
+      exports: [AuthService, UsersService, CODE_SENDER, OrganisationState],
     };
   }
 }

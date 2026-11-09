@@ -10,7 +10,8 @@ describe('departments and eligible domains', { skip: SKIP_NO_DB }, () => {
   let member: Client;
 
   beforeEach(async () => {
-    t = await startTestApp();
+    // Before setup, so the last department and domain may still be retired or removed (after setup: onboarding.http.test).
+    t = await startTestApp(undefined, { organisation: false });
     await seedUser(t.pool, 'admin@example.org', 'enterprise_administrator');
     await seedUser(t.pool, 'sam@example.org');
     admin = await t.signIn('admin@example.org');

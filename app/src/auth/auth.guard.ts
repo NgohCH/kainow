@@ -1,7 +1,8 @@
 import { timingSafeEqual } from 'node:crypto';
-import { CanActivate, ExecutionContext, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { CanActivate, ConflictException, ExecutionContext, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { ACCESS_KEY, type Access } from './access';
+import { OrganisationState } from '../organisation/state';
+import { ACCESS_KEY, BEFORE_SETUP_KEY, type Access } from './access';
 import { AuthService } from './auth.service';
 import { readCookie } from './cookies';
 import { can } from './permissions';
@@ -28,12 +29,18 @@ export class AuthGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly auth: AuthService,
+    private readonly organisation: OrganisationState,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
     const access = this.reflector.getAllAndOverride<Access | undefined>(ACCESS_KEY, [context.getHandler(), context.getClass()]);
     if (!access) {
       throw new ForbiddenException();
+    }
+    // Until the organisation is set up, only sign-in, setup and onboarding answer.
+    const beforeSetup = this.reflector.getAllAndOverride<boolean | undefined>(BEFORE_SETUP_KEY, [context.getHandler(), context.getClass()]);
+    if (!beforeSetup && !(await this.organisation.isRegistered())) {
+      throw new ConflictException('Set up the organisation first.');
     }
     if (access.kind === 'public') {
       return true;
