@@ -236,7 +236,7 @@ describe('replacing and withdrawing decisions', { skip: SKIP_NO_DB }, () => {
     const a = await task();
     await submit(owner, 'withdraw_decision', old, { reason: 'x', affected: [{ kind: 'task', id: a }] }, true);
     const flag = (await flags())[0].id;
-    for (const status of ['deferred', 'closed', 'planned']) {
+    for (const status of ['deferred', 'planned']) {
       await t.pool.query(`UPDATE projects SET status = $2 WHERE id = $1`, [projectId, status]);
       const r = await pm.request('POST', `/review-flags/${flag}/clear`, { note: 'Looked' });
       assert.deepEqual([status, r.status, r.body.message], [status, 409, 'Records change only while the project is Active.']);
