@@ -39,7 +39,8 @@ describe('onboarding', { skip: SKIP_NO_DB }, () => {
     assert.equal((await t.anonymous('GET', '/health')).status, 200);
     assert.equal((await t.anonymous('POST', '/auth/request-code', { email: 'admin@example.org' })).status, 202);
     // Unusual requests are refused the same way, and an unknown route is still "not found".
-    assert.equal((await fetch(`${t.base}/projects`, { method: 'HEAD' })).status, 409);
+    assert.equal((await fetch(`${t.base}/projects`, { method: 'HEAD' })).status, 401, 'not signed in: sign in first, nothing about setup');
+    assert.equal((await t.anonymous('GET', '/projects')).status, 401);
     assert.equal((await t.anonymous('GET', '/no-such-route')).status, 404);
   });
 
