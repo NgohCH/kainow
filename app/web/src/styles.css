@@ -213,3 +213,13 @@ details.archived summary { cursor: pointer; font-weight: 600; }
 .answers li { margin-top: 0.25rem; }
 .authorise-form { margin-top: 0.75rem; }
 .subtask-row { border: 1px solid var(--line, #ddd); padding: 0.5rem 0.75rem; }
+
+/* Organisation branding: logos drawn in their place's box, never stretched. */
+.logo { object-fit: contain; display: inline-block; vertical-align: middle; }
+.letterhead { display: inline-flex; align-items: center; gap: 0.5rem; }
+.letterhead .org-name { font-weight: 600; color: var(--ink); }
+.signin .logo-signIn { display: block; margin-bottom: 0.75rem; }
+.signin .org-heading { font-family: var(--serif); font-size: 2rem; margin: 0; }
+.signin .signin-to { color: var(--muted, #52666b); margin: 0.25rem 0 1rem; }
+.logo-upload { border-top: 1px solid var(--rule); padding: 0.75rem 0; }
+.logo-preview { display: block; max-height: 80px; max-width: 240px; object-fit: contain; margin: 0.5rem 0; border: 1px dashed var(--rule); }

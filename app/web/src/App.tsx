@@ -1,8 +1,13 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { ApiError, api, setCsrfToken, type User } from './api.ts';
+import type { Branding } from './branding.ts';
 import { Invitation } from './views/Invitation.tsx';
+import { Letterhead, LogoImage } from './views/Letterhead.tsx';
 import { NoteDetail } from './views/NoteDetail.tsx';
+import { BeingSetUp, Onboarding } from './views/Onboarding.tsx';
 import { Departments, Domains } from './views/Organisation.tsx';
+import { OrganisationScreen } from './views/OrganisationProfile.tsx';
+import { Setup } from './views/Setup.tsx';
 import { People } from './views/People.tsx';
 import { ProjectPage } from './views/ProjectPage.tsx';
 import { Projects } from './views/Projects.tsx';
@@ -45,12 +50,24 @@ function SpendMeter() {
   );
 }
 
-export function SignIn({ onSignedIn, embedded = false }: { onSignedIn: (u: User) => void; embedded?: boolean }) {
+export function SignIn({
+  onSignedIn,
+  embedded = false,
+  branding = null,
+  initialEmail = '',
+  intro,
+}: {
+  onSignedIn: (u: User) => void;
+  embedded?: boolean;
+  branding?: Branding | null;
+  initialEmail?: string;
+  intro?: string;
+}) {
   // Inside another page (the invitation page) the form is a section with a level-two heading, not a second main landmark.
   const Wrapper = embedded ? 'section' : 'main';
   const Heading = embedded ? 'h2' : 'h1';
   const [step, setStep] = useState<'email' | 'code'>('email');
-  const [email, setEmail] = useState('');
+  const [email, setEmail] = useState(initialEmail);
   const [code, setCode] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -86,8 +103,16 @@ export function SignIn({ onSignedIn, embedded = false }: { onSignedIn: (u: User)
 
   return (
     <Wrapper className="signin" aria-label={embedded ? "Sign in" : undefined}>
-      <Heading className="wordmark">Kainow</Heading>
-      <p className="lede">Turn meeting notes into decisions and actions you have checked against the page.</p>
+      {branding && !embedded ? (
+        <>
+          <LogoImage branding={branding} place="signIn" />
+          <Heading className="org-heading">{branding.name}</Heading>
+          <p className="signin-to">Sign in to Kainow</p>
+        </>
+      ) : (
+        <Heading className="wordmark">Kainow</Heading>
+      )}
+      <p className="lede">{intro ?? 'Turn meeting notes into decisions and actions you have checked against the page.'}</p>
       {step === 'email' ? (
         <form onSubmit={requestCode} className="stack">
           <label>
@@ -128,6 +153,26 @@ export function SignIn({ onSignedIn, embedded = false }: { onSignedIn: (u: User)
 export function App() {
   const hash = useHash();
   const [user, setUser] = useState<User | null | undefined>(undefined);
+  const [branding, setBranding] = useState<Branding | null>(null);
+
+  // The organisation's name and logos (Kainow's own until setup is finished). Public, so the sign-in page has them.
+  const loadBranding = useCallback(() => {
+    api.get<Branding>('/organisation/branding').then(setBranding, () => setBranding(null));
+  }, []);
+  useEffect(loadBranding, [loadBranding]);
+
+  // The browser tab shows the square logo (or Kainow's) and the organisation's name.
+  useEffect(() => {
+    if (!branding) return;
+    document.title = branding.name === 'Kainow' ? 'Kainow' : `${branding.name} · Kainow`;
+    let icon = document.querySelector<HTMLLinkElement>('link[rel="icon"]');
+    if (!icon) {
+      icon = document.createElement('link');
+      icon.rel = 'icon';
+      document.head.appendChild(icon);
+    }
+    icon.href = api.url(branding.places.tab.url);
+  }, [branding]);
 
   useEffect(() => {
     api.get<{ user: User; csrfToken: string | null }>('/auth/me').then(
@@ -155,13 +200,41 @@ export function App() {
   if (user === undefined) return <p className="loading">Loading</p>;
   // An invitation link works before sign-in: it shows the invitation and then asks the person to sign in.
   const invitation = /^#\/invitations\/([A-Za-z0-9_-]{20,})$/.exec(hash);
-  if (user === null) return invitation ? <Invitation token={invitation[1]} user={null} onSignedIn={setUser} /> : <SignIn onSignedIn={setUser} />;
+  const setupLink = /^#\/setup\/([A-Za-z0-9_-]{20,})$/.exec(hash);
+  if (user === null) {
+    if (setupLink) return <Setup token={setupLink[1]} branding={branding} onSignedIn={setUser} />;
+    if (invitation) return <Invitation token={invitation[1]} user={null} onSignedIn={setUser} />;
+    return <SignIn onSignedIn={setUser} branding={branding} />;
+  }
 
   const isAdmin = user.role === 'enterprise_administrator';
+  // Until the organisation is set up, an Administrator sees only onboarding and anyone else a short notice.
+  if (branding && !branding.registered) {
+    if (!isAdmin) return <BeingSetUp onSignOut={signOut} />;
+    return (
+      <>
+        <header className="bar">
+          <Letterhead branding={branding} place="header" />
+          <span className="who">
+            {user.displayName}
+            <button className="quiet" onClick={signOut}>Sign out</button>
+          </span>
+        </header>
+        <div id="main">
+          <Onboarding
+            onFinished={() => {
+              loadBranding();
+              go('#/');
+            }}
+          />
+        </div>
+      </>
+    );
+  }
   const note = /^#\/notes\/([0-9a-f-]{36})(?:\/v\/(\d+))?$/i.exec(hash);
   const run = /^#\/runs\/([0-9a-f-]{36})$/i.exec(hash);
   const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work))?$/i.exec(hash);
-  const adminPage = /^#\/(people|spending|departments|domains)$/.exec(hash)?.[1];
+  const adminPage = /^#\/(people|spending|departments|domains|organisation)$/.exec(hash)?.[1];
 
   let page;
   if (invitation) page = <Invitation token={invitation[1]} user={user} onSignedIn={setUser} />;
@@ -169,6 +242,7 @@ export function App() {
   else if (isAdmin && adminPage === 'spending') page = <Spending />;
   else if (isAdmin && adminPage === 'departments') page = <Departments />;
   else if (isAdmin && adminPage === 'domains') page = <Domains />;
+  else if (isAdmin && adminPage === 'organisation') page = <OrganisationScreen onBrandingChanged={loadBranding} />;
   else if (run) page = <Review runId={run[1]} meId={user.id} />;
   else if (note) page = <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} />;
   else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | undefined) ?? 'overview'} />;
@@ -178,6 +252,7 @@ export function App() {
     <>
       <a className="skip" href="#main">Skip to content</a>
       <header className="bar">
+        {branding && <Letterhead branding={branding} place="header" />}
         <a className="wordmark" href="#/">Kainow</a>
         <nav aria-label="Main" className="mainnav">
           <a href="#/" aria-current={!adminPage ? 'page' : undefined}>My Projects</a>
@@ -185,6 +260,7 @@ export function App() {
             <>
               <a href="#/people" aria-current={adminPage === 'people' ? 'page' : undefined}>Administrators</a>
               <a href="#/departments" aria-current={adminPage === 'departments' ? 'page' : undefined}>Departments</a>
+              <a href="#/organisation" aria-current={adminPage === 'organisation' ? 'page' : undefined}>Organisation</a>
               <a href="#/domains" aria-current={adminPage === 'domains' ? 'page' : undefined}>Domains</a>
               <a href="#/spending" aria-current={adminPage === 'spending' ? 'page' : undefined}>AI spending</a>
             </>
