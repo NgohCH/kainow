@@ -5,6 +5,7 @@ import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { type RequestView, ChangesService } from '../changes/changes.service';
 import { AlreadyAuthorised, authoriseProposalHandler } from '../changes/handlers';
+import { decisionHandlers } from '../changes/decision-handlers';
 import { taskHandlers } from '../changes/task-handlers';
 import { PG_POOL } from '../db/database.module';
 import { isCalendarDate, readDue } from '../extraction/due';
@@ -61,6 +62,7 @@ export class RecordsService {
   ) {
     changes.register(authoriseProposalHandler({ records: this, extraction }));
     for (const h of taskHandlers({ records: this })) changes.register(h);
+    for (const h of decisionHandlers()) changes.register(h);
   }
 
   async tx<T>(work: (c: PoolClient) => Promise<T>): Promise<T> {
@@ -610,11 +612,19 @@ export class RecordsService {
     walk(null);
     const decisions = (
       await this.pool.query(
-        `SELECT d.id, d.statement, d.rationale, d.status, u.display_name AS "authorisedBy", d.authorised_at AS "authorisedAt"
-           FROM decisions d JOIN users u ON u.id = d.authorised_by WHERE d.project_id = $1 ORDER BY d.authorised_at, d.id`,
+        `SELECT d.id, d.statement, d.rationale, d.status, u.display_name AS "authorisedBy", d.authorised_at AS "authorisedAt",
+                CASE WHEN o.id IS NULL THEN NULL ELSE json_build_object('id', o.id, 'statement', o.statement) END AS replaces,
+                (SELECT json_build_object('id', n.id, 'statement', n.statement) FROM decisions n WHERE n.replaces_id = d.id ORDER BY n.authorised_at, n.id LIMIT 1) AS "replacedBy",
+                EXISTS (SELECT 1 FROM change_requests r WHERE r.target_kind = 'decision' AND r.target_id = d.id AND r.status = 'pending') AS "changeWaiting"
+           FROM decisions d JOIN users u ON u.id = d.authorised_by LEFT JOIN decisions o ON o.id = d.replaces_id
+          WHERE d.project_id = $1 ORDER BY d.authorised_at, d.id`,
         [ctx.project.id],
       )
-    ).rows;
+    ).rows.map((d) => ({
+      ...d,
+      // Only an Owner or Sponsor changes a decision, and only an Active one while the project is Active.
+      mayAct: d.status === 'active' && ctx.project.status === 'active' && ctx.roles.some((r) => r === 'owner' || r === 'sponsor') ? ['supersede', 'withdraw'] : [],
+    }));
     const questions = (
       await this.pool.query(
         `SELECT q.id, q.text, q.status, json_build_object('id', r.id, 'displayName', r.display_name) AS requester,
@@ -643,6 +653,21 @@ export class RecordsService {
       );
       return { ...k, mayAct };
     });
-    return { tasks: ordered, decisions, questions, risks };
+    const open = (
+      await this.pool.query(
+        `SELECT f.id, f.record_kind AS kind, f.record_id AS "recordId", f.raised_at AS "raisedAt",
+                json_build_object('id', d.id, 'statement', d.statement, 'status', d.status) AS decision
+           FROM review_flags f JOIN decisions d ON d.id = f.decision_id
+          WHERE f.project_id = $1 AND f.cleared_at IS NULL ORDER BY f.raised_at, f.id`,
+        [ctx.project.id],
+      )
+    ).rows;
+    const flagsOf = (kind: string, id: string) => open.filter((f) => f.kind === kind && f.recordId === id).map((f) => ({ id: f.id, decision: f.decision, raisedAt: f.raisedAt }));
+    return {
+      tasks: ordered.map((x) => ({ ...x, reviewFlags: flagsOf('task', x.id) })),
+      decisions,
+      questions: questions.map((x) => ({ ...x, reviewFlags: flagsOf('question', x.id) })),
+      risks: risks.map((x) => ({ ...x, reviewFlags: flagsOf('risk', x.id) })),
+    };
   }
 }

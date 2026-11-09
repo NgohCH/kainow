@@ -3,6 +3,7 @@ import { AnySignedInUser } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
 import { ChangesService } from './changes.service';
+import { FlagsService } from './flags.service';
 import type { TargetKind } from './handlers';
 import type { ChangeKind } from './rules';
 
@@ -16,7 +17,10 @@ const who = (req: HttpRequest): AuthUser => {
 /** Change requests. Access is decided per project inside the service. */
 @Controller()
 export class ChangesController {
-  constructor(private readonly changes: ChangesService) {}
+  constructor(
+    private readonly changes: ChangesService,
+    private readonly flags: FlagsService,
+  ) {}
 
   /** { kind, targetKind, targetId, terms, reason?, batchId?, approve? } — `approve: true` also approves it, for an Owner or Sponsor. */
   @Post('projects/:id/changes')
@@ -43,6 +47,14 @@ export class ChangesController {
   @AnySignedInUser()
   async list(@Param('id') id: string, @Req() req: HttpRequest) {
     return { requests: await this.changes.list(who(req), id) };
+  }
+
+  /** { note } by the Project Manager or a Deputy. */
+  @Post('review-flags/:id/clear')
+  @AnySignedInUser()
+  @HttpCode(200)
+  clearFlag(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest) {
+    return this.flags.clear(who(req), id, body(b).note);
   }
 
   /** { version, terms? } */
