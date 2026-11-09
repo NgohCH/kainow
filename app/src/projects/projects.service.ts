@@ -1,8 +1,10 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
-import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
+import { CLOCK, CODE_SENDER, type AuthUser, type Clock, type CodeSender } from '../auth/tokens';
+import { assertClosureReady, finaliseClosure, openDelegation } from '../changes/closure';
 import { UUID, uuidv7 } from '../common/uuid7';
+import { APP_CONFIG, type AppConfig } from '../config';
 import { PG_POOL } from '../db/database.module';
 import { isCalendarDate } from '../extraction/due';
 import { type ProjectContext, ProjectAccess, managesGrants, managesRoles } from './access.service';
@@ -46,6 +48,8 @@ export class ProjectsService {
     @Inject(CLOCK) private readonly now: Clock,
     private readonly access: ProjectAccess,
     private readonly org: OrganisationService,
+    @Inject(CODE_SENDER) private readonly sender: CodeSender,
+    @Inject(APP_CONFIG) private readonly config: AppConfig,
   ) {}
 
   /** Checks a full or partial set of project details. Missing keys keep `current` values. */
@@ -415,12 +419,16 @@ export class ProjectsService {
     if (outcome !== null && !OUTCOMES.includes(outcome)) throw new BadRequestException('Choose a closure outcome.');
     const reason = optionalText(input.reason);
     const stage = optionalText(input.stage);
+    const objectivesMet = input.objectivesMet === true;
     const at = this.now();
+    let notify: { emails: string[]; name: string } | null = null;
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
       const ctx = await this.access.context(user, id, client, true);
       const from = ctx.project.status;
+      const delegation = to === 'closed' ? await openDelegation(client, id) : null;
+      const delegatedPm = delegation !== null && delegation.pmUserId === user.id && ctx.roles.includes('pm');
       const verdict = checkTransition({
         from,
         to,
@@ -432,11 +440,24 @@ export class ProjectsService {
         missingAccepted: requiredRolesCheck(ctx.rows, ctx.today, 'accepted').missing,
         missingActive: requiredRolesCheck(ctx.rows, ctx.today, 'active').missing,
         separationOk: separationCheck(ctx.rows, ctx.today).ok,
+        delegatedPm,
       });
       if (!verdict.allowed) {
         // "Only …" names who may act: a permission refusal. Everything else is the request or the project's state.
         if (verdict.reason.startsWith('Only ')) throw new ForbiddenException(verdict.reason);
         throw new ConflictException(verdict.reason);
+      }
+      if (to === 'closed') {
+        // Every open item accounted for (spec §6); the dispositions take effect and become final with the transition.
+        await assertClosureReady(client, id, { outcome, objectivesMet });
+        await finaliseClosure(client, id, user.id, at);
+        if (delegatedPm && !ctx.roles.some((r) => r === 'owner' || r === 'sponsor')) {
+          const emails = ctx.rows
+            .filter((m) => (m.role === 'owner' || m.role === 'sponsor') && membershipState(m, ctx.today) === 'active' && m.userId !== user.id)
+            .map((m) => m.email);
+          const name = (await client.query(`SELECT name FROM projects WHERE id = $1`, [id])).rows[0].name as string;
+          notify = { emails: [...new Set(emails)], name };
+        }
       }
       await client.query(`UPDATE projects SET status = $2, closure_outcome = $3 WHERE id = $1`, [id, to, to === 'closed' ? outcome : null]);
       await client.query(
@@ -454,7 +475,7 @@ export class ProjectsService {
         actorUserId: user.id,
         subjectType: 'project',
         subjectId: id,
-        detail: { from, to, ...(to === 'closed' ? { outcome } : {}) },
+        detail: { from, to, ...(to === 'closed' ? { outcome, objectivesMet, ...(delegatedPm ? { delegatedPm } : {}) } : {}) },
       });
       await client.query('COMMIT');
     } catch (err) {
@@ -462,6 +483,12 @@ export class ProjectsService {
       throw err;
     } finally {
       client.release();
+    }
+    if (notify) {
+      const outcomeLabel = { delivered: 'Delivered', partially_delivered: 'Partially Delivered', abandoned: 'Abandoned' }[outcome as ClosureOutcome];
+      for (const email of notify.emails) {
+        await this.sender.sendDelegatedClosureNotice(email, notify.name, outcomeLabel, `${this.config.appUrl}/#/projects/${id}`).catch(() => undefined);
+      }
     }
     return this.detail(user, id);
   }

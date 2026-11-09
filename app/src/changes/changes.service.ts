@@ -70,7 +70,10 @@ export interface RequestView {
   batchId: string | null;
 }
 
-type Deliver = () => Promise<boolean>;
+export type Deliver = () => Promise<boolean>;
+
+/** A project's closure batch is identified by the project's own id (one batch per project). */
+export const isClosureBatch = (batchId: string | null | undefined, projectId: string) => !!batchId && batchId === projectId;
 
 /** Text in a body field, trimmed; '' when absent. */
 const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
@@ -172,7 +175,7 @@ export class ChangesService {
   private static blocked(ctx: ProjectContext, request: RequestRow): string | null {
     if (request.status !== 'pending') return null;
     if (ctx.missingAccountability) return MISSING_ACCOUNTABILITY;
-    if (!kindAllowedIn(request.kind, ctx.project.status, 'approve')) {
+    if (!kindAllowedIn(request.kind, ctx.project.status, 'approve', { closureBatch: isClosureBatch(request.batchId, request.projectId) })) {
       return `This change cannot be approved while the project is ${STATUS_LABEL[ctx.project.status]}.`;
     }
     const eligible = eligibleApprovers(ctx).length;
@@ -208,41 +211,54 @@ export class ChangesService {
     input: { kind: ChangeKind; targetKind: TargetKind; targetId: string; terms: Record<string, unknown>; batchId?: string | null; reason?: string | null },
     opts: { approveNow?: boolean } = {},
   ): Promise<{ request: RequestView; applied?: AppliedResult }> {
+    return this.withDelivery((c, later) => this.submitWithin(c, user, projectId, input, opts, later));
+  }
+
+  /**
+   * submit() inside the caller's transaction (closure prepares a disposition and its cancellation together). Any
+   * email the applied change prepares is handed to `later`, to be delivered after the caller commits.
+   */
+  async submitWithin(
+    c: PoolClient,
+    user: AuthUser,
+    projectId: string,
+    input: { kind: ChangeKind; targetKind: TargetKind; targetId: string; terms: Record<string, unknown>; batchId?: string | null; reason?: string | null },
+    opts: { approveNow?: boolean },
+    later: (d: Deliver) => void,
+  ): Promise<{ request: RequestView; applied?: AppliedResult }> {
     if (!KINDS.includes(input.kind)) throw new BadRequestException('Choose a kind of change.');
     if (!TARGET_KINDS.includes(input.targetKind)) throw new BadRequestException('Choose what the change is for.');
     const handler = this.handler(input.kind);
     if (!handler || !(handler.targetKinds ?? [handler.targetKind]).includes(input.targetKind)) throw new BadRequestException('This kind of change cannot be proposed here.');
     const terms = objectOf(input.terms) ?? {};
     const at = this.now();
-    return this.withDelivery(async (c, later) => {
-      const ctx = await this.actor(c, user, projectId);
-      const target = await this.lockTarget(c, input.targetKind, input.targetId, projectId);
-      const refusal = handler.mayPropose(ctx, target, user);
-      if (refusal) ChangesService.refuse(refusal);
-      if (!kindAllowedIn(input.kind, ctx.project.status, 'submit', { closureBatch: !!input.batchId })) {
-        throw new ConflictException(`This change cannot be proposed while the project is ${STATUS_LABEL[ctx.project.status]}.`);
-      }
-      const approving = !!opts.approveNow && eligibleApprovers(ctx).includes(user.id);
-      if (approving && ctx.missingAccountability) throw new ConflictException(MISSING_ACCOUNTABILITY);
-      const open = await c.query(`SELECT 1 FROM change_requests WHERE target_kind = $1 AND target_id = $2 AND status = 'pending'`, [input.targetKind, target.id]);
-      if (open.rowCount) throw new ConflictException(`This ${NOUN[input.targetKind]} already has a change waiting for authorisation.`);
-      const normalised = await handler.validate(c, ctx, target, terms, user, at);
-      const required = await this.policy.effectiveFor(c, projectId);
-      const id = uuidv7(at.getTime());
-      await c.query(
-        `INSERT INTO change_requests (id, project_id, kind, target_kind, target_id, batch_id, version, required_approvals, status, submitted_by, submitted_at)
-         VALUES ($1, $2, $3, $4, $5, $6, 1, $7, 'pending', $8, $9)`,
-        [id, projectId, input.kind, input.targetKind, target.id, input.batchId ?? null, required, user.id, at],
-      );
-      await c.query(`INSERT INTO change_request_versions (request_id, version, terms, reason, author_id, at) VALUES ($1, 1, $2, $3, $4, $5)`, [
-        id, JSON.stringify(normalised), text(input.reason) || null, user.id, at,
-      ]);
-      const request = await this.lockRequest(c, id);
-      await this.audit(c, at, 'submitted', user.id, request, { kind: input.kind, targetKind: input.targetKind, targetId: target.id, required });
-      let applied: AppliedResult | undefined;
-      if (approving) applied = await this.recordApproval(c, ctx, request, target, handler, user, at, later);
-      return { request: await this.view(c, ctx, user, await this.lockRequest(c, id)), ...(applied ? { applied } : {}) };
-    });
+    const ctx = await this.actor(c, user, projectId);
+    const target = await this.lockTarget(c, input.targetKind, input.targetId, projectId);
+    const refusal = handler.mayPropose(ctx, target, user);
+    if (refusal) ChangesService.refuse(refusal);
+    if (!kindAllowedIn(input.kind, ctx.project.status, 'submit', { closureBatch: isClosureBatch(input.batchId, projectId) })) {
+      throw new ConflictException(`This change cannot be proposed while the project is ${STATUS_LABEL[ctx.project.status]}.`);
+    }
+    const approving = !!opts.approveNow && eligibleApprovers(ctx).includes(user.id);
+    if (approving && ctx.missingAccountability) throw new ConflictException(MISSING_ACCOUNTABILITY);
+    const open = await c.query(`SELECT 1 FROM change_requests WHERE target_kind = $1 AND target_id = $2 AND status = 'pending'`, [input.targetKind, target.id]);
+    if (open.rowCount) throw new ConflictException(`This ${NOUN[input.targetKind]} already has a change waiting for authorisation.`);
+    const normalised = await handler.validate(c, ctx, target, terms, user, at);
+    const required = await this.policy.effectiveFor(c, projectId);
+    const id = uuidv7(at.getTime());
+    await c.query(
+      `INSERT INTO change_requests (id, project_id, kind, target_kind, target_id, batch_id, version, required_approvals, status, submitted_by, submitted_at)
+       VALUES ($1, $2, $3, $4, $5, $6, 1, $7, 'pending', $8, $9)`,
+      [id, projectId, input.kind, input.targetKind, target.id, input.batchId ?? null, required, user.id, at],
+    );
+    await c.query(`INSERT INTO change_request_versions (request_id, version, terms, reason, author_id, at) VALUES ($1, 1, $2, $3, $4, $5)`, [
+      id, JSON.stringify(normalised), text(input.reason) || null, user.id, at,
+    ]);
+    const request = await this.lockRequest(c, id);
+    await this.audit(c, at, 'submitted', user.id, request, { kind: input.kind, targetKind: input.targetKind, targetId: target.id, required });
+    let applied: AppliedResult | undefined;
+    if (approving) applied = await this.recordApproval(c, ctx, request, target, handler, user, at, later);
+    return { request: await this.view(c, ctx, user, await this.lockRequest(c, id)), ...(applied ? { applied } : {}) };
   }
 
   /** Records one approval on the current version and applies the change when it completes the count. */
@@ -332,7 +348,7 @@ export class ChangesService {
       const { ctx, request } = await this.load(c, user, requestId, true);
       if (request.submittedBy !== user.id) throw new ForbiddenException('Only the person who proposed this change can revise it.');
       if (request.status !== 'pending') throw new ConflictException(NOT_PENDING);
-      if (!kindAllowedIn(request.kind, ctx.project.status, 'submit', { closureBatch: !!request.batchId })) {
+      if (!kindAllowedIn(request.kind, ctx.project.status, 'submit', { closureBatch: isClosureBatch(request.batchId, request.projectId) })) {
         throw new ConflictException(`This change cannot be proposed while the project is ${STATUS_LABEL[ctx.project.status]}.`);
       }
       const handler = this.handler(request.kind);

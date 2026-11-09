@@ -13,6 +13,8 @@ export interface CodeSender {
   sendHoldAlert(email: string, projectName: string, link: string): Promise<void>;
   /** The one-time link that makes the first Enterprise Administrator. */
   sendSetupInvitation(email: string, link: string, expiresAt: Date): Promise<void>;
+  /** The Project Manager closed the project under delegation; sent to each Owner and Sponsor. */
+  sendDelegatedClosureNotice(email: string, projectName: string, outcome: string, link: string): Promise<void>;
 }
 
 export interface AuthUser {
