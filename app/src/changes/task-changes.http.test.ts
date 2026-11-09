@@ -73,6 +73,17 @@ describe('amending and cancelling tasks', { skip: SKIP_NO_DB }, () => {
     assert.equal(amended.note, 'Waiting on a supplier');
   });
 
+  test('the closure batch cannot be named from outside closing', async () => {
+    const id = await task();
+    await t.pool.query(`UPDATE projects SET status = 'deferred' WHERE id = $1`, [projectId]);
+    const r = await owner.request('POST', `/projects/${projectId}/changes`, {
+      kind: 'cancel_task', targetKind: 'task', targetId: id, terms: { reason: 'Not needed', subtasks: {} }, batchId: projectId,
+    });
+    assert.deepEqual([r.status, r.body.message], [400, 'A cancellation for closing is prepared on the Closing screen.']);
+    assert.equal((await t.pool.query(`SELECT count(*)::int AS n FROM change_requests`)).rows[0].n, 0);
+    assert.equal((await row(id)).status, 'not_started');
+  });
+
   test('a Member who is not the assignee cannot propose', async () => {
     const id = await task();
     const r = await submit(ben, 'amend_task', id, { dueOn: '2026-11-27', reason: 'x' });

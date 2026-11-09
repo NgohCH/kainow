@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Req } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Req } from '@nestjs/common';
 import { AnySignedInUser } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
@@ -7,6 +7,8 @@ import { DeadlineService } from './deadline.service';
 import { FlagsService } from './flags.service';
 import type { TargetKind } from './handlers';
 import type { ChangeKind } from './rules';
+
+export const CLOSURE_BATCH_ONLY = 'A cancellation for closing is prepared on the Closing screen.';
 
 const body = (b: unknown): Record<string, unknown> => (b && typeof b === 'object' ? (b as Record<string, unknown>) : {});
 const who = (req: HttpRequest): AuthUser => {
@@ -30,6 +32,8 @@ export class ChangesController {
   @HttpCode(201)
   submit(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest) {
     const x = body(b);
+    // The closure batch (named by the project's own id) is set only by closing, never by a client.
+    if (x.batchId === id) throw new BadRequestException(CLOSURE_BATCH_ONLY);
     return this.changes.submit(
       who(req),
       id,
