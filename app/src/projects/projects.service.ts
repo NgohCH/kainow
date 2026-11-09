@@ -8,7 +8,7 @@ import { APP_CONFIG, type AppConfig } from '../config';
 import { PG_POOL } from '../db/database.module';
 import { isCalendarDate } from '../extraction/due';
 import { type ProjectContext, ProjectAccess, managesGrants, managesRoles } from './access.service';
-import { archiveState } from './archive';
+import { loadArchiveState } from './archive';
 import { OrganisationService } from './organisation.service';
 import { grantState } from './grants';
 import { type ClosureOutcome, STAGES, checkTransition } from './lifecycle';
@@ -149,7 +149,7 @@ export class ProjectsService {
         access: ctx.roles.length === 0 ? ctx.grantKinds[0] : null,
         missingAccountability: ctx.missingAccountability,
         onHold: managesRoles(ctx) && ctx.onHold,
-        ...(await this.archiveOf(this.pool, id, ctx.project.status, ctx.today)),
+        ...(await loadArchiveState(this.pool, id, ctx.project.status, ctx.today)),
         myOpenTasks: (
           await this.pool.query(
             `SELECT count(*)::int AS n FROM tasks WHERE project_id = $1 AND assignee_id = $2 AND status NOT IN ('completed', 'cancelled')`,
@@ -270,23 +270,8 @@ export class ProjectsService {
       onHold: managesRoles(ctx) && ctx.onHold,
       access: ctx.roles.length === 0 && ctx.grantKinds.length > 0 ? ctx.grantKinds[0] : null,
       grants: await this.grantsFor(ctx),
-      ...(await this.archiveOf(this.pool, id, ctx.project.status, ctx.today)),
+      ...(await loadArchiveState(this.pool, id, ctx.project.status, ctx.today)),
     };
-  }
-
-  /** Archived state, worked out from the latest closing and the archive history (V1.0 Q04). */
-  private async archiveOf(db: Pool | PoolClient, id: string, status: ProjectStatus, today: string) {
-    const closing = (
-      await db.query(`SELECT at FROM project_transitions WHERE project_id = $1 AND to_status = 'closed' ORDER BY at DESC, id DESC LIMIT 1`, [id])
-    ).rows[0];
-    const events = (await db.query(`SELECT kind, at FROM project_archive_events WHERE project_id = $1 ORDER BY at, id`, [id])).rows;
-    const s = archiveState({
-      status,
-      closedAt: closing ? new Date(closing.at).toISOString() : null,
-      events: events.map((e) => ({ kind: e.kind, at: new Date(e.at).toISOString() })),
-      today,
-    });
-    return { archived: s.archived, archivedAutomatically: s.automatic };
   }
 
   async archive(user: AuthUser, id: string, kind: 'archived' | 'unarchived', input: Record<string, unknown>) {
@@ -297,7 +282,7 @@ export class ProjectsService {
       const ctx = await this.access.authorize(user, 'project.archive', id, client, true);
       const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
       if (reason === '') throw new BadRequestException('A reason is required.');
-      const current = await this.archiveOf(client, id, ctx.project.status, ctx.today);
+      const current = await loadArchiveState(client, id, ctx.project.status, ctx.today);
       if (kind === 'archived' && current.archived) throw new ConflictException('This project is already archived.');
       if (kind === 'unarchived' && !current.archived) throw new ConflictException('This project is not archived.');
       await client.query(`INSERT INTO project_archive_events (id, project_id, kind, actor_id, reason, at) VALUES ($1, $2, $3, $4, $5, $6)`, [

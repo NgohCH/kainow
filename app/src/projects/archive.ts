@@ -3,6 +3,7 @@
  * after closing unless unarchived since. Worked out on read. Events and the closing are exact instants
  * (ISO strings); the twelve months count from the closing's UTC+8 day.
  */
+import type { Pool, PoolClient } from 'pg';
 import type { ProjectStatus } from './matrix';
 import { todayUtc8 } from './membership';
 
@@ -35,4 +36,19 @@ export function archiveState(input: {
   const unarchivedAfterDue = latest?.kind === 'unarchived' && todayUtc8(new Date(latest.at)) >= due;
   if (input.today >= due && !unarchivedAfterDue) return { archived: true, automatic: true };
   return { archived: false, automatic: false };
+}
+
+/** Archived state, worked out from the latest closing and the archive history (V1.0 Q04). */
+export async function loadArchiveState(db: Pool | PoolClient, projectId: string, status: ProjectStatus, today: string) {
+  const closing = (
+    await db.query(`SELECT at FROM project_transitions WHERE project_id = $1 AND to_status = 'closed' ORDER BY at DESC, id DESC LIMIT 1`, [projectId])
+  ).rows[0];
+  const events = (await db.query(`SELECT kind, at FROM project_archive_events WHERE project_id = $1 ORDER BY at, id`, [projectId])).rows;
+  const s = archiveState({
+    status,
+    closedAt: closing ? new Date(closing.at).toISOString() : null,
+    events: events.map((e) => ({ kind: e.kind, at: new Date(e.at).toISOString() })),
+    today,
+  });
+  return { archived: s.archived, archivedAutomatically: s.automatic };
 }
