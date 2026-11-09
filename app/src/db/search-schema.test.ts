@@ -157,4 +157,74 @@ describe('search schema', { skip: SKIP_NO_DB }, () => {
     ];
     assert.deepEqual(rows.map((r) => r.indexname as string).sort(), tables.map((t) => `search_${t}_trgm`).sort());
   });
+
+  test('trigram indexes serve a search over the view, also when narrowed by kind and project', async () => {
+    const kinds = ['project', 'note', 'ai_proposal', 'human_proposal', 'task', 'decision', 'question', 'risk', 'person'];
+    const plans = [
+      `SELECT * FROM search_documents WHERE text ILIKE '%wording%'`,
+      `SELECT * FROM search_documents WHERE text ILIKE '%wording%' AND kind = ANY(ARRAY['${kinds.join("','")}'])`,
+      `SELECT * FROM search_documents WHERE text ILIKE '%wording%' AND project_id = ANY(ARRAY['${projectId}']::uuid[])`,
+      `SELECT * FROM search_documents WHERE text ILIKE '%wording%' AND kind = ANY(ARRAY['${kinds.join("','")}']) AND project_id = ANY(ARRAY['${projectId}']::uuid[])`,
+    ];
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('SET LOCAL enable_seqscan = off');
+      for (const sql of plans) {
+        const plan = (await client.query(`EXPLAIN ${sql}`)).rows.map((r) => r['QUERY PLAN'] as string).join('\n');
+        assert.ok(!plan.includes('WindowAgg'), `a window blocks pushing the search down:
+${plan}`);
+        if (sql.includes('project_id')) {
+          // Narrowed to a project, the planner may rightly reach rows through the project's own indexes instead.
+          assert.match(plan, /search_\w+_trgm/, plan);
+          continue;
+        }
+        // The people branch is left out: with a handful of rows the planner may reach users through memberships.
+        for (const table of ['projects', 'source_versions', 'extraction_items', 'extraction_item_edits', 'tasks']) {
+          assert.ok(plan.includes(`search_${table}_trgm`), `${sql} does not use search_${table}_trgm:
+${plan}`);
+        }
+      }
+    } finally {
+      await client.query('ROLLBACK');
+      client.release();
+    }
+  });
+
+  test('rows carry their source, run, dates and match notes', async () => {
+    const q = async (sql: string) => (await pool.query(sql)).rows;
+    const person = await q(`SELECT ends_on::text FROM search_documents WHERE kind = 'person' ORDER BY ends_on`);
+    assert.deepEqual(person, [{ ends_on: null }, { ends_on: null }]);
+    await pool.query(`UPDATE memberships SET expires_on = '2027-01-31' WHERE user_id = $1`, [otherId]);
+    assert.deepEqual(await q(`SELECT ends_on::text FROM search_documents WHERE kind = 'person' AND ends_on IS NOT NULL`), [{ ends_on: '2027-01-31' }]);
+
+    const sourceId = (await pool.query(`SELECT id FROM sources`)).rows[0].id as string;
+    const runId = (await pool.query(`SELECT id FROM extraction_runs`)).rows[0].id as string;
+    const notes = await q(`SELECT source_id, run_id, item_id FROM search_documents WHERE kind = 'note'`);
+    assert.equal(notes.length, 3);
+    assert.ok(notes.every((r) => r.source_id === sourceId && r.run_id === null && r.item_id === sourceId));
+    const ai = await q(`SELECT source_id, run_id, item_id FROM search_documents WHERE kind = 'ai_proposal'`);
+    assert.equal(ai.length, 2);
+    assert.ok(ai.every((r) => r.source_id === sourceId && r.run_id === runId && r.item_id === itemId));
+
+    assert.deepEqual(await q(`SELECT match_note FROM search_documents WHERE kind = 'note' AND version_no IS NULL`), [{ match_note: "Matched the note's title" }]);
+    assert.deepEqual(await q(`SELECT text, ref_title FROM search_documents WHERE match_note = 'Matched an answer'`), [{ text: 'Like this', ref_title: 'What now?' }]);
+  });
+
+  test('the newest of several edits is the one in force', async () => {
+    await pool.query(`INSERT INTO extraction_item_edits (id, item_id, text, edited_by, edited_at) VALUES ($1, $2, 'Third wording', $3, now() + interval '1 minute')`, [uuidv7(), itemId, userId]);
+    const rows = (await pool.query(`SELECT text, is_current, ref_title FROM search_documents WHERE kind = 'ai_proposal' ORDER BY text`)).rows;
+    assert.deepEqual(rows.map((r) => [r.text, r.is_current, r.ref_title]), [
+      ['Edited wording', false, 'Third wording'],
+      ['Original wording\na quote', false, 'Third wording'],
+      ['Third wording', true, 'Third wording'],
+    ]);
+  });
+
+  test('proposals under a note with no project are left out', async () => {
+    await pool.query(`UPDATE sources SET project_id = NULL`);
+    for (const kind of ['note', 'ai_proposal']) {
+      assert.equal((await pool.query(`SELECT count(*)::int AS n FROM search_documents WHERE kind = $1`, [kind])).rows[0].n, 0);
+    }
+  });
 });

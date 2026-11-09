@@ -47,8 +47,8 @@ CREATE VIEW search_documents AS
   UNION ALL
   -- Note text, every version.
   SELECT s.project_id, 'note', s.id, s.id, NULL,
-         v.version_no, max(v.version_no) OVER (PARTITION BY v.source_id)::int,
-         v.version_no = max(v.version_no) OVER (PARTITION BY v.source_id), NULL,
+         v.version_no, (SELECT max(v2.version_no) FROM source_versions v2 WHERE v2.source_id = v.source_id)::int,
+         NOT EXISTS (SELECT 1 FROM source_versions v2 WHERE v2.source_id = v.source_id AND v2.version_no > v.version_no), NULL,
          v.text_content, s.title, NULL,
          v.created_at, NULL
     FROM source_versions v JOIN sources s ON s.id = v.source_id
