@@ -130,7 +130,7 @@ export function Work({ projectId, people, canPropose, canClear }: { projectId: s
       setError(null);
       setNotice(null);
       try {
-        await api.post(`/projects/${projectId}/changes`, { kind, targetKind, targetId, terms });
+        await api.post(`/projects/${projectId}/changes`, { kind, targetKind, targetId, terms, reason: String(terms.reason ?? '') });
         setNotice('Proposed. It now waits for authorisation.');
         load();
         return true;
