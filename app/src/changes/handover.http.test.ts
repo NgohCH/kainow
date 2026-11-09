@@ -118,6 +118,21 @@ describe('handing a risk to another project at closure', { skip: SKIP_NO_DB }, (
     assert.equal(audit, 1);
   });
 
+  test('with a count of 2 the second approver accepting on the same terms completes it', async () => {
+    const admin = await t.signIn('admin@example.org');
+    assert.equal((await admin.request('POST', '/approval-policy', { required: 2, reason: 'Two sets of eyes', pending: 'keep' })).status, 200);
+    assert.equal((await offer()).status, 201);
+    t.clock.advanceSeconds(60);
+    const first = await accept(rOwner, terms());
+    assert.equal(first.status, 200, JSON.stringify(first.body));
+    assert.equal(first.body.request.status, 'pending');
+    t.clock.advanceSeconds(60);
+    const second = await accept(rSponsor, terms());
+    assert.equal(second.status, 200, JSON.stringify(second.body));
+    assert.equal(second.body.request.status, 'authorised', 'the same terms are not a revision, so the first approval stands');
+    assert.equal((await risksOf(rOwner, receiver)).length, 1);
+  });
+
   test('closing waits for the hand-over', async () => {
     assert.equal((await offer()).status, 201);
     const refused = await close(owner);

@@ -91,6 +91,13 @@ export const eligibleApprovers = (ctx: ProjectContext): string[] => [
  * configurable number of distinct approvers in any order, and applied by the approval that completes the count, in
  * that approval's transaction (spec §3).
  */
+/** Terms are equal when they hold the same values, whatever order the keys come in (jsonb returns them in its own order). */
+function sameTerms(a: unknown, b: unknown): boolean {
+  const canonical = (v: unknown): unknown =>
+    Array.isArray(v) ? v.map(canonical) : v && typeof v === 'object' ? Object.fromEntries(Object.entries(v as Record<string, unknown>).sort(([x], [y]) => (x < y ? -1 : 1)).map(([k, x]) => [k, canonical(x)])) : v;
+  return JSON.stringify(canonical(a)) === JSON.stringify(canonical(b));
+}
+
 @Injectable()
 export class ChangesService {
   private readonly registered = new Map<ChangeKind, ChangeHandler>();
@@ -323,7 +330,7 @@ export class ChangesService {
     if (!given) throw new BadRequestException('Write the revised terms.');
     const before = await this.termsOf(c, request.id, request.version);
     const normalised = await handler.validate(c, ctx, target, { ...before, ...given }, user, at);
-    if (JSON.stringify(normalised) === JSON.stringify(before)) return request;
+    if (sameTerms(normalised, before)) return request;
     const reason = (await c.query(`SELECT reason FROM change_request_versions WHERE request_id = $1 AND version = $2`, [request.id, request.version])).rows[0].reason as string | null;
     const next = request.version + 1;
     await c.query(`INSERT INTO change_request_versions (request_id, version, terms, reason, author_id, at) VALUES ($1, $2, $3, $4, $5, $6)`, [
