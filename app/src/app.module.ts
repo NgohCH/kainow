@@ -11,6 +11,7 @@ import { ExtractionModule } from './extraction/extraction.module';
 import type { ExtractionQueue } from './extraction/queue';
 import { NotesModule } from './notes/notes.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { DigestsModule } from './digests/digests.module';
 import { OrganisationModule } from './organisation/organisation.module';
 import { ProjectsModule } from './projects/projects.module';
 import { SearchModule } from './search/search.module';
@@ -56,6 +57,7 @@ export class AppModule {
         ExtractionModule.register(options.extractionQueue),
         ChangesModule,
         NotificationsModule,
+        DigestsModule,
         SearchModule,
       ],
       controllers: [HealthController],

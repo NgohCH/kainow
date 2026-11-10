@@ -3,6 +3,7 @@
 import type { Pool } from 'pg';
 import type { Clock } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
+import { runScheduledDigest } from '../digests/digest';
 import type { EmailNudge } from '../email/nudge';
 import { todayUtc8 } from '../projects/membership';
 import { type Decided, type Outcome, recordTrigger, recordedKeys } from './fire';
@@ -107,9 +108,19 @@ export class Sweep {
         log.warn('The sweep could not finish a project; it is tried again at the next sweep');
       }
     }
+    let digestEmails = 0;
+    for (const project of projects) {
+      try {
+        const eff = await loadEffective(pool, project.id);
+        digestEmails += await runScheduledDigest(pool, project, eff.cal, eff.digest, now, this.deps.appUrl);
+      } catch {
+        log.warn('The sweep could not send a scheduled digest; it is tried again at the next sweep');
+      }
+    }
     try {
-      counts.emails = await mailDue(pool, now, this.deps.appUrl);
+      counts.emails = (await mailDue(pool, now, this.deps.appUrl)) + digestEmails;
     } catch {
+      counts.emails = digestEmails;
       log.warn('The sweep could not queue notice emails; they are tried again at the next sweep');
     }
     if (counts.emails > 0) {
