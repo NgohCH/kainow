@@ -6,12 +6,13 @@ import { uuidv7 } from '../common/uuid7';
 import { runScheduledDigest } from '../digests/digest';
 import type { EmailNudge } from '../email/nudge';
 import { todayUtc8 } from '../projects/membership';
-import { type Decided, type Outcome, recordTrigger, recordedKeys } from './fire';
+import { type Decided, type Outcome, recordTrigger, unrecordedKeys } from './fire';
 import { mailDue } from './mailing';
 import { type PlannedTrigger, type RiskSnap, type TaskSnap, dueNow, planProject } from './planner';
-import { type Holder, applyCover, loadAdmins, loadHolders, loadUnreachable, routeFor } from './recipients';
-import { latestResumption, resumptionTrigger } from './resumption';
-import { loadEffective, loadOrgRow, loadRiskSnaps, loadTaskSnaps } from './settings';
+import { type Holder, applyCover, holdersOf, loadAdmins, routeFor } from './recipients';
+import { resumptionTrigger } from './resumption';
+import { loadOrgRow } from './settings';
+import { type ProjectData, loadSweepData } from './sweep-data';
 import { linkFor, triggerSummary } from './summaries';
 import { unavailableTriggers } from './unavailable';
 
@@ -82,6 +83,17 @@ export function decide(p: PlannedTrigger, ctx: ProjectCtx, obsolete: boolean): D
   };
 }
 
+/** One project's planned work for this run, before the recorded-key check. */
+interface Prepared {
+  ctx: ProjectCtx;
+  fire: PlannedTrigger[];
+  obsolete: PlannedTrigger[];
+  unavailable: Decided[];
+  resumed: Decided | null;
+  /** Every key that may be recorded now (due, obsolete and unavailable). */
+  keys: string[];
+}
+
 export class Sweep {
   constructor(private readonly deps: SweepDeps) {}
 
@@ -101,9 +113,34 @@ export class Sweep {
     const counts: SweepCounts = { triggers: 0, notifications: 0, emails: 0 };
     const projects = (await pool.query(`SELECT id, name FROM projects WHERE status = 'active' ORDER BY id`)).rows as { id: string; name: string }[];
     const admins = projects.length > 0 ? await loadAdmins(pool) : [];
+    // Everything the per-project work reads, loaded together; a failure here is retried at the next sweep.
+    let data = new Map<string, ProjectData>();
+    try {
+      data = await loadSweepData(pool, projects.map((p) => p.id), todayUtc8(now));
+    } catch {
+      log.warn('The sweep could not load the projects; it is tried again at the next sweep');
+    }
+    // Plan every project first, then ask once which of the due keys are not recorded yet, then record.
+    const prepared: Prepared[] = [];
     for (const project of projects) {
       try {
-        await this.sweepProject(project, now, admins, counts);
+        const d = data.get(project.id);
+        if (d) prepared.push(await this.prepareProject(project, d, now, admins));
+      } catch {
+        log.warn('The sweep could not finish a project; it is tried again at the next sweep');
+      }
+    }
+    let fresh = new Set<string>();
+    let keysLoaded = false;
+    try {
+      fresh = await unrecordedKeys(pool, prepared.flatMap((p) => p.keys));
+      keysLoaded = true;
+    } catch {
+      log.warn('The sweep could not check which triggers are recorded; it is tried again at the next sweep');
+    }
+    for (const p of keysLoaded ? prepared : []) {
+      try {
+        await this.recordProject(p, fresh, now, counts);
       } catch {
         log.warn('The sweep could not finish a project; it is tried again at the next sweep');
       }
@@ -111,7 +148,8 @@ export class Sweep {
     let digestEmails = 0;
     for (const project of projects) {
       try {
-        const eff = await loadEffective(pool, project.id);
+        const eff = data.get(project.id)?.effective;
+        if (!eff) continue;
         digestEmails += await runScheduledDigest(pool, project, eff.cal, eff.digest, now, this.deps.appUrl);
       } catch {
         log.warn('The sweep could not send a scheduled digest; it is tried again at the next sweep');
@@ -138,36 +176,38 @@ export class Sweep {
     return counts;
   }
 
-  private async sweepProject(project: { id: string; name: string }, now: Date, admins: string[], counts: SweepCounts): Promise<void> {
+  private async prepareProject(project: { id: string; name: string }, data: ProjectData, now: Date, admins: string[]): Promise<Prepared> {
     const { pool } = this.deps;
     const today = todayUtc8(now);
-    const eff = await loadEffective(pool, project.id);
-    const tasks = await loadTaskSnaps(pool, project.id);
-    const risks = await loadRiskSnaps(pool, project.id);
+    const eff = data.effective;
+    const tasks: TaskSnap[] = data.tasks;
+    const risks = data.risks;
     const { fire, obsolete } = dueNow(planProject({ cal: eff.cal, timings: eff.timings, tasks, risks }), now);
-    const seen = await recordedKeys(pool, [...fire, ...obsolete].map((p) => p.key));
+    const holders = holdersOf(data.memberships.filter((m) => m.userActive), today);
     const ctx: ProjectCtx = {
-      project, now, today,
-      holders: await loadHolders(pool, project.id, today),
-      unreachable: await loadUnreachable(pool, project.id, today),
-      admins,
-      resumedAt: await latestResumption(pool, project.id),
+      project, now, today, holders, unreachable: data.unreachable, admins, resumedAt: data.resumedAt,
       tasks: new Map(tasks.map((t) => [t.id, t])),
       risks: new Map(risks.map((r) => [r.id, r])),
     };
+    const unavailable = await unavailableTriggers(pool, project, {
+      ...ctx,
+      preloaded: { tasks: data.tasks.filter((t) => !t.deadlineReviewRequired), memberships: data.memberships },
+    });
+    const resumed = await resumptionTrigger(pool, project, { ...ctx, latestActive: data.latestActive });
+    const keys = [...fire, ...obsolete].map((p) => p.key).concat(unavailable.map((d) => d.key));
+    return { ctx, fire, obsolete, unavailable, resumed, keys };
+  }
 
+  private async recordProject(p: Prepared, fresh: ReadonlySet<string>, now: Date, counts: SweepCounts): Promise<void> {
+    const { ctx } = p;
     const decided: Decided[] = [
-      ...obsolete.filter((p) => !seen.has(p.key)).map((p) => decide(p, ctx, true)),
-      ...fire.filter((p) => !seen.has(p.key)).map((p) => decide(p, ctx, false)),
+      ...p.obsolete.filter((t) => fresh.has(t.key)).map((t) => decide(t, ctx, true)),
+      ...p.fire.filter((t) => fresh.has(t.key)).map((t) => decide(t, ctx, false)),
+      ...p.unavailable.filter((d) => fresh.has(d.key)),
     ];
-    const unavailable = await unavailableTriggers(pool, project, ctx);
-    const seenUnavailable = await recordedKeys(pool, unavailable.map((d) => d.key));
-    decided.push(...unavailable.filter((d) => !seenUnavailable.has(d.key)));
-    const resumed = await resumptionTrigger(pool, project, ctx);
-    if (resumed) decided.push(resumed);
-
+    if (p.resumed) decided.push(p.resumed);
     for (const d of decided) {
-      const r = await recordTrigger(pool, d, now);
+      const r = await recordTrigger(this.deps.pool, d, now);
       counts.triggers += r.triggers;
       counts.notifications += r.notifications;
     }

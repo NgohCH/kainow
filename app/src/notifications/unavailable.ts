@@ -6,7 +6,7 @@ import type { Decided } from './fire';
 import { type Holder, applyCover, routeFor } from './recipients';
 import { ADMIN_FALLBACK, linkFor, triggerSummary } from './summaries';
 
-interface TaskRow {
+export interface TaskRow {
   id: string;
   title: string;
   assigneeId: string;
@@ -17,7 +17,7 @@ interface TaskRow {
   invExpiresAt: Date | null;
 }
 
-type Membership = MembershipRow & { id: string };
+export type Membership = MembershipRow & { id: string };
 
 /** The cause and its id when the task's assignee is unavailable, else null. */
 export function causeOf(
@@ -50,9 +50,13 @@ export function causeOf(
 export async function unavailableTriggers(
   pool: Pool,
   project: { id: string; name: string },
-  ctx: { now: Date; today: string; holders: Holder[]; admins: string[]; unreachable: ReadonlySet<string> },
+  ctx: {
+    now: Date; today: string; holders: Holder[]; admins: string[]; unreachable: ReadonlySet<string>;
+    /** Already loaded by the sweep (tasks not under deadline review, and every membership); else read here. */
+    preloaded?: { tasks: TaskRow[]; memberships: Membership[] };
+  },
 ): Promise<Decided[]> {
-  const tasks = (
+  const tasks = ctx.preloaded?.tasks ?? (
     await pool.query(
       `SELECT t.id, t.title, t.assignee_id AS "assigneeId", to_char(t.due_on, 'YYYY-MM-DD') AS "dueOn",
               (SELECT count(*)::int FROM task_events e WHERE e.task_id = t.id AND e.kind = 'reopened') AS "reopenCount",
@@ -64,7 +68,7 @@ export async function unavailableTriggers(
     )
   ).rows as TaskRow[];
   if (tasks.length === 0) return [];
-  const memberships = (
+  const memberships = ctx.preloaded?.memberships ?? (
     await pool.query(
       `SELECT id, user_id AS "userId", role, to_char(starts_on, 'YYYY-MM-DD') AS "startsOn", to_char(expires_on, 'YYYY-MM-DD') AS "expiresOn",
               revoked_at AS "revokedAt", held_at AS "heldAt", restored_at AS "restoredAt"

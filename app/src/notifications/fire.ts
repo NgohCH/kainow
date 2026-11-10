@@ -47,6 +47,16 @@ export async function recordedKeys(db: Pool | PoolClient, keys: string[]): Promi
   return new Set(r.rows.map((x: { key: string }) => x.key));
 }
 
+/** Keys among these that are not recorded yet, found with one set-based anti-join however many keys are sent. */
+export async function unrecordedKeys(db: Pool | PoolClient, keys: string[]): Promise<Set<string>> {
+  if (keys.length === 0) return new Set();
+  const r = await db.query(
+    `SELECT k AS key FROM unnest($1::text[]) AS k WHERE NOT EXISTS (SELECT 1 FROM notification_triggers t WHERE t.key = k)`,
+    [keys],
+  );
+  return new Set(r.rows.map((x: { key: string }) => x.key));
+}
+
 /**
  * Inserts the trigger row; only when this call recorded it (no row with the key existed) and the outcome is 'sent'
  * does it write one notification per recipient. email_off is the recipient's choice for the project at this moment.

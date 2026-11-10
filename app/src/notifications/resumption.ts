@@ -23,9 +23,9 @@ export async function latestResumption(pool: Pool, projectId: string): Promise<D
 export async function resumptionTrigger(
   pool: Pool,
   project: { id: string; name: string },
-  ctx: { today: string; holders: Holder[] },
+  ctx: { today: string; holders: Holder[]; latestActive?: { id: string; from: string; at: Date } | null },
 ): Promise<Decided | null> {
-  const latest = (
+  const latest = ctx.latestActive !== undefined ? (ctx.latestActive ?? undefined) : (
     await pool.query(
       `SELECT id, from_status AS "from", at FROM project_transitions
         WHERE project_id = $1 AND to_status = 'active' ORDER BY at DESC, id DESC LIMIT 1`,

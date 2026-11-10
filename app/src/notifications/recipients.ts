@@ -106,7 +106,11 @@ export async function loadHolders(db: Db, projectId: string, today: string): Pro
       ORDER BY m.user_id, m.id`,
     [projectId],
   );
-  const rows = m.rows as MembershipRow[];
+  return holdersOf(m.rows as MembershipRow[], today);
+}
+
+/** Holders from the memberships of one project whose accounts are Active (the roles in force today). */
+export function holdersOf(rows: MembershipRow[], today: string): Holder[] {
   const out: Holder[] = [];
   for (const userId of sorted(rows.map((r) => r.userId))) {
     const roles = effectiveRoles(rows, userId, today);

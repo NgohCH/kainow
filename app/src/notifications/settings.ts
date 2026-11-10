@@ -220,6 +220,48 @@ export async function loadEffective(db: Db, projectId: string | null): Promise<E
   return resolveEffective(org, proj, await loadHolidayDates(db, projectId));
 }
 
+/**
+ * Effective settings for many projects with three queries in all (the same values `loadEffective` gives each one).
+ * The sweep uses this once per run instead of three queries per project.
+ */
+export async function loadEffectiveMany(db: Db, projectIds: string[]): Promise<Map<string, Effective>> {
+  const org = await loadOrgRow(db);
+  const out = new Map<string, Effective>();
+  if (projectIds.length === 0) return out;
+  const projects = new Map<string, ProjectRow>();
+  const { rows: prs } = await db.query(
+    `SELECT project_id AS "projectId", day_counting AS "dayCounting", weekdays, lead_days AS "leadDays", escalation_days AS "escalationDays",
+            digest_enabled AS "digestEnabled", digest_frequency AS "digestFrequency", digest_weekday AS "digestWeekday",
+            to_char(digest_time, 'HH24:MI') AS "digestTime"
+       FROM project_notification_settings WHERE project_id = ANY($1::uuid[])`,
+    [projectIds],
+  );
+  for (const r of prs) {
+    const { projectId, ...row } = r;
+    projects.set(projectId, {
+      ...row,
+      weekdays: row.weekdays ? asc(toNums(row.weekdays)) : null,
+      leadDays: row.leadDays ? desc(toNums(row.leadDays)) : null,
+    });
+  }
+  const orgHolidays = new Set<string>();
+  const projectHolidays = new Map<string, Set<string>>();
+  const { rows: hs } = await db.query(
+    `SELECT project_id AS "projectId", to_char(on_date, 'YYYY-MM-DD') AS d FROM holidays
+      WHERE removed_at IS NULL AND (project_id IS NULL OR project_id = ANY($1::uuid[]))`,
+    [projectIds],
+  );
+  for (const h of hs) {
+    if (h.projectId === null) orgHolidays.add(h.d);
+    else projectHolidays.set(h.projectId, (projectHolidays.get(h.projectId) ?? new Set()).add(h.d));
+  }
+  for (const id of projectIds) {
+    const holidays = new Set([...orgHolidays, ...(projectHolidays.get(id) ?? [])]);
+    out.set(id, resolveEffective(org, projects.get(id) ?? { ...EMPTY_PROJECT }, holidays));
+  }
+  return out;
+}
+
 /** Every open task of the project (open ancestors included: the planner needs them for parent deadlines). */
 export async function loadTaskSnaps(db: Db, projectId: string): Promise<TaskSnap[]> {
   const { rows } = await db.query(

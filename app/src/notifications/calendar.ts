@@ -15,14 +15,30 @@ const MAX_STEPS = 366;
 const DAY_MS = 86_400_000;
 const OFFSET_MS = 8 * 3_600_000; // UTC+8
 
+// The date/instant conversions are memoised: the sweep walks the same few hundred dates many thousands of times.
+// The keys are calendar dates, so the caches stay small however long the process runs.
+const MS_OF = new Map<string, number>();
+const DATE_OF = new Map<number, string>();
+
 const dateMs = (date: string): number => {
+  const known = MS_OF.get(date);
+  if (known !== undefined) return known;
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(date);
   if (!m) throw new Error(`Invalid date: ${date}`);
-  return Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  const ms = Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  if (MS_OF.size < 50_000) MS_OF.set(date, ms);
+  return ms;
 };
-const msDate = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
+const msDate = (ms: number): string => {
+  const known = DATE_OF.get(ms);
+  if (known !== undefined) return known;
+  const date = new Date(ms).toISOString().slice(0, 10);
+  if (DATE_OF.size < 50_000) DATE_OF.set(ms, date);
+  return date;
+};
 const shiftDays = (date: string, n: number): string => msDate(dateMs(date) + n * DAY_MS);
-const isoWeekday = (date: string): number => new Date(dateMs(date)).getUTCDay() || 7;
+/** ISO weekday of a UTC midnight: 1970-01-01 was a Thursday (4). */
+const isoWeekday = (date: string): number => ((((Math.floor(dateMs(date) / DAY_MS) + 3) % 7) + 7) % 7) + 1;
 
 export function isWorkingDay(cal: Calendar, date: string): boolean {
   if (cal.dayCounting === 'calendar') return true;
