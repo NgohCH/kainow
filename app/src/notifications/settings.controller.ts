@@ -36,6 +36,14 @@ export class NotificationSettingsController {
     return this.settings.previewOrganisation(body(b));
   }
 
+  /** { add?: { date }, removeId? } */
+  @Post('notification-settings/holidays/preview')
+  @HttpCode(200)
+  @RequireAction('organisation.manage')
+  previewOrgHoliday(@Body() b: unknown) {
+    return this.settings.previewOrganisationHoliday(body(b));
+  }
+
   @Get('notification-settings/holidays')
   @RequireAction('organisation.manage')
   holidays() {
@@ -77,6 +85,13 @@ export class NotificationSettingsController {
   @AnySignedInUser()
   previewProject(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest) {
     return this.settings.previewProject(who(req), id, body(b));
+  }
+
+  @Post('projects/:id/holidays/preview')
+  @HttpCode(200)
+  @AnySignedInUser()
+  previewProjectHoliday(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest) {
+    return this.settings.previewProjectHoliday(who(req), id, body(b));
   }
 
   @Get('projects/:id/holidays')

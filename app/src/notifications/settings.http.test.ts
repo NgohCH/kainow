@@ -75,7 +75,7 @@ describe('notification settings, holidays and preview', { skip: SKIP_NO_DB }, ()
   test('a member cannot read or change organisation settings', async () => {
     assert.equal((await pm.request('GET', '/notification-settings')).status, 403);
     assert.equal((await pm.request('PUT', '/notification-settings', { changes: { sweepMinutes: 10 }, reason: 'x' })).status, 403);
-    assert.equal((await pm.request('POST', '/notification-settings/holidays', { date: '2026-12-25', name: 'Day' })).status, 403);
+    assert.equal((await pm.request('POST', '/notification-settings/holidays', { date: '2026-12-25', name: 'Day', reason: 'Calendar' })).status, 403);
     assert.equal((await pm.request('POST', '/notification-settings/preview', { changes: { sweepMinutes: 10 } })).status, 403);
   });
 
@@ -158,12 +158,12 @@ describe('notification settings, holidays and preview', { skip: SKIP_NO_DB }, ()
   });
 
   test('holidays are added and removed with a record, never deleted, and duplicates are refused', async () => {
-    const add = await admin.request('POST', '/notification-settings/holidays', { date: '2026-11-18', name: 'Founders Day' });
+    const add = await admin.request('POST', '/notification-settings/holidays', { date: '2026-11-18', name: 'Founders Day', reason: 'Calendar' });
     assert.equal(add.status, 201);
     const id = add.body.holidays[0].id as string;
-    const dupe = await admin.request('POST', '/notification-settings/holidays', { date: '2026-11-18', name: 'Again' });
+    const dupe = await admin.request('POST', '/notification-settings/holidays', { date: '2026-11-18', name: 'Again', reason: 'Calendar' });
     assert.equal(dupe.status, 409);
-    assert.equal((await admin.request('POST', '/notification-settings/holidays', { date: '2026-02-30', name: 'x' })).status, 400);
+    assert.equal((await admin.request('POST', '/notification-settings/holidays', { date: '2026-02-30', name: 'x', reason: 'Calendar' })).status, 400);
     assert.equal((await admin.request('DELETE', `/notification-settings/holidays/${id}`, {})).status, 400);
     const del = await admin.request('DELETE', `/notification-settings/holidays/${id}`, { reason: 'Moved' });
     assert.equal(del.status, 200);
@@ -172,16 +172,16 @@ describe('notification settings, holidays and preview', { skip: SKIP_NO_DB }, ()
     assert.equal(row.removed_by, ids.admin);
     assert.ok(row.removed_at);
     // A removed date can be added again.
-    assert.equal((await admin.request('POST', '/notification-settings/holidays', { date: '2026-11-18', name: 'Back' })).status, 201);
+    assert.equal((await admin.request('POST', '/notification-settings/holidays', { date: '2026-11-18', name: 'Back', reason: 'Calendar' })).status, 201);
     assert.equal((await admin.request('DELETE', `/notification-settings/holidays/${id}`, { reason: 'Twice' })).status, 404);
 
     // Project holidays follow the calendar switch; the organisation's also apply.
-    const refused = await pm.request('POST', `/projects/${projectId}/holidays`, { date: '2026-11-19', name: 'Local' });
+    const refused = await pm.request('POST', `/projects/${projectId}/holidays`, { date: '2026-11-19', name: 'Local', reason: 'Calendar' });
     assert.deepEqual([refused.status, refused.body.message], [403, 'The Administrator has not allowed projects to change this setting.']);
     await allow('Calendar');
-    const p = await pm.request('POST', `/projects/${projectId}/holidays`, { date: '2026-11-19', name: 'Local' });
+    const p = await pm.request('POST', `/projects/${projectId}/holidays`, { date: '2026-11-19', name: 'Local', reason: 'Calendar' });
     assert.equal(p.status, 201);
-    assert.equal((await pm.request('POST', `/projects/${projectId}/holidays`, { date: '2026-11-19', name: 'Local' })).status, 409);
+    assert.equal((await pm.request('POST', `/projects/${projectId}/holidays`, { date: '2026-11-19', name: 'Local', reason: 'Calendar' })).status, 409);
     assert.deepEqual([...(await loadEffective(t.pool, projectId)).cal.holidays].sort(), ['2026-11-18', '2026-11-19']);
     const ownId = p.body.holidays[0].id as string;
     assert.equal((await ann.request('GET', `/projects/${projectId}/holidays`)).status, 200);
@@ -281,5 +281,65 @@ describe('notification settings, holidays and preview', { skip: SKIP_NO_DB }, ()
     await risk('open', null);
     const risks = await loadRiskSnaps(t.pool, projectId);
     assert.deepEqual(risks.map((r) => [r.description, r.status, r.reviewOn]), [['Supplier slips', 'open', '2026-12-01']]);
+  });
+
+  test('holiday changes are recorded in the history with a reason', async () => {
+    assert.equal((await admin.request('POST', '/notification-settings/holidays', { date: '2026-12-25', name: 'Winter Day' })).status, 400);
+    const add = await admin.request('POST', '/notification-settings/holidays', { date: '2026-12-25', name: 'Winter Day', reason: 'Public holiday' });
+    t.clock.advanceSeconds(60);
+    await admin.request('DELETE', `/notification-settings/holidays/${add.body.holidays[0].id}`, { reason: 'Cancelled' });
+    const h = (await admin.request('GET', '/notification-settings')).body.history;
+    assert.deepEqual(h.map((x: { field: string; oldValue: string | null; newValue: string | null; reason: string }) => [x.field, x.oldValue, x.newValue, x.reason]).reverse(), [
+      ['holiday', null, '2026-12-25 Winter Day', 'Public holiday'],
+      ['holiday', '2026-12-25 Winter Day', null, 'Cancelled'],
+    ]);
+    await allow('Calendar');
+    await pm.request('POST', `/projects/${projectId}/holidays`, { date: '2026-12-24', name: 'Eve', reason: 'Local' });
+    const ph = (await pm.request('GET', `/projects/${projectId}/notification-settings`)).body.history;
+    assert.deepEqual([ph.length, ph[0].field, ph[0].newValue, ph[0].reason], [1, 'holiday', '2026-12-24 Eve', 'Local']);
+    const row = (await t.pool.query(`SELECT scope, project_id FROM notification_settings_changes WHERE new_value = '2026-12-24 Eve'`)).rows[0];
+    assert.deepEqual([row.scope, row.project_id], ['project', projectId]);
+  });
+
+  test('a holiday preview moves a reminder to the previous working day', async () => {
+    await seedTask('2026-11-20');
+    // The 1-day reminder is Thu 19 Nov 09:00 UTC+8; making 19 Nov a holiday moves it to Wed 18 Nov.
+    const prev = await admin.request('POST', '/notification-settings/holidays/preview', { add: { date: '2026-11-19' } });
+    assert.equal(prev.status, 200);
+    assert.deepEqual(prev.body.moved.map((m: { from: string; to: string }) => [m.from, m.to]), [['2026-11-11T01:00:00.000Z', '2026-11-10T01:00:00.000Z'], ['2026-11-19T01:00:00.000Z', '2026-11-18T01:00:00.000Z']]);
+    const own = await pm.request('POST', `/projects/${projectId}/holidays/preview`, { add: { date: '2026-11-19' } });
+    assert.deepEqual([own.status, own.body.moved.length], [200, 2]);
+    assert.equal((await ann.request('POST', `/projects/${projectId}/holidays/preview`, { add: { date: '2026-11-19' } })).status, 403);
+    assert.equal((await admin.request('POST', '/notification-settings/holidays/preview', {})).status, 400);
+  });
+
+  test('the Administrator may clear a project override but not set one', async () => {
+    await allow('Timings');
+    await setProj({ leadDays: [5, 1], escalationDays: 6 });
+    await allow('Timings', false);
+    t.clock.advanceSeconds(60);
+    const set = await admin.request('PUT', `/projects/${projectId}/notification-settings`, { changes: { leadDays: [3, 1] }, reason: 'x' });
+    assert.deepEqual([set.status, set.body.message], [403, 'Only a Project Manager, Owner or Sponsor can change the project’s notification settings.']);
+    const clear = await admin.request('PUT', `/projects/${projectId}/notification-settings`, { changes: { leadDays: null, escalationDays: null }, reason: 'Back to central' });
+    assert.equal(clear.status, 200);
+    assert.deepEqual([clear.body.own.leadDays, clear.body.own.escalationDays], [null, null]);
+    assert.deepEqual(clear.body.history.slice(0, 2).map((x: { actor: string; newValue: unknown; reason: string }) => [x.actor, x.newValue, x.reason]), [
+      ['admin', null, 'Back to central'],
+      ['admin', null, 'Back to central'],
+    ]);
+    // A project manager is still refused while the switch is off.
+    assert.equal((await setProj({ leadDays: null })).status, 403);
+  });
+
+  test('a person with no role in the project gets 404, not a validation error', async () => {
+    await seedUser(t.pool, 'outsider@example.org');
+    const out = await t.signIn('outsider@example.org');
+    const path = `/projects/${projectId}/notification-settings`;
+    assert.equal((await out.request('GET', path)).status, 404);
+    assert.equal((await out.request('PUT', path, { changes: { leadDays: [99] } })).status, 404);
+    assert.equal((await out.request('PUT', path, {})).status, 404);
+    assert.equal((await out.request('POST', `${path}/preview`, { changes: { leadDays: [99] } })).status, 404);
+    assert.equal((await out.request('POST', `/projects/${projectId}/holidays/preview`, {})).status, 404);
+    assert.equal((await out.request('POST', `/projects/${projectId}/holidays`, {})).status, 404);
   });
 });

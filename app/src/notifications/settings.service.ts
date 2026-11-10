@@ -23,10 +23,17 @@ const reasonOf = (v: unknown): string => {
   return v.trim();
 };
 
-function holidayInput(b: Record<string, unknown>): { date: string; name: string } {
-  const date = b.date;
-  const ok = typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date) && new Date(`${date}T00:00:00Z`).toISOString().slice(0, 10) === date;
+const NOT_EDITOR = 'Only a Project Manager, Owner or Sponsor can change the project’s notification settings.';
+type Proposal = { org: OrgRow; proj: ProjectRow; holidays?: ReadonlySet<string> };
+
+function holidayDate(date: unknown): string {
+  const ok = typeof date === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(date) && !Number.isNaN(Date.parse(`${date}T00:00:00Z`)) && new Date(`${date}T00:00:00Z`).toISOString().slice(0, 10) === date;
   if (!ok) throw new BadRequestException('Choose the holiday date as YYYY-MM-DD.');
+  return date as string;
+}
+
+function holidayInput(b: Record<string, unknown>): { date: string; name: string } {
+  const date = holidayDate(b.date);
   if (typeof b.name !== 'string' || b.name.trim() === '') throw new BadRequestException('Give the holiday a name.');
   return { date, name: b.name.trim().slice(0, 200) };
 }
@@ -117,13 +124,20 @@ export class NotificationSettingsService {
 
   private async addHoliday(c: Db, projectId: string | null, b: Record<string, unknown>, user: AuthUser, at: Date) {
     const { date, name } = holidayInput(b);
+    const reason = reasonOf(b.reason);
     const dupe = await c.query(
       `SELECT 1 FROM holidays WHERE project_id IS NOT DISTINCT FROM $1 AND on_date = $2::date AND removed_at IS NULL`,
       [projectId, date],
     );
     if (dupe.rowCount) throw new ConflictException('That date is already a holiday.');
     const id = uuidv7(at.getTime());
-    await c.query(`INSERT INTO holidays (id, project_id, on_date, name, added_by, added_at) VALUES ($1, $2, $3::date, $4, $5, $6)`, [id, projectId, date, name, user.id, at]);
+    try {
+      await c.query(`INSERT INTO holidays (id, project_id, on_date, name, added_by, added_at) VALUES ($1, $2, $3::date, $4, $5, $6)`, [id, projectId, date, name, user.id, at]);
+    } catch (err) {
+      if ((err as { code?: string }).code === '23505') throw new ConflictException('That date is already a holiday.');
+      throw err;
+    }
+    await this.log(c, projectId, 'holiday', null, `${date} ${name}`, reason, user.id, at);
     await writeAudit(c, {
       at, action: 'notification_holiday.added', actorUserId: user.id,
       subjectType: projectId ? 'project' : 'organisation', subjectId: projectId ?? undefined, detail: { holidayId: id, date },
@@ -135,10 +149,11 @@ export class NotificationSettingsService {
     if (!UUID.test(id)) throw new NotFoundException();
     const r = await c.query(
       `UPDATE holidays SET removed_by = $3, removed_at = $4
-        WHERE id = $1 AND project_id IS NOT DISTINCT FROM $2 AND removed_at IS NULL RETURNING to_char(on_date, 'YYYY-MM-DD') AS date`,
+        WHERE id = $1 AND project_id IS NOT DISTINCT FROM $2 AND removed_at IS NULL RETURNING to_char(on_date, 'YYYY-MM-DD') AS date, name`,
       [id, projectId, user.id, at],
     );
     if (!r.rows[0]) throw new NotFoundException();
+    await this.log(c, projectId, 'holiday', `${r.rows[0].date} ${r.rows[0].name}`, null, reason, user.id, at);
     await writeAudit(c, {
       at, action: 'notification_holiday.removed', actorUserId: user.id,
       subjectType: projectId ? 'project' : 'organisation', subjectId: projectId ?? undefined, detail: { holidayId: id, date: r.rows[0].date, reason },
@@ -185,7 +200,7 @@ export class NotificationSettingsService {
   /** A project's Project Manager, Owner or Sponsor, when the Administrator allows each group touched. */
   private async editContext(user: AuthUser, projectId: string, c: Db, groups: ('calendar' | 'timings' | 'digest')[]): Promise<ProjectContext> {
     const ctx = await this.access.context(user, projectId, c, true);
-    if (!this.canEditRole(ctx)) throw new ForbiddenException('Only a Project Manager, Owner or Sponsor can change the project’s notification settings.');
+    if (!this.canEditRole(ctx)) throw new ForbiddenException(NOT_EDITOR);
     const org = await loadOrgRow(c, true);
     const allowed = { calendar: org.projectsMayChangeCalendar, timings: org.projectsMayChangeTimings, digest: org.projectsMayChangeDigest };
     if (groups.some((g) => !allowed[g])) throw new ForbiddenException(NOT_ALLOWED);
@@ -215,12 +230,16 @@ export class NotificationSettingsService {
 
   /** { changes: {...}, reason }; null clears an override. */
   async setProject(user: AuthUser, projectId: string, b: Record<string, unknown>): Promise<void> {
+    await this.access.context(user, projectId); // a non-reader gets 404 before anything about the body is said
     const changes = parseProjectChanges(b.changes);
     const reason = reasonOf(b.reason);
     const at = this.now();
     await this.tx(async (c) => {
       const groups = [...new Set((Object.keys(changes) as (keyof ProjectRow)[]).map((k) => GROUP_OF[k]))];
-      await this.editContext(user, projectId, c, groups);
+      // The Administrator may always clear overrides (only null values), without a project role or the switch.
+      const clearing = user.role === 'enterprise_administrator' && Object.values(changes).every((v) => v === null);
+      if (clearing) await this.access.context(user, projectId, c, true);
+      else await this.editContext(user, projectId, c, groups);
       await c.query(
         `INSERT INTO project_notification_settings (project_id, updated_at) VALUES ($1, $2) ON CONFLICT (project_id) DO NOTHING`,
         [projectId, at],
@@ -247,7 +266,10 @@ export class NotificationSettingsService {
   // ---- Preview ----
 
   /** Triggers in the next 30 days that the proposed change would move, add or remove (those already recorded are left out). */
-  private async preview(projectIds: string[], propose: (org: OrgRow, proj: ProjectRow) => { org: OrgRow; proj: ProjectRow }): Promise<Preview> {
+  private async preview(
+    projectIds: string[],
+    propose: (cur: { org: OrgRow; proj: ProjectRow; projectId: string }) => Proposal | Promise<Proposal>,
+  ): Promise<Preview> {
     const now = this.now();
     const from = now.getTime();
     const to = from + 30 * DAY_MS;
@@ -256,17 +278,17 @@ export class NotificationSettingsService {
     const org = await loadOrgRow(this.pool);
     for (const projectId of projectIds) {
       const proj = await loadProjectRow(this.pool, projectId);
-      const next = propose(org, proj);
+      const next = await propose({ org, proj, projectId });
       const holidays = await loadHolidayDates(this.pool, projectId);
       const tasks = await loadTaskSnaps(this.pool, projectId);
       const risks = await loadRiskSnaps(this.pool, projectId);
       const recorded = new Set((await this.pool.query(`SELECT key FROM notification_triggers WHERE project_id = $1`, [projectId])).rows.map((r) => r.key as string));
-      const plan = (o: OrgRow, p: ProjectRow) => {
-        const e = resolveEffective(o, p, holidays);
+      const plan = (o: OrgRow, p: ProjectRow, h: ReadonlySet<string>) => {
+        const e = resolveEffective(o, p, h);
         return planProject({ cal: e.cal, timings: e.timings, tasks, risks });
       };
-      const before = new Map(this.matchKeys(plan(org, proj)).filter(([, t]) => !recorded.has(t.key)));
-      const after = new Map(this.matchKeys(plan(next.org, next.proj)).filter(([, t]) => !recorded.has(t.key)));
+      const before = new Map(this.matchKeys(plan(org, proj, holidays)).filter(([, t]) => !recorded.has(t.key)));
+      const after = new Map(this.matchKeys(plan(next.org, next.proj, next.holidays ?? holidays)).filter(([, t]) => !recorded.has(t.key)));
       const item = (t: PlannedTrigger, f: PlannedTrigger | null, g: PlannedTrigger | null): PreviewItem => ({
         recordKind: t.recordKind, recordId: t.recordId,
         title: String(t.detail.title ?? t.detail.description ?? ''), kind: t.kind,
@@ -301,14 +323,46 @@ export class NotificationSettingsService {
   async previewOrganisation(b: Record<string, unknown>): Promise<Preview> {
     const changes = parseOrgChanges(b.changes);
     const ids = (await this.pool.query(`SELECT id FROM projects WHERE status = 'active' ORDER BY id`)).rows.map((r) => r.id as string);
-    return this.preview(ids, (org, proj) => ({ org: { ...org, ...changes }, proj }));
+    return this.preview(ids, ({ org, proj }) => ({ org: { ...org, ...changes }, proj }));
   }
 
   async previewProject(user: AuthUser, projectId: string, b: Record<string, unknown>): Promise<Preview> {
-    const changes = parseProjectChanges(b.changes);
     const ctx = await this.access.context(user, projectId);
-    if (!this.canEditRole(ctx)) throw new ForbiddenException('Only a Project Manager, Owner or Sponsor can change the project’s notification settings.');
+    if (!this.canEditRole(ctx)) throw new ForbiddenException(NOT_EDITOR);
+    const changes = parseProjectChanges(b.changes);
     if (ctx.project.status !== 'active') return { moved: [], added: [], removed: [] };
-    return this.preview([projectId], (org, proj) => ({ org, proj: applyProject(proj, changes) }));
+    return this.preview([projectId], ({ org, proj }) => ({ org, proj: applyProject(proj, changes) }));
+  }
+
+  /** The holidays that would apply to a project after adding a date and/or removing a current holiday. */
+  private async holidaysAfter(projectId: string, add: string | null, removeId: string | null): Promise<Set<string>> {
+    const { rows } = await this.pool.query(
+      `SELECT id, to_char(on_date, 'YYYY-MM-DD') AS d FROM holidays WHERE removed_at IS NULL AND (project_id IS NULL OR project_id = $1)`,
+      [projectId],
+    );
+    const out = new Set<string>(rows.filter((r) => r.id !== removeId).map((r) => r.d as string));
+    if (add) out.add(add);
+    return out;
+  }
+
+  private holidayProposal(b: Record<string, unknown>): { add: string | null; removeId: string | null } {
+    const add = b.add && typeof b.add === 'object' ? holidayDate((b.add as Record<string, unknown>).date) : null;
+    const removeId = typeof b.removeId === 'string' && UUID.test(b.removeId) ? b.removeId : null;
+    if (!add && !removeId) throw new BadRequestException('Choose a holiday to add or remove.');
+    return { add, removeId };
+  }
+
+  async previewOrganisationHoliday(b: Record<string, unknown>): Promise<Preview> {
+    const { add, removeId } = this.holidayProposal(b);
+    const ids = (await this.pool.query(`SELECT id FROM projects WHERE status = 'active' ORDER BY id`)).rows.map((r) => r.id as string);
+    return this.preview(ids, async ({ org, proj, projectId }) => ({ org, proj, holidays: await this.holidaysAfter(projectId, add, removeId) }));
+  }
+
+  async previewProjectHoliday(user: AuthUser, projectId: string, b: Record<string, unknown>): Promise<Preview> {
+    const ctx = await this.access.context(user, projectId);
+    if (!this.canEditRole(ctx)) throw new ForbiddenException(NOT_EDITOR);
+    const { add, removeId } = this.holidayProposal(b);
+    if (ctx.project.status !== 'active') return { moved: [], added: [], removed: [] };
+    return this.preview([projectId], async ({ org, proj }) => ({ org, proj, holidays: await this.holidaysAfter(projectId, add, removeId) }));
   }
 }
