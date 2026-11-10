@@ -42,12 +42,19 @@ test('a job on the email queue runs the dispatcher once, and a job on the sweep 
   let swept = 0;
   const boss = await setup({ runIfDue: async () => { swept++; return true; } }, { dispatchDue: async () => { dispatched++; return {}; } }, []);
   try {
+    // The once-a-minute ticks are covered by the test above. Remove them here so a tick landing on a minute boundary
+    // cannot add a run, then count only the runs caused by the two jobs this test sends.
+    await boss.unschedule(QUEUES.email, 'tick');
+    await boss.unschedule(QUEUES.sweep, 'tick');
+    await new Promise((r) => setTimeout(r, 500));
+    const dispatchedBefore = dispatched;
+    const sweptBefore = swept;
     await boss.send(QUEUES.email, { nudge: true });
     await boss.send(QUEUES.sweep, {});
-    await until(() => dispatched >= 1 && swept >= 1);
+    await until(() => dispatched - dispatchedBefore >= 1 && swept - sweptBefore >= 1);
     await new Promise((r) => setTimeout(r, 1500));
-    assert.equal(dispatched, 1);
-    assert.equal(swept, 1);
+    assert.equal(dispatched - dispatchedBefore, 1);
+    assert.equal(swept - sweptBefore, 1);
   } finally {
     await boss.stop({ graceful: true, timeout: 5000 });
   }

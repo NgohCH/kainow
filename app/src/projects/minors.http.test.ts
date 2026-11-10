@@ -79,9 +79,9 @@ describe('review minors from sub-project 1', { skip: SKIP_NO_DB }, () => {
   });
 
   test("creating a project rechecks the creator's domain", async () => {
-    await seedUser(t.pool, 'x@other.org');
+    await seedUser(t.pool, 'x@outside.example.net');
     const dept = (await t.pool.query(`SELECT owning_department_id AS d FROM projects WHERE id = $1`, [projectId])).rows[0].d;
-    const x = await t.signIn('x@other.org');
+    const x = await t.signIn('x@outside.example.net');
     const r = await x.request('POST', '/projects', { name: 'New', purpose: 'p', owningDepartmentId: dept });
     assert.equal(r.status, 403);
     assert.equal(r.body.message, 'Your email domain is no longer eligible; ask an Administrator.');

@@ -29,10 +29,10 @@ describe('project invitations', { skip: SKIP_NO_DB }, () => {
   };
 
   test('an invitation goes only to an eligible domain, and its link reaches the invitee', async () => {
-    const bad = await invite({ email: 'someone@gmail.com' });
+    const bad = await invite({ email: 'someone@outside.example.net' });
     assert.equal(bad.status, 400);
     assert.equal(bad.body.message, 'That address is not in an eligible organisation domain.');
-    assert.deepEqual(await t.outbox('someone@gmail.com'), [], 'a refused invitation leaves no outbox row');
+    assert.deepEqual(await t.outbox('someone@outside.example.net'), [], 'a refused invitation leaves no outbox row');
     const made = await invite({ email: 'Lee@EXAMPLE.com' });
     assert.equal(made.status, 201);
     assert.equal(made.body.invitation.email, 'lee@example.com');
