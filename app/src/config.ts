@@ -96,6 +96,10 @@ export function loadEmailConfig(env: NodeJS.ProcessEnv): EmailConfig {
   throw new Error('EMAIL_PROVIDER must be m365, smtp or log');
 }
 
+function appUrlFrom(env: NodeJS.ProcessEnv): string {
+  return (env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
+}
+
 /** Reads configuration from the environment. Secrets come only from here, never from files in the repo. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const database = loadDatabaseConfig(env);
@@ -120,7 +124,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     authSecret,
     // Browsers accept Secure cookies on http://localhost; set COOKIE_SECURE=false only if a browser does not.
     cookieSecure: env.COOKIE_SECURE !== 'false',
-    appUrl: (env.APP_URL || 'http://localhost:3000').replace(/\/+$/, ''),
+    appUrl: appUrlFrom(env),
     email,
   };
 }
@@ -135,8 +139,10 @@ export interface WorkerConfig extends DatabaseConfig {
   /** Absent means AI runs fail with a clear reason and nothing is sent or charged. */
   openAiApiKey: string | null;
   email: EmailConfig;
+  /** Where people open Kainow; used for links in notification emails. */
+  appUrl: string;
 }
 
 export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
-  return { ...loadDatabaseConfig(env), openAiApiKey: env.OPENAI_API_KEY?.trim() || null, email: loadEmailConfig(env) };
+  return { ...loadDatabaseConfig(env), openAiApiKey: env.OPENAI_API_KEY?.trim() || null, email: loadEmailConfig(env), appUrl: appUrlFrom(env) };
 }

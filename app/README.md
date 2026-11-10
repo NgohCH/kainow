@@ -21,11 +21,14 @@ The API refuses to start unless these are set:
 
 | Variable | Meaning |
 | --- | --- |
-| `DATABASE_URL` | PostgreSQL connection string. The worker and `migrate` need only this. |
+| `DATABASE_URL` | PostgreSQL connection string. `migrate` needs only this. |
 | `AUTH_SECRET` | Random value of at least 32 characters, used to hash sign-in codes. Keep it out of the database and the repo. |
 | `SMTP_URL` and `SMTP_FROM` | Sends sign-in codes by email, for example `smtp://user:password@mail.example.org:587` and `Kainow <no-reply@example.org>`. |
 | `LOG_SIGN_IN_CODES=true` | Local development only: prints codes in the server log instead of emailing them. Ignored when `SMTP_URL` is set. |
+| `APP_URL` | Optional. The address people open Kainow at, used for links in emails (default `http://localhost:3000`). The API and the worker both read it. |
 | `COOKIE_SECURE=false` | Optional. The session cookie is Secure by default; turn it off only if a browser refuses it on plain `http://localhost`. |
+
+The worker needs `DATABASE_URL` and a way to deliver email: `EMAIL_PROVIDER` (`smtp`, `m365` or `log`) with `EMAIL_FROM`, plus `SMTP_URL` for `smtp`, or `M365_TENANT_ID`, `M365_CLIENT_ID` and `M365_CLIENT_SECRET` for `m365`. For development only, `LOG_SIGN_IN_CODES=true` prints emails in the log instead. Set `APP_URL` for the worker as well, so the links in notification emails are right. It also reads `OPENAI_API_KEY` for extraction. It runs the notification sweep and the email dispatch once a minute.
 
 ## Tests
 

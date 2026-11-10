@@ -5,6 +5,7 @@ export const QUEUES = {
   ai: 'ai',
   email: 'email',
   document: 'document',
+  sweep: 'sweep',
 } as const;
 
 export const BOSS_SCHEMA = 'pgboss';
@@ -23,7 +24,10 @@ export async function startQueues(
   boss.on('error', (err: Error) => console.error('pg-boss error:', err.message));
   await boss.start();
   for (const name of Object.values(QUEUES)) {
-    await boss.createQueue(name);
+    // One queued and one active job at most: a tick or nudge arriving while a run is queued or active is dropped,
+    // because every run looks at all the work that is due (the sweep and the outbox are the source of truth).
+    if (name === QUEUES.sweep || name === QUEUES.email) await boss.createQueue(name, { policy: 'stately' });
+    else await boss.createQueue(name);
   }
   return boss;
 }

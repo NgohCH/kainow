@@ -125,3 +125,9 @@ test('an unknown EMAIL_PROVIDER is refused without echoing it', () => {
 test('with no email settings and no development logging, the worker refuses to start too', () => {
   assert.throws(() => loadWorkerConfig(noEmail), /No way to deliver/);
 });
+
+test('the worker reads APP_URL with the same default and trimming as the API', () => {
+  assert.equal(loadWorkerConfig(base).appUrl, 'http://localhost:3000');
+  assert.equal(loadWorkerConfig({ ...base, APP_URL: 'https://kainow.example.org//' }).appUrl, 'https://kainow.example.org');
+  assert.equal(loadWorkerConfig({ ...base, APP_URL: 'https://kainow.example.org' }).appUrl, loadConfig({ ...base, APP_URL: 'https://kainow.example.org' }).appUrl);
+});

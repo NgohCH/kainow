@@ -4,7 +4,7 @@ import { QUEUES, startQueues } from './queues';
 import { SKIP_NO_DB, testDatabaseUrl } from '../testing/db';
 
 test('queue names are separate for AI, email and document work', () => {
-  assert.deepEqual(Object.values(QUEUES).sort(), ['ai', 'document', 'email']);
+  assert.deepEqual(Object.values(QUEUES).sort(), ['ai', 'document', 'email', 'sweep']);
 });
 
 test('creates every queue and a job survives a restart of the queue client', { skip: SKIP_NO_DB }, async () => {
