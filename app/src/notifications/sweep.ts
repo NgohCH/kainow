@@ -112,7 +112,13 @@ export class Sweep {
     } catch {
       log.warn('The sweep could not queue notice emails; they are tried again at the next sweep');
     }
-    if (counts.emails > 0) await this.deps.nudge.nudge();
+    if (counts.emails > 0) {
+      try {
+        await this.deps.nudge.nudge();
+      } catch {
+        log.warn('The sweep could not nudge the email worker; the scheduled tick still finds the emails');
+      }
+    }
     const finished = clock();
     await pool.query(
       `INSERT INTO sweep_runs (id, started_at, finished_at, duration_ms, triggers_fired, emails_queued) VALUES ($1, $2, $3, $4, $5, $6)`,

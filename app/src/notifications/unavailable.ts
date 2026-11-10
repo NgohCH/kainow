@@ -58,7 +58,7 @@ export async function unavailableTriggers(
               (SELECT count(*)::int FROM task_events e WHERE e.task_id = t.id AND e.kind = 'reopened') AS "reopenCount",
               t.invitation_id AS "invitationId", i.status AS "invStatus", i.expires_at AS "invExpiresAt"
          FROM tasks t LEFT JOIN invitations i ON i.id = t.invitation_id
-        WHERE t.project_id = $1 AND t.status NOT IN ('completed', 'cancelled')
+        WHERE t.project_id = $1 AND t.status NOT IN ('completed', 'cancelled') AND NOT t.deadline_review_required
         ORDER BY t.id`,
       [project.id],
     )

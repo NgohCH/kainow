@@ -591,23 +591,94 @@ describe('the sweep', { skip: SKIP_NO_DB }, () => {
     await setPref(pm.id, q, 'off');
     await runAt(at(19, 9));
     assert.equal((await mailsTo(q, pm.id)).length, 0);
+    const held = (await notes(q)).find((x) => x.user_id === pm.id);
+    assert.equal(held?.email_off, true, 'marked when the choice is Off at mail time');
+    await setPref(pm.id, q, 'daily_urgent_immediate');
+    await runAt(at(20, 9));
+    assert.equal((await mailsTo(q, pm.id)).length, 0, 'switching back does not catch it up');
   });
 
-  test('away Monday to Wednesday holds everything; Thursday 09:00 carries the catch-up in one email', async () => {
+  test('away Monday to Wednesday holds everything, urgent included; Thursday 09:00 carries the catch-up in one email', async () => {
     const pm = await user('pm');
     const ann = await user('ann');
     const p = await project([{ userId: pm.id, role: 'pm' }, { userId: ann.id, role: 'member' }]);
     await risk(p, { description: 'Supplier may withdraw', responsible: ann.id, reviewOn: '2026-11-16', by: pm.id });
     await task(p, { title: 'Draft the tender', assignee: ann.id, dueOn: '2026-11-19', authorisedAt: at(16, 8) });
+    // Authorised on Tuesday with a date already past: an urgent notice to Ann (and the PM) at Wednesday 09:00.
+    await task(p, { title: 'Book the hall', assignee: ann.id, dueOn: '2026-11-16', authorisedAt: at(17, 10) });
     await away(ann.id, '2026-11-16', '2026-11-18');
     for (const ms of [at(16, 9), at(17, 9), at(18, 9), at(19, 0, 5), at(19, 8, 45)]) await runAt(ms);
-    assert.equal((await mailsTo(p, ann.id)).length, 0);
-    assert.equal((await notes(p)).filter((x) => x.user_id === ann.id).length, 3, 'in-app notices still appear');
-    assert.equal((await mailsTo(p, pm.id)).length, 2, 'the PM is not away');
+    assert.equal((await mailsTo(p, ann.id)).length, 0, 'the urgent notice from an away day waits for the daily email too');
+    const annNotes = (await notes(p)).filter((x) => x.user_id === ann.id);
+    assert.equal(annNotes.length, 4, 'in-app notices still appear');
+    assert.ok(annNotes.some((x) => x.kind === 'past_due_set' && x.urgent));
+    assert.equal((await mailsTo(p, pm.id)).length, 3, 'the PM is not away');
     await runAt(at(19, 9));
     const m = await mailsTo(p, ann.id);
     assert.equal(m.length, 1);
-    assert.equal(m[0].subject, 'Kainow: 3 items need your attention in Harbour Works');
+    assert.equal(m[0].subject, 'Kainow: 4 items need your attention in Harbour Works');
     assert.ok(m[0].text_body.includes("Reminder: 'Draft the tender' is due on Thu 19 Nov"));
+    assert.ok(m[0].text_body.includes("Due date set in the past: 'Book the hall' was due on Mon 16 Nov"));
+    assert.equal(m[0].initiated_by, 'schedule');
+  });
+
+  test('a notice not yet emailed when the project is Deferred is not emailed while paused, nor after resuming', async () => {
+    const pm = await user('pm');
+    const ann = await user('ann');
+    const p = await project([{ userId: pm.id, role: 'pm' }, { userId: ann.id, role: 'member' }], 'deferred');
+    await task(p, { title: 'Book the hall', assignee: ann.id, dueOn: '2026-11-27', reviewRequired: true });
+    // A non-urgent notice fired Friday 14:00 under the default choice: it waits for Monday 09:00.
+    await resume(p, pm.id, at(13, 14));
+    await runAt(at(13, 14, 5));
+    const [first] = await byKind(p, 'resumption');
+    assert.equal((await mails(p)).length, 0);
+    await pool.query(`UPDATE projects SET status = 'deferred' WHERE id = $1`, [p]);
+    await pool.query(
+      `INSERT INTO project_transitions (id, project_id, from_status, to_status, actor_id, at) VALUES ($1, $2, 'active', 'deferred', $3, $4)`,
+      [uuidv7(), p, pm.id, new Date(at(13, 16))],
+    );
+    await runAt(at(16, 9));
+    assert.equal((await mails(p)).length, 0, 'not emailed while the project is Deferred');
+
+    await resume(p, pm.id, at(17, 10));
+    await runAt(at(17, 10, 5));
+    const old = (await notes(p)).filter((x) => x.trigger_id === first.id);
+    assert.equal(old.length, 2);
+    assert.ok(old.every((x) => x.email_off && x.outbox_id === null), 'replaced by the new resumption summary');
+    await runAt(at(18, 9));
+    const m = await mailsTo(p, pm.id);
+    assert.equal(m.length, 1);
+    const second = (await byKind(p, 'resumption')).find((x) => x.id !== first.id);
+    assert.deepEqual(m[0].trigger_ids, [second?.id]);
+    assert.ok((await notes(p)).filter((x) => x.trigger_id === first.id).every((x) => x.outbox_id === null));
+  });
+
+  test('a task under deadline review raises no unavailable-assignee alert', async () => {
+    const pm = await user('pm');
+    const ann = await user('ann');
+    const p = await project([{ userId: pm.id, role: 'pm' }, { userId: ann.id, role: 'member' }]);
+    await task(p, { title: 'Book the hall', assignee: ann.id, dueOn: '2026-11-27', reviewRequired: true });
+    await pool.query(`UPDATE memberships SET held_at = $2, held_by = $3 WHERE project_id = $1 AND user_id = $4`, [p, new Date(at(16, 9)), pm.id, ann.id]);
+    await runAt(at(16, 10));
+    assert.equal((await byKind(p, 'assignee_unavailable')).length, 0);
+  });
+
+  test('a throwing nudge is logged and the run is still recorded', async () => {
+    const pm = await user('pm');
+    const ann = await user('ann');
+    const p = await project([{ userId: pm.id, role: 'pm' }, { userId: ann.id, role: 'member' }]);
+    await task(p, { title: 'Draft the tender', assignee: ann.id, dueOn: '2026-11-16' });
+    t.clock.ms = at(13, 9);
+    const logged: string[] = [];
+    const s = new Sweep({
+      pool, clock: t.clock.now, appUrl: APP_URL,
+      nudge: { nudge: async () => { throw new Error('queue down'); } },
+      log: { warn: (m: string) => { logged.push(m); } },
+    });
+    const c = await s.run();
+    assert.equal(c.emails, 1);
+    assert.equal(logged.length, 1);
+    assert.ok(!logged[0].includes('queue down'));
+    assert.equal((await pool.query(`SELECT count(*)::int AS n FROM sweep_runs`)).rows[0].n, 1);
   });
 });
