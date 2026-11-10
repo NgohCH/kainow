@@ -137,18 +137,56 @@ This holds everything: notes, original files, proposals, decisions, the audit tr
 
 ## Going live
 
-Go live on a new, empty database so nothing from development or testing comes with you.
+Go live on a new, empty database so nothing from development or testing comes with you. Under the provided Compose setup the database address is fixed to the `db` service in `compose.yaml`, so the new database comes from a new Compose project with its own database volume.
 
-1. Create a new, empty PostgreSQL database for this installation and point `DATABASE_URL` in `.env` at it (under the provided Compose setup, use a new Compose project with its own database volume).
-2. Prepare it and invite the first Enterprise Administrator. This applies the migrations, starts notices from now and emails a one-time setup link. It refuses any database that already holds users or projects, and it never deletes anything:
+1. **Stop the old installation**, in this folder, before changing `.env`:
+
+   ```
+   docker compose down
+   ```
+
+   Do not add `-v`. The old database volume is kept until you delete it by hand (`docker volume ls` lists it).
+2. **Name a new Compose project.** Add this line to `.env`:
+
+   ```
+   COMPOSE_PROJECT_NAME=kainow-live
+   ```
+
+   Compose then uses a new, empty database volume, `kainow-live_kainow-db`.
+3. **Build and start the new project:**
+
+   ```
+   docker compose up -d --build
+   ```
+
+4. **Prepare the database and invite the first Enterprise Administrator.** This applies the migrations, starts notices from now and emails a one-time setup link. It refuses any database that already holds users or projects, or tables of another application, and it never deletes anything:
 
    ```
    docker compose run --rm api node dist/golive/golive-init-cli.js you@example.org "Your Name"
    ```
 
    Outside Docker the same command is `npm run golive-init -- you@example.org "Your Name"`.
-3. Development and test databases and old backup dump files are not carried over. Delete them yourself, by hand, outside Kainow.
-4. The first Administrator opens the emailed link and follows the **Go-live checklist**.
+
+   If it says the database is ready but the setup email could not be sent, fix the email settings and send a new link with:
+
+   ```
+   docker compose run --rm api node dist/users/setup-invite-cli.js you@example.org "Your Name"
+   ```
+
+   (Outside Docker: `npm run setup-invite -- you@example.org "Your Name"`.) The setup link expires after 7 days; if it expires before it is used, send a new one the same way.
+5. **Save the approved AI spend settings again**, on the new database, as in step 4 of "Install". Until you do, every AI request is refused:
+
+   ```
+   docker compose run --rm api node dist/spend/apply-mvp-settings-cli.js
+   ```
+
+6. From now on every `docker compose` command in this folder, the backup commands included, acts on the new `kainow-live` project, because `.env` names it. Removing the line from `.env` would point them back at the old installation.
+7. Development and test databases and old backup dump files are not carried over. Delete them yourself, by hand, outside Kainow.
+8. The first Administrator opens the emailed link and follows the **Go-live checklist**.
+
+## Recovery custodian
+
+Agree who the recovery custodian is and record how to reach them. Kainow's recovery procedure is still being written; check it is in place before go-live.
 
 ## What this does and does not protect
 
@@ -185,6 +223,8 @@ Kainow can send all its email, sign-in codes and reminders, as one mailbox in yo
    ```
 
    Then `docker compose up -d`. If one is missing, Kainow refuses to start and names the missing variable (never its value). Remove `LOG_SIGN_IN_CODES` so codes are emailed, not logged.
+
+**Auto-reply.** Set an automatic reply on the sender mailbox saying that it is not monitored, so people who answer a Kainow email know no one will read it.
 
 If Microsoft rejects the sender's credentials, Kainow does not retry that email and shows the reason in the delivery history; check the secret has not expired and that steps 2 and 3 are done. The client secret is never written to the database, the logs or any screen.
 
