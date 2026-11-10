@@ -119,6 +119,42 @@ describe('notifications, email preferences and away periods', { skip: SKIP_NO_DB
     assert.ok(!JSON.stringify(gone).includes('Lighthouse'));
   });
 
+  test("the Administrator's minimal fallback shows its summary and project name without a project role; other notices stay hidden", async () => {
+    const adminId = await seedUser(t.pool, 'admin@example.org', 'enterprise_administrator');
+    const trig = async (minimal: boolean) => {
+      const id = uuidv7();
+      await t.pool.query(
+        `INSERT INTO notification_triggers (id, key, kind, project_id, record_kind, record_id, fire_at, decided_at, outcome, recipients, detail)
+         VALUES ($1, $2, 'assignee_unavailable', $3, 'task', $4, '2026-11-08T01:00:00Z', '2026-11-08T01:00:00Z', 'sent', $5, $6)`,
+        [id, `task:${uuidv7()}:assignee_unavailable:x:${id}`, projectId, uuidv7(), [adminId], minimal ? { minimal: true } : { title: 'Secret title' }],
+      );
+      return id;
+    };
+    const add = async (triggerId: string, summary: string, link: string | null, createdAt: string) =>
+      t.pool.query(
+        `INSERT INTO notifications (id, user_id, trigger_id, project_id, kind, urgent, summary, link, created_at)
+         VALUES ($1, $2, $3, $4, 'assignee_unavailable', true, $5, $6, $7)`,
+        [uuidv7(), adminId, triggerId, projectId, summary, link, createdAt],
+      );
+    await add(await trig(true), 'A task in Harbour Works needs reassignment.', null, '2026-11-08T02:00:00Z');
+    await add(await trig(false), "'Secret title' needs a new assignee", '#/projects/x', '2026-11-08T01:00:00Z');
+    const admin = await t.signIn('admin@example.org');
+    const r = await admin.request('GET', '/notifications');
+    assert.equal(r.status, 200);
+    const [minimal, other] = r.body.items;
+    assert.deepEqual(
+      [minimal.noAccess, minimal.projectName, minimal.summary, minimal.link],
+      [false, 'Harbour Works', 'A task in Harbour Works needs reassignment.', null],
+    );
+    assert.deepEqual([other.noAccess, other.summary, other.link, other.projectName], [true, null, null, null]);
+    assert.ok(!JSON.stringify(r.body).includes('Secret title'));
+    // A minimal notice reaching a person who is no longer an Administrator shows nothing.
+    await t.pool.query(`UPDATE users SET role = 'member' WHERE id = $1`, [adminId]);
+    const after = await (await t.signIn('admin@example.org')).request('GET', '/notifications');
+    assert.equal(after.body.items[0].noAccess, true);
+    assert.equal(after.body.items[0].summary, null);
+  });
+
   test('preferences default, can be set and read back, and are refused without a role', async () => {
     const g = await ann.request('GET', '/email-preferences');
     assert.equal(g.status, 200);

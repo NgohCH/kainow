@@ -57,8 +57,9 @@ export function decide(p: PlannedTrigger, ctx: ProjectCtx, obsolete: boolean): D
     summary: '', link: null,
   };
   const skipped = (outcome: Outcome): Decided => ({ ...base, outcome, recipients: [], detail: { ...p.detail } });
-  if (obsolete) return skipped('skipped_obsolete');
+  // A time that fell while the project was paused is recorded as paused (spec §4.7), even when it is also obsolete.
   if (ctx.resumedAt && p.fireAt.getTime() < ctx.resumedAt.getTime()) return skipped('skipped_paused');
+  if (obsolete) return skipped('skipped_obsolete');
 
   const assigneeId = p.recordKind === 'task' ? (ctx.tasks.get(p.recordId)?.assigneeId ?? null) : null;
   const responsibleId = p.recordKind === 'risk' ? (ctx.risks.get(p.recordId)?.responsibleId ?? null) : null;

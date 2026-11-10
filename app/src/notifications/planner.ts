@@ -112,7 +112,8 @@ export function planProject(input: {
 
 /**
  * Triggers whose time has come. A reminder is obsolete once its task's deadline has passed,
- * or when a later reminder of the same task is also due. Triggers not yet due appear in neither list.
+ * or when a later reminder of the same task is also due. A risk's "review due" is obsolete when its "review missed"
+ * for the same review date is also due. Triggers not yet due appear in neither list.
  */
 export function dueNow(
   planned: PlannedTrigger[], now: Date,
@@ -124,9 +125,15 @@ export function dueNow(
     const cur = latest.get(p.recordId);
     if (!cur || p.fireAt.getTime() > cur.fireAt.getTime()) latest.set(p.recordId, p);
   }
+  // A review that is already missed is not also announced as due (catch-up after downtime).
+  const missed = new Set(due.filter((p) => p.kind === 'risk_review_missed').map((p) => `${p.recordId}:${String(p.detail.reviewOn)}`));
   const fire: PlannedTrigger[] = [];
   const obsolete: PlannedTrigger[] = [];
   for (const p of due) {
+    if (p.kind === 'risk_review_due') {
+      (missed.has(`${p.recordId}:${String(p.detail.reviewOn)}`) ? obsolete : fire).push(p);
+      continue;
+    }
     if (p.kind !== 'reminder') { fire.push(p); continue; }
     const passed = deadlineOf(String(p.detail.dueOn)).getTime() <= now.getTime();
     if (passed || latest.get(p.recordId) !== p) obsolete.push(p);

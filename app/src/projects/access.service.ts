@@ -36,6 +36,12 @@ export interface ProjectContext {
   viewerId: string;
 }
 
+/**
+ * Whether the person can read the project's content now: an Active role or a grant giving access (the rule search
+ * uses). The Administrator role alone does not count: it admits project details, never content.
+ */
+export const canReadContent = (ctx: ProjectContext | null): ctx is ProjectContext => !!ctx && (ctx.roles.length > 0 || ctx.grantKinds.length > 0);
+
 /** The Administrator, the Owner and Sponsors record, decide and manage Audit/Oversight grants. */
 export function managesGrants(ctx: ProjectContext): boolean {
   return ctx.isAdmin || ctx.roles.some((r) => r === 'owner' || r === 'sponsor');

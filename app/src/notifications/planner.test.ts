@@ -120,3 +120,19 @@ test('dueNow keeps only the latest reminder when 7-day and 1-day are both due, a
   const esc = dueNow(p, at('2026-11-27T01:00:00Z'));
   assert.deepEqual(esc.fire.map((x) => x.kind), ['overdue']);
 });
+
+test('dueNow: when review due and review missed for the same date are both due, only "missed" fires', () => {
+  const p = plan([], [risk(), risk({ id: 'r2', reviewOn: '2026-11-30' })]);
+  // On time, "due" fires alone.
+  const onTime = dueNow(p, at('2026-11-25T02:00:00Z'));
+  assert.deepEqual(onTime.fire.map((x) => x.key), ['risk:r1:review_due:2026-11-25']);
+  assert.deepEqual(onTime.obsolete, []);
+  // Catch-up after both times passed: r1's "due" is obsolete; r2 is not yet due at all.
+  const late = dueNow(p, at('2026-11-26T02:00:00Z'));
+  assert.deepEqual(late.fire.map((x) => x.key), ['risk:r1:review_missed:2026-11-25']);
+  assert.deepEqual(late.obsolete.map((x) => x.key), ['risk:r1:review_due:2026-11-25']);
+  // A "missed" for another review date does not make this date's "due" obsolete.
+  const other = plan([], [risk({ reviewOn: '2026-11-30' })]).filter((x) => x.kind === 'risk_review_due');
+  const mixed = dueNow([...other, ...p.filter((x) => x.key === 'risk:r1:review_missed:2026-11-25')], at('2026-11-30T02:00:00Z'));
+  assert.deepEqual(mixed.fire.map((x) => x.key).sort(), ['risk:r1:review_due:2026-11-30', 'risk:r1:review_missed:2026-11-25']);
+});

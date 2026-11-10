@@ -278,6 +278,11 @@ describe('the sweep', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(r.body, [{ taskId: tk, title: 'Sign the lease', dueOn: '2026-11-09' }]);
     const stranger = await t.signIn(outsider.email);
     assert.equal((await stranger.request('GET', `/projects/${p}/escalation-flags`)).status, 404);
+    // The Administrator holds no role here: task titles are project content, so 404 like other content routes.
+    const adminClient = await t.signIn('admin@kainow.test');
+    const asAdmin = await adminClient.request('GET', `/projects/${p}/escalation-flags`);
+    assert.equal(asAdmin.status, 404);
+    assert.ok(!JSON.stringify(asAdmin.body).includes('Sign the lease'));
 
     await pool.query(`UPDATE tasks SET status = 'completed' WHERE id = $1`, [tk]);
     assert.deepEqual((await viewer.request('GET', `/projects/${p}/escalation-flags`)).body, []);
@@ -305,14 +310,18 @@ describe('the sweep', { skip: SKIP_NO_DB }, () => {
     const forPm = await mailsTo(p, pm.id);
     assert.equal(forAnn.length, 1);
     assert.equal(forPm.length, 1);
-    assert.equal(forAnn[0].subject, 'Kainow: 3 items need your attention in Harbour Works');
+    assert.equal(forAnn[0].subject, 'Kainow: 2 items need your attention in Harbour Works');
     assert.equal((forAnn[0].text_body.match(/Reminder: /g) ?? []).length, 1);
-    assert.ok(forAnn[0].text_body.includes("Risk review due: 'Supplier may withdraw' on Fri 13 Nov"));
+    // The review date passed while the worker was down: "missed" is sent, "due" for the same date is not.
+    assert.ok(!forAnn[0].text_body.includes('Risk review due:'));
     assert.ok(forAnn[0].text_body.includes("Risk review missed: 'Supplier may withdraw' was due for review on Fri 13 Nov"));
-    assert.equal(forPm[0].subject, 'Kainow: 3 items need your attention in Harbour Works');
+    const reviews = (await triggers(p)).filter((r) => r.kind.startsWith('risk_review'));
+    assert.deepEqual(reviews.map((r) => [r.kind, r.outcome]), [['risk_review_due', 'skipped_obsolete'], ['risk_review_missed', 'sent']]);
+    assert.equal(forPm[0].subject, 'Kainow: 2 items need your attention in Harbour Works');
     assert.ok(forPm[0].text_body.includes("Overdue: 'Call the supplier' was due on Mon 9 Nov"));
+    assert.ok(!forPm[0].text_body.includes('Risk review due:'));
     assert.equal(forPm[0].initiated_by, 'schedule');
-    assert.equal(forPm[0].trigger_ids.length, 3);
+    assert.equal(forPm[0].trigger_ids.length, 2);
   });
 
   test('a holiday added after a trigger was recorded never re-sends it; untriggered ones move (Review Focus 3)', async () => {

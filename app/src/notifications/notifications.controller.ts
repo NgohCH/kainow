@@ -6,7 +6,7 @@ import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { cursorTime, parseCursor } from '../common/cursor';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
-import { type ProjectContext, ProjectAccess } from '../projects/access.service';
+import { ProjectAccess, canReadContent } from '../projects/access.service';
 import { todayUtc8 } from '../projects/membership';
 import { escalationFlags } from './escalation-flags';
 
@@ -38,7 +38,7 @@ function calendarDate(v: unknown, field: string): string {
 }
 
 /** Whether the person can read the project now: an Active role or a grant giving access (the rule search uses). */
-const canRead = (ctx: ProjectContext | null): ctx is ProjectContext => !!ctx && (ctx.roles.length > 0 || ctx.grantKinds.length > 0);
+const canRead = canReadContent;
 
 @Controller()
 export class NotificationsController {
@@ -48,17 +48,23 @@ export class NotificationsController {
     private readonly access: ProjectAccess,
   ) {}
 
-  /** Tasks shown with "No independent escalation recipient": anyone who can view the project. */
+  /**
+   * Tasks shown with "No independent escalation recipient": anyone who can read the project's content (an Active role
+   * or a read grant). Task titles are content, so an Administrator with no role gets 404 like other content routes.
+   */
   @Get('projects/:id/escalation-flags')
   @AnySignedInUser()
   async flags(@Param('id') id: string, @Req() req: HttpRequest) {
-    const user = req.auth?.user;
-    if (!user) throw new NotFoundException();
-    await this.access.context(user, id);
+    const user = who(req);
+    if (!canRead(await this.access.load(id, user))) throw new NotFoundException();
     return escalationFlags(this.pool, id, todayUtc8(this.now()));
   }
 
-  /** The person's own notices, newest first; `before` is the createdAt of the last one already shown. */
+  /**
+   * The person's own notices, newest first; `before` is the `next` cursor of the previous page ("<created time>|<id>").
+   * A notice for a project the person can no longer read shows no detail, except the minimal Administrator fallback
+   * (project name and "A task in <project> needs reassignment."), which an Administrator always sees.
+   */
   @Get('notifications')
   @AnySignedInUser()
   async list(@Query('before') before: string | undefined, @Req() req: HttpRequest) {
@@ -66,8 +72,10 @@ export class NotificationsController {
     const cursor = parseCursor(before);
     const { rows } = await this.pool.query(
       `SELECT n.id, n.project_id AS "projectId", p.name AS "projectName", n.kind, n.urgent, n.summary, n.link,
-              n.created_at AS "createdAt", n.read_at AS "readAt", ${cursorTime('n.created_at')} AS cur
+              n.created_at AS "createdAt", n.read_at AS "readAt", ${cursorTime('n.created_at')} AS cur,
+              COALESCE((tr.detail->>'minimal')::boolean, false) AS minimal
          FROM notifications n LEFT JOIN projects p ON p.id = n.project_id
+         LEFT JOIN notification_triggers tr ON tr.id = n.trigger_id
         WHERE n.user_id = $1 AND ($2::timestamptz IS NULL OR (n.created_at, n.id) < ($2::timestamptz, $3::uuid))
         ORDER BY n.created_at DESC, n.id DESC LIMIT $4`,
       [user.id, cursor?.at ?? null, cursor?.id ?? null, PAGE + 1],
@@ -76,8 +84,11 @@ export class NotificationsController {
     for (const r of rows.slice(0, PAGE)) {
       if (r.projectId && !readable.has(r.projectId)) readable.set(r.projectId, canRead(await this.access.load(r.projectId, user)));
     }
+    const isAdmin = user.role === 'enterprise_administrator';
     const items = rows.slice(0, PAGE).map((r) => {
-      const noAccess = r.projectId !== null && readable.get(r.projectId) !== true;
+      // The minimal fallback holds only the project name, and it is addressed to the Administrator role, not a project role.
+      const adminFallback = r.minimal === true && isAdmin;
+      const noAccess = r.projectId !== null && !adminFallback && readable.get(r.projectId) !== true;
       return {
         id: r.id,
         projectId: r.projectId,
@@ -85,7 +96,7 @@ export class NotificationsController {
         kind: r.kind,
         urgent: r.urgent,
         summary: noAccess ? null : r.summary,
-        link: noAccess ? null : r.link,
+        link: noAccess || r.minimal ? null : r.link,
         createdAt: r.createdAt,
         readAt: r.readAt,
         noAccess,
