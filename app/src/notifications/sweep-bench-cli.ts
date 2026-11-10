@@ -154,29 +154,26 @@ async function explain(pool: Pool, title: string, sql: string, params: unknown[]
 }
 
 async function plans(pool: Pool, now: Date): Promise<void> {
-  const proj = (await pool.query(`SELECT id FROM projects ORDER BY id LIMIT 1 OFFSET 17`)).rows[0].id as string;
-  await explain(pool, 'task snapshots (one project)',
-    `SELECT t.id, t.parent_id, t.title, t.assignee_id, to_char(t.due_on, 'YYYY-MM-DD'), t.status, t.deadline_review_required,
+    const ids = (await pool.query(`SELECT id FROM projects WHERE status = 'active' ORDER BY id`)).rows.map((r) => r.id as string);
+  await explain(pool, 'task read, all Active projects (the bulk read the sweep runs once per sweep)',
+    `SELECT t.project_id, t.id, t.parent_id, t.title, t.assignee_id, to_char(t.due_on, 'YYYY-MM-DD'), t.status, t.deadline_review_required,
             COALESCE((SELECT max(e.at) FROM task_events e
                        WHERE e.task_id = t.id AND (e.kind IN ('authorised', 'deadline_reviewed') OR (e.kind = 'amended' AND e.detail ? 'dueOn'))),
                      t.authorised_at),
-            (SELECT count(*)::int FROM task_events e WHERE e.task_id = t.id AND e.kind = 'reopened')
-       FROM tasks t WHERE t.project_id = $1 AND t.status NOT IN ('completed', 'cancelled') ORDER BY t.id`, [proj]);
-  await explain(pool, 'risk snapshots (one project)',
-    `SELECT id, description, status, responsible_id, to_char(review_on, 'YYYY-MM-DD')
-       FROM risks WHERE project_id = $1 AND status <> 'resolved' AND review_on IS NOT NULL ORDER BY id`, [proj]);
-  const keys = (await pool.query(`SELECT key FROM notification_triggers WHERE project_id = $1`, [proj])).rows.map((r) => r.key as string);
+            (SELECT count(*)::int FROM task_events e WHERE e.task_id = t.id AND e.kind = 'reopened'),
+            t.invitation_id, i.status, i.expires_at
+       FROM tasks t LEFT JOIN invitations i ON i.id = t.invitation_id
+      WHERE t.project_id = ANY($1::uuid[]) AND t.status NOT IN ('completed', 'cancelled')
+      ORDER BY t.project_id, t.id`, [ids]);
+  await explain(pool, 'risk read, all Active projects (once per sweep)',
+    `SELECT project_id, id, description, status, responsible_id, to_char(review_on, 'YYYY-MM-DD')
+       FROM risks WHERE project_id = ANY($1::uuid[]) AND status <> 'resolved' AND review_on IS NOT NULL ORDER BY project_id, id`, [ids]);
+  const keys = (await pool.query(`SELECT key FROM notification_triggers WHERE project_id = $1`, [ids[17]])).rows.map((r) => r.key as string);
   await explain(pool, `unrecorded keys, set-based anti-join (what the sweep runs once per sweep; here ${keys.length} keys of one project)`,
     `SELECT k AS key FROM unnest($1::text[]) AS k WHERE NOT EXISTS (SELECT 1 FROM notification_triggers t WHERE t.key = k)`, [keys]);
   const all = (await pool.query(`SELECT key FROM notification_triggers`)).rows.map((r) => r.key as string);
   await explain(pool, `unrecorded keys, set-based anti-join over every project (${all.length} keys, as one sweep sends them)`,
     `SELECT k AS key FROM unnest($1::text[]) AS k WHERE NOT EXISTS (SELECT 1 FROM notification_triggers t WHERE t.key = k)`, [all]);
-  await explain(pool, 'unavailable-assignee tasks (one project)',
-    `SELECT t.id, t.title, t.assignee_id, to_char(t.due_on, 'YYYY-MM-DD'),
-            (SELECT count(*)::int FROM task_events e WHERE e.task_id = t.id AND e.kind = 'reopened'),
-            t.invitation_id, i.status, i.expires_at
-       FROM tasks t LEFT JOIN invitations i ON i.id = t.invitation_id
-      WHERE t.project_id = $1 AND t.status NOT IN ('completed', 'cancelled') AND NOT t.deadline_review_required ORDER BY t.id`, [proj]);
   await explain(pool, 'mail candidates (all unemailed notifications)',
     `SELECT n.id, n.user_id, n.project_id, n.urgent, n.summary, n.link, n.trigger_id, t.fire_at, t.record_kind, t.record_id, t.detail,
             COALESCE((t.detail->>'minimal')::boolean, false), p.name, u.email, COALESCE(ep.choice, 'daily_urgent_immediate'),
@@ -202,6 +199,8 @@ async function main(): Promise<void> {
   const url = guardDatabase();
   const pool = new Pool({ connectionString: url, max: 4 });
   try {
+    const actual = (await pool.query('SELECT current_database() AS db')).rows[0].db as string;
+    if (actual !== 'kainow_test') throw new Error(`Refusing to run: connected to "${actual}", not kainow_test.`);
     if (process.argv.includes('--plans-only')) {
       // Prints the plans on whatever the last run left in the database; nothing is reset or swept.
       await plans(pool, new Date(NOW_MS + 15 * 60_000));
