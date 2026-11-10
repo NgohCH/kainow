@@ -204,4 +204,16 @@ describe('action-item digests over HTTP and the sweep', { skip: SKIP_NO_DB }, ()
     await sweep().run();
     assert.equal((await digestKeys()).length, 0);
   });
+  test('a failing nudge after commit still answers 201 with the emails queued', async () => {
+    await t.close();
+    t = await startTestApp(at(17, 10), { emailNudge: { nudge: async () => { throw new Error('queue down'); } } });
+    for (const p of ['pm', 'ann']) ids[p] = await seedUser(t.pool, `${p}@example.org`);
+    projectId = await seedProject(t.pool, { status: 'active', name: 'Harbour Works', members: [{ userId: ids.pm, role: 'pm' }, { userId: ids.ann, role: 'member' }] });
+    await task();
+    pm = await t.signIn('pm@example.org');
+    const r = await pm.request('POST', `/projects/${projectId}/digest`);
+    assert.equal(r.status, 201);
+    assert.equal(r.body.recipients, 2);
+    assert.equal((await outbox()).length, 2);
+  });
 });

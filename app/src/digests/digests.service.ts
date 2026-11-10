@@ -1,4 +1,4 @@
-import { ConflictException, ForbiddenException, Inject, Injectable } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Inject, Injectable, Logger } from '@nestjs/common';
 import type { Pool } from 'pg';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { APP_CONFIG, type AppConfig } from '../config';
@@ -44,7 +44,12 @@ export class DigestsService {
     const digestRunId = await inTransaction(this.pool, (c) =>
       queueDigestRun(c, { projectId, recipients, asAt, scheduled: false, initiatedBy: user.id, appUrl: this.config.appUrl }),
     );
-    await this.nudge.nudge();
+    try {
+      await this.nudge.nudge();
+    } catch {
+      // The emails are committed; the scheduled email tick still finds them.
+      new Logger('Digests').warn('Could not nudge the email worker after a digest; the scheduled tick still sends it');
+    }
     return { digestRunId, recipients: recipients.length };
   }
 }
