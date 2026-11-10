@@ -340,7 +340,31 @@ All new actions follow existing matrix rows; none is new authority.
 
 ### 12.3 Measurement
 
-Before claiming the sweep is cheap, it is timed on a seeded realistic dataset (200 users, 300 projects, 30,000 open tasks and subtasks, 3,000 risks, a year of holidays) with query plans recorded. The aim is **under 2 seconds per sweep**. The results, met or missed, are written into this section before the work is reported done.
+Before claiming the sweep is cheap, it is timed on a seeded realistic dataset (200 users, 300 projects, 30,000 open tasks and subtasks, 3,000 risks, a year of holidays) with query plans recorded. The aim is **under 2 seconds per sweep**.
+
+#### Measured results (10 November 2026)
+
+Measured with `app/src/notifications/sweep-bench-cli.ts` (`node dist/notifications/sweep-bench-cli.js`; it refuses to run unless the database is named `kainow_test`, resets it, seeds it and runs `Sweep.run()`). Environment: PostgreSQL 16.15 in a Docker Desktop `postgres:16` container on a Windows 11 developer laptop (16 logical cores), Node 24, reached over the loopback port. This is not production hardware; a trivial `SELECT 1` costs 0.6 ms per round trip here, which matters below.
+
+Data: 200 users, 300 Active projects (a PM, an Owner and 3 to 6 Members each, 1,950 memberships), 30,000 open tasks and subtasks (6,000 of them subtasks) with due dates spread from 60 days before to 60 days after Tuesday 10 November 2026, 31,478 task events (an authorisation for each task and a reopening for about 5%), 3,000 risks with review dates spread the same way, 84 holidays (the organisation's across 2026, plus three project holidays in 20 projects), 55 project overrides (day counting, lead days, escalation delay, 10 daily digests), 200 email preferences and 8 away periods. `ANALYZE` was run after seeding. The clock was fixed at 09:30 UTC+8, so the 09:00 slot work happens.
+
+| Run | Before (as first built) | After the change below |
+|---|---|---|
+| Cold: the first sweep over all of that history (catch-up) | 392.5 s (54,071 triggers, 26,345 notifications, 1,605 emails) | 405.8 s (the same counts) |
+| Warm, same clock, five runs | 6.4 to 8.5 s (median 7.0 s) | 0.89 to 1.16 s (median 1.09 s) |
+| 15 minutes later, twice (nothing new is due) | 7.5 s and 6.4 s | 1.10 s and 1.09 s |
+
+**The aim of under 2 seconds per sweep is met for a normal sweep (about 1.1 s), but was missed as first built (about 7 s).** The cause was not slow query plans: every per-project query ran in about 1 ms on the server using the existing indexes (`tasks_open_sweep_idx`, `risks_review_sweep_idx`, `task_events_task_idx`, the unique key index on triggers). The time went to about 5,000 database round trips per sweep (about 16 for each of 300 projects, including the settings, holidays and recorded keys read twice) and to about 1.3 s of date-string conversion in the working-day calendar. The change, with behaviour and results unchanged (the cold run fired exactly the same triggers, notifications and emails before and after):
+
+- The sweep reads settings, holidays, open tasks (with the invitation facts), risks, memberships, away dates, email preferences and project transitions for all Active projects in about ten queries per sweep instead of about sixteen per project.
+- It plans every project, then asks once, with a set-based anti-join, which of the due keys are not recorded yet (about 0.1 s for 54,000 keys), instead of sending each project's keys separately.
+- The calendar memoises its date conversions.
+
+No index was needed, so there is no new migration. The query plans are recorded in the task report (`EXPLAIN (ANALYZE, BUFFERS)` of the task and risk snapshots, the unavailable-assignee read, the recorded-key anti-join and the mail candidates); the largest remaining server cost is the anti-join and the one task read, and a normal sweep spends about 0.5 s in the database and 0.6 s in the planner.
+
+**The cold catch-up is slow and is disclosed here.** The first sweep over this dataset took about 6.5 minutes, because it recorded 54,071 triggers and 26,345 notifications, each trigger in its own transaction (several round trips each, about 7 ms per trigger here). That is the worst case: an installation that starts sweeping with a hundred and twenty days of overdue and reminder history for 30,000 tasks. A normal catch-up after a few days down is a small fraction of it (the sweep tests exercise one). Batching the writes of a project into one transaction would shorten it, at the cost of recording a project's triggers all or nothing; it was not done because it changes the atomic unit and no approval for that is recorded. Other things still scale with history and are worth watching: the single task read returns every open task, the anti-join sends a key for every due trigger of every open task, and `mailDue` reads every notification not yet emailed (about 1,000 here, 14 to 88 ms). Each is linear and measured fast at this size.
+
+A schedule test (`worker/schedules.test.js`, which fires a real once-a-minute pg-boss schedule) failed once in the full suite run because the minute boundary fell inside its 1.5 second wait; it passed on its own and touches no sweep code.
 
 ## 13. Out of scope
 
