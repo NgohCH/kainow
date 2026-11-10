@@ -25,6 +25,8 @@ export class M365TokenSource {
     private readonly cfg: M365Credentials,
     private readonly fetchFn: typeof fetch = fetch,
     private readonly clock: Clock = () => new Date(),
+    /** A token request that takes longer than this is abandoned and counts as a temporary failure. */
+    private readonly timeoutMs: number = 15_000,
   ) {}
 
   async token(): Promise<string> {
@@ -48,6 +50,7 @@ export class M365TokenSource {
           client_secret: this.cfg.clientSecret,
           scope: 'https://outlook.office365.com/.default',
         }).toString(),
+        signal: AbortSignal.timeout(this.timeoutMs),
       });
     } catch {
       throw new TokenError(0);

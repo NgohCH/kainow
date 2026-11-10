@@ -133,3 +133,25 @@ test('the SMTP transport hands the URL to nodemailer and the log transport sends
   const log = createTransport({ provider: 'log' }, () => new Date());
   assert.deepEqual(await log.send({ from: 'x', to: 'b@example.org', subject: 's', text: 't', html: 'h', attachments: [] }), { messageId: null });
 });
+
+test('concurrent token requests share a single fetch', async () => {
+  const f = fakeFetch([{ status: 200, body: { access_token: 'tok-1', expires_in: 3600 } }]);
+  const source = new M365TokenSource(cfg, f.fn, () => new Date(0));
+  const tokens = await Promise.all([source.token(), source.token(), source.token()]);
+  assert.deepEqual(tokens, ['tok-1', 'tok-1', 'tok-1']);
+  assert.equal(f.calls.length, 1);
+});
+
+test('a token request that hangs is aborted and becomes a temporary failure', async () => {
+  const hanging = ((_url: string | URL | Request, init?: RequestInit) =>
+    new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
+    })) as typeof fetch;
+  const source = new M365TokenSource(cfg, hanging, () => new Date(0), 20);
+  await assert.rejects(source.token(), (err: unknown) => {
+    assert.ok(err instanceof TokenError);
+    assert.equal(err.status, 0);
+    assert.equal(classify(err).kind, 'temporary');
+    return true;
+  });
+});
