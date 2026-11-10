@@ -1,6 +1,6 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, api } from '../api.ts';
-import { formatWhen } from '../format.ts';
+import { formatWhen, noticesStartLine } from '../format.ts';
 import {
   type Current, type Draft, type Preview, FIELD_LABEL, WEEKDAY_NAMES, afterSave, buildChanges, changeErrors, draftFrom, leadDaysText,
 } from '../settings.ts';
@@ -21,6 +21,7 @@ interface OrgView extends Current {
   projectsMayChangeTimings: boolean;
   projectsMayChangeDigest: boolean;
   sweepMinutes: number;
+  noticesFrom: string | null;
   history: HistoryRow[];
 }
 interface ProjectView extends Current {
@@ -247,6 +248,7 @@ export function NotificationSettingsForm({ projectId }: { projectId?: string }) 
         <>
           <fieldset className="panel stack settings-group">
             <legend>Checking for due dates</legend>
+            {'noticesFrom' in view && view.noticesFrom && <p className="meta">{noticesStartLine(view.noticesFrom)}</p>}
             <label>
               Sweep interval in minutes
               <input type="number" min={5} max={60} value={draft.sweep} onChange={(e) => edit({ sweep: e.target.value })} />

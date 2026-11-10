@@ -33,7 +33,7 @@ describe('the sweep', { skip: SKIP_NO_DB }, () => {
     await pool.query(`DELETE FROM notifications WHERE outbox_id IS NULL`);
     await pool.query(`DELETE FROM sweep_runs`);
     await pool.query(`DELETE FROM holidays`);
-    await pool.query(`UPDATE notification_settings SET lead_days = '{7,1}', sweep_minutes = 15`);
+    await pool.query(`UPDATE notification_settings SET lead_days = '{7,1}', sweep_minutes = 15, notices_from = NULL`);
     nudges = 0;
     warnings.length = 0;
   });
@@ -689,5 +689,46 @@ describe('the sweep', { skip: SKIP_NO_DB }, () => {
     assert.equal(logged.length, 1);
     assert.ok(!logged[0].includes('queue down'));
     assert.equal((await pool.query(`SELECT count(*)::int AS n FROM sweep_runs`)).rows[0].n, 1);
+  });
+
+  test('notices start from the go-live time: earlier triggers are neither fired nor recorded, later ones fire; null changes nothing', async () => {
+    const pm = await user('pm');
+    const ann = await user('ann');
+    const p = await project([{ userId: pm.id, role: 'pm' }, { userId: ann.id, role: 'member' }]);
+    // Due Tue 10 Nov: its reminders fall on Tue 3 Nov and Mon 9 Nov 09:00, both before the go-live time.
+    const early = await task(p, { title: 'Early task', assignee: ann.id, dueOn: '2026-11-10' });
+    // Due Thu 12 Nov: its reminder falls on Wed 11 Nov 09:00, after it.
+    const late = await task(p, { title: 'Late task', assignee: ann.id, dueOn: '2026-11-12' });
+    await pool.query(`UPDATE notification_settings SET notices_from = $1`, [new Date(at(10, 9, 30))]);
+
+    await runAt(at(11, 9));
+    const trs = await triggers(p);
+    assert.deepEqual(trs.filter((x) => x.record_id === early), [], 'nothing recorded for the early task');
+    assert.ok(trs.every((x) => x.fire_at.getTime() >= at(10, 9, 30)), 'no trigger before the go-live time is recorded');
+    const fired = trs.filter((x) => x.record_id === late && x.outcome === 'sent');
+    assert.deepEqual(fired.map((x) => x.key), [`task:${late}:reminder:1:2026-11-12:0`]);
+    assert.equal((await notes(p)).length, 1);
+
+    // With no cutoff the early reminders are recorded as before.
+    await pool.query(`UPDATE notification_settings SET notices_from = NULL`);
+    await runAt(at(11, 10));
+    assert.ok((await triggers(p)).some((x) => x.record_id === early));
+  });
+
+  test('a scheduled digest dated before the go-live time is not sent', async () => {
+    const pm = await user('pm');
+    const ann = await user('ann');
+    const p = await project([{ userId: pm.id, role: 'pm' }, { userId: ann.id, role: 'member' }]);
+    await task(p, { title: 'Open task', assignee: ann.id, dueOn: '2026-11-30' });
+    await pool.query(
+      `INSERT INTO project_notification_settings (project_id, digest_enabled, digest_frequency, digest_time) VALUES ($1, true, 'daily', '09:00')`,
+      [p],
+    );
+    await pool.query(`UPDATE notification_settings SET notices_from = $1`, [new Date(at(11, 9, 30))]);
+    await runAt(at(11, 10));
+    assert.deepEqual(await byKind(p, 'digest'), []);
+    // The next day's digest is after the go-live time and goes out.
+    await runAt(at(12, 10));
+    assert.equal((await byKind(p, 'digest')).length, 1);
   });
 });

@@ -180,6 +180,7 @@ export async function runScheduledDigest(
   schedule: DigestSchedule | null,
   now: Date,
   appUrl: string,
+  noticesFrom: Date | null = null,
 ): Promise<number> {
   if (!schedule) return 0;
   // By project and kind (index notification_triggers_project_idx); a LIKE on the key cannot use the unique index under a non-C collation.
@@ -188,6 +189,11 @@ export async function runScheduledDigest(
   ).rows[0];
   const date = scheduledDigestDue(cal, schedule, now, (lastRow?.d as string | null) ?? null);
   if (!date) return 0;
+  // A digest whose scheduled time fell before the go-live time is neither sent nor recorded.
+  if (noticesFrom) {
+    const [h, m] = schedule.time.split(':').map(Number);
+    if (dateMs(date) + (h - 8) * 3_600_000 + m * 60_000 < noticesFrom.getTime()) return 0;
+  }
   const open = await countOpen(pool, project.id);
   const recipients = open === 0 ? [] : await digestRecipients(pool, project.id, todayUtc8(now));
   const outcome = open === 0 ? 'skipped_obsolete' : recipients.length === 0 ? 'no_recipient' : 'sent';

@@ -72,6 +72,19 @@ describe('notification settings, holidays and preview', { skip: SKIP_NO_DB }, ()
     assert.equal((await setOrg({ bogus: 1 })).status, 400);
   });
 
+  test('the organisation settings show noticesFrom (read-only; set only by golive-init)', async () => {
+    assert.equal((await admin.request('GET', '/notification-settings')).body.noticesFrom, null);
+    await t.pool.query(`UPDATE notification_settings SET notices_from = '2026-11-10T01:30:00Z'`);
+    const g = await admin.request('GET', '/notification-settings');
+    assert.equal(new Date(g.body.noticesFrom).getTime(), Date.UTC(2026, 10, 10, 1, 30));
+    assert.equal((await setOrg({ noticesFrom: '2026-01-01T00:00:00Z' })).status, 400);
+    assert.equal((await setOrg({ noticesFrom: null })).status, 400);
+    assert.equal(
+      (await t.pool.query(`SELECT notices_from FROM notification_settings`)).rows[0].notices_from.getTime(), Date.UTC(2026, 10, 10, 1, 30),
+    );
+    assert.equal((await setOrg({ escalationDays: 4 })).body.noticesFrom.slice(0, 16), '2026-11-10T01:30');
+  });
+
   test('a member cannot read or change organisation settings', async () => {
     assert.equal((await pm.request('GET', '/notification-settings')).status, 403);
     assert.equal((await pm.request('PUT', '/notification-settings', { changes: { sweepMinutes: 10 }, reason: 'x' })).status, 403);

@@ -151,7 +151,7 @@ export class Sweep {
       try {
         const eff = data.get(project.id)?.effective;
         if (!eff) continue;
-        digestEmails += await runScheduledDigest(pool, project, eff.cal, eff.digest, now, this.deps.appUrl);
+        digestEmails += await runScheduledDigest(pool, project, eff.cal, eff.digest, now, this.deps.appUrl, eff.noticesFrom);
       } catch {
         log.warn('The sweep could not send a scheduled digest; it is tried again at the next sweep');
       }
@@ -183,18 +183,23 @@ export class Sweep {
     const eff = data.effective;
     const tasks: TaskSnap[] = data.tasks;
     const risks = data.risks;
-    const { fire, obsolete } = dueNow(planProject({ cal: eff.cal, timings: eff.timings, tasks, risks }), now);
+    // Triggers due before the go-live time are dropped here, before anything is recorded (not even as skipped).
+    const from = eff.noticesFrom?.getTime() ?? null;
+    const planned = planProject({ cal: eff.cal, timings: eff.timings, tasks, risks });
+    const { fire, obsolete } = dueNow(from === null ? planned : planned.filter((p) => p.fireAt.getTime() >= from), now);
     const holders = holdersOf(data.memberships.filter((m) => m.userActive), today);
     const ctx: ProjectCtx = {
       project, now, today, holders, unreachable: data.unreachable, admins, resumedAt: data.resumedAt,
       tasks: new Map(tasks.map((t) => [t.id, t])),
       risks: new Map(risks.map((r) => [r.id, r])),
     };
-    const unavailable = await unavailableTriggers(pool, project, {
+    const unavailableAll = await unavailableTriggers(pool, project, {
       ...ctx,
       preloaded: { tasks: data.tasks.filter((t) => !t.deadlineReviewRequired), memberships: data.memberships },
     });
-    const resumed = await resumptionTrigger(pool, project, { ...ctx, latestActive: data.latestActive });
+    const unavailable = from === null ? unavailableAll : unavailableAll.filter((d) => d.fireAt.getTime() >= from);
+    const resumedAll = await resumptionTrigger(pool, project, { ...ctx, latestActive: data.latestActive });
+    const resumed = resumedAll && from !== null && resumedAll.fireAt.getTime() < from ? null : resumedAll;
     const keys = [...fire, ...obsolete].map((p) => p.key).concat(unavailable.map((d) => d.key));
     return { ctx, fire, obsolete, unavailable, resumed, keys };
   }
