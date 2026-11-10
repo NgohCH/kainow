@@ -157,6 +157,8 @@ Kainow can send all its email, sign-in codes and reminders, as one mailbox in yo
    ```
 
    Also make sure SMTP AUTH is allowed for that mailbox (`Set-CASMailbox -Identity kainow@example.org -SmtpClientAuthenticationDisabled $false`). Only this one mailbox can be used as the sender.
+
+   **What `FullAccess` means.** Microsoft requires `FullAccess` on the mailbox for an application that sends through SMTP with its own credentials; there is no narrower "send only" right for this method. `FullAccess` lets the application open and read everything in that mailbox, not only send from it. Kainow only sends, but the grant itself is broader than that. We therefore recommend a **dedicated sender mailbox** used for nothing else (for example a shared mailbox named for Kainow), so the only mail the application could ever read is its own. Do not grant this on a person's mailbox or on a mailbox that receives other mail. The grant covers this one mailbox only; nothing else in your organisation is opened to the application.
 4. **Put the four settings in `.env`** (never committed):
 
    ```
@@ -170,3 +172,5 @@ Kainow can send all its email, sign-in codes and reminders, as one mailbox in yo
    Then `docker compose up -d`. If one is missing, Kainow refuses to start and names the missing variable (never its value). Remove `LOG_SIGN_IN_CODES` so codes are emailed, not logged.
 
 If Microsoft rejects the sender's credentials, Kainow does not retry that email and shows the reason in the delivery history; check the secret has not expired and that steps 2 and 3 are done. The client secret is never written to the database, the logs or any screen.
+
+**Sending rate.** Exchange Online accepts at most 30 messages a minute from one mailbox. Kainow sends at most 30 a minute through Microsoft 365 and keeps the rest queued for the next minute, so a large batch (for example the first morning after a long holiday) goes out over a few minutes. If Microsoft still answers that a sending limit or quota is reached, Kainow treats it as temporary and retries on its normal schedule.
