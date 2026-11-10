@@ -8,7 +8,7 @@ import { AuthController } from './auth.controller';
 import { AuthGuard } from './auth.guard';
 import { AuthService } from './auth.service';
 import { createCodeSender } from './code-senders';
-import { CODE_SENDER, type CodeSender } from './tokens';
+import { CLOCK, CODE_SENDER, type Clock, type CodeSender } from './tokens';
 
 /** Replaceable pieces, so tests can capture codes. */
 export interface AuthOptions {
@@ -30,8 +30,8 @@ export class AuthModule {
         { provide: APP_GUARD, useClass: AuthGuard },
         {
           provide: CODE_SENDER,
-          inject: [APP_CONFIG],
-          useFactory: (config: AppConfig) => options.codeSender ?? createCodeSender(config.codeDelivery),
+          inject: [APP_CONFIG, CLOCK],
+          useFactory: (config: AppConfig, clock: Clock) => options.codeSender ?? createCodeSender(config.email, clock),
         },
       ],
       exports: [AuthService, UsersService, CODE_SENDER, OrganisationState],

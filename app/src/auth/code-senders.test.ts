@@ -1,7 +1,10 @@
 import assert from 'node:assert/strict';
 import net from 'node:net';
 import { test } from 'node:test';
-import { SmtpCodeSender, createCodeSender, LogCodeSender } from './code-senders';
+import { createTransport } from '../email/transport';
+import { EmailCodeSender, createCodeSender, LogCodeSender } from './code-senders';
+
+const smtpSender = (url: string, from: string) => new EmailCodeSender(createTransport({ provider: 'smtp', url, from }, () => new Date()), from);
 
 /** A bare-bones SMTP server that records each message it is given. */
 function startSmtpServer(): Promise<{ port: number; messages: string[]; close: () => Promise<void> }> {
@@ -49,7 +52,7 @@ function startSmtpServer(): Promise<{ port: number; messages: string[]; close: (
 test('the email sender delivers the code to the right person through a real SMTP exchange', async () => {
   const smtp = await startSmtpServer();
   try {
-    const sender = new SmtpCodeSender(`smtp://127.0.0.1:${smtp.port}/?ignoreTLS=true`, 'Kainow <no-reply@example.org>');
+    const sender = smtpSender(`smtp://127.0.0.1:${smtp.port}/?ignoreTLS=true`, 'Kainow <no-reply@example.org>');
     await sender.send('person@example.org', '048213', 10);
 
     assert.equal(smtp.messages.length, 1);
@@ -66,11 +69,16 @@ test('the email sender delivers the code to the right person through a real SMTP
 });
 
 test('the email sender reports failure when the mail server cannot be reached', async () => {
-  const sender = new SmtpCodeSender('smtp://127.0.0.1:1/?ignoreTLS=true', 'a@example.org');
+  const sender = smtpSender('smtp://127.0.0.1:1/?ignoreTLS=true', 'a@example.org');
   await assert.rejects(sender.send('person@example.org', '123456', 10));
 });
 
+test('the Microsoft 365 setting also picks the email sender, so codes go through the same provider', () => {
+  const m365 = { provider: 'm365', tenantId: 't', clientId: 'c', clientSecret: 's', from: 'kainow@example.org' } as const;
+  assert.ok(createCodeSender(m365) instanceof EmailCodeSender);
+});
+
 test('the delivery setting picks the matching sender', () => {
-  assert.ok(createCodeSender({ kind: 'log' }) instanceof LogCodeSender);
-  assert.ok(createCodeSender({ kind: 'smtp', url: 'smtp://127.0.0.1:2525', from: 'a@example.org' }) instanceof SmtpCodeSender);
+  assert.ok(createCodeSender({ provider: 'log' }) instanceof LogCodeSender);
+  assert.ok(createCodeSender({ provider: 'smtp', url: 'smtp://127.0.0.1:2525', from: 'a@example.org' }) instanceof EmailCodeSender);
 });

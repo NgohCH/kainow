@@ -13,7 +13,7 @@ async function main(): Promise<void> {
   const config = loadConfig();
   const pool = new Pool({ connectionString: config.databaseUrl });
   try {
-    const setup = new SetupService(pool, config, createCodeSender(config.codeDelivery));
+    const setup = new SetupService(pool, config, createCodeSender(config.email));
     const sent = await setup.issue({ email, displayName }, new Date());
     console.log(`Setup invitation sent to ${sent.email}. It expires on ${sent.expiresAt.toISOString().slice(0, 16).replace('T', ' ')} UTC.`);
   } finally {

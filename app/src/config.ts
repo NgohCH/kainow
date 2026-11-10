@@ -10,8 +10,11 @@ export interface AuthSettings {
   codeResendSeconds: number;
 }
 
-/** How one-time sign-in codes reach people. Other email is deferred to January. */
-export type CodeDelivery = { kind: 'smtp'; url: string; from: string } | { kind: 'log' };
+/** How email leaves Kainow: sign-in codes, invitations and everything in the outbox. */
+export type EmailConfig =
+  | { provider: 'm365'; tenantId: string; clientId: string; clientSecret: string; from: string }
+  | { provider: 'smtp'; url: string; from: string }
+  | { provider: 'log' };
 
 export interface DatabaseConfig {
   databaseUrl: string;
@@ -24,7 +27,7 @@ export interface AppConfig extends DatabaseConfig {
   /** Secret used to hash one-time codes. Never stored in the database. */
   authSecret: string;
   cookieSecure: boolean;
-  codeDelivery: CodeDelivery;
+  email: EmailConfig;
   /** Where people open Kainow; used for links in invitation emails. */
   appUrl: string;
 }
@@ -52,6 +55,47 @@ export function loadDatabaseConfig(env: NodeJS.ProcessEnv = process.env): Databa
   };
 }
 
+const missing = (name: string, when: string): Error => new Error(`${name} must be set when ${when}`);
+
+/**
+ * Chooses the email provider. EMAIL_PROVIDER unset keeps the older rules: SMTP_URL (with SMTP_FROM) gives smtp,
+ * else LOG_SIGN_IN_CODES=true gives log. Messages name variables, never their values.
+ */
+export function loadEmailConfig(env: NodeJS.ProcessEnv): EmailConfig {
+  const provider = env.EMAIL_PROVIDER || undefined;
+  if (provider === 'm365') {
+    const need = (name: string): string => {
+      const value = env[name];
+      if (!value) throw missing(name, 'EMAIL_PROVIDER=m365');
+      return value;
+    };
+    return {
+      provider: 'm365',
+      tenantId: need('M365_TENANT_ID'),
+      clientId: need('M365_CLIENT_ID'),
+      clientSecret: need('M365_CLIENT_SECRET'),
+      from: need('EMAIL_FROM'),
+    };
+  }
+  if (provider === 'smtp') {
+    if (!env.SMTP_URL) throw missing('SMTP_URL', 'EMAIL_PROVIDER=smtp');
+    const from = env.EMAIL_FROM || env.SMTP_FROM;
+    if (!from) throw missing('EMAIL_FROM', 'EMAIL_PROVIDER=smtp');
+    return { provider: 'smtp', url: env.SMTP_URL, from };
+  }
+  if (provider === 'log' || provider === undefined) {
+    if (provider === undefined && env.SMTP_URL) {
+      if (!env.SMTP_FROM) throw new Error('SMTP_FROM must be set when SMTP_URL is set');
+      return { provider: 'smtp', url: env.SMTP_URL, from: env.SMTP_FROM };
+    }
+    if (env.LOG_SIGN_IN_CODES === 'true') return { provider: 'log' };
+    throw new Error(
+      'No way to deliver sign-in codes: set EMAIL_PROVIDER (m365 or smtp) with its settings, or set LOG_SIGN_IN_CODES=true for local development only',
+    );
+  }
+  throw new Error('EMAIL_PROVIDER must be m365, smtp or log');
+}
+
 /** Reads configuration from the environment. Secrets come only from here, never from files in the repo. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const database = loadDatabaseConfig(env);
@@ -67,19 +111,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     throw new Error('AUTH_SECRET must be set to a random value of at least 32 characters');
   }
 
-  let codeDelivery: CodeDelivery;
-  if (env.SMTP_URL) {
-    if (!env.SMTP_FROM) {
-      throw new Error('SMTP_FROM must be set when SMTP_URL is set');
-    }
-    codeDelivery = { kind: 'smtp', url: env.SMTP_URL, from: env.SMTP_FROM };
-  } else if (env.LOG_SIGN_IN_CODES === 'true') {
-    codeDelivery = { kind: 'log' };
-  } else {
-    throw new Error(
-      'No way to deliver sign-in codes: set SMTP_URL and SMTP_FROM, or set LOG_SIGN_IN_CODES=true for local development only',
-    );
-  }
+  const email = loadEmailConfig(env);
 
   return {
     ...database,
@@ -89,7 +121,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     // Browsers accept Secure cookies on http://localhost; set COOKIE_SECURE=false only if a browser does not.
     cookieSecure: env.COOKIE_SECURE !== 'false',
     appUrl: (env.APP_URL || 'http://localhost:3000').replace(/\/+$/, ''),
-    codeDelivery,
+    email,
   };
 }
 
@@ -102,8 +134,9 @@ export function appUrlWarning(env: Record<string, string | undefined>): string |
 export interface WorkerConfig extends DatabaseConfig {
   /** Absent means AI runs fail with a clear reason and nothing is sent or charged. */
   openAiApiKey: string | null;
+  email: EmailConfig;
 }
 
 export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
-  return { ...loadDatabaseConfig(env), openAiApiKey: env.OPENAI_API_KEY?.trim() || null };
+  return { ...loadDatabaseConfig(env), openAiApiKey: env.OPENAI_API_KEY?.trim() || null, email: loadEmailConfig(env) };
 }

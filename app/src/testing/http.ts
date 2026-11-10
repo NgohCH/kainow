@@ -56,7 +56,7 @@ export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opt
   await resetPublicSchema(pool);
   await runMigrations(pool, config.migrationsDir);
   if (opts.organisation !== false) await seedOrganisation(pool);
-  const app = await createApp(config, { codeSender: sender, clock: clock.now, logger: false, extractionQueue: { enqueue: async () => undefined } });
+  const app = await createApp(config, { codeSender: sender, clock: clock.now, logger: false, extractionQueue: { enqueue: async () => undefined }, emailNudge: { nudge: async () => undefined } });
   await app.listen(0);
   const base = await app.getUrl();
 

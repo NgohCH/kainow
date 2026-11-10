@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { SmtpCodeSender } from '../auth/code-senders';
+import { EmailCodeSender } from '../auth/code-senders';
+import type { MailTransport } from '../email/transport';
 import { composeEmail } from './email';
 import { LetterheadWiring } from './letterhead-wiring';
 import type { Letterhead, OrganisationProfileService } from './organisation.service';
@@ -34,8 +35,8 @@ test('names and text are escaped in the HTML part and left as they are in the te
 
 test('the SMTP sender sends every email through the letterhead, and Kainow defaults with none attached', async () => {
   const sent: Record<string, unknown>[] = [];
-  const transport = { sendMail: async (m: Record<string, unknown>) => void sent.push(m) };
-  const sender = new SmtpCodeSender('smtp://unused', 'kainow@example.org', transport);
+  const transport: MailTransport = { send: async (m) => (sent.push({ ...m }), { messageId: null }) };
+  const sender = new EmailCodeSender(transport, 'kainow@example.org');
   await sender.sendSetupInvitation('first@example.org', 'http://localhost:3000/#/setup/t', new Date(Date.UTC(2026, 10, 16)));
   assert.equal(sent[0].from, 'kainow@example.org');
   assert.match(String(sent[0].text), /^Kainow\n\n/);

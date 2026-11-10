@@ -1,7 +1,8 @@
-import { createTransport } from 'nodemailer';
-import type { CodeDelivery } from '../config';
+import type { Clock } from './tokens';
+import type { EmailConfig } from '../config';
 import { DEFAULT_NAME, chooseLogo, defaultLogo } from '../organisation/branding';
 import { composeEmail } from '../organisation/email';
+import { createTransport, storeAttachments, type MailTransport } from '../email/transport';
 import type { Letterhead } from '../organisation/organisation.service';
 import type { CodeSender } from './tokens';
 
@@ -28,8 +29,6 @@ export class LogCodeSender implements CodeSender {
   }
 }
 
-type MailTransport = { sendMail(message: Record<string, unknown>): Promise<unknown> };
-
 /** Kainow's own letterhead, used until the running app attaches the organisation's (and by the setup command). */
 async function kainowLetterhead(): Promise<Letterhead> {
   const choice = chooseLogo('email', { wide: false, square: false });
@@ -38,17 +37,13 @@ async function kainowLetterhead(): Promise<Letterhead> {
 }
 
 /** Sends every email with the organisation's letterhead: its name in the text, its logo inline in the HTML. */
-export class SmtpCodeSender implements CodeSender {
-  private readonly transport: MailTransport;
+export class EmailCodeSender implements CodeSender {
   private letterhead: () => Promise<Letterhead> = kainowLetterhead;
 
   constructor(
-    url: string,
+    private readonly transport: MailTransport,
     private readonly from: string,
-    transport?: MailTransport,
-  ) {
-    this.transport = transport ?? createTransport(url);
-  }
+  ) {}
 
   /** Called once the app starts, so emails carry the organisation's name and logo for the 'email' place. */
   useLetterhead(source: () => Promise<Letterhead>): void {
@@ -57,7 +52,7 @@ export class SmtpCodeSender implements CodeSender {
 
   private async deliver(to: string, subject: string, body: string): Promise<void> {
     const m = composeEmail(await this.letterhead(), subject, body);
-    await this.transport.sendMail({ from: this.from, to, subject: m.subject, text: m.text, html: m.html, attachments: m.attachments });
+    await this.transport.send({ from: this.from, to, subject: m.subject, text: m.text, html: m.html, attachments: storeAttachments(m.attachments) });
   }
 
   async send(email: string, code: string, validForMinutes: number): Promise<void> {
@@ -112,6 +107,7 @@ ${link}`,
   }
 }
 
-export function createCodeSender(delivery: CodeDelivery): CodeSender {
-  return delivery.kind === 'smtp' ? new SmtpCodeSender(delivery.url, delivery.from) : new LogCodeSender();
+/** Sign-in codes and the setup invitation go straight out through the chosen provider (the log provider prints them instead). */
+export function createCodeSender(email: EmailConfig, clock: Clock = () => new Date()): CodeSender {
+  return email.provider === 'log' ? new LogCodeSender() : new EmailCodeSender(createTransport(email, clock), email.from);
 }

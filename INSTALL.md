@@ -36,7 +36,7 @@ The PowerShell lines in this guide were run in Windows PowerShell 5.1 on 8 Novem
      ```
      $b = New-Object byte[] 48; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [Convert]::ToBase64String($b)
      ```
-   - Sign-in codes: either `SMTP_URL` and `SMTP_FROM`, or leave `LOG_SIGN_IN_CODES=true` to read codes from the log (own computer only).
+   - Email (sign-in codes and reminders): either the four Microsoft 365 variables (see "Microsoft 365 email" below), or `SMTP_URL` and `SMTP_FROM`, or leave `LOG_SIGN_IN_CODES=true` to read codes from the log (own computer only).
    - `OPENAI_API_KEY`: your key. It stays in `.env`, which is never committed, and only the worker receives it.
 
 2. **Build and start.**
@@ -142,3 +142,31 @@ This holds everything: notes, original files, proposals, decisions, the audit tr
 - The server and worker run as a non-root user, on a read-only filesystem, with no extra Linux capabilities.
 - There is one Enterprise Administrator and no recovery person yet. If that person is locked out, access can be restored only from the command line (step 3 for a new administrator). Before real use, add a second administrator and agree who holds recovery.
 - Updates are manual (`git pull`, rebuild). An in-app updater is deferred to January.
+
+## Microsoft 365 email
+
+Kainow can send all its email, sign-in codes and reminders, as one mailbox in your Microsoft 365 organisation, with no password stored: it signs in as an application. You need a Microsoft 365 administrator for steps 1 to 3. The examples use the placeholder mailbox `kainow@example.org`; use your own.
+
+1. **Register an application.** In the Microsoft Entra admin centre choose **App registrations**, then **New registration**. Give it a name such as "Kainow email" and keep the default single-tenant choice. On its overview page note the **Directory (tenant) ID** and the **Application (client) ID**.
+2. **Make a secret and give it permission.** Under **Certificates & secrets** make a **New client secret** and copy its **Value** at once (it is shown only once). Under **API permissions** choose **Add a permission**, **APIs my organization uses**, **Office 365 Exchange Online**, **Application permissions**, and add `SMTP.SendAsApp`. Then choose **Grant admin consent**.
+3. **Let the application send as one mailbox.** In Exchange Online PowerShell (replace the placeholders with your application's client ID and its **Object ID** from **Enterprise applications**; this is a different ID from the one on the registration page):
+
+   ```
+   New-ServicePrincipal -AppId <client-id> -ServiceId <enterprise-application-object-id>
+   Add-MailboxPermission -Identity kainow@example.org -User <enterprise-application-object-id> -AccessRights FullAccess
+   ```
+
+   Also make sure SMTP AUTH is allowed for that mailbox (`Set-CASMailbox -Identity kainow@example.org -SmtpClientAuthenticationDisabled $false`). Only this one mailbox can be used as the sender.
+4. **Put the four settings in `.env`** (never committed):
+
+   ```
+   EMAIL_PROVIDER=m365
+   M365_TENANT_ID=<directory-tenant-id>
+   M365_CLIENT_ID=<application-client-id>
+   M365_CLIENT_SECRET=<secret-value>
+   EMAIL_FROM=kainow@example.org
+   ```
+
+   Then `docker compose up -d`. If one is missing, Kainow refuses to start and names the missing variable (never its value). Remove `LOG_SIGN_IN_CODES` so codes are emailed, not logged.
+
+If Microsoft rejects the sender's credentials, Kainow does not retry that email and shows the reason in the delivery history; check the secret has not expired and that steps 2 and 3 are done. The client secret is never written to the database, the logs or any screen.
