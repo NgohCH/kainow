@@ -15,12 +15,12 @@ export interface StepDef {
 /** Order and keys are fixed; positions 1 to 11 follow this order. */
 export const STEPS: readonly StepDef[] = [
   { key: 'organisation', mode: 'auto', link: '#/organisation', text: 'Register your organisation: its name and email domains', explanation: 'Kainow needs the organisation’s name and email domains before anyone can be invited.' },
-  { key: 'logos', mode: 'auto_or_skip', link: '#/organisation', text: 'Upload your organisation’s logos (optional)', explanation: 'Logos appear on sign-in and on exported documents. Upload one, or confirm that you are skipping it.' },
+  { key: 'logos', mode: 'auto_or_skip', link: '#/organisation', text: "Upload your organisation's logos (optional)", explanation: 'Logos appear on sign-in and on exported documents. Upload one, or confirm that you are skipping it.' },
   { key: 'second_admin', mode: 'auto', link: '#/people', text: 'Appoint a second Enterprise Administrator', explanation: 'A second Administrator means the organisation is never locked out if one is unavailable.' },
   { key: 'recovery', mode: 'confirm', link: 'INSTALL.md, the section on the recovery custodian', text: 'Nominate the recovery custodian and test the recovery procedure', explanation: 'One named person holds the recovery secret, and the procedure has been tried once.' },
   { key: 'mailbox', mode: 'confirm', link: '#/notifications-settings', text: 'Set up the Microsoft 365 sender mailbox and its permissions (INSTALL.md), with an auto-reply saying it is not monitored', explanation: 'Kainow sends its emails from this mailbox; people must not expect replies to be read.' },
   { key: 'test_email', mode: 'confirm', link: '#/deliveries', text: 'Send a test email and check that it arrived', explanation: 'Send a test email, wait until it shows as sent, then check it reached the inbox.' },
-  { key: 'calendar', mode: 'confirm', link: '#/notifications-settings', text: 'Set the working weekdays and this year’s holidays', explanation: 'Notice times follow the working days, so the weekdays and holidays must be right.' },
+  { key: 'calendar', mode: 'confirm', link: '#/notifications-settings', text: "Set the working weekdays and this year's holidays", explanation: 'Notice times follow the working days, so the weekdays and holidays must be right.' },
   { key: 'backups', mode: 'confirm', link: 'INSTALL.md, the section on backups', text: 'Configure daily encrypted backups and complete a test restore', explanation: 'A backup is only real once a restore from it has worked.' },
   { key: 'department', mode: 'auto', link: '#/departments', text: 'Create a real department', explanation: 'Projects and people belong to a department.' },
   { key: 'users', mode: 'auto', link: '#/', text: 'Admit real users', explanation: 'At least one person who is not an Enterprise Administrator has accepted their invitation and is Active.' },

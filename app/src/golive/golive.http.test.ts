@@ -146,6 +146,27 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     ]);
   });
 
+  test('an automatic logo tick cannot be skipped or unticked; a skip can be undone', async () => {
+    assert.equal((await admin.upload('PUT', '/organisation/logos/square', pngHeader(64, 64), 'image/png')).status, 200);
+    assert.equal(step(await get(), 'logos').canUntick, false);
+    for (const path of ['/go-live/steps/logos/skip', '/go-live/steps/logos/untick']) {
+      const r = await admin.request('POST', path, {});
+      assert.deepEqual([r.status, r.body.message], [409, 'Kainow ticks this step itself.'], path);
+    }
+    assert.equal(step(await get(), 'logos').tickedBy, 'kainow');
+    await t.pool.query(`DELETE FROM organisation_logos`);
+    await t.pool.query(`UPDATE golive_steps SET ticked_by = NULL, ticked_at = NULL WHERE key = 'logos'`);
+    const skipped = await admin.request('POST', '/go-live/steps/logos/skip', {});
+    assert.deepEqual([step(skipped.body, 'logos').canUntick, step(skipped.body, 'logos').canTick], [true, false]);
+    assert.equal(step((await admin.request('POST', '/go-live/steps/logos/untick')).body, 'logos').done, false);
+  });
+
+  test('the logos and calendar texts use straight apostrophes', async () => {
+    const body = await get();
+    assert.equal(step(body, 'logos').text, "Upload your organisation's logos (optional)");
+    assert.equal(step(body, 'calendar').text, "Set the working weekdays and this year's holidays");
+  });
+
   test('Kainow-ticked steps cannot be ticked or unticked by a person', async () => {
     for (const key of ['organisation', 'department']) {
       const r = await admin.request('POST', `/go-live/steps/${key}/tick`, {});

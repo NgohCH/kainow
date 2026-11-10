@@ -7,7 +7,7 @@ import { MSG, STEPS, TOTAL, refreshChecklist } from './checklist';
 
 export interface StepView {
   key: string; position: number; text: string; explanation: string; link: string; mode: string; done: boolean;
-  tickedBy: { id: string; name: string } | 'kainow' | null; tickedAt: string | null; note: string | null; skipped: boolean; canTick: boolean;
+  tickedBy: { id: string; name: string } | 'kainow' | null; tickedAt: string | null; note: string | null; skipped: boolean; canTick: boolean; canUntick: boolean;
 }
 
 @Injectable()
@@ -38,6 +38,7 @@ export class GoLiveService {
         tickedBy: !done ? null : r.ticked_by ? { id: r.ticked_by, name: r.display_name } : 'kainow',
         tickedAt: done ? (r.ticked_at as Date).toISOString() : null,
         note: r.note, skipped: r.skipped,
+        canUntick: !closedAt && def.mode !== 'auto' && done && r.ticked_by !== null,
         canTick: !closedAt && def.mode !== 'auto' && (def.key !== 'test_email' || sent) && (def.mode === 'auto_or_skip' ? !done : true),
       };
     });
@@ -84,6 +85,10 @@ export class GoLiveService {
       await c.query('BEGIN');
       const closed = (await c.query(`SELECT closed_at FROM golive_checklist WHERE id = 1 FOR UPDATE`)).rows[0].closed_at;
       if (closed) throw new ConflictException(MSG.closed);
+      if (key === 'logos') {
+        const row = (await c.query(`SELECT ticked_by, ticked_at FROM golive_steps WHERE key = 'logos' FOR UPDATE`)).rows[0];
+        if (row.ticked_at !== null && row.ticked_by === null) throw new ConflictException(MSG.autoStep);
+      }
       if (action === 'tick' && key === 'test_email' &&
         (await c.query(`SELECT 1 FROM email_outbox WHERE kind = 'test' AND status = 'sent' LIMIT 1`)).rowCount !== 1) {
         throw new ConflictException(MSG.testEmailFirst);
