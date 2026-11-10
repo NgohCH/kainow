@@ -291,3 +291,12 @@ mark { background: var(--marker-wash); color: inherit; font-weight: 700; padding
 .deliveries .warn.inline { display: block; margin: 0.25rem 0 0; }
 @media (max-width: 40rem) { .deliveries caption { text-align: left; } }
 .facts > div { display: contents; }
+
+/* Go-live checklist */
+.golive-banner { border: 1px solid var(--rule); border-left-width: 4px; border-radius: 4px; padding: 0.6rem 0.9rem; background: var(--surface); margin: 0.75rem 0; }
+.golive-list { list-style: none; padding: 0; margin: 1rem 0; display: grid; gap: 0.75rem; }
+.golive-step { border: 1px solid var(--rule); border-radius: 4px; padding: 0.75rem 1rem; background: var(--surface); }
+.golive-step-text { font-size: 1.05rem; margin: 0 0 0.4rem; }
+.golive-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
+.golive-form { margin-top: 0.5rem; }
+.golive-form input[type="text"] { width: 100%; }

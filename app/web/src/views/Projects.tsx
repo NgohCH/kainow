@@ -1,6 +1,8 @@
 import { type FormEvent, useEffect, useState } from 'react';
 import { ApiError, api, type AdminProjectRow, type Department, type Project, type ProjectSummary } from '../api.ts';
 import { go } from '../App.tsx';
+import { bannerText } from '../golive.ts';
+import { useGoLiveSummary } from './goLiveSummary.ts';
 import { STATUS_LABEL, accessLabel, roleLabel } from '../projects.ts';
 
 /** One row of My Projects. */
@@ -27,6 +29,7 @@ export function Projects({ isAdmin }: { isAdmin: boolean }) {
   const [all, setAll] = useState<AdminProjectRow[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [creating, setCreating] = useState(false);
+  const goLive = useGoLiveSummary(isAdmin);
 
   useEffect(() => {
     api.get<{ projects: ProjectSummary[]; all?: AdminProjectRow[] }>('/projects').then(
@@ -46,6 +49,11 @@ export function Projects({ isAdmin }: { isAdmin: boolean }) {
           {creating ? 'Close' : 'New project'}
         </button>
       </div>
+      {goLive && (
+        <p className="golive-banner">
+          <strong>{bannerText(goLive.done, goLive.total)}</strong> <a href="#/go-live">Open the go-live checklist</a>
+        </p>
+      )}
       {creating && <NewProject onCreated={(p) => go(`#/projects/${p.id}`)} />}
       {error && <p role="alert" className="error">{error}</p>}
       {projects === null && !error && <p className="loading">Loading</p>}
