@@ -1,5 +1,6 @@
 import { type FormEvent, useState } from 'react';
 import type { DueReading } from '../api.ts';
+import { NonWorkingDayNote } from './ProjectCalendar.tsx';
 import { SEVERITY_LABEL, type Severity, defaultDueOn, likelyAssignee, splitNames } from '../records.ts';
 
 export interface Person {
@@ -121,6 +122,7 @@ export function AuthoriseForm({
             Due date
             <input type="date" required value={dueOn} onChange={(e) => setDueOn(e.target.value)} />
           </label>
+          <NonWorkingDayNote date={dueOn} />
           {names.length > 1 && (
             <label className="check">
               <input type="checkbox" checked={split} onChange={(e) => setSplit(e.target.checked)} /> Split into subtasks for the other people named
@@ -146,6 +148,7 @@ export function AuthoriseForm({
                   Due date
                   <input type="date" required value={s.dueOn} onChange={(e) => setSubs(subs.map((x, j) => (j === i ? { ...x, dueOn: e.target.value } : x)))} />
                 </label>
+                <NonWorkingDayNote date={s.dueOn} />
               </fieldset>
             ))}
         </>

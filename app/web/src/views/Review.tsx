@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, api, type Item, type Project, type Run } from '../api.ts';
 import { AuthoriseForm, type Person } from './AuthoriseForm.tsx';
+import { ProjectCalendarProvider } from './ProjectCalendar.tsx';
 import { ChangeRequestPanel, pendingAuthorisation, useRequests } from './ChangeRequest.tsx';
 import { waitingLine, type RequestView } from '../changes.ts';
 import { KIND_LABEL, plural } from '../format.ts';
@@ -466,6 +467,7 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                 />
               )}
               {authorising === item.id && !pendingAuthorisation(requests, item.id) && (
+                <ProjectCalendarProvider projectId={view.projectId}>
                 <AuthoriseForm
                   kind={item.kind}
                   text={item.text}
@@ -476,6 +478,7 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                   onSubmit={(body) => authorise(item, body)}
                   onCancel={() => setAuthorising(null)}
                 />
+                </ProjectCalendarProvider>
               )}
             </article>
           ))}

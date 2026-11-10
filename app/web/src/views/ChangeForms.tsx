@@ -1,6 +1,7 @@
 import { type FormEvent, type ReactNode, useState } from 'react';
 import { isPastDay } from '../changes.ts';
 import { INVITE, type Person, who } from './AuthoriseForm.tsx';
+import { NonWorkingDayNote } from './ProjectCalendar.tsx';
 
 export interface WorkTask {
   id: string;
@@ -108,6 +109,7 @@ export function AmendForm({ task, people, initial, onSubmit, onCancel }: { task:
       <PersonField label="Assignee" people={people} value={assignee} email={email} onChange={setAssignee} onEmail={setEmail} keepLabel={`Keep ${task.assignee.displayName}`} />
       <label>Due date <input type="date" required value={dueOn} onChange={(e) => setDueOn(e.target.value)} /></label>
       {dueOn !== task.dueOn && <PastWarning day={dueOn} />}
+      {dueOn !== task.dueOn && <NonWorkingDayNote date={dueOn} />}
       <label>Reason <input required value={reason} onChange={(e) => setReason(e.target.value)} /></label>
     </Form>
   );
@@ -132,6 +134,7 @@ export function AddSubtaskForm({ task, people, initial, onSubmit, onCancel }: { 
       <PersonField label="Assignee" people={people} value={assignee} email={email} onChange={setAssignee} onEmail={setEmail} />
       <label>Due date <input type="date" required value={dueOn} onChange={(e) => setDueOn(e.target.value)} /></label>
       <PastWarning day={dueOn} />
+      <NonWorkingDayNote date={dueOn} />
       <label>Reason <input required value={reason} onChange={(e) => setReason(e.target.value)} /></label>
     </Form>
   );

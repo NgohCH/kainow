@@ -20,6 +20,7 @@ import {
   historyLine,
 } from '../records.ts';
 import type { Person } from './AuthoriseForm.tsx';
+import { ModeLabel } from './ProjectCalendar.tsx';
 import { type RequestView } from '../changes.ts';
 import { ChangeRequestPanel, useRequests } from './ChangeRequest.tsx';
 import { useFocusItem } from './useFocusItem.ts';
@@ -333,7 +334,7 @@ function TaskRow({
         {t.parentCancelled && <span className="badge badge-pending">Parent cancelled</span>}
       </div>
       <span className="meta">
-        {t.assignee.displayName} · due {t.dueOn}
+        {t.assignee.displayName} · due {t.dueOn}<ModeLabel />
         {t.ownerAsWritten ? ` · the notes say: ${t.ownerAsWritten}` : ''}
         {t.follows ? ` · Follows ${t.follows.title}` : ''}
         {t.followedBy ? ` · Followed by ${t.followedBy.title}` : ''}
