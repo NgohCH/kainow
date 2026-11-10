@@ -1,5 +1,5 @@
 import { formatWhen } from '../format.ts';
-import { type Preview, type PreviewItem, kindText, previewIsEmpty } from '../settings.ts';
+import { type Preview, type PreviewItem, kindText, previewIsEmpty, previewTitle } from '../settings.ts';
 
 function Group({ title, items, show }: { title: string; items: PreviewItem[]; show: (i: PreviewItem) => string }) {
   if (items.length === 0) return null;
@@ -8,8 +8,8 @@ function Group({ title, items, show }: { title: string; items: PreviewItem[]; sh
       <h4>{title}</h4>
       <ul className="plain">
         {items.map((i, n) => (
-          <li key={`${i.recordId}:${i.kind}:${n}`}>
-            <strong>{i.title || 'Untitled'}</strong> · {kindText(i.kind)} · {show(i)}
+          <li key={`${i.projectId}:${i.recordId}:${i.kind}:${n}`}>
+            <strong>{previewTitle(i)}</strong> · {kindText(i.kind)} · {show(i)}
           </li>
         ))}
       </ul>

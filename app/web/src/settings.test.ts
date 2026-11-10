@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { kindText, parseLeadDays, previewIsEmpty } from './settings.ts';
+import { kindText, parseLeadDays, previewIsEmpty, previewTitle } from './settings.ts';
 
 test('lead days are read from commas and spaces', () => {
   assert.deepEqual(parseLeadDays('7, 1'), [7, 1]);
@@ -72,4 +72,12 @@ test('a blank escalation delay or sweep interval is refused before sending', () 
   assert.deepEqual(changeErrors('project', d), [BLANK_ESCALATION]);
   assert.deepEqual(changeErrors('project', d, new Set(['escalationDays'])), []);
   assert.deepEqual(changeErrors('project', draftFrom(start)), []);
+});
+
+test('a preview line without a title names only the record kind and the project', () => {
+  const base = { projectId: 'p1', projectName: 'Harbour Works', recordId: 'r1', kind: 'reminder', from: null, to: null };
+  assert.equal(previewTitle({ ...base, recordKind: 'task', title: null }), 'A task in Harbour Works');
+  assert.equal(previewTitle({ ...base, recordKind: 'risk', title: null }), 'A risk in Harbour Works');
+  assert.equal(previewTitle({ ...base, recordKind: 'task', title: 'Write the report' }), 'Write the report');
+  assert.equal(previewTitle({ ...base, recordKind: 'task', title: '' }), 'Untitled');
 });

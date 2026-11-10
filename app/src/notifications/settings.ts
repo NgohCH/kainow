@@ -188,19 +188,23 @@ export async function loadHolidayDates(db: Db, projectId: string | null): Promis
   return new Set(rows.map((r) => r.d as string));
 }
 
-/** What applies to a project: the project's value where the Administrator allows it and one is set, else the organisation's. */
+/**
+ * What applies to a project: the project's own value whenever one is set, else the organisation's. The Administrator's
+ * switches only decide whether a project may change a group (`canEdit`); turning one off keeps existing project values
+ * in force, read-only (spec §9.2, ruling R28). The Administrator can clear them.
+ */
 export function resolveEffective(org: OrgRow, proj: ProjectRow, holidays: ReadonlySet<string>): Effective {
   const delegation = { calendar: org.projectsMayChangeCalendar, timings: org.projectsMayChangeTimings, digest: org.projectsMayChangeDigest };
-  const pick = <K extends SettingKey>(k: K, group: 'calendar' | 'timings'): [NonNullable<ProjectRow[K]> | OrgRow[K], Source] => {
+  const pick = <K extends SettingKey>(k: K): [NonNullable<ProjectRow[K]> | OrgRow[K], Source] => {
     const own = proj[k];
-    return delegation[group] && own !== null ? [own as NonNullable<ProjectRow[K]>, 'project'] : [org[k], 'organisation'];
+    return own !== null ? [own as NonNullable<ProjectRow[K]>, 'project'] : [org[k], 'organisation'];
   };
-  const [dayCounting, sDay] = pick('dayCounting', 'calendar');
-  const [weekdays, sWeek] = pick('weekdays', 'calendar');
-  const [leadDays, sLead] = pick('leadDays', 'timings');
-  const [escalationDays, sEsc] = pick('escalationDays', 'timings');
+  const [dayCounting, sDay] = pick('dayCounting');
+  const [weekdays, sWeek] = pick('weekdays');
+  const [leadDays, sLead] = pick('leadDays');
+  const [escalationDays, sEsc] = pick('escalationDays');
   const digest: DigestSchedule | null =
-    delegation.digest && proj.digestEnabled && proj.digestFrequency && proj.digestTime
+    proj.digestEnabled && proj.digestFrequency && proj.digestTime
       ? { frequency: proj.digestFrequency, weekday: proj.digestFrequency === 'weekly' ? proj.digestWeekday : null, time: proj.digestTime }
       : null;
   return {

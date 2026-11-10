@@ -28,7 +28,16 @@ export const FIELD_LABEL: Record<string, string> = {
 
 export const WEEKDAY_NAMES = ['', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday'];
 
-export interface PreviewItem { recordKind: string; recordId: string; title: string; kind: string; from: string | null; to: string | null }
+/** `title` is null when the viewer cannot read the project's content (an Administrator with no role there). */
+export interface PreviewItem {
+  projectId: string; projectName: string; recordKind: string; recordId: string; title: string | null; kind: string; from: string | null; to: string | null;
+}
+
+/** The name of a preview line: the title, or only the record kind and project when the title is withheld. */
+export function previewTitle(i: PreviewItem): string {
+  if (i.title === null) return `${i.recordKind === 'risk' ? 'A risk' : 'A task'} in ${i.projectName}`;
+  return i.title || 'Untitled';
+}
 export interface Preview { moved: PreviewItem[]; added: PreviewItem[]; removed: PreviewItem[] }
 
 export const previewIsEmpty = (p: Preview): boolean => p.moved.length + p.added.length + p.removed.length === 0;

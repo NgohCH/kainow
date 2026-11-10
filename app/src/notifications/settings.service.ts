@@ -4,7 +4,7 @@ import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
-import { type ProjectContext, ProjectAccess } from '../projects/access.service';
+import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { type PlannedTrigger, planProject } from './planner';
 import {
   EMPTY_PROJECT, GROUP_OF, MSG, NOT_ALLOWED, type OrgRow, type ProjectRow, applyProject, historyText, loadHolidayDates,
@@ -15,7 +15,10 @@ type Db = Pool | PoolClient;
 const DAY_MS = 86_400_000;
 const EDITORS = ['pm', 'owner', 'sponsor'];
 
-export interface PreviewItem { recordKind: string; recordId: string; title: string; kind: string; from: string | null; to: string | null }
+/** `title` is null when the person asking cannot read the project's content (an Administrator with no role). */
+export interface PreviewItem {
+  projectId: string; projectName: string; recordKind: string; recordId: string; title: string | null; kind: string; from: string | null; to: string | null;
+}
 export interface Preview { moved: PreviewItem[]; added: PreviewItem[]; removed: PreviewItem[] }
 
 const reasonOf = (v: unknown): string => {
@@ -265,8 +268,12 @@ export class NotificationSettingsService {
 
   // ---- Preview ----
 
-  /** Triggers in the next 30 days that the proposed change would move, add or remove (those already recorded are left out). */
+  /**
+   * Triggers in the next 30 days that the proposed change would move, add or remove (those already recorded are left out).
+   * Task titles and risk descriptions are given only where `user` can read the project's content.
+   */
   private async preview(
+    user: AuthUser,
     projectIds: string[],
     propose: (cur: { org: OrgRow; proj: ProjectRow; projectId: string }) => Proposal | Promise<Proposal>,
   ): Promise<Preview> {
@@ -279,6 +286,8 @@ export class NotificationSettingsService {
     for (const projectId of projectIds) {
       const proj = await loadProjectRow(this.pool, projectId);
       const next = await propose({ org, proj, projectId });
+      const projectName = (await this.pool.query(`SELECT name FROM projects WHERE id = $1`, [projectId])).rows[0]?.name as string;
+      const readable = canReadContent(await this.access.load(projectId, user));
       const holidays = await loadHolidayDates(this.pool, projectId);
       const tasks = await loadTaskSnaps(this.pool, projectId);
       const risks = await loadRiskSnaps(this.pool, projectId);
@@ -287,11 +296,12 @@ export class NotificationSettingsService {
         const e = resolveEffective(o, p, h);
         return planProject({ cal: e.cal, timings: e.timings, tasks, risks });
       };
-      const before = new Map(this.matchKeys(plan(org, proj, holidays)).filter(([, t]) => !recorded.has(t.key)));
-      const after = new Map(this.matchKeys(plan(next.org, next.proj, next.holidays ?? holidays)).filter(([, t]) => !recorded.has(t.key)));
+      const [b0, a0] = matchKeys(plan(org, proj, holidays), plan(next.org, next.proj, next.holidays ?? holidays));
+      const before = new Map(b0.filter(([, t]) => !recorded.has(t.key)));
+      const after = new Map(a0.filter(([, t]) => !recorded.has(t.key)));
       const item = (t: PlannedTrigger, f: PlannedTrigger | null, g: PlannedTrigger | null): PreviewItem => ({
-        recordKind: t.recordKind, recordId: t.recordId,
-        title: String(t.detail.title ?? t.detail.description ?? ''), kind: t.kind,
+        projectId, projectName, recordKind: t.recordKind, recordId: t.recordId,
+        title: readable ? String(t.detail.title ?? t.detail.description ?? '') : null, kind: t.kind,
         from: f ? f.fireAt.toISOString() : null, to: g ? g.fireAt.toISOString() : null,
       });
       for (const [k, a] of before) {
@@ -304,26 +314,10 @@ export class NotificationSettingsService {
     return out;
   }
 
-  /** Reminders are matched by their rank (longest lead first) so changing 7 to 5 days reads as a move, not a removal and an addition. */
-  private matchKeys(plan: PlannedTrigger[]): [string, PlannedTrigger][] {
-    const reminders = new Map<string, PlannedTrigger[]>();
-    const out: [string, PlannedTrigger][] = [];
-    for (const t of plan) {
-      if (t.kind !== 'reminder') { out.push([t.key, t]); continue; }
-      const prefix = t.key.replace(/:reminder:\d+:/, ':reminder:');
-      reminders.set(prefix, [...(reminders.get(prefix) ?? []), t]);
-    }
-    for (const [prefix, list] of reminders) {
-      list.sort((x, y) => Number(y.detail.lead) - Number(x.detail.lead));
-      list.forEach((t, i) => out.push([`${prefix}#${i}`, t]));
-    }
-    return out;
-  }
-
-  async previewOrganisation(b: Record<string, unknown>): Promise<Preview> {
+  async previewOrganisation(user: AuthUser, b: Record<string, unknown>): Promise<Preview> {
     const changes = parseOrgChanges(b.changes);
     const ids = (await this.pool.query(`SELECT id FROM projects WHERE status = 'active' ORDER BY id`)).rows.map((r) => r.id as string);
-    return this.preview(ids, ({ org, proj }) => ({ org: { ...org, ...changes }, proj }));
+    return this.preview(user, ids, ({ org, proj }) => ({ org: { ...org, ...changes }, proj }));
   }
 
   async previewProject(user: AuthUser, projectId: string, b: Record<string, unknown>): Promise<Preview> {
@@ -331,7 +325,7 @@ export class NotificationSettingsService {
     if (!this.canEditRole(ctx)) throw new ForbiddenException(NOT_EDITOR);
     const changes = parseProjectChanges(b.changes);
     if (ctx.project.status !== 'active') return { moved: [], added: [], removed: [] };
-    return this.preview([projectId], ({ org, proj }) => ({ org, proj: applyProject(proj, changes) }));
+    return this.preview(user, [projectId], ({ org, proj }) => ({ org, proj: applyProject(proj, changes) }));
   }
 
   /** The holidays that would apply to a project after adding a date and/or removing a current holiday. */
@@ -352,10 +346,10 @@ export class NotificationSettingsService {
     return { add, removeId };
   }
 
-  async previewOrganisationHoliday(b: Record<string, unknown>): Promise<Preview> {
+  async previewOrganisationHoliday(user: AuthUser, b: Record<string, unknown>): Promise<Preview> {
     const { add, removeId } = this.holidayProposal(b);
     const ids = (await this.pool.query(`SELECT id FROM projects WHERE status = 'active' ORDER BY id`)).rows.map((r) => r.id as string);
-    return this.preview(ids, async ({ org, proj, projectId }) => ({ org, proj, holidays: await this.holidaysAfter(projectId, add, removeId) }));
+    return this.preview(user, ids, async ({ org, proj, projectId }) => ({ org, proj, holidays: await this.holidaysAfter(projectId, add, removeId) }));
   }
 
   async previewProjectHoliday(user: AuthUser, projectId: string, b: Record<string, unknown>): Promise<Preview> {
@@ -363,6 +357,41 @@ export class NotificationSettingsService {
     if (!this.canEditRole(ctx)) throw new ForbiddenException(NOT_EDITOR);
     const { add, removeId } = this.holidayProposal(b);
     if (ctx.project.status !== 'active') return { moved: [], added: [], removed: [] };
-    return this.preview([projectId], async ({ org, proj }) => ({ org, proj, holidays: await this.holidaysAfter(projectId, add, removeId) }));
+    return this.preview(user, [projectId], async ({ org, proj }) => ({ org, proj, holidays: await this.holidaysAfter(projectId, add, removeId) }));
   }
+}
+
+/**
+ * Pairs the triggers of the plan before and after a change, giving each the same key on both sides when they are the
+ * same notice. Non-reminders keep their own key. A task's reminders of the same lead are the same notice; the
+ * remaining ones are paired by rank (longest lead first), so changing 7 to 5 days reads as a move, and adding a
+ * reminder never shows an unchanged one as moved.
+ */
+export function matchKeys(before: PlannedTrigger[], after: PlannedTrigger[]): [[string, PlannedTrigger][], [string, PlannedTrigger][]] {
+  const group = (plan: PlannedTrigger[], out: [string, PlannedTrigger][]) => {
+    const reminders = new Map<string, PlannedTrigger[]>();
+    for (const t of plan) {
+      if (t.kind !== 'reminder') { out.push([t.key, t]); continue; }
+      const prefix = t.key.replace(/:reminder:\d+:/, ':reminder:');
+      reminders.set(prefix, [...(reminders.get(prefix) ?? []), t]);
+    }
+    return reminders;
+  };
+  const outB: [string, PlannedTrigger][] = [];
+  const outA: [string, PlannedTrigger][] = [];
+  const rb = group(before, outB);
+  const ra = group(after, outA);
+  const lead = (t: PlannedTrigger) => Number(t.detail.lead);
+  for (const prefix of new Set([...rb.keys(), ...ra.keys()])) {
+    const b = rb.get(prefix) ?? [];
+    const a = ra.get(prefix) ?? [];
+    const leadsB = new Set(b.map(lead));
+    const leadsA = new Set(a.map(lead));
+    for (const t of b) if (leadsA.has(lead(t))) outB.push([`${prefix}@${lead(t)}`, t]);
+    for (const t of a) if (leadsB.has(lead(t))) outA.push([`${prefix}@${lead(t)}`, t]);
+    const rest = (list: PlannedTrigger[], other: Set<number>) => list.filter((t) => !other.has(lead(t))).sort((x, y) => lead(y) - lead(x));
+    rest(b, leadsA).forEach((t, i) => outB.push([`${prefix}#${i}`, t]));
+    rest(a, leadsB).forEach((t, i) => outA.push([`${prefix}#${i}`, t]));
+  }
+  return [outB, outA];
 }

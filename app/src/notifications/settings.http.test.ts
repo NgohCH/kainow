@@ -4,7 +4,7 @@ import { uuidv7 } from '../common/uuid7';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
-import { loadEffective, loadRiskSnaps, loadTaskSnaps } from './settings';
+import { loadEffective, loadEffectiveMany, loadRiskSnaps, loadTaskSnaps } from './settings';
 
 describe('notification settings, holidays and preview', { skip: SKIP_NO_DB }, () => {
   let t: TestApp;
@@ -126,17 +126,35 @@ describe('notification settings, holidays and preview', { skip: SKIP_NO_DB }, ()
     assert.deepEqual([cleared.body.leadDays, cleared.body.sources.leadDays, cleared.body.own.leadDays], [[7, 1], 'organisation', null]);
   });
 
-  test('switching a group off keeps the project value but ignores it and removes canEdit', async () => {
+  test('switching a group off keeps the project value in force but read-only (spec §9.2, R28)', async () => {
     await allow('Timings');
-    await setProj({ escalationDays: 6 });
+    await allow('Calendar');
+    await allow('Digest');
+    await setProj({ escalationDays: 6, leadDays: [3, 1], weekdays: [1, 2, 3, 4], digestEnabled: true, digestFrequency: 'daily', digestTime: '08:30' });
     assert.equal((await pm.request('GET', `/projects/${projectId}/notification-settings`)).body.escalationDays, 6);
+    // The organisation preview of switching the groups off: nothing moves for a project with its own values.
+    await seedTask();
+    const prev = await admin.request('POST', '/notification-settings/preview', { changes: { projectsMayChangeTimings: false, projectsMayChangeCalendar: false } });
+    assert.equal(prev.status, 200);
+    assert.deepEqual([prev.body.moved, prev.body.added, prev.body.removed], [[], [], []]);
     await allow('Timings', false);
+    await allow('Calendar', false);
+    await allow('Digest', false);
     const v = await pm.request('GET', `/projects/${projectId}/notification-settings`);
-    assert.deepEqual([v.body.escalationDays, v.body.sources.escalationDays, v.body.own.escalationDays, v.body.canEdit.timings], [3, 'organisation', 6, false]);
+    assert.deepEqual(
+      [v.body.escalationDays, v.body.sources.escalationDays, v.body.own.escalationDays, v.body.weekdays, v.body.sources.weekdays, v.body.leadDays],
+      [6, 'project', 6, [1, 2, 3, 4], 'project', [3, 1]],
+    );
+    assert.deepEqual(v.body.canEdit, { calendar: false, timings: false, digest: false });
+    assert.deepEqual(v.body.digest, { frequency: 'daily', weekday: null, time: '08:30' });
     assert.equal((await setProj({ escalationDays: 2 })).status, 403);
+    // The sweep's loaders (one project and many) give the same values.
     const eff = await loadEffective(t.pool, projectId);
-    assert.equal(eff.timings.escalationDays, 3);
+    assert.deepEqual([eff.timings.escalationDays, eff.timings.leadDays, eff.cal.weekdays], [6, [3, 1], [1, 2, 3, 4]]);
+    assert.deepEqual(eff.digest, { frequency: 'daily', weekday: null, time: '08:30' });
     assert.deepEqual(eff.delegation, { calendar: false, timings: false, digest: false });
+    const many = (await loadEffectiveMany(t.pool, [projectId])).get(projectId);
+    assert.deepEqual([many?.timings.escalationDays, many?.cal.weekdays, many?.digest], [6, [1, 2, 3, 4], { frequency: 'daily', weekday: null, time: '08:30' }]);
   });
 
   test('the digest schedule is validated and gated by its own switch', async () => {
@@ -201,10 +219,23 @@ describe('notification settings, holidays and preview', { skip: SKIP_NO_DB }, ()
     assert.equal(prev.body.moved.length, 1);
     const m = prev.body.moved[0];
     // Seven working days before Fri 20 Nov is Wed 11 Nov; five is Fri 13 Nov; both at 09:00 UTC+8.
+    // The Administrator holds no role in the project: the task title is project content and is not shown.
     assert.deepEqual(
-      [m.recordKind, m.recordId, m.title, m.kind, m.from, m.to],
-      ['task', taskId, 'Write the report', 'reminder', '2026-11-11T01:00:00.000Z', '2026-11-13T01:00:00.000Z'],
+      [m.recordKind, m.recordId, m.projectId, m.projectName, m.title, m.kind, m.from, m.to],
+      ['task', taskId, projectId, 'Project', null, 'reminder', '2026-11-11T01:00:00.000Z', '2026-11-13T01:00:00.000Z'],
     );
+    assert.ok(!JSON.stringify(prev.body).includes('Write the report'));
+    const hol = await admin.request('POST', '/notification-settings/holidays/preview', { add: { date: '2026-11-19' } });
+    assert.ok(hol.body.moved.length > 0 && hol.body.moved.every((x: { title: unknown }) => x.title === null));
+    // An Administrator who also holds a role in the project sees the title.
+    await t.pool.query(
+      `INSERT INTO memberships (id, project_id, user_id, role, starts_on) VALUES ($1, $2, $3, 'sponsor', '2026-11-01')`,
+      [uuidv7(), projectId, ids.admin],
+    );
+    const withRole = await admin.request('POST', '/notification-settings/preview', { changes: { leadDays: [5, 1] } });
+    assert.equal(withRole.body.moved[0].title, 'Write the report');
+    const holWithRole = await admin.request('POST', '/notification-settings/holidays/preview', { add: { date: '2026-11-19' } });
+    assert.ok(holWithRole.body.moved.every((x: { title: unknown }) => x.title === 'Write the report'));
     // The change is only previewed.
     assert.deepEqual((await admin.request('GET', '/notification-settings')).body.leadDays, [7, 1]);
 
@@ -216,6 +247,33 @@ describe('notification settings, holidays and preview', { skip: SKIP_NO_DB }, ()
     const after = await admin.request('POST', '/notification-settings/preview', { changes: { leadDays: [5, 1] } });
     assert.deepEqual([after.body.moved.length, after.body.removed.length], [0, 0]);
     assert.deepEqual(after.body.added.map((x: { kind: string; to: string }) => [x.kind, x.to]), [['reminder', '2026-11-13T01:00:00.000Z']]);
+  });
+
+  test('reminders keep their pairing by lead: adding a 5-day reminder to [7,1] when 7 days had passed shows only the new one', async () => {
+    // The due date was set on Thu 12 Nov for Fri 20 Nov: the 7-day reminder (Wed 11 Nov) had already passed, so only the 1-day one is planned.
+    const taskId = uuidv7();
+    await t.pool.query(
+      `INSERT INTO tasks (id, project_id, depth, title, assignee_id, due_on, status, authorised_by, authorised_at)
+       VALUES ($1, $2, 0, 'Late task', $3, '2026-11-20', 'not_started', $4, '2026-11-12T00:00:00Z')`,
+      [taskId, projectId, ids.ann, ids.owner],
+    );
+    const prev = await admin.request('POST', '/notification-settings/preview', { changes: { leadDays: [5, 1] } });
+    assert.equal(prev.status, 200);
+    assert.deepEqual(prev.body.moved, []);
+    assert.deepEqual(prev.body.removed, []);
+    // Five working days before Fri 20 Nov is Fri 13 Nov 09:00 UTC+8.
+    assert.deepEqual(prev.body.added.map((x: { recordId: string; kind: string; from: unknown; to: string }) => [x.recordId, x.kind, x.from, x.to]), [
+      [taskId, 'reminder', null, '2026-11-13T01:00:00.000Z'],
+    ]);
+    // Leftovers still pair by rank: [7,1] → [3,1] moves the 7-day reminder of a task where it is planned.
+    const other = await seedTask('2026-11-27', 'Planned early');
+    const p2 = await admin.request('POST', '/notification-settings/preview', { changes: { leadDays: [3, 1] } });
+    assert.deepEqual(p2.body.moved.map((x: { recordId: string; from: string; to: string }) => [x.recordId, x.from, x.to]), [
+      [other, '2026-11-18T01:00:00.000Z', '2026-11-24T01:00:00.000Z'],
+    ]);
+    // For the late task the 1-day reminder stays paired with itself; its new 3-day reminder (Tue 17 Nov) is new.
+    assert.deepEqual(p2.body.added.map((x: { recordId: string; to: string }) => [x.recordId, x.to]), [[taskId, '2026-11-17T01:00:00.000Z']]);
+    assert.equal(p2.body.removed.length, 0);
   });
 
   test('a project preview covers that project, and an organisation preview skips projects with their own value', async () => {

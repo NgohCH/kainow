@@ -32,16 +32,16 @@ export class NotificationSettingsController {
   @Post('notification-settings/preview')
   @HttpCode(200)
   @RequireAction('organisation.manage')
-  previewOrganisation(@Body() b: unknown) {
-    return this.settings.previewOrganisation(body(b));
+  previewOrganisation(@Body() b: unknown, @Req() req: HttpRequest) {
+    return this.settings.previewOrganisation(who(req), body(b));
   }
 
   /** { add?: { date }, removeId? } */
   @Post('notification-settings/holidays/preview')
   @HttpCode(200)
   @RequireAction('organisation.manage')
-  previewOrgHoliday(@Body() b: unknown) {
-    return this.settings.previewOrganisationHoliday(body(b));
+  previewOrgHoliday(@Body() b: unknown, @Req() req: HttpRequest) {
+    return this.settings.previewOrganisationHoliday(who(req), body(b));
   }
 
   @Get('notification-settings/holidays')
