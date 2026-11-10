@@ -193,16 +193,19 @@ describe('action-item digests over HTTP and the sweep', { skip: SKIP_NO_DB }, ()
     assert.deepEqual((await digestKeys()).map((k) => k.key), [`project:${projectId}:digest:2026-11-20`]);
   });
 
-  test('without a schedule, or without the delegation, no digest is sent', async () => {
+  test('without a schedule no digest is sent; a schedule stays in force after the delegation is turned off (spec 9.2, R28)', async () => {
     await task();
     t.clock.ms = at(20, 10);
     await sweep().run();
+    assert.equal((await digestKeys()).length, 0);
+    // Set while the switch was on; the switch is now off (its default): the project's schedule still applies.
     await t.pool.query(
       `INSERT INTO project_notification_settings (project_id, digest_enabled, digest_frequency, digest_time) VALUES ($1, true, 'daily', '09:00')`,
       [projectId],
     );
+    assert.equal((await t.pool.query(`SELECT projects_may_change_digest FROM notification_settings`)).rows[0].projects_may_change_digest, false);
     await sweep().run();
-    assert.equal((await digestKeys()).length, 0);
+    assert.deepEqual((await digestKeys()).map((k) => [k.key, k.outcome]), [[`project:${projectId}:digest:2026-11-20`, 'sent']]);
   });
   test('a failing nudge after commit still answers 201 with the emails queued', async () => {
     await t.close();
