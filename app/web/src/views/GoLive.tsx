@@ -1,12 +1,12 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, api } from '../api.ts';
-import { CLOSING_RULE, closedText, installText, linkKind, stepState, type GoLive as GoLiveData, type GoLiveStep } from '../golive.ts';
+import { CLOSING_RULE, closedText, installText, linkKind, stepLinkHidden, stepState, tickWaitText, type GoLive as GoLiveData, type GoLiveStep } from '../golive.ts';
 
 const message = (e: unknown): string => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
 
 type Action = 'tick' | 'untick' | 'skip';
 
-function Step({ s, onAction, busy }: { s: GoLiveStep; onAction: (key: string, action: Action, note: string) => void; busy: boolean }) {
+function Step({ s, closed, onAction, busy }: { s: GoLiveStep; closed: boolean; onAction: (key: string, action: Action, note: string) => void; busy: boolean }) {
   const [asking, setAsking] = useState(false);
   const [note, setNote] = useState('');
   const [skipping, setSkipping] = useState(false);
@@ -21,6 +21,9 @@ function Step({ s, onAction, busy }: { s: GoLiveStep; onAction: (key: string, ac
 
   const showTick = s.canTick && s.mode === 'confirm' && !s.done;
   const showSkip = s.canTick && s.key === 'logos' && !s.done;
+  // The test-email step's Mark done stays visible but disabled until a test email has been sent.
+  const waiting = tickWaitText(s, closed);
+  const waitId = `wait-${s.key}`;
   return (
     <li ref={item} tabIndex={-1} id={`step-${s.key}`} className="golive-step">
       <h2 className="golive-step-text">
@@ -30,13 +33,25 @@ function Step({ s, onAction, busy }: { s: GoLiveStep; onAction: (key: string, ac
       </h2>
       <p>{s.explanation}</p>
       <p>
-        {linkKind(s.link) === 'page' ? <a href={s.link}>Open the page for this step</a> : <span className="meta">{installText(s.link)}</span>}
+        {linkKind(s.link) === 'page' ? (
+          <a href={s.link}>
+            Open the page for this step<span className="visually-hidden">{stepLinkHidden(s.position)}</span>
+          </a>
+        ) : (
+          <span className="meta">{installText(s.link)}</span>
+        )}
       </p>
       <p className="golive-state">
         <strong>{stepState(s)}</strong>
         {s.mode === 'auto' && <span className="meta"> (Kainow ticks this step itself)</span>}
       </p>
       {s.note && <p className="meta">Note: {s.note}</p>}
+      {waiting && !asking && (
+        <div className="golive-actions">
+          <button type="button" disabled aria-describedby={waitId}>Mark done</button>
+          <span id={waitId} className="meta">{waiting}</span>
+        </div>
+      )}
       {(showTick || showSkip || s.canUntick) && !asking && (
         <div className="golive-actions">
           {showTick && (
@@ -124,32 +139,33 @@ export function GoLive() {
       {data && (
         <>
           {data.closedAt ? (
-            <section aria-labelledby="closed-heading">
-              <h2 id="closed-heading">{closedText(data.closedAt)}</h2>
-              <p className="meta">This page is now a record. Steps can no longer be changed.</p>
-            </section>
+            <>
+              <section aria-labelledby="closed-heading">
+                <h2 id="closed-heading">{closedText(data.closedAt)}</h2>
+                <p className="meta">This page is now a record. Steps can no longer be changed.</p>
+              </section>
+              <section aria-labelledby="notdone-heading">
+                <h2 id="notdone-heading">Not done at close</h2>
+                {data.notDoneAtClose.length === 0 ? (
+                  <p className="meta">Every step was done.</p>
+                ) : (
+                  <ul>
+                    {data.notDoneAtClose.map((k) => (
+                      <li key={k}>Step {stepOf(k)?.position}: {stepOf(k)?.text ?? k}</li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+            </>
           ) : (
             <p className="meta">{CLOSING_RULE}</p>
           )}
-          <ol className="golive-list">
+          {/* role="list" keeps the list announced as one where list-style is removed (Safari). */}
+          <ol className="golive-list" role="list">
             {data.steps.map((s) => (
-              <Step key={s.key} s={s} onAction={(k, a, n) => void act(k, a, n)} busy={busy} />
+              <Step key={s.key} s={s} closed={!!data.closedAt} onAction={(k, a, n) => void act(k, a, n)} busy={busy} />
             ))}
           </ol>
-          {data.closedAt && (
-            <section aria-labelledby="notdone-heading">
-              <h2 id="notdone-heading">Not done at close</h2>
-              {data.notDoneAtClose.length === 0 ? (
-                <p className="meta">Every step was done.</p>
-              ) : (
-                <ul>
-                  {data.notDoneAtClose.map((k) => (
-                    <li key={k}>Step {stepOf(k)?.position}: {stepOf(k)?.text ?? k}</li>
-                  ))}
-                </ul>
-              )}
-            </section>
-          )}
         </>
       )}
     </main>

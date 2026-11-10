@@ -54,3 +54,13 @@ export function installText(link: string): string {
   const section = link.replace(/^INSTALL\.md,?\s*/, '').replace(/^the section on\s*/, '');
   return `See INSTALL.md: ${section || 'the install guide'}`;
 }
+
+/** Read only by screen readers after "Open the page for this step", so each step's link has its own name. */
+export const stepLinkHidden = (position: number): string => ` (step ${position})`;
+
+export const TEST_EMAIL_FIRST = 'Send a test email first, then check it arrived.';
+
+/** Why the test-email step's Mark done is shown disabled; null when the button is not waiting for anything. */
+export function tickWaitText(s: Pick<GoLiveStep, 'key' | 'mode' | 'done' | 'canTick'>, closed: boolean): string | null {
+  return s.key === 'test_email' && s.mode === 'confirm' && !s.done && !s.canTick && !closed ? TEST_EMAIL_FIRST : null;
+}

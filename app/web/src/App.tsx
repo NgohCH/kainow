@@ -13,7 +13,6 @@ import { Setup } from './views/Setup.tsx';
 import { People } from './views/People.tsx';
 import { ProjectPage } from './views/ProjectPage.tsx';
 import { GoLive } from './views/GoLive.tsx';
-import { useGoLiveSummary } from './views/goLiveSummary.ts';
 import { Deliveries } from './views/Deliveries.tsx';
 import { Notifications } from './views/Notifications.tsx';
 import { NotificationsSettings } from './views/NotificationSettings.tsx';
@@ -205,8 +204,6 @@ export function App() {
     go('#/');
   }, []);
 
-  const goLive = useGoLiveSummary(!!user && user.role === 'enterprise_administrator');
-
   if (user === undefined) return <p className="loading">Loading</p>;
   // An invitation link works before sign-in: it shows the invitation and then asks the person to sign in.
   const invitation = /^#\/invitations\/([A-Za-z0-9_-]{20,})$/.exec(hash);
@@ -281,7 +278,8 @@ export function App() {
               <a href="#/approvals" aria-current={adminPage === 'approvals' ? 'page' : undefined}>Approvals</a>
               <a href="#/notifications-settings" aria-current={adminPage === 'notifications-settings' ? 'page' : undefined}>Notifications and email</a>
               <a href="#/deliveries" aria-current={adminPage === 'deliveries' ? 'page' : undefined}>Email delivery</a>
-              {goLive && <a href="#/go-live" aria-current={adminPage === 'go-live' ? 'page' : undefined}>Go-live</a>}
+              {/* Always there for Administrators: after closing, the page is the read-only record. */}
+              <a href="#/go-live" aria-current={adminPage === 'go-live' ? 'page' : undefined}>Go-live</a>
               <a href="#/domains" aria-current={adminPage === 'domains' ? 'page' : undefined}>Domains</a>
               <a href="#/spending" aria-current={adminPage === 'spending' ? 'page' : undefined}>AI spending</a>
             </>
