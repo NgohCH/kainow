@@ -469,8 +469,9 @@ test('scope project with no project is not eligible; a sent row loses its old re
 });
 
 test('a row claimed and then marked uncertain by a second dispatcher is not sent by the first', { skip: SKIP_NO_DB }, async () => {
-  await queue({ subject: 'Row A' });
-  await queue({ subject: 'Row B' });
+  // distinct creation times fix the claim order (A, then B); with equal times it falls to a random id and either row may go first
+  await queue({ subject: 'Row A', now: new Date(START) });
+  await queue({ subject: 'Row B', now: new Date(START + 1000) });
   const t2 = new ScriptedTransport();
   const d2 = dispatcher(t2);
   const first: string[] = [];
@@ -484,7 +485,7 @@ test('a row claimed and then marked uncertain by a second dispatcher is not sent
     },
   };
   await dispatcher(t1).dispatchDue();
-  assert.equal(first.length, 1, 'the first dispatcher stops at the row it lost');
+  assert.deepEqual(first, ['Row A'], 'the first dispatcher stops at the row it lost');
   const sentB = [...first, ...t2.sent.map((m) => m.subject)].filter((x) => x === 'Row B');
   assert.equal(sentB.length, 1);
 });
