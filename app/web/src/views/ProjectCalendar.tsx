@@ -1,8 +1,9 @@
-import { createContext, type ReactNode, useContext, useEffect, useMemo, useState } from 'react';
+import { createContext, type ReactNode, useCallback, useContext, useEffect, useMemo, useState } from 'react';
 import { api } from '../api.ts';
 import { type CalendarSettings, NOT_WORKING_DAY, isWorkingDayClient, modeLabel } from '../calendar.ts';
 
-const Ctx = createContext<CalendarSettings | null>(null);
+interface CalendarValue { settings: CalendarSettings | null; refresh: () => void }
+const Ctx = createContext<CalendarValue>({ settings: null, refresh: () => undefined });
 
 interface SettingsResponse { dayCounting: 'working' | 'calendar'; weekdays: number[] }
 interface HolidaysResponse {
@@ -13,6 +14,8 @@ interface HolidaysResponse {
 /** Fetches the project's effective calendar once and shares it with the date fields and deadlines below. */
 export function ProjectCalendarProvider({ projectId, children }: { projectId: string | undefined; children: ReactNode }) {
   const [settings, setSettings] = useState<CalendarSettings | null>(null);
+  const [version, setVersion] = useState(0);
+  const refresh = useCallback(() => setVersion((v) => v + 1), []);
   useEffect(() => {
     if (!projectId) return;
     let live = true;
@@ -30,11 +33,14 @@ export function ProjectCalendarProvider({ projectId, children }: { projectId: st
     return () => {
       live = false;
     };
-  }, [projectId]);
-  return <Ctx.Provider value={settings}>{children}</Ctx.Provider>;
+  }, [projectId, version]);
+  const value = useMemo(() => ({ settings, refresh }), [settings, refresh]);
+  return <Ctx.Provider value={value}>{children}</Ctx.Provider>;
 }
 
-export const useProjectCalendar = (): CalendarSettings | null => useContext(Ctx);
+export const useProjectCalendar = (): CalendarSettings | null => useContext(Ctx).settings;
+/** Reloads the page's calendar after the settings or holidays change. Does nothing outside a project page. */
+export const useRefreshCalendar = (): (() => void) => useContext(Ctx).refresh;
 
 /** The warning under a date field when the chosen date is not a working day. Nothing is changed; the date stays. */
 export function NonWorkingDayNote({ date, id }: { date: string; id?: string }) {

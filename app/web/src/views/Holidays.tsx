@@ -11,7 +11,7 @@ interface Listing { holidays: Holiday[]; organisationHolidays?: Array<{ id: stri
 type Pending = { kind: 'add'; date: string; name: string } | { kind: 'remove'; id: string; label: string };
 
 /** Holidays for the organisation or one project: add or remove with a reason, after seeing what would move. */
-export function Holidays({ projectId, canEdit, onChanged }: { projectId?: string; canEdit: boolean; onChanged?: () => void }) {
+export function Holidays({ projectId, canEdit, notice: blockedNote, onChanged }: { projectId?: string; canEdit: boolean; notice?: string | null; onChanged?: () => void }) {
   const base = projectId ? `/projects/${projectId}/holidays` : '/notification-settings/holidays';
   const [list, setList] = useState<Listing | null>(null);
   const [date, setDate] = useState('');
@@ -96,6 +96,7 @@ export function Holidays({ projectId, canEdit, onChanged }: { projectId?: string
           ))}
         </ul>
       )}
+      {!canEdit && blockedNote && <p className="meta">{blockedNote}</p>}
       {canEdit && !pending && (
         <form className="panel stack" onSubmit={startAdd} aria-label="Add a holiday">
           <label>Date <input type="date" required value={date} onChange={(e) => setDate(e.target.value)} /></label>

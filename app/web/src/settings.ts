@@ -124,3 +124,14 @@ export function buildChanges(scope: 'organisation' | 'project', start: Current, 
   }
   return out;
 }
+
+export const BLANK_ESCALATION = 'The escalation delay must be 1–10 days.';
+export const BLANK_SWEEP = 'The sweep interval must be 5–60 minutes.';
+
+/** Problems to show before asking the server: a blank number is never sent (it would read as "clear the override"). */
+export function changeErrors(scope: 'organisation' | 'project', d: Draft, cleared: ReadonlySet<string> = new Set()): string[] {
+  const out: string[] = [];
+  if (d.escalation.trim() === '' && !(scope === 'project' && cleared.has('escalationDays'))) out.push(BLANK_ESCALATION);
+  if (scope === 'organisation' && d.sweep.trim() === '') out.push(BLANK_SWEEP);
+  return out;
+}

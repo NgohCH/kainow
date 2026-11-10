@@ -145,7 +145,7 @@ export function Deliveries() {
     setNotice(null);
     try {
       await api.post('/email/test');
-      say('A test email is queued for your own address. Refresh the list in a minute to see how it went.');
+      say('A test email is queued for your own address. Use Refresh in a minute to see how it went.');
       setReload((n) => n + 1);
       loadStatus();
     } catch (e) {
@@ -186,6 +186,7 @@ export function Deliveries() {
         )}
         <button type="button" onClick={() => void test()}>Send test email</button>
       </section>
+      <button type="button" onClick={() => { setReload((n) => n + 1); loadStatus(); }}>Refresh</button>
       <DeliveryHistory path="/deliveries" onResend={resend} reloadKey={reload} />
     </main>
   );

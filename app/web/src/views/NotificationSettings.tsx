@@ -2,9 +2,10 @@ import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useStat
 import { ApiError, api } from '../api.ts';
 import { formatWhen } from '../format.ts';
 import {
-  type Current, type Draft, type Preview, FIELD_LABEL, WEEKDAY_NAMES, buildChanges, draftFrom, leadDaysText,
+  type Current, type Draft, type Preview, FIELD_LABEL, WEEKDAY_NAMES, buildChanges, changeErrors, draftFrom, leadDaysText,
 } from '../settings.ts';
 import { Holidays } from './Holidays.tsx';
+import { useRefreshCalendar } from './ProjectCalendar.tsx';
 import { PreviewList } from './PreviewList.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
@@ -76,6 +77,7 @@ export function NotificationSettingsForm({ projectId }: { projectId?: string }) 
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const previewBox = useRef<HTMLDivElement>(null);
+  const refreshCalendar = useRefreshCalendar();
 
   const load = useCallback(() => {
     api.get<OrgView | ProjectView>(base).then(
@@ -122,6 +124,11 @@ export function NotificationSettingsForm({ projectId }: { projectId?: string }) 
     e.preventDefault();
     setError(null);
     setNotice(null);
+    const problems = changeErrors(scope, draft!, cleared);
+    if (problems.length > 0) {
+      setError(problems.join(' '));
+      return;
+    }
     try {
       setPreview(await api.post<Preview>(`${base}/preview`, { changes }));
     } catch (err) {
@@ -137,6 +144,7 @@ export function NotificationSettingsForm({ projectId }: { projectId?: string }) 
       setPreview(null);
       setNotice('Saved.');
       load();
+      refreshCalendar();
     } catch (err) {
       setError(errText(err));
     }
@@ -321,9 +329,14 @@ export function NotificationsSettings() {
 /** Project → Settings. Everyone who can read the project sees the values; editing follows `canEdit`. */
 export function ProjectSettings({ projectId }: { projectId: string }) {
   const [canEditCalendar, setCanEditCalendar] = useState(false);
+  const [blocked, setBlocked] = useState<string | null>(null);
+  const refreshCalendar = useRefreshCalendar();
   useEffect(() => {
-    api.get<{ canEdit: { calendar: boolean } }>(`/projects/${projectId}/notification-settings`).then(
-      (v) => setCanEditCalendar(v.canEdit.calendar),
+    api.get<{ canEdit: { calendar: boolean }; delegation: { calendar: boolean } }>(`/projects/${projectId}/notification-settings`).then(
+      (v) => {
+        setCanEditCalendar(v.canEdit.calendar);
+        setBlocked(v.delegation.calendar ? null : NOT_ALLOWED);
+      },
       () => setCanEditCalendar(false),
     );
   }, [projectId]);
@@ -331,7 +344,7 @@ export function ProjectSettings({ projectId }: { projectId: string }) {
     <>
       <h2>Notification settings</h2>
       <NotificationSettingsForm projectId={projectId} />
-      <Holidays projectId={projectId} canEdit={canEditCalendar} />
+      <Holidays projectId={projectId} canEdit={canEditCalendar} notice={blocked} onChanged={refreshCalendar} />
     </>
   );
 }

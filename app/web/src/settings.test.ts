@@ -63,3 +63,13 @@ test('weekday order does not matter', () => {
   const d = { ...draftFrom(start), weekdays: [5, 4, 3, 2, 1] };
   assert.deepEqual(buildChanges('organisation', start, d), {});
 });
+
+import { BLANK_ESCALATION, BLANK_SWEEP, changeErrors } from './settings.ts';
+
+test('a blank escalation delay or sweep interval is refused before sending', () => {
+  const d = { ...draftFrom(start), escalation: ' ', sweep: '' };
+  assert.deepEqual(changeErrors('organisation', d), [BLANK_ESCALATION, BLANK_SWEEP]);
+  assert.deepEqual(changeErrors('project', d), [BLANK_ESCALATION]);
+  assert.deepEqual(changeErrors('project', d, new Set(['escalationDays'])), []);
+  assert.deepEqual(changeErrors('project', draftFrom(start)), []);
+});

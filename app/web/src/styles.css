@@ -290,3 +290,4 @@ mark { background: var(--marker-wash); color: inherit; font-weight: 700; padding
 .deliveries tr:focus { outline: 2px solid var(--teal); outline-offset: -2px; }
 .deliveries .warn.inline { display: block; margin: 0.25rem 0 0; }
 @media (max-width: 40rem) { .deliveries caption { text-align: left; } }
+.facts > div { display: contents; }
