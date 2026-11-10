@@ -9,6 +9,7 @@ import { ChangesModule } from './changes/changes.module';
 import { ExtractionModule } from './extraction/extraction.module';
 import type { ExtractionQueue } from './extraction/queue';
 import { NotesModule } from './notes/notes.module';
+import { NotificationsModule } from './notifications/notifications.module';
 import { OrganisationModule } from './organisation/organisation.module';
 import { ProjectsModule } from './projects/projects.module';
 import { SearchModule } from './search/search.module';
@@ -50,6 +51,7 @@ export class AppModule {
         NotesModule,
         ExtractionModule.register(options.extractionQueue),
         ChangesModule,
+        NotificationsModule,
         SearchModule,
       ],
       controllers: [HealthController],
