@@ -50,7 +50,7 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(body.steps.map((s: any) => s.position), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]);
     assert.equal(step(body, 'organisation').text, 'Register your organisation: its name and email domains');
     assert.equal(step(body, 'organisation').link, '#/organisation');
-    assert.ok(body.steps.every((s: any) => s.explanation.length > 0 && s.explanation.length <= 120));
+    assert.ok(body.steps.every((s: any) => s.explanation.length > 0 && s.explanation.length <= 160));
     assert.deepEqual(body.steps.map((s: any) => s.mode), ['auto', 'auto_or_skip', 'auto', 'confirm', 'confirm', 'confirm', 'confirm', 'confirm', 'auto', 'auto', 'auto']);
     assert.deepEqual([body.closedAt, body.notDoneAtClose], [null, []]);
   });
@@ -165,6 +165,50 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     const body = await get();
     assert.equal(step(body, 'logos').text, "Upload your organisation's logos (optional)");
     assert.equal(step(body, 'calendar').text, "Set the working weekdays and this year's holidays");
+  });
+
+  test('a done step cannot be ticked again and a step that is not done cannot be unticked', async () => {
+    const first = await admin.request('POST', '/go-live/steps/recovery/tick', { note: 'First' });
+    assert.equal(first.status, 200);
+    assert.deepEqual([step(first.body, 'recovery').canTick, step(first.body, 'recovery').canUntick], [false, true], 'a done Confirm step');
+    const before = (await t.pool.query(`SELECT ticked_by, ticked_at, note FROM golive_steps WHERE key = 'recovery'`)).rows[0];
+    const again = await admin.request('POST', '/go-live/steps/recovery/tick', { note: 'Second' });
+    assert.deepEqual([again.status, again.body.message], [409, 'This step is already done.']);
+    assert.deepEqual((await t.pool.query(`SELECT ticked_by, ticked_at, note FROM golive_steps WHERE key = 'recovery'`)).rows[0], before, 'who and when kept');
+    const notDone = await admin.request('POST', '/go-live/steps/calendar/untick');
+    assert.deepEqual([notDone.status, notDone.body.message], [409, 'This step is not done.']);
+    assert.deepEqual([step(await get(), 'calendar').canTick, step(await get(), 'calendar').canUntick], [true, false], 'a Confirm step not done');
+    await admin.request('POST', '/go-live/steps/logos/skip', {});
+    const skipAgain = await admin.request('POST', '/go-live/steps/logos/skip', {});
+    assert.deepEqual([skipAgain.status, skipAgain.body.message], [409, 'This step is already done.']);
+    assert.deepEqual((await events(t)).filter((e) => e.actor_id === adminId).map((e) => [e.step_key, e.action]), [['recovery', 'ticked'], ['logos', 'ticked']], 'no history for refused changes');
+  });
+
+  test('a skipped logos step becomes a Kainow tick once a logo is uploaded', async () => {
+    await admin.request('POST', '/go-live/steps/logos/skip', { note: 'Later' });
+    assert.equal(step(await get(), 'logos').skipped, true);
+    assert.equal((await admin.upload('PUT', '/organisation/logos/square', pngHeader(64, 64), 'image/png')).status, 200);
+    const logos = step(await get(), 'logos');
+    assert.deepEqual([logos.done, logos.skipped, logos.tickedBy, logos.canUntick, logos.note], [true, false, 'kainow', false, null]);
+    assert.deepEqual((await events(t)).filter((e) => e.step_key === 'logos').map((e) => [e.action, e.actor_id]), [['ticked', adminId], ['ticked', null]]);
+  });
+
+  test('the recovery and mailbox steps point to INSTALL.md sections; the organisation text uses a straight apostrophe', async () => {
+    const body = await get();
+    assert.equal(step(body, 'recovery').text, 'Nominate the recovery custodian and test the recovery procedure');
+    assert.equal(step(body, 'recovery').explanation, "Agree who the recovery custodian is and record how to reach them. Kainow's recovery procedure is still being written; check it is in place before go-live.");
+    assert.equal(step(body, 'recovery').link, 'INSTALL.md, the section on Recovery custodian');
+    assert.equal(step(body, 'mailbox').link, 'INSTALL.md, the section on Microsoft 365 email');
+    assert.ok(!body.steps.some((s: any) => /[‘’]/.test(s.text + s.explanation)), 'no curly apostrophes');
+    assert.equal(step(body, 'organisation').explanation, "Kainow needs the organisation's name and email domains before anyone can be invited.");
+  });
+
+  test('after closing, no step can be ticked or unticked, Confirm steps included', async () => {
+    await admin.request('POST', '/go-live/steps/recovery/tick', {});
+    await reachClose();
+    const body = await get();
+    assert.ok(body.closedAt);
+    assert.deepEqual([step(body, 'recovery').canUntick, step(body, 'recovery').canTick, step(body, 'calendar').canTick], [false, false, false]);
   });
 
   test('Kainow-ticked steps cannot be ticked or unticked by a person', async () => {

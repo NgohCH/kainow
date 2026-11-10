@@ -14,11 +14,11 @@ export interface StepDef {
 
 /** Order and keys are fixed; positions 1 to 11 follow this order. */
 export const STEPS: readonly StepDef[] = [
-  { key: 'organisation', mode: 'auto', link: '#/organisation', text: 'Register your organisation: its name and email domains', explanation: 'Kainow needs the organisation’s name and email domains before anyone can be invited.' },
+  { key: 'organisation', mode: 'auto', link: '#/organisation', text: 'Register your organisation: its name and email domains', explanation: "Kainow needs the organisation's name and email domains before anyone can be invited." },
   { key: 'logos', mode: 'auto_or_skip', link: '#/organisation', text: "Upload your organisation's logos (optional)", explanation: 'Logos appear on sign-in and on exported documents. Upload one, or confirm that you are skipping it.' },
   { key: 'second_admin', mode: 'auto', link: '#/people', text: 'Appoint a second Enterprise Administrator', explanation: 'A second Administrator means the organisation is never locked out if one is unavailable.' },
-  { key: 'recovery', mode: 'confirm', link: 'INSTALL.md, the section on the recovery custodian', text: 'Nominate the recovery custodian and test the recovery procedure', explanation: 'One named person holds the recovery secret, and the procedure has been tried once.' },
-  { key: 'mailbox', mode: 'confirm', link: '#/notifications-settings', text: 'Set up the Microsoft 365 sender mailbox and its permissions (INSTALL.md), with an auto-reply saying it is not monitored', explanation: 'Kainow sends its emails from this mailbox; people must not expect replies to be read.' },
+  { key: 'recovery', mode: 'confirm', link: 'INSTALL.md, the section on Recovery custodian', text: 'Nominate the recovery custodian and test the recovery procedure', explanation: "Agree who the recovery custodian is and record how to reach them. Kainow's recovery procedure is still being written; check it is in place before go-live." },
+  { key: 'mailbox', mode: 'confirm', link: 'INSTALL.md, the section on Microsoft 365 email', text: 'Set up the Microsoft 365 sender mailbox and its permissions (INSTALL.md), with an auto-reply saying it is not monitored', explanation: 'Kainow sends its emails from this mailbox; people must not expect replies to be read.' },
   { key: 'test_email', mode: 'confirm', link: '#/deliveries', text: 'Send a test email and check that it arrived', explanation: 'Send a test email, wait until it shows as sent, then check it reached the inbox.' },
   { key: 'calendar', mode: 'confirm', link: '#/notifications-settings', text: "Set the working weekdays and this year's holidays", explanation: 'Notice times follow the working days, so the weekdays and holidays must be right.' },
   { key: 'backups', mode: 'confirm', link: 'INSTALL.md, the section on backups', text: 'Configure daily encrypted backups and complete a test restore', explanation: 'A backup is only real once a restore from it has worked.' },
@@ -34,6 +34,8 @@ export const MSG = {
   testEmailFirst: 'Send a test email first, then check it arrived.',
   closed: 'The go-live checklist is closed.',
   noteLong: 'A note can be at most 200 characters.',
+  alreadyDone: 'This step is already done.',
+  notDone: 'This step is not done.',
 } as const;
 
 type Db = Pool | PoolClient;
@@ -67,9 +69,10 @@ export async function refreshChecklist(db: Pool, now: Date): Promise<void> {
     }
     const holds = await conditions(c);
     const auto = STEPS.filter((s) => s.mode !== 'confirm' && holds[s.key]).map((s) => s.key);
+    // A skip (logos) gives way to Kainow's own tick once the condition holds.
     const ticked = (await c.query(
-      `UPDATE golive_steps SET ticked_by = NULL, ticked_at = $2, skipped = false
-        WHERE key = ANY($1::text[]) AND ticked_at IS NULL RETURNING key`,
+      `UPDATE golive_steps SET ticked_by = NULL, ticked_at = $2, skipped = false, note = NULL
+        WHERE key = ANY($1::text[]) AND (ticked_at IS NULL OR skipped) RETURNING key`,
       [auto, now],
     )).rows as { key: string }[];
     for (const { key } of ticked) {

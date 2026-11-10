@@ -39,7 +39,7 @@ export class GoLiveService {
         tickedAt: done ? (r.ticked_at as Date).toISOString() : null,
         note: r.note, skipped: r.skipped,
         canUntick: !closedAt && def.mode !== 'auto' && done && r.ticked_by !== null,
-        canTick: !closedAt && def.mode !== 'auto' && (def.key !== 'test_email' || sent) && (def.mode === 'auto_or_skip' ? !done : true),
+        canTick: !closedAt && def.mode !== 'auto' && !done && (def.key !== 'test_email' || sent),
       };
     });
     // Not done at close: steps without a tick, or ticked only after the checklist closed.
@@ -85,10 +85,11 @@ export class GoLiveService {
       await c.query('BEGIN');
       const closed = (await c.query(`SELECT closed_at FROM golive_checklist WHERE id = 1 FOR UPDATE`)).rows[0].closed_at;
       if (closed) throw new ConflictException(MSG.closed);
-      if (key === 'logos') {
-        const row = (await c.query(`SELECT ticked_by, ticked_at FROM golive_steps WHERE key = 'logos' FOR UPDATE`)).rows[0];
-        if (row.ticked_at !== null && row.ticked_by === null) throw new ConflictException(MSG.autoStep);
-      }
+      const row = (await c.query(`SELECT ticked_by, ticked_at FROM golive_steps WHERE key = $1 FOR UPDATE`, [key])).rows[0];
+      if (key === 'logos' && row.ticked_at !== null && row.ticked_by === null) throw new ConflictException(MSG.autoStep);
+      // A tick never overwrites who and when; an untick of a step that is not done records nothing.
+      if (action === 'untick' && row.ticked_at === null) throw new ConflictException(MSG.notDone);
+      if (action !== 'untick' && row.ticked_at !== null) throw new ConflictException(MSG.alreadyDone);
       if (action === 'tick' && key === 'test_email' &&
         (await c.query(`SELECT 1 FROM email_outbox WHERE kind = 'test' AND status = 'sent' LIMIT 1`)).rowCount !== 1) {
         throw new ConflictException(MSG.testEmailFirst);
