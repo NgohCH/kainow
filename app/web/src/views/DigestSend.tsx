@@ -6,8 +6,11 @@ const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did n
 
 interface DigestPreview { recipients: number; asAt: string; subject: string; body: string }
 
-/** Project Manager, Owner or Sponsor of an Active project: preview the action-item email, then confirm. */
-export function DigestSend({ projectId }: { projectId: string }) {
+/**
+ * Project Manager, Owner or Sponsor of an Active project: preview the action-item email, then confirm. `onSent` tells
+ * the page the emails are queued, so its Email delivery list reloads.
+ */
+export function DigestSend({ projectId, onSent }: { projectId: string; onSent?: () => void }) {
   const [preview, setPreview] = useState<DigestPreview | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [result, setResult] = useState<string | null>(null);
@@ -39,6 +42,7 @@ export function DigestSend({ projectId }: { projectId: string }) {
       const r = await api.post<{ digestRunId: string; recipients: number }>(`/projects/${projectId}/digest`);
       setPreview(null);
       setResult(`Queued for ${plural(r.recipients, 'person', 'people')}. You can follow it under Email delivery.`);
+      onSent?.();
       setTimeout(() => start.current?.focus(), 0);
     } catch (e) {
       setError(errText(e));

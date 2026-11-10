@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { kindText, parseLeadDays, previewIsEmpty, previewTitle } from './settings.ts';
+import { SAVED, afterSave, kindText, parseLeadDays, previewIsEmpty, previewTitle } from './settings.ts';
 
 test('lead days are read from commas and spaces', () => {
   assert.deepEqual(parseLeadDays('7, 1'), [7, 1]);
@@ -80,4 +80,15 @@ test('a preview line without a title names only the record kind and the project'
   assert.equal(previewTitle({ ...base, recordKind: 'risk', title: null }), 'A risk in Harbour Works');
   assert.equal(previewTitle({ ...base, recordKind: 'task', title: 'Write the report' }), 'Write the report');
   assert.equal(previewTitle({ ...base, recordKind: 'task', title: '' }), 'Untitled');
+});
+
+test('after a save the form starts again from the saved values the server returned, with nothing pending', () => {
+  const saved = { ...start, leadDays: [5, 1], escalationDays: 4, history: [{ id: 'h1' }] };
+  const s = afterSave(saved);
+  assert.equal(s.view, saved, 'the PUT answer itself is shown: no second request that could race or come back stale');
+  assert.equal(s.draft.leadText, '5, 1');
+  assert.equal(s.draft.escalation, '4');
+  assert.deepEqual([...s.cleared], []);
+  assert.deepEqual([s.preview, s.reason, s.notice], [null, '', SAVED]);
+  assert.deepEqual(buildChanges('organisation', s.view, s.draft, s.cleared), {});
 });

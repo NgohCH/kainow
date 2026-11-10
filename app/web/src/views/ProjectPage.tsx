@@ -173,6 +173,8 @@ function Overview({ project, act }: { project: Project; act: Act }) {
   const [markedTasks, setMarkedTasks] = useState(0);
   const [atClosure, setAtClosure] = useState<ClosedSummary | null>(null);
   const [tick, setTick] = useState(0);
+  // Shared by the action-item email and the Email delivery list: a sent digest shows up in the list at once.
+  const [deliveriesKey, setDeliveriesKey] = useState(0);
   const closable = ['planned', 'active', 'deferred'].includes(project.status);
   const isOS = project.myRoles.some((r) => r === 'owner' || r === 'sponsor');
   const isPmOrDeputy = project.myRoles.some((r) => r === 'pm' || r === 'deputy_pm');
@@ -314,11 +316,11 @@ function Overview({ project, act }: { project: Project; act: Act }) {
 
       <ProjectApprovals projectId={project.id} />
 
-      {isEmailManager && project.status === 'active' && <DigestSend projectId={project.id} />}
+      {isEmailManager && project.status === 'active' && <DigestSend projectId={project.id} onSent={() => setDeliveriesKey((n) => n + 1)} />}
       {isEmailManager && (
         <section aria-labelledby="deliveries-heading">
           <h2 id="deliveries-heading">Email delivery</h2>
-          <DeliveryHistory path={`/projects/${project.id}/deliveries`} />
+          <DeliveryHistory path={`/projects/${project.id}/deliveries`} reloadKey={deliveriesKey} />
         </section>
       )}
 

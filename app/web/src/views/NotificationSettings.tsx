@@ -2,7 +2,7 @@ import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useStat
 import { ApiError, api } from '../api.ts';
 import { formatWhen } from '../format.ts';
 import {
-  type Current, type Draft, type Preview, FIELD_LABEL, WEEKDAY_NAMES, buildChanges, changeErrors, draftFrom, leadDaysText,
+  type Current, type Draft, type Preview, FIELD_LABEL, WEEKDAY_NAMES, afterSave, buildChanges, changeErrors, draftFrom, leadDaysText,
 } from '../settings.ts';
 import { Holidays } from './Holidays.tsx';
 import { useRefreshCalendar } from './ProjectCalendar.tsx';
@@ -77,6 +77,7 @@ export function NotificationSettingsForm({ projectId }: { projectId?: string }) 
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const previewBox = useRef<HTMLDivElement>(null);
+  const status = useRef<HTMLParagraphElement>(null);
   const refreshCalendar = useRefreshCalendar();
 
   const load = useCallback(() => {
@@ -93,6 +94,10 @@ export function NotificationSettingsForm({ projectId }: { projectId?: string }) 
   useEffect(() => {
     if (preview) previewBox.current?.focus();
   }, [preview]);
+  // The Save button disappears with the preview; focus moves to the outcome, beside where the person was working.
+  useEffect(() => {
+    if (notice) status.current?.focus();
+  }, [notice]);
 
   if (!view || !draft) return error ? <p role="alert" className="error">{error}</p> : <p className="loading">Loading</p>;
   const proj = scope === 'project' ? (view as ProjectView) : null;
@@ -138,12 +143,16 @@ export function NotificationSettingsForm({ projectId }: { projectId?: string }) 
 
   async function save() {
     setError(null);
+    setNotice(null);
     try {
-      await api.put(base, { changes, reason });
-      setReason('');
-      setPreview(null);
-      setNotice('Saved.');
-      load();
+      // The PUT answers with the saved view (values and history); it is shown as it is, with no second request.
+      const next = afterSave(await api.put<OrgView | ProjectView>(base, { changes, reason }));
+      setView(next.view);
+      setDraft(next.draft);
+      setCleared(next.cleared);
+      setPreview(next.preview);
+      setReason(next.reason);
+      setNotice(next.notice);
       refreshCalendar();
     } catch (err) {
       setError(errText(err));
@@ -226,7 +235,6 @@ export function NotificationSettingsForm({ projectId }: { projectId?: string }) 
   return (
     <form className="stack" onSubmit={showPreview} aria-label={proj ? 'Notification settings for this project' : 'Notification settings for the organisation'}>
       {error && <p role="alert" className="error">{error}</p>}
-      {notice && <p role="status" className="ok">{notice}</p>}
       <fieldset className="panel stack settings-group">
         <legend>Calendar</legend>
         {calendar}
@@ -298,6 +306,8 @@ export function NotificationSettingsForm({ projectId }: { projectId?: string }) 
           <button className="primary" disabled={!anyChange}>Preview changes</button>
         </div>
       )}
+      {/* Always in the page, so a screen reader announces the text when it appears; shown next to the Save step. */}
+      <p ref={status} role="status" tabIndex={-1} className={notice ? 'ok' : 'visually-hidden'}>{notice ?? ''}</p>
       <div ref={previewBox} tabIndex={-1} className="preview-box">
         {preview && (
           <>

@@ -144,3 +144,13 @@ export function changeErrors(scope: 'organisation' | 'project', d: Draft, cleare
   if (scope === 'organisation' && d.sweep.trim() === '') out.push(BLANK_SWEEP);
   return out;
 }
+
+export const SAVED = 'Saved.';
+
+/**
+ * The whole form state after a successful save, built from the view the PUT answered with: the server's saved values
+ * and history, a draft equal to them, nothing cleared, no preview, no reason, and the "Saved." notice.
+ */
+export function afterSave<V extends Current>(view: V): { view: V; draft: Draft; cleared: Set<string>; preview: null; reason: ''; notice: string } {
+  return { view, draft: draftFrom(view), cleared: new Set(), preview: null, reason: '', notice: SAVED };
+}
