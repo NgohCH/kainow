@@ -15,7 +15,7 @@ export const RETRY_MINUTES = [5, 30, 120];
 export const UNCERTAIN_AFTER_MINUTES = 10;
 
 const MAX_ATTEMPTS = RETRY_MINUTES.length + 1;
-const BATCH = 50;
+const BATCH = 10;
 const MAX_ROUNDS = 20;
 const MINUTE = 60_000;
 
@@ -46,6 +46,7 @@ export interface DispatchResult {
 interface Claimed {
   id: string;
   attemptNo: number;
+  /** The claim time, replaced by the stamp taken just before the send. */
   startedAt: Date;
   email: OutgoingEmail;
 }
@@ -215,7 +216,7 @@ export class EmailDispatcher {
     if (r.to_user_id === null) return true;
     const scope: EligibilityScope = r.relevance?.scope ?? 'account';
     if (scope === 'admin') return isEligible(db, r.to_user_id, null, today);
-    if (scope === 'project' && r.project_id !== null) return isEligible(db, r.to_user_id, r.project_id, today);
+    if (scope === 'project') return r.project_id !== null && (await isEligible(db, r.to_user_id, r.project_id, today));
     return (await db.query(`SELECT 1 FROM users WHERE id = $1 AND status = 'active'`, [r.to_user_id])).rows.length > 0;
   }
 
@@ -247,6 +248,14 @@ export class EmailDispatcher {
 
   /** Sends one claimed row and records the outcome. */
   private async attempt(c: Claimed): Promise<'sent' | 'failed' | 'retry'> {
+    // Re-assert ownership just before sending: if another pass has marked this claim uncertain meanwhile, do not send.
+    const stamp = this.deps.clock();
+    const owned = await this.deps.pool.query(
+      `UPDATE email_outbox SET next_attempt_at = $4 WHERE id = $1 AND status = 'sending' AND attempts = $2 AND next_attempt_at = $3`,
+      [c.id, c.attemptNo, c.startedAt, stamp],
+    );
+    if (owned.rowCount === 0) return 'retry';
+    c.startedAt = stamp;
     let error: ReturnType<typeof classify> | undefined;
     try {
       await this.deps.transport.send(c.email);
@@ -255,7 +264,7 @@ export class EmailDispatcher {
     }
     const finished = this.deps.clock();
     if (!error) {
-      await this.record(c, finished, 'sent', null, null, `status = 'sent', sent_at = $4`, [finished]);
+      await this.record(c, finished, 'sent', null, null, `status = 'sent', sent_at = $4, last_reason = NULL`, [finished]);
       return 'sent';
     }
     this.deps.log.warn(`Email attempt ${c.attemptNo} failed (${error.kind}): ${error.reason}`);
@@ -307,7 +316,7 @@ export class EmailDispatcher {
   }
 }
 
-/** Raised when an email cannot be resent; the controller maps it to 409. */
+/** Raised when an email cannot be resent because of its status; the controller maps it to 409. */
 export class NotResendable extends Error {
   constructor(message = 'Only an email that failed or has an uncertain outcome can be resent.') {
     super(message);
@@ -315,20 +324,38 @@ export class NotResendable extends Error {
   }
 }
 
+/** Raised when there is no such email; the controller maps it to 404. */
+export class OutboxRowNotFound extends Error {
+  constructor() {
+    super('No such email.');
+    this.name = 'OutboxRowNotFound';
+  }
+}
+
 /**
  * Queues a copy of a failed or uncertain email as a new row linked by `resend_of`, with a fresh attempt count.
  * The composed email is copied, never recomposed; eligibility and relevance are checked again when it is sent.
+ * An uncertain original that was still waiting for its automatic resend is taken out of the schedule in the same
+ * statement, so the person is not sent two copies.
  */
 export async function resend(db: Db, outboxId: string, actorId: string, now: Date): Promise<string> {
   const id = randomUUID();
   const r = await db.query(
-    `INSERT INTO email_outbox (id, to_user_id, to_address, subject, text_body, html_body, attachments, kind, project_id,
+    `WITH src AS (
+       SELECT * FROM email_outbox WHERE id = $2 AND status IN ('failed', 'uncertain') FOR UPDATE
+     ), unschedule AS (
+       UPDATE email_outbox SET next_attempt_at = NULL WHERE id IN (SELECT id FROM src WHERE status = 'uncertain')
+     )
+     INSERT INTO email_outbox (id, to_user_id, to_address, subject, text_body, html_body, attachments, kind, project_id,
        initiated_by_user, initiated_by, relevance, status, attempts, resend_of, created_at)
      SELECT $1, to_user_id, to_address, subject, text_body, html_body, attachments, kind, project_id,
             $3, 'person', relevance, 'queued', 0, id, $4
-       FROM email_outbox WHERE id = $2 AND status IN ('failed', 'uncertain')`,
+       FROM src`,
     [id, outboxId, actorId, now],
   );
-  if (r.rowCount === 0) throw new NotResendable();
+  if (r.rowCount === 0) {
+    const exists = await db.query(`SELECT 1 FROM email_outbox WHERE id = $1`, [outboxId]);
+    throw exists.rows.length > 0 ? new NotResendable() : new OutboxRowNotFound();
+  }
   return id;
 }

@@ -115,6 +115,9 @@ test('the Microsoft 365 transport sends through smtp.office365.com with the cach
     port: 587,
     secure: false,
     requireTLS: true,
+    connectionTimeout: 120_000,
+    greetingTimeout: 120_000,
+    socketTimeout: 120_000,
     auth: { type: 'OAuth2', user: 'kainow@example.org', accessToken: 'tok-1' },
   });
   assert.equal(sent[0].to, 'a@example.org');
@@ -128,7 +131,7 @@ test('the SMTP transport hands the URL to nodemailer and the log transport sends
     nodemailer: (o) => ((given = o), { sendMail: async () => ({}) }),
   });
   assert.deepEqual(await smtp.send({ from: 'a@example.org', to: 'b@example.org', subject: 's', text: 't', html: 'h', attachments: [] }), { messageId: null });
-  assert.equal(given, 'smtp://u:p@mail.example.org:587');
+  assert.deepEqual(given, { url: 'smtp://u:p@mail.example.org:587', connectionTimeout: 120_000, greetingTimeout: 120_000, socketTimeout: 120_000 });
 
   const log = createTransport({ provider: 'log' }, () => new Date());
   assert.deepEqual(await log.send({ from: 'x', to: 'b@example.org', subject: 's', text: 't', html: 'h', attachments: [] }), { messageId: null });

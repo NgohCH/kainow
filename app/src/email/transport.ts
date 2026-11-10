@@ -60,6 +60,10 @@ export interface TransportDeps {
   nodemailer?: (options: string | Record<string, unknown>) => MailerLike;
 }
 
+/** A slow send must end as a temporary failure well before the dispatcher's 10-minute uncertain threshold. */
+export const SEND_TIMEOUT_MS = 2 * 60_000;
+const TIMEOUTS = { connectionTimeout: SEND_TIMEOUT_MS, greetingTimeout: SEND_TIMEOUT_MS, socketTimeout: SEND_TIMEOUT_MS };
+
 const addressOf = (from: string): string => /<([^>]+)>/.exec(from)?.[1] ?? from;
 
 function toMessage(m: OutgoingEmail): Record<string, unknown> {
@@ -84,7 +88,7 @@ export function createTransport(cfg: EmailConfig, clock: Clock, deps: TransportD
     };
   }
   if (cfg.provider === 'smtp') {
-    const transport = mailer(cfg.url);
+    const transport = mailer({ url: cfg.url, ...TIMEOUTS });
     return {
       async send(m) {
         const info = await transport.sendMail(toMessage(m));
@@ -101,6 +105,7 @@ export function createTransport(cfg: EmailConfig, clock: Clock, deps: TransportD
         port: 587,
         secure: false,
         requireTLS: true,
+        ...TIMEOUTS,
         auth: { type: 'OAuth2', user: addressOf(cfg.from), accessToken },
       });
       const info = await transport.sendMail(toMessage(m));

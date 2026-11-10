@@ -7,7 +7,7 @@ import { uuidv7 } from '../common/uuid7';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { FakeClock } from '../testing/fakes';
 import { seedOrganisation, seedProject, seedUser } from '../testing/projects';
-import { EmailDispatcher, NotResendable, RETRY_MINUTES, UNCERTAIN_AFTER_MINUTES, resend } from './dispatcher';
+import { EmailDispatcher, NotResendable, OutboxRowNotFound, RETRY_MINUTES, UNCERTAIN_AFTER_MINUTES, resend } from './dispatcher';
 import { writeOutbox, type OutboxInput } from './outbox';
 import { stillRelevant, type EmailRelevance } from './relevance';
 import { SendError, type MailTransport, type OutgoingEmail } from './transport';
@@ -439,5 +439,52 @@ test('only failed or uncertain rows can be resent', { skip: SKIP_NO_DB }, async 
   await assert.rejects(resend(pool, id, adminId, clock.now()), NotResendable);
   await dispatcher(new ScriptedTransport()).dispatchDue();
   await assert.rejects(resend(pool, id, adminId, clock.now()), NotResendable);
-  await assert.rejects(resend(pool, uuidv7(), adminId, clock.now()), NotResendable);
+  await assert.rejects(resend(pool, uuidv7(), adminId, clock.now()), OutboxRowNotFound);
+});
+
+test('resend of a first-uncertain row takes the original out of the schedule', { skip: SKIP_NO_DB }, async () => {
+  const id = await queue();
+  await pool.query(`UPDATE email_outbox SET status = 'uncertain', attempts = 1, possible_duplicate = true, first_failure_at = $2, next_attempt_at = $2 WHERE id = $1`, [id, new Date(START)]);
+  const newId = await resend(pool, id, adminId, clock.now());
+  assert.equal((await row(id)).next_attempt_at, null);
+  assert.equal((await row(id)).status, 'uncertain');
+  const t = new ScriptedTransport();
+  await dispatcher(t).dispatchDue();
+  assert.equal(t.calls, 1);
+  assert.equal((await row(newId)).status, 'sent');
+});
+
+test('scope project with no project is not eligible; a sent row loses its old reason', { skip: SKIP_NO_DB }, async () => {
+  const id = await queue({ projectId: null, relevance: { kind: 'none', scope: 'project' } });
+  await dispatcher(new ScriptedTransport()).dispatchDue();
+  assert.equal((await row(id)).last_reason, 'recipient no longer eligible');
+  const id2 = await queue();
+  await dispatcher(new ScriptedTransport([temp()])).dispatchDue();
+  assert.ok((await row(id2)).last_reason);
+  clock.advanceMinutes(5);
+  await dispatcher(new ScriptedTransport()).dispatchDue();
+  const o = await row(id2);
+  assert.equal(o.status, 'sent');
+  assert.equal(o.last_reason, null);
+});
+
+test('a row claimed and then marked uncertain by a second dispatcher is not sent by the first', { skip: SKIP_NO_DB }, async () => {
+  await queue({ subject: 'Row A' });
+  await queue({ subject: 'Row B' });
+  const t2 = new ScriptedTransport();
+  const d2 = dispatcher(t2);
+  const first: string[] = [];
+  const t1: MailTransport = {
+    async send(m) {
+      first.push(m.subject);
+      // while the first dispatcher is busy, ten minutes pass and a second dispatcher takes over the stale claims
+      clock.advanceMinutes(10);
+      await d2.dispatchDue();
+      return { messageId: 'id' };
+    },
+  };
+  await dispatcher(t1).dispatchDue();
+  assert.equal(first.length, 1, 'the first dispatcher stops at the row it lost');
+  const sentB = [...first, ...t2.sent.map((m) => m.subject)].filter((x) => x === 'Row B');
+  assert.equal(sentB.length, 1);
 });
