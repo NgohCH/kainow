@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import { formatWhen } from '../format.ts';
 import {
@@ -15,18 +15,23 @@ const message = (e: unknown): string => (e instanceof ApiError ? e.message : 'So
 function Entry({ n, onRead }: { n: NotificationItem; onRead: (id: string) => void }) {
   const unread = n.readAt === null;
   const [failed, setFailed] = useState(false);
+  const item = useRef<HTMLLIElement>(null);
 
   function markRead() {
     setFailed(false);
     api.post(`/notifications/${n.id}/read`).then(
-      () => onRead(n.id),
+      () => {
+        // The button is about to disappear, so focus moves to the entry itself.
+        item.current?.focus();
+        onRead(n.id);
+      },
       () => setFailed(true),
     );
   }
 
   const text = n.noAccess ? NO_ACCESS_TEXT : (n.summary ?? 'A notice');
   return (
-    <li className={unread ? 'notif unread' : 'notif'}>
+    <li ref={item} tabIndex={-1} className={unread ? 'notif unread' : 'notif'}>
       <div className="notif-head">
         {unread && <span className="visually-hidden">Unread. </span>}
         {n.urgent && <span className="notif-urgent">Urgent</span>}
@@ -35,7 +40,7 @@ function Entry({ n, onRead }: { n: NotificationItem; onRead: (id: string) => voi
         {unread && <span className="meta" aria-hidden="true">Unread</span>}
       </div>
       <p>
-        {n.noAccess || !n.link ? (
+        {n.noAccess || !n.link || !n.link.startsWith('#/') ? (
           text
         ) : (
           // Following the link marks the notice read; the request is not waited for.
@@ -72,6 +77,8 @@ function EmailPreferencesSection() {
   const [note, setNote] = useState('');
   const [awayError, setAwayError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [awayNote, setAwayNote] = useState('');
+  const awayHeading = useRef<HTMLHeadingElement>(null);
 
   const load = useCallback(() => {
     setError(null);
@@ -97,11 +104,13 @@ function EmailPreferencesSection() {
     e.preventDefault();
     setBusy(true);
     setAwayError(null);
+    setAwayNote('');
     try {
       await api.post('/away-periods', { startsOn: start, endsOn: end, ...(note.trim() ? { note: note.trim() } : {}) });
       setStart('');
       setEnd('');
       setNote('');
+      setAwayNote('Away dates added.');
       load();
     } catch (err) {
       setAwayError(message(err));
@@ -112,8 +121,12 @@ function EmailPreferencesSection() {
 
   async function removeAway(id: string) {
     setAwayError(null);
+    setAwayNote('');
     try {
       await api.delete(`/away-periods/${id}`);
+      setAwayNote('Away dates removed.');
+      // The Remove button goes with its row, so focus moves to the heading above the list.
+      awayHeading.current?.focus();
       load();
     } catch (err) {
       setAwayError(message(err));
@@ -146,7 +159,8 @@ function EmailPreferencesSection() {
             </fieldset>
           ))}
 
-          <h3>Away dates</h3>
+          <h3 ref={awayHeading} tabIndex={-1}>Away dates</h3>
+          <p className="meta" role="status" aria-live="polite">{awayNote}</p>
           <p className="meta">No notice emails or digests are sent to you on these dates (UTC+8, both days included). They are sent after you return.</p>
           {prefs.away.length === 0 ? (
             <p className="meta">No away dates set.</p>
@@ -191,6 +205,19 @@ export function Notifications() {
   const [error, setError] = useState<string | null>(null);
   const [loadingMore, setLoadingMore] = useState(false);
   const [marking, setMarking] = useState(false);
+  const [moreError, setMoreError] = useState<string | null>(null);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [done, setDone] = useState('');
+  const heading = useRef<HTMLHeadingElement>(null);
+
+  const loadCount = useCallback(() => {
+    api.get<{ count: number }>('/notifications/unread-count').then((r) => setUnreadCount(r.count), () => undefined);
+  }, []);
+  useEffect(() => {
+    loadCount();
+    window.addEventListener('notifications-changed', loadCount);
+    return () => window.removeEventListener('notifications-changed', loadCount);
+  }, [loadCount]);
 
   const load = useCallback(() => {
     setError(null);
@@ -208,12 +235,13 @@ export function Notifications() {
   async function showMore() {
     if (!next) return;
     setLoadingMore(true);
+    setMoreError(null);
     try {
       const r = await api.get<NotificationPage>(`/notifications?before=${encodeURIComponent(next)}`);
       setItems((cur) => [...(cur ?? []), ...r.items]);
       setNext(r.more ? r.next : null);
     } catch (e) {
-      setError(message(e));
+      setMoreError(message(e));
     } finally {
       setLoadingMore(false);
     }
@@ -224,6 +252,10 @@ export function Notifications() {
     try {
       await api.post('/notifications/read-all');
       window.dispatchEvent(new Event('notifications-changed'));
+      setUnreadCount(0);
+      setDone('All notices marked read.');
+      // The button is disabled once nothing is unread, so focus moves to the heading.
+      heading.current?.focus();
       const now = new Date().toISOString();
       setItems((cur) => cur && cur.map((n) => (n.readAt ? n : { ...n, readAt: now })));
     } catch (e) {
@@ -238,11 +270,12 @@ export function Notifications() {
     changed();
     setItems((cur) => cur && cur.map((n) => (n.id === id && !n.readAt ? { ...n, readAt: new Date().toISOString() } : n)));
   };
-  const anyUnread = !!items && items.some((n) => n.readAt === null);
+  const anyUnread = unreadCount > 0 || (!!items && items.some((n) => n.readAt === null));
 
   return (
-    <main className="notifications-page">
-      <h1>Notifications</h1>
+    <main className="page narrow notifications-page">
+      <h1 ref={heading} tabIndex={-1}>Notifications</h1>
+      <p className="visually-hidden" role="status" aria-live="polite">{done}</p>
       <div className="notif-toolbar">
         <button type="button" onClick={() => void markAll()} disabled={marking || !anyUnread}>Mark all read</button>
       </div>
@@ -259,6 +292,11 @@ export function Notifications() {
             <Entry key={n.id} n={n} onRead={markOne} />
           ))}
         </ul>
+      )}
+      {moreError && (
+        <p role="alert" className="error">
+          {moreError} <button type="button" onClick={() => void showMore()}>Retry</button>
+        </p>
       )}
       {next && <button type="button" disabled={loadingMore} onClick={() => void showMore()}>Show more</button>}
       <EmailPreferencesSection />

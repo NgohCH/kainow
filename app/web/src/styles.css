@@ -268,7 +268,6 @@ mark { background: var(--marker-wash); color: inherit; font-weight: 700; padding
 .notif { border: 1px solid var(--rule); border-radius: 4px; padding: 0.6rem 0.9rem; background: var(--surface); }
 .notif.unread { border-left: 4px solid var(--teal-deep); }
 .notif-head { display: flex; flex-wrap: wrap; gap: 0.5rem 0.75rem; align-items: baseline; }
-.notif-head .badge { margin-right: 0; }
 .notif-urgent { color: var(--rust); font-weight: 700; }
 .notif-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; margin-top: 0.4rem; }
 .notif-toolbar { display: flex; flex-wrap: wrap; gap: 0.75rem; align-items: center; }
