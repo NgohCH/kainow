@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { ApiError, api, setCsrfToken, type User } from './api.ts';
 import type { Branding } from './branding.ts';
 import { Invitation } from './views/Invitation.tsx';
+import { Bell } from './views/Bell.tsx';
 import { Letterhead, LogoImage } from './views/Letterhead.tsx';
 import { NoteDetail } from './views/NoteDetail.tsx';
 import { BeingSetUp, Onboarding } from './views/Onboarding.tsx';
@@ -11,6 +12,7 @@ import { OrganisationScreen } from './views/OrganisationProfile.tsx';
 import { Setup } from './views/Setup.tsx';
 import { People } from './views/People.tsx';
 import { ProjectPage } from './views/ProjectPage.tsx';
+import { Notifications } from './views/Notifications.tsx';
 import { Projects } from './views/Projects.tsx';
 import { Review } from './views/Review.tsx';
 import { HeaderSearch, isSearchHash, Search } from './views/Search.tsx';
@@ -247,6 +249,7 @@ export function App() {
   else if (isAdmin && adminPage === 'domains') page = <Domains />;
   else if (isAdmin && adminPage === 'organisation') page = <OrganisationScreen onBrandingChanged={loadBranding} />;
   else if (isAdmin && adminPage === 'approvals') page = <ApprovalSettings />;
+  else if (hash === '#/notifications') page = <Notifications />;
   else if (searching) page = <Search hash={hash} />;
   else if (run) page = <Review runId={run[1]} meId={user.id} />;
   else if (note) page = <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} />;
@@ -273,6 +276,7 @@ export function App() {
           )}
         </nav>
         <HeaderSearch hash={hash} />
+        <Bell hash={hash} />
         <SpendMeter />
         <span className="who">
           {user.displayName}
