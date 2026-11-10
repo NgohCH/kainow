@@ -60,9 +60,9 @@ describe('notifications, email preferences and away periods', { skip: SKIP_NO_DB
     assert.equal(r.body.more, false);
     assert.equal(r.body.items[0].projectName, 'Harbour Works');
     assert.equal(r.body.items[0].noAccess, false);
-    const older = await ann.request('GET', `/notifications?before=${encodeURIComponent('2026-11-08T02:00:00Z')}`);
-    assert.deepEqual(older.body.items.map((i: any) => i.id), [a1]);
+    assert.equal(r.body.next, null);
     assert.equal((await ann.request('GET', '/notifications?before=nonsense')).status, 400);
+    assert.equal((await ann.request('GET', '/notifications?before=2026-11-08T02:00:00Z')).status, 400);
   });
 
   test('pages hold 30 and say when there is more', async () => {
@@ -70,9 +70,24 @@ describe('notifications, email preferences and away periods', { skip: SKIP_NO_DB
     const r = await ann.request('GET', '/notifications');
     assert.equal(r.body.items.length, 30);
     assert.equal(r.body.more, true);
-    const next = await ann.request('GET', `/notifications?before=${encodeURIComponent(r.body.items[29].createdAt)}`);
+    const next = await ann.request('GET', `/notifications?before=${encodeURIComponent(r.body.next)}`);
     assert.equal(next.body.items.length, 1);
     assert.equal(next.body.more, false);
+  });
+
+  test('35 notifications sharing one timestamp page through with no loss and no repeats', async () => {
+    const all = new Set<string>();
+    for (let i = 0; i < 35; i += 1) all.add(await notice(ids.ann, projectId, '2026-11-08T01:00:00.123456Z'));
+    const seen: string[] = [];
+    let before = '';
+    for (let page = 0; page < 5; page += 1) {
+      const r = await ann.request('GET', `/notifications${before}`);
+      seen.push(...r.body.items.map((i: any) => i.id));
+      if (!r.body.more) break;
+      before = `?before=${encodeURIComponent(r.body.next)}`;
+    }
+    assert.equal(seen.length, 35);
+    assert.deepEqual(new Set(seen), all);
   });
 
   test('unread count, mark one read, mark all read; only own rows', async () => {
@@ -85,7 +100,8 @@ describe('notifications, email preferences and away periods', { skip: SKIP_NO_DB
     assert.equal((await ann.request('POST', '/notifications/not-a-uuid/read')).status, 404);
     assert.equal((await ann.request('POST', `/notifications/${a1}/read`)).status, 200);
     assert.equal((await ann.request('GET', '/notifications/unread-count')).body.count, 1);
-    assert.equal((await ann.request('POST', '/notifications/read-all')).status, 200);
+    const all = await ann.request('POST', '/notifications/read-all');
+    assert.deepEqual([all.status, all.body.count], [200, 1]);
     assert.equal((await ann.request('GET', '/notifications/unread-count')).body.count, 0);
     assert.equal((await bob.request('GET', '/notifications/unread-count')).body.count, 1);
     const list = await ann.request('GET', '/notifications');

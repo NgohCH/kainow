@@ -3,6 +3,7 @@ import type { Pool } from 'pg';
 import { AnySignedInUser } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
+import { cursorTime, parseCursor } from '../common/cursor';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
@@ -62,18 +63,14 @@ export class NotificationsController {
   @AnySignedInUser()
   async list(@Query('before') before: string | undefined, @Req() req: HttpRequest) {
     const user = who(req);
-    let cursor: Date | null = null;
-    if (before !== undefined) {
-      cursor = new Date(before);
-      if (typeof before !== 'string' || Number.isNaN(cursor.getTime())) throw new BadRequestException('before must be a timestamp.');
-    }
+    const cursor = parseCursor(before);
     const { rows } = await this.pool.query(
       `SELECT n.id, n.project_id AS "projectId", p.name AS "projectName", n.kind, n.urgent, n.summary, n.link,
-              n.created_at AS "createdAt", n.read_at AS "readAt"
+              n.created_at AS "createdAt", n.read_at AS "readAt", ${cursorTime('n.created_at')} AS cur
          FROM notifications n LEFT JOIN projects p ON p.id = n.project_id
-        WHERE n.user_id = $1 AND ($2::timestamptz IS NULL OR n.created_at < $2)
-        ORDER BY n.created_at DESC, n.id DESC LIMIT $3`,
-      [user.id, cursor, PAGE + 1],
+        WHERE n.user_id = $1 AND ($2::timestamptz IS NULL OR (n.created_at, n.id) < ($2::timestamptz, $3::uuid))
+        ORDER BY n.created_at DESC, n.id DESC LIMIT $4`,
+      [user.id, cursor?.at ?? null, cursor?.id ?? null, PAGE + 1],
     );
     const readable = new Map<string, boolean>();
     for (const r of rows.slice(0, PAGE)) {
@@ -94,7 +91,8 @@ export class NotificationsController {
         noAccess,
       };
     });
-    return { items, more: rows.length > PAGE };
+    const more = rows.length > PAGE;
+    return { items, more, next: more ? `${rows[PAGE - 1].cur}|${rows[PAGE - 1].id}` : null };
   }
 
   @Get('notifications/unread-count')
@@ -108,8 +106,8 @@ export class NotificationsController {
   @HttpCode(200)
   @AnySignedInUser()
   async readAll(@Req() req: HttpRequest) {
-    await this.pool.query(`UPDATE notifications SET read_at = $2 WHERE user_id = $1 AND read_at IS NULL`, [who(req).id, this.now()]);
-    return { count: 0 };
+    const r = await this.pool.query(`UPDATE notifications SET read_at = $2 WHERE user_id = $1 AND read_at IS NULL`, [who(req).id, this.now()]);
+    return { count: r.rowCount ?? 0 };
   }
 
   @Post('notifications/:id/read')

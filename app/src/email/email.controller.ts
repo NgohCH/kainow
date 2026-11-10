@@ -3,6 +3,7 @@ import type { Pool } from 'pg';
 import { AnySignedInUser, RequireAction } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
+import { cursorTime, parseCursor } from '../common/cursor';
 import { UUID } from '../common/uuid7';
 import { APP_CONFIG, type AppConfig } from '../config';
 import { PG_POOL } from '../db/database.module';
@@ -41,21 +42,20 @@ export class EmailController {
   }
 
   private async history(where: string, params: unknown[], before: string | undefined) {
-    let cursor: Date | null = null;
-    if (before !== undefined) {
-      cursor = new Date(before);
-      if (typeof before !== 'string' || Number.isNaN(cursor.getTime())) throw new BadRequestException('before must be a timestamp.');
-    }
+    const cursor = parseCursor(before);
+    const n = params.length;
     const { rows } = await this.pool.query(
       `SELECT o.id, COALESCE(u.display_name, o.to_address) AS "recipientName", o.to_address AS "toAddress", o.kind, o.subject,
               o.created_at AS "createdAt", o.status, o.attempts, o.last_reason AS "lastReason", o.possible_duplicate AS "possibleDuplicate",
-              o.resend_of AS "resendOf", o.replaces
+              o.resend_of AS "resendOf", o.replaces, ${cursorTime('o.created_at')} AS cur
          FROM email_outbox o LEFT JOIN users u ON u.id = o.to_user_id
-        WHERE ${where} AND ($${params.length + 1}::timestamptz IS NULL OR o.created_at < $${params.length + 1})
+        WHERE ${where} AND ($${n + 1}::timestamptz IS NULL OR (o.created_at, o.id) < ($${n + 1}::timestamptz, $${n + 2}::uuid))
         ORDER BY o.created_at DESC, o.id DESC LIMIT ${PAGE + 1}`,
-      [...params, cursor],
+      [...params, cursor?.at ?? null, cursor?.id ?? null],
     );
-    return { items: rows.slice(0, PAGE), more: rows.length > PAGE };
+    const more = rows.length > PAGE;
+    const items = rows.slice(0, PAGE).map(({ cur: _cur, ...r }) => r);
+    return { items, more, next: more ? `${rows[PAGE - 1].cur}|${rows[PAGE - 1].id}` : null };
   }
 
   /** Project Manager, Owner or Sponsor of the project. Other readers get 403, non-readers 404. */

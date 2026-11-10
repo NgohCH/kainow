@@ -76,6 +76,23 @@ describe('delivery history and email administration', { skip: SKIP_NO_DB }, () =
     assert.equal((await pm.request('GET', '/deliveries')).status, 403);
   });
 
+  test('55 deliveries sharing one timestamp page through with no loss and no repeats', async () => {
+    const all = new Set<string>();
+    for (let i = 0; i < 55; i += 1) all.add(await row('sent', { at: '2026-11-08T01:00:00.654321Z' }));
+    const seen: string[] = [];
+    let before = '';
+    for (let page = 0; page < 5; page += 1) {
+      const r = await admin.request('GET', `/deliveries${before}`);
+      seen.push(...r.body.items.map((i: any) => i.id));
+      assert.ok(r.body.items.every((i: any) => !('cur' in i)));
+      if (!r.body.more) break;
+      before = `?before=${encodeURIComponent(r.body.next)}`;
+    }
+    assert.equal(seen.length, 55);
+    assert.deepEqual(new Set(seen), all);
+    assert.equal((await admin.request('GET', '/deliveries?before=bad')).status, 400);
+  });
+
   test('resending a failed row queues a linked copy and nudges; a sent row is 409; unknown is 404', async () => {
     const failed = await row('failed');
     const sent = await row('sent');
