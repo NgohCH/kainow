@@ -135,6 +135,21 @@ This holds everything: notes, original files, proposals, decisions, the audit tr
 
 `docker compose down` removes the containers and keeps your data. `docker compose down -v` also **deletes the database volume, and with it all your notes, decisions and the audit trail. It cannot be undone.**
 
+## Going live
+
+Go live on a new, empty database so nothing from development or testing comes with you.
+
+1. Create a new, empty PostgreSQL database for this installation and point `DATABASE_URL` in `.env` at it (under the provided Compose setup, use a new Compose project with its own database volume).
+2. Prepare it and invite the first Enterprise Administrator. This applies the migrations, starts notices from now and emails a one-time setup link. It refuses any database that already holds users or projects, and it never deletes anything:
+
+   ```
+   docker compose run --rm api node dist/golive/golive-init-cli.js you@example.org "Your Name"
+   ```
+
+   Outside Docker the same command is `npm run golive-init -- you@example.org "Your Name"`.
+3. Development and test databases and old backup dump files are not carried over. Delete them yourself, by hand, outside Kainow.
+4. The first Administrator opens the emailed link and follows the **Go-live checklist**.
+
 ## What this does and does not protect
 
 - Only this computer can reach Kainow (the port is bound to 127.0.0.1). Do not publish it to a network without putting HTTPS in front.
