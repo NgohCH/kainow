@@ -11,6 +11,7 @@ import { mailDue } from './mailing';
 import { type PlannedTrigger, type RiskSnap, type TaskSnap, dueNow, planProject } from './planner';
 import { type Holder, applyCover, holdersOf, loadAdmins, routeFor } from './recipients';
 import { resumptionTrigger } from './resumption';
+import { refreshChecklist } from '../golive/checklist';
 import { loadOrgRow } from './settings';
 import { type ProjectData, loadSweepData } from './sweep-data';
 import { linkFor, triggerSummary } from './summaries';
@@ -168,6 +169,11 @@ export class Sweep {
       } catch {
         log.warn('The sweep could not nudge the email worker; the scheduled tick still finds the emails');
       }
+    }
+    try {
+      await refreshChecklist(pool, now);
+    } catch {
+      log.warn('The sweep could not refresh the go-live checklist; it is tried again at the next sweep');
     }
     const finished = clock();
     await pool.query(
