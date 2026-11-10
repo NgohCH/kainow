@@ -24,8 +24,9 @@ export async function startQueues(
   boss.on('error', (err: Error) => console.error('pg-boss error:', err.message));
   await boss.start();
   for (const name of Object.values(QUEUES)) {
-    // One queued and one active job at most: a tick or nudge arriving while a run is queued or active is dropped,
-    // because every run looks at all the work that is due (the sweep and the outbox are the source of truth).
+    // 'stately' (one queued and one active job per key) keeps duplicate ticks from piling up on a new queue. It is
+    // only applied when the queue is first created: pg-boss cannot change the policy of an existing queue, so this
+    // is not what prevents overlapping runs (see registerSchedules).
     if (name === QUEUES.sweep || name === QUEUES.email) await boss.createQueue(name, { policy: 'stately' });
     else await boss.createQueue(name);
   }
