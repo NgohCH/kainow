@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { FakeClock } from '../testing/fakes';
 import { M365TokenSource, TokenError } from './m365-token';
-import { SendError, classify, createTransport, type StoredAttachment } from './transport';
+import { M365_MESSAGES_PER_MINUTE, SendError, classify, createTransport, type StoredAttachment } from './transport';
 
 const cfg = { tenantId: 'tenant-1', clientId: 'client-1', clientSecret: 'secret-value-xyz' };
 
@@ -157,4 +157,50 @@ test('a token request that hangs is aborted and becomes a temporary failure', as
     assert.equal(classify(err).kind, 'temporary');
     return true;
   });
+});
+
+test('throttling replies are temporary; other 5xx replies stay permanent; the reply text is never kept', () => {
+  const reply = (responseCode: number, response: string) => Object.assign(new Error(response), { responseCode, response });
+  const rows: [unknown, 'temporary' | 'permanent'][] = [
+    [reply(421, '421 4.7.0 Try again later'), 'temporary'],
+    [reply(432, '432 4.7.12 A password transition is needed'), 'temporary'],
+    [reply(450, '450 4.2.1 Mailbox busy'), 'temporary'],
+    [reply(451, '451 4.4.2 Timeout'), 'temporary'],
+    [reply(452, '452 4.5.3 Too many recipients'), 'temporary'],
+    [reply(554, '554 5.2.0 STOREDRV.Submission.Exception:SubmissionQuotaExceededException; Failed to process message'), 'temporary'],
+    [reply(550, '550 5.2.0 Message rejected: sending quota exceeded for this mailbox'), 'temporary'],
+    [reply(554, '554 4.4.2 Connection dropped'), 'temporary'],
+    [reply(550, '550 5.7.1 Message throttled: too many messages'), 'temporary'],
+    [reply(550, '550 5.1.1 User unknown'), 'permanent'],
+    [reply(554, '554 5.2.0 Message could not be delivered'), 'permanent'],
+    [reply(535, '535 5.7.3 Authentication unsuccessful, throttled'), 'permanent'],
+  ];
+  for (const [err, kind] of rows) {
+    const c = classify(err);
+    assert.equal(c.kind, kind, (err as Error).message);
+    assert.ok(!c.reason.includes('SubmissionQuota') && !c.message.includes('STOREDRV') && !c.reason.includes('User unknown'));
+  }
+  assert.equal(classify(reply(554, '554 5.2.0 SubmissionQuotaExceeded')).smtpCode, 554);
+});
+
+test('only the Microsoft 365 transport is paced, at the one constant', () => {
+  assert.equal(M365_MESSAGES_PER_MINUTE, 30);
+  const m365 = createTransport({ provider: 'm365', ...cfg, from: 'Kainow <kainow@example.org>' }, () => new Date(), { fetch: fakeFetch([]).fn });
+  assert.equal(m365.perMinute, M365_MESSAGES_PER_MINUTE);
+  const smtp = createTransport({ provider: 'smtp', url: 'smtp://u:p@mail.example.org:587', from: 'a@example.org' }, () => new Date(), {
+    nodemailer: () => ({ sendMail: async () => ({}) }),
+  });
+  assert.equal(smtp.perMinute, undefined);
+  assert.equal(createTransport({ provider: 'log' }, () => new Date()).perMinute, undefined);
+});
+
+test('the log transport (development only) prints the recipient, subject and text body, so local invitation links can be followed', async () => {
+  const lines: string[] = [];
+  const log = createTransport({ provider: 'log' }, () => new Date(), { print: (l) => lines.push(l) });
+  await log.send({ from: 'x', to: 'b@example.org', subject: 'You are invited', text: 'Open http://localhost:5173/#/invitations/abc', html: '<p>h</p>', attachments: [] });
+  const out = lines.join('\n');
+  assert.ok(out.includes('b@example.org'));
+  assert.ok(out.includes('You are invited'));
+  assert.ok(out.includes('Open http://localhost:5173/#/invitations/abc'));
+  assert.ok(!out.includes('<p>h</p>'));
 });

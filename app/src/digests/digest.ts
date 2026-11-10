@@ -182,7 +182,10 @@ export async function runScheduledDigest(
   appUrl: string,
 ): Promise<number> {
   if (!schedule) return 0;
-  const lastRow = (await pool.query(`SELECT max(substring(key from '[^:]+$')) AS d FROM notification_triggers WHERE key LIKE $1`, [`project:${project.id}:digest:%`])).rows[0];
+  // By project and kind (index notification_triggers_project_idx); a LIKE on the key cannot use the unique index under a non-C collation.
+  const lastRow = (
+    await pool.query(`SELECT max(substring(key from '[^:]+$')) AS d FROM notification_triggers WHERE project_id = $1 AND kind = 'digest'`, [project.id])
+  ).rows[0];
   const date = scheduledDigestDue(cal, schedule, now, (lastRow?.d as string | null) ?? null);
   if (!date) return 0;
   const open = await countOpen(pool, project.id);

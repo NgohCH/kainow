@@ -10,7 +10,7 @@ import { seedOrganisation, seedProject, seedUser } from '../testing/projects';
 import { EmailDispatcher, NotResendable, OutboxRowNotFound, RETRY_MINUTES, UNCERTAIN_AFTER_MINUTES, resend } from './dispatcher';
 import { writeOutbox, type OutboxInput } from './outbox';
 import { stillRelevant, type EmailRelevance } from './relevance';
-import { SendError, type MailTransport, type OutgoingEmail } from './transport';
+import { M365_MESSAGES_PER_MINUTE, SendError, type MailTransport, type OutgoingEmail } from './transport';
 
 const START = Date.UTC(2026, 10, 10, 1, 0, 0); // Tue 10 Nov 2026, 09:00 UTC+8
 let pool: Pool;
@@ -488,4 +488,85 @@ test('a row claimed and then marked uncertain by a second dispatcher is not sent
   assert.deepEqual(first, ['Row A'], 'the first dispatcher stops at the row it lost');
   const sentB = [...first, ...t2.sent.map((m) => m.subject)].filter((x) => x === 'Row B');
   assert.equal(sentB.length, 1);
+});
+
+test('a paced transport sends at most its limit per rolling minute; the rest stay queued with no attempt', { skip: SKIP_NO_DB }, async () => {
+  const ids: string[] = [];
+  for (let i = 0; i < 35; i += 1) ids.push(await queue({ subject: `Paced ${i}` }));
+  const t = Object.assign(new ScriptedTransport(), { perMinute: M365_MESSAGES_PER_MINUTE });
+  const d = dispatcher(t);
+  const r = await d.dispatchDue();
+  assert.deepEqual(r, { sent: 30, failed: 0, cancelled: 0 });
+  const rows = (await pool.query(`SELECT status, attempts FROM email_outbox WHERE id = ANY($1::uuid[])`, [ids])).rows;
+  assert.equal(rows.filter((x) => x.status === 'sent').length, 30);
+  const waiting = rows.filter((x) => x.status !== 'sent');
+  assert.deepEqual(waiting.map((x) => [x.status, x.attempts]), Array(5).fill(['queued', 0]));
+  assert.equal(Number((await pool.query(`SELECT count(*) AS n FROM email_attempts WHERE outbox_id = ANY($1::uuid[])`, [ids])).rows[0].n), 30);
+  // Within the same minute nothing more goes; once the minute has rolled on, the rest go.
+  clock.advanceSeconds(30);
+  assert.deepEqual(await d.dispatchDue(), { sent: 0, failed: 0, cancelled: 0 });
+  clock.advanceSeconds(31);
+  assert.deepEqual(await d.dispatchDue(), { sent: 5, failed: 0, cancelled: 0 });
+  assert.equal(t.calls, 35);
+});
+
+test('an unpaced transport sends every due row in one pass', { skip: SKIP_NO_DB }, async () => {
+  for (let i = 0; i < 35; i += 1) await queue({ subject: `Unpaced ${i}` });
+  assert.deepEqual(await dispatcher(new ScriptedTransport()).dispatchDue(), { sent: 35, failed: 0, cancelled: 0 });
+});
+
+test('a Microsoft 365 quota reply (554 5.2.0 SubmissionQuotaExceeded) waits for a retry', { skip: SKIP_NO_DB }, async () => {
+  const id = await queue();
+  const quota = Object.assign(new Error('554 5.2.0 STOREDRV.Submission.Exception:SubmissionQuotaExceededException'), {
+    responseCode: 554,
+    response: '554 5.2.0 STOREDRV.Submission.Exception:SubmissionQuotaExceededException',
+  });
+  const t: MailTransport = { send: async () => { throw quota; } };
+  await dispatcher(t).dispatchDue();
+  const o = await row(id);
+  assert.equal(o.status, 'retry_wait');
+  assert.equal(minutes(o.next_attempt_at), 5);
+  assert.ok(!String(o.last_reason).includes('SubmissionQuota'));
+  const [a] = await attempts(id);
+  assert.deepEqual([a.outcome, a.smtp_code], ['temporary', '554']);
+});
+
+test('resend keeps the trigger ids and the digest run of the original', { skip: SKIP_NO_DB }, async () => {
+  const runId = uuidv7();
+  await pool.query(
+    `INSERT INTO digest_runs (id, project_id, initiated_by_user, scheduled, as_at, recipient_count) VALUES ($1, $2, $3, false, $4, 1)`,
+    [runId, projectId, adminId, clock.now()],
+  );
+  const triggerIds = [uuidv7(), uuidv7()];
+  const id = await queue({ kind: 'digest', initiatedBy: 'digest', digestRunId: runId, triggerIds });
+  await dispatcher(new ScriptedTransport([perm()])).dispatchDue();
+  const n = await row(await resend(pool, id, adminId, clock.now()));
+  assert.equal(n.digest_run_id, runId);
+  assert.deepEqual(n.trigger_ids, triggerIds);
+});
+
+test('an invitation email is sent only while its invitation is still open and unexpired', { skip: SKIP_NO_DB }, async () => {
+  const invitation = async (expiresAt: number) => {
+    const id = uuidv7();
+    await pool.query(
+      `INSERT INTO invitations (id, project_id, email, role, starts_on, invited_by, token_hash, issued_at, expires_at)
+       VALUES ($1, $2, 'invitee@example.net', 'member', '2026-11-10', $3, $4, $5, $6)`,
+      [id, projectId, adminId, `hash-${id}`, new Date(START), new Date(expiresAt)],
+    );
+    return id;
+  };
+  const open = await invitation(START + 86_400_000);
+  const rel = (invitationId: string) => ({ kind: 'invitation', invitationId }) as const;
+  assert.equal(await stillRelevant(pool, rel(open), clock.now()), true);
+  assert.equal(await stillRelevant(pool, rel(open), new Date(START + 86_400_000)), false, 'expired');
+  assert.equal(await stillRelevant(pool, rel(uuidv7()), clock.now()), false);
+
+  const keep = await queue({ toUserId: null, kind: 'invitation', relevance: rel(open) });
+  const revoked = await invitation(START + 86_400_000);
+  const dropped = await queue({ toUserId: null, kind: 'invitation', relevance: rel(revoked) });
+  await pool.query(`UPDATE invitations SET status = 'revoked' WHERE id = $1`, [revoked]);
+  const r = await dispatcher(new ScriptedTransport()).dispatchDue();
+  assert.deepEqual(r, { sent: 1, failed: 0, cancelled: 1 });
+  assert.equal((await row(keep)).status, 'sent');
+  assert.deepEqual([(await row(dropped)).status, (await row(dropped)).last_reason], ['cancelled', 'no longer relevant']);
 });

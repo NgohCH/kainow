@@ -86,18 +86,34 @@ async function inTransaction<T>(pool: Pool, work: (c: PoolClient) => Promise<T>)
 }
 
 export class EmailDispatcher {
+  /** When this process handed each message to a paced transport in the last minute. */
+  private readonly recentSends: number[] = [];
+
   constructor(private readonly deps: DispatcherDeps) {}
+
+  /** How many more messages may be sent now: unlimited unless the transport is paced (Microsoft 365). */
+  private room(): number {
+    const limit = this.deps.transport.perMinute;
+    if (limit === undefined) return Number.POSITIVE_INFINITY;
+    const since = this.deps.clock().getTime() - MINUTE;
+    while (this.recentSends.length > 0 && this.recentSends[0] <= since) this.recentSends.shift();
+    return limit - this.recentSends.length;
+  }
 
   /**
    * One pass over the outbox. Nothing is sent inside a transaction: rows are claimed (status `sending`) and committed first,
    * then sent, then the outcome is recorded in a second transaction. A row whose outcome was never recorded is found
    * later by the 10-minute rule and handled as uncertain, never silently resent.
+   * A paced transport takes at most its limit per rolling minute; rows beyond it stay queued, with no attempt counted,
+   * for a later pass.
    */
   async dispatchDue(): Promise<DispatchResult> {
     const result: DispatchResult = { sent: 0, failed: 0, cancelled: 0 };
     result.failed += await this.markUncertain();
     for (let round = 0; round < MAX_ROUNDS; round += 1) {
-      const { claimed, cancelled } = await this.claim();
+      const room = this.room();
+      if (room <= 0) break;
+      const { claimed, cancelled } = await this.claim(Math.min(BATCH, room));
       result.cancelled += cancelled;
       for (const c of claimed) {
         const outcome = await this.attempt(c);
@@ -156,7 +172,7 @@ export class EmailDispatcher {
   }
 
   /** Locks due rows, rechecks eligibility and relevance for each, and marks the ones to send as `sending`. */
-  private async claim(): Promise<{ claimed: Claimed[]; cancelled: number }> {
+  private async claim(limit: number): Promise<{ claimed: Claimed[]; cancelled: number }> {
     const now = this.deps.clock();
     const today = todayUtc8(now);
     return inTransaction(this.deps.pool, async (db) => {
@@ -165,7 +181,7 @@ export class EmailDispatcher {
           `SELECT * FROM email_outbox
             WHERE status = 'queued' OR (status IN ('retry_wait', 'uncertain') AND next_attempt_at <= $1)
             ORDER BY created_at, id LIMIT $2 FOR UPDATE SKIP LOCKED`,
-          [now, BATCH],
+          [now, limit],
         )
       ).rows as OutboxRow[];
       const claimed: Claimed[] = [];
@@ -182,13 +198,13 @@ export class EmailDispatcher {
         const rel = r.relevance;
         if (rel && isConsolidated(rel)) {
           const keep: typeof rel.items = [];
-          for (const item of rel.items) if (await stillRelevant(db, item.check)) keep.push(item);
+          for (const item of rel.items) if (await stillRelevant(db, item.check, now)) keep.push(item);
           if (keep.length < rel.items.length) {
             await cancel(r.id, REASON_CONTENT_CHANGED);
             if (keep.length > 0) await this.writeReplacement(db, r, rel, keep, now);
             continue;
           }
-        } else if (rel && !(await stillRelevant(db, rel))) {
+        } else if (rel && !(await stillRelevant(db, rel, now))) {
           await cancel(r.id, REASON_NOT_RELEVANT);
           continue;
         }
@@ -256,6 +272,7 @@ export class EmailDispatcher {
     );
     if (owned.rowCount === 0) return 'retry';
     c.startedAt = stamp;
+    if (this.deps.transport.perMinute !== undefined) this.recentSends.push(stamp.getTime());
     let error: ReturnType<typeof classify> | undefined;
     try {
       await this.deps.transport.send(c.email);
@@ -347,9 +364,9 @@ export async function resend(db: Db, outboxId: string, actorId: string, now: Dat
        UPDATE email_outbox SET next_attempt_at = NULL WHERE id IN (SELECT id FROM src WHERE status = 'uncertain')
      )
      INSERT INTO email_outbox (id, to_user_id, to_address, subject, text_body, html_body, attachments, kind, project_id,
-       initiated_by_user, initiated_by, relevance, status, attempts, resend_of, created_at)
+       initiated_by_user, initiated_by, relevance, trigger_ids, digest_run_id, status, attempts, resend_of, created_at)
      SELECT $1, to_user_id, to_address, subject, text_body, html_body, attachments, kind, project_id,
-            $3, 'person', relevance, 'queued', 0, id, $4
+            $3, 'person', relevance, trigger_ids, digest_run_id, 'queued', 0, id, $4
        FROM src`,
     [id, outboxId, actorId, now],
   );

@@ -111,11 +111,12 @@ export class InvitationsService {
 
   /**
    * Queues the invitation email in the caller's transaction, so it exists exactly when the invitation does. The invitee may
-   * have no account, so no recipient user is named and no eligibility is checked before sending.
+   * have no account, so no recipient user is named and no eligibility is checked before sending; the invitation itself
+   * must still be open and unexpired at each attempt.
    */
   private async queueEmail(
     c: PoolClient,
-    invite: { email: string; token: string; projectId: string; projectName: string; role: ProjectRole; expiresAt: Date; actorId: string },
+    invite: { invitationId: string; email: string; token: string; projectId: string; projectName: string; role: ProjectRole; expiresAt: Date; actorId: string },
     at: Date,
   ): Promise<void> {
     const m = invitationEmail(invite.projectName, ROLE_LABEL[invite.role], `${this.config.appUrl}/#/invitations/${invite.token}`, invite.expiresAt);
@@ -128,7 +129,8 @@ export class InvitationsService {
       projectId: invite.projectId,
       initiatedBy: 'person',
       initiatedByUser: invite.actorId,
-      relevance: { kind: 'none' },
+      // A revoked, replaced, answered or expired invitation's email is not sent (its link would be dead).
+      relevance: { kind: 'invitation', invitationId: invite.invitationId },
       now: at,
     });
   }
@@ -172,7 +174,7 @@ export class InvitationsService {
         name,
         at,
       );
-      await this.queueEmail(c, { email, token: issued.token, projectId, projectName: name, role, expiresAt: issued.expiresAt, actorId: user.id }, at);
+      await this.queueEmail(c, { invitationId: issued.id, email, token: issued.token, projectId, projectName: name, role, expiresAt: issued.expiresAt, actorId: user.id }, at);
       await writeAudit(c, { at, action: 'invitation.issued', actorUserId: user.id, subjectType: 'project', subjectId: projectId, detail: { invitationId: issued.id, role } });
       const row = (await c.query(`SELECT ${COLUMNS} FROM invitations WHERE id = $1`, [issued.id])).rows[0] as InvitationRow;
       return { invitation: this.view(row, at) };
@@ -201,7 +203,7 @@ export class InvitationsService {
       name,
       at,
     );
-    await this.queueEmail(c, { email, token: issued.token, projectId, projectName: name, role: 'member', expiresAt: issued.expiresAt, actorId }, at);
+    await this.queueEmail(c, { invitationId: issued.id, email, token: issued.token, projectId, projectName: name, role: 'member', expiresAt: issued.expiresAt, actorId }, at);
     await writeAudit(c, { at, action: 'invitation.issued', actorUserId: actorId, subjectType: 'project', subjectId: projectId, detail: { invitationId: issued.id, role: 'member', forTask: true } });
     return { id: issued.id, deliver: () => this.deliver() };
   }
@@ -228,7 +230,7 @@ export class InvitationsService {
       const issued = await this.issue(c, { ...r, invited_by: user.id }, name, at);
       await c.query(`UPDATE invitations SET status = 'replaced', replaced_by = $2 WHERE id = $1`, [r.id, issued.id]);
       await writeAudit(c, { at, action: 'invitation.resent', actorUserId: user.id, subjectType: 'project', subjectId: r.project_id, detail: { invitationId: issued.id, replaces: r.id } });
-      await this.queueEmail(c, { email: r.email, token: issued.token, projectId: r.project_id, projectName: name, role: r.role, expiresAt: issued.expiresAt, actorId: user.id }, at);
+      await this.queueEmail(c, { invitationId: issued.id, email: r.email, token: issued.token, projectId: r.project_id, projectName: name, role: r.role, expiresAt: issued.expiresAt, actorId: user.id }, at);
       const row = (await c.query(`SELECT ${COLUMNS} FROM invitations WHERE id = $1`, [issued.id])).rows[0] as InvitationRow;
       return { invitation: this.view(row, at) };
     });
@@ -322,7 +324,7 @@ export class InvitationsService {
         name,
         at,
       );
-      await this.queueEmail(c, { email, token: issued.token, projectId, projectName: name, role: 'pm', expiresAt: issued.expiresAt, actorId: user.id }, at);
+      await this.queueEmail(c, { invitationId: issued.id, email, token: issued.token, projectId, projectName: name, role: 'pm', expiresAt: issued.expiresAt, actorId: user.id }, at);
       await writeAudit(c, { at, action: 'invitation.handover_issued', actorUserId: user.id, subjectType: 'project', subjectId: projectId, detail: { invitationId: issued.id, outgoingRole } });
       const row = (await c.query(`SELECT ${COLUMNS} FROM invitations WHERE id = $1`, [issued.id])).rows[0] as InvitationRow;
       return { invitation: this.view(row, at) };

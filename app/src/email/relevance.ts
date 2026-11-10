@@ -5,6 +5,8 @@ export type Relevance =
   | { kind: 'task'; taskId: string; dueOn: string; reopenCount: number }
   | { kind: 'risk'; riskId: string; reviewOn: string }
   | { kind: 'project_active'; projectId: string }
+  /** An invitation email: worth sending only while the invitation is still open (not revoked, replaced or answered) and unexpired. */
+  | { kind: 'invitation'; invitationId: string }
   | { kind: 'none' };
 
 /**
@@ -26,8 +28,8 @@ export type EmailRelevance = SingleRelevance | ConsolidatedRelevance;
 
 export const isConsolidated = (r: EmailRelevance): r is ConsolidatedRelevance => 'items' in r;
 
-/** Whether the thing an email is about is still as it was when the email was composed. */
-export async function stillRelevant(db: Db, r: Relevance): Promise<boolean> {
+/** Whether the thing an email is about is still as it was when the email was composed (`now`: the attempt time). */
+export async function stillRelevant(db: Db, r: Relevance, now: Date = new Date()): Promise<boolean> {
   switch (r.kind) {
     case 'none':
       return true;
@@ -49,6 +51,10 @@ export async function stillRelevant(db: Db, r: Relevance): Promise<boolean> {
     case 'project_active': {
       const p = (await db.query(`SELECT status FROM projects WHERE id = $1`, [r.projectId])).rows[0];
       return p?.status === 'active';
+    }
+    case 'invitation': {
+      const i = (await db.query(`SELECT 1 FROM invitations WHERE id = $1 AND status = 'invited' AND expires_at > $2`, [r.invitationId, now])).rows[0];
+      return !!i;
     }
   }
 }
