@@ -45,7 +45,7 @@ export async function holdMembershipsOf(
 }
 
 /** Who to tell: the Active Project Manager, or the Active Owner and Sponsors when the PM is the one held. */
-export async function alertRecipients(c: PoolClient, projectId: string, heldUserId: string, today: string): Promise<string[]> {
+export async function alertRecipients(c: PoolClient, projectId: string, heldUserId: string, today: string): Promise<Array<{ userId: string; email: string }>> {
   const { rows } = await c.query(
     `SELECT m.user_id AS "userId", m.role, u.email, to_char(m.starts_on, 'YYYY-MM-DD') AS "startsOn",
             to_char(m.expires_on, 'YYYY-MM-DD') AS "expiresOn", m.revoked_at AS "revokedAt", m.held_at AS "heldAt", m.restored_at AS "restoredAt"
@@ -56,5 +56,5 @@ export async function alertRecipients(c: PoolClient, projectId: string, heldUser
   const active = (rows as Array<MembershipRow & { email: string }>).filter((r) => r.userId !== heldUserId && membershipState(r, today) === 'active');
   const pms = active.filter((r) => r.role === 'pm');
   const chosen = pms.length > 0 ? pms : active.filter((r) => r.role === 'owner' || r.role === 'sponsor');
-  return [...new Set(chosen.map((r) => r.email))];
+  return [...new Map(chosen.map((r) => [r.email, { userId: r.userId, email: r.email }] as const)).values()];
 }

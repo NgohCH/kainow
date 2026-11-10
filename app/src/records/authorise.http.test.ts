@@ -122,7 +122,7 @@ describe('authorising proposals into records', { skip: SKIP_NO_DB }, () => {
     const before = await task(pm);
     assert.deepEqual([before.awaitingMembership, before.invitation], [true, 'invited']);
     const invitee = await t.signIn('new@example.org');
-    const token = t.sender.lastInvitation('new@example.org').split('#/invitations/')[1];
+    const token = (await t.lastInvitationLink('new@example.org')).split('#/invitations/')[1];
     assert.equal((await invitee.request('POST', `/invitations/by-token/${token}/accept`)).status, 200);
     const after = await task(pm);
     assert.deepEqual([after.awaitingMembership, after.invitation], [false, null]);

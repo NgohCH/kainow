@@ -33,8 +33,14 @@ describe('account disable and membership holds', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(await state(b, ids.mem), { hold_reason: 'Account disabled', held: true });
     assert.equal((await state(c, ids.mem)).held, false, 'an expired membership is untouched');
     assert.equal((await state(d, ids.mem)).held, false, 'a revoked membership is untouched');
-    assert.deepEqual(t.sender.holdAlerts.map((x) => [x.email, x.projectName]).sort(), [['pma@example.org', 'A'], ['pmb@example.org', 'B']]);
-    assert.match(t.sender.holdAlerts[0].link, /#\/projects\/[0-9a-f-]{36}\/people$/);
+    const alerts = (await t.outbox()).filter((r) => r.kind === 'hold_alert');
+    assert.deepEqual(alerts.map((r) => [r.to_address, r.subject, r.status]).sort(), [
+      ['pma@example.org', 'Kainow: action needed in A', 'queued'],
+      ['pmb@example.org', 'Kainow: action needed in B', 'queued'],
+    ]);
+    assert.deepEqual(alerts.map((r) => r.project_id).sort(), [a, b].sort());
+    assert.match(alerts[0].text_body, /A member of the project "[AB]" is On Hold and needs investigating\./);
+    assert.match(alerts[0].text_body, /#\/projects\/[0-9a-f-]{36}\/people\n/);
     const pm = await t.signIn('pma@example.org');
     const p = (await pm.request('GET', `/projects/${a}`)).body.project;
     assert.equal(p.onHold, true);
@@ -51,7 +57,7 @@ describe('account disable and membership holds', { skip: SKIP_NO_DB }, () => {
       members: [{ userId: ids.pma, role: 'pm' }, { userId: ids.owner, role: 'owner' }, { userId: ids.sponsor, role: 'sponsor' }, { userId: ids.mem, role: 'member' }],
     });
     await admin.request('POST', `/users/${ids.pma}/disable`);
-    assert.deepEqual(t.sender.holdAlerts.map((x) => x.email).sort(), ['owner@example.org', 'sponsor@example.org']);
+    assert.deepEqual((await t.outbox()).filter((r) => r.kind === 'hold_alert').map((r) => r.to_address).sort(), ['owner@example.org', 'sponsor@example.org']);
   });
 
   test('re-enabling leaves holds in place', async () => {

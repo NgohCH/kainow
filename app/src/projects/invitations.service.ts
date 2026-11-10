@@ -2,10 +2,13 @@ import { BadRequestException, ConflictException, ForbiddenException, Inject, Inj
 import { createHash, randomBytes } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
-import { CLOCK, CODE_SENDER, type AuthUser, type Clock, type CodeSender } from '../auth/tokens';
+import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { APP_CONFIG, type AppConfig } from '../config';
 import { PG_POOL } from '../db/database.module';
+import { invitationEmail } from '../email/messages';
+import { EMAIL_NUDGE, type EmailNudge } from '../email/nudge';
+import { writeOutbox } from '../email/outbox';
 import { ProjectAccess } from './access.service';
 import { ROLE_LABEL, canManageRole } from './matrix';
 import { type ProjectRole, membershipState } from './membership';
@@ -47,7 +50,7 @@ export class InvitationsService {
   constructor(
     @Inject(PG_POOL) private readonly pool: Pool,
     @Inject(CLOCK) private readonly now: Clock,
-    @Inject(CODE_SENDER) private readonly sender: CodeSender,
+    @Inject(EMAIL_NUDGE) private readonly nudge: EmailNudge,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     private readonly access: ProjectAccess,
     private readonly org: OrganisationService,
@@ -106,15 +109,39 @@ export class InvitationsService {
     return { id, token, expiresAt };
   }
 
-  /** Sends the link; false when the email could not be sent, so the manager can send it again. */
-  private async deliver(email: string, token: string, projectName: string, role: ProjectRole, expiresAt: Date): Promise<boolean> {
+  /**
+   * Queues the invitation email in the caller's transaction, so it exists exactly when the invitation does. The invitee may
+   * have no account, so no recipient user is named and no eligibility is checked before sending.
+   */
+  private async queueEmail(
+    c: PoolClient,
+    invite: { email: string; token: string; projectId: string; projectName: string; role: ProjectRole; expiresAt: Date; actorId: string },
+    at: Date,
+  ): Promise<void> {
+    const m = invitationEmail(invite.projectName, ROLE_LABEL[invite.role], `${this.config.appUrl}/#/invitations/${invite.token}`, invite.expiresAt);
+    await writeOutbox(c, {
+      toUserId: null,
+      toAddress: invite.email,
+      subject: m.subject,
+      body: m.body,
+      kind: 'invitation',
+      projectId: invite.projectId,
+      initiatedBy: 'person',
+      initiatedByUser: invite.actorId,
+      relevance: { kind: 'none' },
+      now: at,
+    });
+  }
+
+  /** Tells the email worker there is something to send, after the transaction has committed. Always true: the email is queued. */
+  private async deliver(): Promise<boolean> {
     try {
-      await this.sender.sendInvitation(email, `${this.config.appUrl}/#/invitations/${token}`, projectName, ROLE_LABEL[role], expiresAt);
-      return true;
+      await this.nudge.nudge();
     } catch {
-      console.error('An invitation email could not be delivered');
-      return false;
+      // The email is committed; the scheduled email tick still finds it.
+      console.error('Could not nudge the email worker after an invitation; the scheduled tick still sends it');
     }
+    return true;
   }
 
   async invite(user: AuthUser, projectId: string, input: Record<string, unknown>) {
@@ -123,7 +150,6 @@ export class InvitationsService {
     if (!EMAIL.test(email)) throw new BadRequestException('Enter the email address to invite.');
     const displayName = typeof input.displayName === 'string' && input.displayName.trim() !== '' ? input.displayName.trim().slice(0, 200) : null;
     const at = this.now();
-    let out: { id: string; token: string; expiresAt: Date; name: string };
     const result = await this.tx(async (c) => {
       const ctx = await this.access.context(user, projectId, c, true);
       const v = canManageRole({ target: role, roles: ctx.roles, isAdmin: ctx.isAdmin, status: ctx.project.status, via: 'invitation' });
@@ -146,18 +172,18 @@ export class InvitationsService {
         name,
         at,
       );
-      out = { ...issued, name };
+      await this.queueEmail(c, { email, token: issued.token, projectId, projectName: name, role, expiresAt: issued.expiresAt, actorId: user.id }, at);
       await writeAudit(c, { at, action: 'invitation.issued', actorUserId: user.id, subjectType: 'project', subjectId: projectId, detail: { invitationId: issued.id, role } });
       const row = (await c.query(`SELECT ${COLUMNS} FROM invitations WHERE id = $1`, [issued.id])).rows[0] as InvitationRow;
       return { invitation: this.view(row, at) };
     });
-    const delivered = await this.deliver(email, out!.token, out!.name, role, out!.expiresAt);
-    return { ...result, delivered };
+    return { ...result, delivered: await this.deliver() };
   }
 
   /**
    * A Member invitation issued inside the caller's transaction (authorising a task for someone not yet in the
-   * project). Reuses an open invitation to the same address; the email is sent by calling `deliver` after commit.
+   * project). Reuses an open invitation to the same address; the email is queued in the same transaction and
+   * `deliver` (after commit) nudges the email worker.
    */
   async issueMemberInvitation(c: PoolClient, projectId: string, email: string, actorId: string, startsOn: string, at: Date) {
     if (!(await this.org.isEligible(email))) throw new BadRequestException('That address is not in an eligible organisation domain.');
@@ -175,8 +201,9 @@ export class InvitationsService {
       name,
       at,
     );
+    await this.queueEmail(c, { email, token: issued.token, projectId, projectName: name, role: 'member', expiresAt: issued.expiresAt, actorId }, at);
     await writeAudit(c, { at, action: 'invitation.issued', actorUserId: actorId, subjectType: 'project', subjectId: projectId, detail: { invitationId: issued.id, role: 'member', forTask: true } });
-    return { id: issued.id, deliver: () => this.deliver(email, issued.token, name, 'member', issued.expiresAt) };
+    return { id: issued.id, deliver: () => this.deliver() };
   }
 
   private async loadForManager(c: PoolClient, user: AuthUser, invitationId: string, via: 'invitation' | 'appointment' = 'invitation') {
@@ -194,7 +221,6 @@ export class InvitationsService {
   /** A new invitation with the same details; the old link stops working. Earlier history is kept. */
   async resend(user: AuthUser, invitationId: string) {
     const at = this.now();
-    let out: { token: string; expiresAt: Date; name: string; email: string; role: ProjectRole };
     const result = await this.tx(async (c) => {
       const { r } = await this.loadForManager(c, user, invitationId);
       if (r.status !== 'invited') throw new ConflictException('Only an unanswered invitation can be sent again.');
@@ -202,12 +228,11 @@ export class InvitationsService {
       const issued = await this.issue(c, { ...r, invited_by: user.id }, name, at);
       await c.query(`UPDATE invitations SET status = 'replaced', replaced_by = $2 WHERE id = $1`, [r.id, issued.id]);
       await writeAudit(c, { at, action: 'invitation.resent', actorUserId: user.id, subjectType: 'project', subjectId: r.project_id, detail: { invitationId: issued.id, replaces: r.id } });
-      out = { token: issued.token, expiresAt: issued.expiresAt, name, email: r.email, role: r.role };
+      await this.queueEmail(c, { email: r.email, token: issued.token, projectId: r.project_id, projectName: name, role: r.role, expiresAt: issued.expiresAt, actorId: user.id }, at);
       const row = (await c.query(`SELECT ${COLUMNS} FROM invitations WHERE id = $1`, [issued.id])).rows[0] as InvitationRow;
       return { invitation: this.view(row, at) };
     });
-    const delivered = await this.deliver(out!.email, out!.token, out!.name, out!.role, out!.expiresAt);
-    return { ...result, delivered };
+    return { ...result, delivered: await this.deliver() };
   }
 
   async revoke(user: AuthUser, invitationId: string) {
@@ -276,7 +301,6 @@ export class InvitationsService {
     if (!OUTGOING_ROLES.includes(outgoingRole)) throw new BadRequestException('Choose your role afterwards: deputy_pm, member or leave.');
     const displayName = typeof input.displayName === 'string' && input.displayName.trim() !== '' ? input.displayName.trim().slice(0, 200) : null;
     const at = this.now();
-    let out: { token: string; expiresAt: Date; name: string };
     const result = await this.tx(async (c) => {
       const ctx = await this.access.context(user, projectId, c, true);
       const mine = ctx.rows.find((m) => m.userId === user.id && m.role === 'pm' && membershipState(m, ctx.today) === 'active');
@@ -298,13 +322,12 @@ export class InvitationsService {
         name,
         at,
       );
-      out = { token: issued.token, expiresAt: issued.expiresAt, name };
+      await this.queueEmail(c, { email, token: issued.token, projectId, projectName: name, role: 'pm', expiresAt: issued.expiresAt, actorId: user.id }, at);
       await writeAudit(c, { at, action: 'invitation.handover_issued', actorUserId: user.id, subjectType: 'project', subjectId: projectId, detail: { invitationId: issued.id, outgoingRole } });
       const row = (await c.query(`SELECT ${COLUMNS} FROM invitations WHERE id = $1`, [issued.id])).rows[0] as InvitationRow;
       return { invitation: this.view(row, at) };
     });
-    const delivered = await this.deliver(email, out!.token, out!.name, 'pm', out!.expiresAt);
-    return { ...result, delivered };
+    return { ...result, delivered: await this.deliver() };
   }
 
   /** The switch, in one transaction: outgoing PM revoked ("Handed over"), replacement PM from today, chosen role appointed. */

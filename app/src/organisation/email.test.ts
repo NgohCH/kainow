@@ -43,8 +43,6 @@ test('the SMTP sender sends every email through the letterhead, and Kainow defau
   assert.match(String(sent[0].text), /Sent by Kainow\.$/);
   sender.useLetterhead(async () => registered);
   await sender.send('a@example.org', '123456', 10);
-  await sender.sendInvitation('a@example.org', 'http://x', 'P', 'Member', new Date());
-  await sender.sendHoldAlert('a@example.org', 'P', 'http://x');
   for (const m of sent.slice(1)) {
     assert.match(String(m.text), /^Example Organisation\n\n/);
     assert.match(String(m.html), /cid:logo/);

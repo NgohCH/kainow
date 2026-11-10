@@ -295,7 +295,7 @@ describe('change requests', { skip: SKIP_NO_DB }, () => {
     const a = await approve(sponsor, r.body.request.id);
     assert.equal(a.status, 200, JSON.stringify(a.body));
     assert.equal(a.body.applied.delivered, true);
-    assert.ok(t.sender.lastInvitation('new@example.org'));
+    assert.ok(await t.lastInvitationLink('new@example.org'));
   });
 
   test('editing an AI proposal sets aside its pending authorisation', async () => {

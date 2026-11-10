@@ -270,12 +270,13 @@ describe('closure accounting and delegated closure', { skip: SKIP_NO_DB }, () =>
     assert.equal((await dispose(pm, 'task', a, 'keep', 'Operations will finish it')).status, 201);
     const closed = await close(pm, 'partially_delivered');
     assert.equal(closed.status, 200, JSON.stringify(closed.body));
-    assert.deepEqual(
-      t.sender.closureNotices.map((n) => n.email).sort(),
-      ['owner@example.org', 'sponsor@example.org'],
-    );
-    assert.equal(t.sender.closureNotices[0].projectName, 'Records Upgrade');
-    assert.ok(t.sender.closureNotices[0].link.endsWith(`/#/projects/${projectId}`));
+    const notices = (await t.outbox()).filter((r) => r.kind === 'closure_notice');
+    assert.deepEqual(notices.map((n) => n.to_address).sort(), ['owner@example.org', 'sponsor@example.org']);
+    assert.equal(notices[0].subject, 'Records Upgrade was closed by its Project Manager');
+    assert.equal(notices[0].status, 'queued');
+    assert.equal(notices[0].project_id, projectId);
+    assert.match(notices[0].text_body, /with the outcome Partially Delivered\./);
+    assert.match(notices[0].text_body, new RegExp(`/#/projects/${projectId}\n`));
     const del = (await t.pool.query(`SELECT revoked_by FROM closure_delegations WHERE project_id = $1`, [projectId])).rows[0];
     assert.equal(del.revoked_by, ids.pm, 'closing ends the delegation');
   });
