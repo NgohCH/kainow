@@ -24,9 +24,13 @@ import { Closing, DelegationControl, type ClosedSummary, type ClosureView } from
 import { DeadlineReview } from './DeadlineReview.tsx';
 import { Notes } from './Notes.tsx';
 import { Work } from './Work.tsx';
+import { DeliveryHistory } from './Deliveries.tsx';
+import { DigestSend, EscalationFlags } from './DigestSend.tsx';
+import { ProjectSettings } from './NotificationSettings.tsx';
+import { ProjectCalendarProvider } from './ProjectCalendar.tsx';
 import { type Act, ArchivePanel, DepartmentMove, GrantsSection, HandoverForm, HoldActions } from './ProjectAccessPanels.tsx';
 
-type Tab = 'overview' | 'people' | 'notes' | 'work' | 'closing' | 'deadline-review';
+type Tab = 'overview' | 'people' | 'notes' | 'work' | 'settings' | 'closing' | 'deadline-review';
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
@@ -79,6 +83,7 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
     ['overview', 'Overview'],
     ['people', 'People'],
     ...(contentAllowed ? ([['notes', 'Notes'], ['work', 'Work']] as Array<[Tab, string]>) : []),
+    ['settings', 'Settings'],
   ];
   // The project's current people, for choosing assignees, requesters and responsible people.
   const people = [
@@ -92,6 +97,7 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
   const base = `#/projects/${project.id}`;
 
   return (
+    <ProjectCalendarProvider projectId={project.id}>
     <main className="page">
       <p><a href="#/">My Projects</a></p>
       <div className="row">
@@ -120,6 +126,7 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
           This project is missing {project.missingRoles.join(' and ')}. Existing work continues, but proposals cannot be approved until the role is filled.
         </p>
       )}
+      <EscalationFlags projectId={project.id} />
       <nav aria-label="Project" className="tabs">
         {tabs.map(([t, label]) => (
           <a key={t} href={t === 'overview' ? base : `${base}/${t}`} aria-current={tab === t ? 'page' : undefined}>
@@ -130,6 +137,7 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
       {tab === 'overview' && <Overview project={project} act={act} />}
+      {tab === 'settings' && <ProjectSettings projectId={project.id} />}
       {tab === 'closing' && <Closing project={project} act={act} />}
       {tab === 'deadline-review' && <DeadlineReview project={project} />}
       {tab === 'people' && <People project={project} act={act} />}
@@ -150,6 +158,7 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
         <Work projectId={project.id} people={people} canPropose={roles.length > 0} canClear={roles.some((r) => r === 'pm' || r === 'deputy_pm')} focusId={itemId} />
       )}
     </main>
+    </ProjectCalendarProvider>
   );
 }
 
@@ -167,6 +176,7 @@ function Overview({ project, act }: { project: Project; act: Act }) {
   const closable = ['planned', 'active', 'deferred'].includes(project.status);
   const isOS = project.myRoles.some((r) => r === 'owner' || r === 'sponsor');
   const isPmOrDeputy = project.myRoles.some((r) => r === 'pm' || r === 'deputy_pm');
+  const isEmailManager = project.myRoles.some((r) => r === 'pm' || r === 'owner' || r === 'sponsor');
   useEffect(() => {
     if (!closable || project.myRoles.length === 0) return setClosure(null);
     api.get<ClosureView>(`/projects/${project.id}/closure`).then(setClosure, () => setClosure(null));
@@ -303,6 +313,14 @@ function Overview({ project, act }: { project: Project; act: Act }) {
       )}
 
       <ProjectApprovals projectId={project.id} />
+
+      {isEmailManager && project.status === 'active' && <DigestSend projectId={project.id} />}
+      {isEmailManager && (
+        <section aria-labelledby="deliveries-heading">
+          <h2 id="deliveries-heading">Email delivery</h2>
+          <DeliveryHistory path={`/projects/${project.id}/deliveries`} />
+        </section>
+      )}
 
       <ArchivePanel project={project} act={act} />
       <DepartmentMove project={project} act={act} />
