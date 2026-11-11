@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import type { Pool, PoolClient } from 'pg';
+import { Pool, type PoolClient } from 'pg';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
@@ -76,8 +76,9 @@ function draftView(r: Record<string, any>): DraftView {
 
 /**
  * Stores an AI draft as the next version of a meeting's minutes. Standalone because the worker builds plain
- * classes without Nest. The caller holds the thread row lock (or is the only writer); a concurrent insert of the
- * same version number is refused by the unique key rather than overwriting.
+ * classes without Nest. It locks the thread row (FOR NO KEY UPDATE, like every write path) before reading the
+ * newest version number, so it queues behind a concurrent minutes save instead of colliding on the unique key.
+ * Given a Pool it runs in its own transaction; given a client it joins the caller's (re-taking the lock is harmless).
  */
 export async function insertAiDraft(
   db: Db,
@@ -85,6 +86,21 @@ export async function insertAiDraft(
   input: { body: string; coversThroughNo: number; analysisRunId: string },
   now: () => Date = () => new Date(),
 ): Promise<DraftView> {
+  if (db instanceof Pool) {
+    const client = await db.connect();
+    try {
+      await client.query('BEGIN');
+      const view = await insertAiDraft(client, threadId, input, now);
+      await client.query('COMMIT');
+      return view;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+  await db.query(`SELECT 1 FROM discussion_threads WHERE id = $1 FOR NO KEY UPDATE`, [threadId]);
   const at = now();
   const next = Number((await db.query(`SELECT COALESCE(max(version_no), 0) + 1 AS n FROM minutes_drafts WHERE thread_id = $1`, [threadId])).rows[0].n);
   await db.query(
@@ -227,7 +243,7 @@ export class MeetingsService {
       }
       if (text.length > MAX_MINUTES_CHARS) throw new BadRequestException(`The minutes are longer than ${MAX_MINUTES_CHARS.toLocaleString('en-US')} characters.`);
       refuseSecrets(text);
-      const newest = (await db.query(`SELECT id, version_no AS v, body FROM minutes_drafts WHERE thread_id = $1 ORDER BY version_no DESC LIMIT 1`, [t.id])).rows[0];
+      const newest = (await db.query(`SELECT id, version_no AS v, body, covers_through_no AS covers FROM minutes_drafts WHERE thread_id = $1 ORDER BY version_no DESC LIMIT 1`, [t.id])).rows[0];
       const newestNo: number = newest ? newest.v : 0;
       if (newestNo !== based) {
         const current = newest ? draftView((await db.query(`${DRAFT_SELECT} WHERE d.id = $1`, [newest.id])).rows[0]) : null;
@@ -236,7 +252,8 @@ export class MeetingsService {
       if (newest && newest.body === text) throw new BadRequestException('Nothing has changed in these minutes.');
       const at = this.now();
       const id = uuidv7(at.getTime());
-      const covers = Number((await db.query(`SELECT next_message_no - 1 AS n FROM discussion_threads WHERE id = $1`, [t.id])).rows[0].n);
+      // A person's version covers what the draft it came from covered (nothing, when written from scratch): it never saw later messages.
+      const covers: number = newest ? newest.covers : 0;
       await db.query(
         `INSERT INTO minutes_drafts (id, thread_id, version_no, origin, body, covers_through_no, edited_from_id, created_by, created_at)
          VALUES ($1, $2, $3, 'human', $4, $5, $6, $7, $8)`,

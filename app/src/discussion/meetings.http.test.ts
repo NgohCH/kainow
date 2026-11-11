@@ -181,6 +181,35 @@ describe('typed meetings and draft minutes', { skip: SKIP_NO_DB }, () => {
     assert.ok(events.rows.every((e) => e.draft_id && typeof e.detail.sha256 === 'string' && typeof e.detail.length === 'number' && !JSON.stringify(e.detail).includes('Minutes')));
   });
 
+  test('a human version covers what the draft it came from covered', async () => {
+    const say = (c: Client, text: string) => c.request('POST', `/threads/${meeting}/messages`, { body: text });
+    await say(ada, 'one');
+    await say(ben, 'two');
+    await insertAiDraft(t.pool, meeting, { body: 'AI text', coversThroughNo: 2, analysisRunId: await seedRun() });
+    await say(ada, 'three');
+    const edited = await save(pm, 'AI text, tidied', 1);
+    assert.equal(edited.status, 201, JSON.stringify(edited.body));
+    const row = await t.pool.query(`SELECT covers_through_no AS n FROM minutes_drafts WHERE thread_id = $1 AND version_no = 2`, [meeting]);
+    assert.equal(row.rows[0].n, 2, 'message 3 is not covered');
+    const other = await startMeeting(ada, { kind: 'meeting', title: 'From scratch' });
+    await ada.request('POST', `/threads/${other}/messages`, { body: 'hello' });
+    assert.equal((await save(ada, 'Typed by hand', 0, other)).status, 201);
+    assert.equal((await t.pool.query(`SELECT covers_through_no AS n FROM minutes_drafts WHERE thread_id = $1`, [other])).rows[0].n, 0);
+  });
+
+  test('an AI draft and a minutes save at the same moment never give a 500', async () => {
+    assert.equal((await save(pm, 'Version one', 0)).status, 201);
+    const run = await seedRun();
+    const [ai, human] = await Promise.all([
+      insertAiDraft(t.pool, meeting, { body: 'AI text', coversThroughNo: 0, analysisRunId: run }).then(() => 'ok', (e) => `error: ${e}`),
+      save(ada, 'Human text', 1),
+    ]);
+    assert.equal(ai, 'ok');
+    assert.ok(human.status === 201 || human.status === 409, `got ${human.status}`);
+    const versions = await t.pool.query(`SELECT version_no FROM minutes_drafts WHERE thread_id = $1 ORDER BY version_no`, [meeting]);
+    assert.deepEqual(versions.rows.map((r) => r.version_no), human.status === 201 ? [1, 2, 3] : [1, 2]);
+  });
+
   test('minutes save based on an old version is refused (409)', async () => {
     assert.equal((await save(pm, 'Version one', 0)).status, 201);
     const stale = await save(ada, 'Ada was looking at nothing', 0);
