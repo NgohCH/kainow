@@ -1,5 +1,6 @@
 import { Pool } from 'pg';
 import { AnalysisRunner } from '../analysis/analysis-runner';
+import { MinutesRunner } from '../analysis/minutes-runner';
 import { AnalysisTick } from '../analysis/tick';
 import { bossAnalysisQueue } from '../analysis/queue';
 import { ExtractionRunner } from '../extraction/runner';
@@ -18,14 +19,17 @@ async function main(): Promise<void> {
   const config = loadWorkerConfig();
   const pool = new Pool({ connectionString: config.databaseUrl });
   const clock = () => new Date();
+  const spend = new SpendService(pool, clock);
+  const model = config.openAiApiKey ? new OpenAiModelClient(config.openAiApiKey) : null;
   const extraction = new ExtractionRunner({
     pool,
-    spend: new SpendService(pool, clock),
-    model: config.openAiApiKey ? new OpenAiModelClient(config.openAiApiKey) : null,
+    spend,
+    model,
     clock,
     log: (m) => console.error(m),
   });
-  const analysisRunner = new AnalysisRunner({ pool, clock, extraction, log: (m) => console.error(m) });
+  const minutes = new MinutesRunner({ pool, spend, model, clock, log: (m) => console.error(m) });
+  const analysisRunner = new AnalysisRunner({ pool, clock, extraction, minutes, log: (m) => console.error(m) });
   if (!config.openAiApiKey) {
     console.warn('OPENAI_API_KEY is not set: extraction runs will fail without sending anything.');
   }

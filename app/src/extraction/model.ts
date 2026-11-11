@@ -1,4 +1,5 @@
 import type { Usage } from '../spend/cost';
+import { MINUTES_SCHEMA, type MinutesAnswer, parseMinutes } from '../analysis/minutes';
 import { isCalendarDate } from './due';
 
 export const ITEM_KINDS = ['decision', 'action', 'question', 'risk'] as const;
@@ -59,6 +60,11 @@ export class ModelBadResponse extends Error {
 /** Anything that can run an extraction. The real one calls OpenAI; tests use a fake. */
 export interface ModelClient {
   extract(request: ModelRequest): Promise<ModelResult>;
+}
+
+/** Anything that can draft minutes. The real one calls OpenAI; tests use a fake. */
+export interface MinutesModel {
+  draftMinutes(request: ModelRequest): Promise<MinutesAnswer & { usage: Usage }>;
 }
 
 const SCHEMA = {
@@ -141,7 +147,7 @@ export function parseAnswer(content: unknown, usage: Usage): ModelAnswer {
 }
 
 /** Calls the OpenAI chat completions API with a strict JSON schema. Needs a key; the sandbox cannot reach it. */
-export class OpenAiModelClient implements ModelClient {
+export class OpenAiModelClient implements ModelClient, MinutesModel {
   constructor(
     private readonly apiKey: string,
     private readonly baseUrl: string = 'https://api.openai.com/v1',
@@ -149,6 +155,17 @@ export class OpenAiModelClient implements ModelClient {
   ) {}
 
   async extract(req: ModelRequest): Promise<ModelResult> {
+    const { content, usage } = await this.callJson(req, SCHEMA);
+    return { ...parseAnswer(content, usage), usage };
+  }
+
+  async draftMinutes(req: ModelRequest): Promise<MinutesAnswer & { usage: Usage }> {
+    const { content, usage } = await this.callJson(req, MINUTES_SCHEMA);
+    return { ...parseMinutes(content, usage), usage };
+  }
+
+  /** One request with a strict JSON schema: the answer's text and the reported usage, or a ModelCallError / ModelBadResponse. */
+  private async callJson(req: ModelRequest, schema: object): Promise<{ content: unknown; usage: Usage }> {
     let res: Response;
     try {
       res = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {
@@ -162,7 +179,7 @@ export class OpenAiModelClient implements ModelClient {
             { role: 'user', content: req.user },
           ],
           max_completion_tokens: req.maxOutputTokens,
-          response_format: { type: 'json_schema', json_schema: SCHEMA },
+          response_format: { type: 'json_schema', json_schema: schema },
         }),
       });
     } catch (err) {
@@ -202,6 +219,6 @@ export class OpenAiModelClient implements ModelClient {
     if (choice?.message?.refusal) {
       throw new ModelBadResponse('The model declined to answer', usage);
     }
-    return { ...parseAnswer(choice?.message?.content, usage), usage };
+    return { content: choice?.message?.content, usage };
   }
 }

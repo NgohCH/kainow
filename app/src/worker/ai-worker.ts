@@ -34,17 +34,19 @@ export async function registerAiWorker(boss: PgBoss, runners: AiRunners, pool: P
         // because that would block any new run for the same version or thread.
         if (last) {
           if (analysis) {
+            const minutes = (await pool.query(`SELECT kind FROM analysis_runs WHERE id = $1`, [id])).rows[0]?.kind === 'minutes';
+            const detail = minutes ? 'The minutes drafting stopped on an unexpected error.' : 'The analysis stopped on an unexpected error.';
             await pool.query(
               `UPDATE extraction_runs SET status = 'failed', failure_code = 'internal_error',
-                      failure_detail = 'The analysis stopped on an unexpected error.', finished_at = now()
+                      failure_detail = $2, finished_at = now()
                 WHERE id = (SELECT extraction_run_id FROM analysis_runs WHERE id = $1) AND status IN ('queued', 'running')`,
-              [id],
+              [id, detail],
             );
             await pool.query(
               `UPDATE analysis_runs SET status = 'failed', failure_code = 'internal_error',
-                      failure_detail = 'The analysis stopped on an unexpected error.', finished_at = now()
+                      failure_detail = $2, finished_at = now()
                 WHERE id = $1 AND status IN ('queued', 'running')`,
-              [id],
+              [id, detail],
             );
           } else {
             await pool.query(
