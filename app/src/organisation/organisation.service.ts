@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type Clock } from '../auth/tokens';
@@ -112,7 +112,7 @@ export class OrganisationProfileService {
     const at = this.now();
     await this.tx(async (c) => {
       const row = (await c.query(`SELECT recovery_custodian_name, recovery_custodian_contact FROM organisation WHERE id = 1 FOR UPDATE`)).rows[0];
-      if (!row) throw new BadRequestException('Give the organisation a name.');
+      if (!row) throw new ConflictException('Set up the organisation first.');
       const from = { name: row.recovery_custodian_name as string | null, contact: row.recovery_custodian_contact as string | null };
       if (from.name === next.name && from.contact === next.contact) return;
       await c.query(

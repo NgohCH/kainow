@@ -70,6 +70,14 @@ describe('recovery custodian', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(org, { recovery_custodian_name: null, recovery_custodian_contact: null });
   });
 
+  test('before the organisation row exists, saving is refused with 409 and nothing is recorded', async () => {
+    await t.pool.query(`DELETE FROM organisation`);
+    const r = await admin.request('PUT', '/organisation/recovery-custodian', { name: 'Casey', contact: 'c@example.org' });
+    assert.equal(r.status, 409);
+    assert.equal((r.body as { message: string }).message, 'Set up the organisation first.');
+    assert.deepEqual(await audits(), []);
+  });
+
   test('a disabled Administrator can no longer use it', async () => {
     await t.pool.query(`UPDATE users SET status = 'disabled' WHERE email = 'admin@example.org'`);
     assert.equal((await admin.request('GET', '/organisation/recovery-custodian')).status, 401);
