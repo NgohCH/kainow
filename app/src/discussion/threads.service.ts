@@ -124,7 +124,7 @@ export class ThreadsService {
   }
 
   private async threadRow(db: Db, threadId: string, lock = false): Promise<ThreadRow> {
-    const { rows } = await db.query(`SELECT ${THREAD_COLUMNS} FROM discussion_threads WHERE id = $1 ${lock ? 'FOR UPDATE' : ''}`, [uuidOrNotFound(threadId)]);
+    const { rows } = await db.query(`SELECT ${THREAD_COLUMNS} FROM discussion_threads WHERE id = $1 ${lock ? 'FOR NO KEY UPDATE' : ''}`, [uuidOrNotFound(threadId)]);
     if (!rows[0]) throw new NotFoundException();
     return rows[0] as ThreadRow;
   }
@@ -296,14 +296,19 @@ export class ThreadsService {
     return (await this.messageViews(this.pool, user.id, 'm.id = $1', [messageId]))[0];
   }
 
-  /** The message's thread, author and state; locks the message row when asked. */
+  /**
+   * The message's thread, author and state. With `lock`, the thread row is locked first and the message row second
+   * (the order `post` uses), both FOR NO KEY UPDATE so inserts that reference them (replies, events) are not blocked.
+   */
   private async messageRow(db: Db, messageId: string, lock = false): Promise<{ t: ThreadRow; authorId: string; state: MessageState }> {
+    const found = await db.query(`SELECT thread_id AS "threadId" FROM discussion_messages WHERE id = $1`, [uuidOrNotFound(messageId)]);
+    if (!found.rows[0]) throw new NotFoundException();
+    const t = await this.threadRow(db, found.rows[0].threadId, lock);
     const { rows } = await db.query(
-      `SELECT thread_id AS "threadId", author_id AS "authorId", state FROM discussion_messages WHERE id = $1 ${lock ? 'FOR UPDATE' : ''}`,
-      [uuidOrNotFound(messageId)],
+      `SELECT author_id AS "authorId", state FROM discussion_messages WHERE id = $1 ${lock ? 'FOR NO KEY UPDATE' : ''}`,
+      [messageId],
     );
-    if (!rows[0]) throw new NotFoundException();
-    return { t: await this.threadRow(db, rows[0].threadId), authorId: rows[0].authorId, state: rows[0].state };
+    return { t, authorId: rows[0].authorId, state: rows[0].state };
   }
 
   async edit(user: AuthUser, messageId: string, body: { body: unknown; basedOnVersion: unknown }): Promise<MessageView> {

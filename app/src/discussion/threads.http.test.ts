@@ -187,6 +187,19 @@ describe('threads and messages', { skip: SKIP_NO_DB }, () => {
     assert.equal(title.status, 400);
   });
 
+  test('a reply and an edit of the message it answers can run at the same time', async () => {
+    const thread = await start(ada);
+    for (let i = 0; i < 4; i++) {
+      const msg = (await post(ada, thread.id, `target ${i}`)).body;
+      const [reply, edit, again] = await Promise.all([
+        post(ben, thread.id, 'a reply', msg.id),
+        ada.request('PUT', `/messages/${msg.id}`, { body: `target ${i} edited`, basedOnVersion: 1 }),
+        post(pm, thread.id, 'another reply', msg.id),
+      ]);
+      assert.deepEqual([reply.status, edit.status, again.status], [201, 200, 201], JSON.stringify([reply.body, edit.body, again.body]));
+    }
+  });
+
   test('empty and over-long messages are refused', async () => {
     const thread = await start(ada);
     assert.equal((await post(ada, thread.id, '   ')).status, 400);
