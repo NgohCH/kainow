@@ -19,6 +19,7 @@ test('the matrix holds exactly the agreed rows', () => {
     'proposal.review': ['owner,sponsor', 'planned,active'],
     'project.archive': ['pm,owner,sponsor', 'closed'],
     'proposal.submit': ['participant', 'draft,planned,active'],
+    'audience.change': ['pm,owner,sponsor', 'draft,planned,active'],
   });
   assert.equal(PROJECT_MATRIX['proposal.review'].refusal, 'Only the Owner or a Sponsor can approve or reject proposals, and only while the project is Planned or Active.');
 });

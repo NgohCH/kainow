@@ -19,7 +19,8 @@ export type ProjectAction =
   | 'meeting_date.set'
   | 'proposal.review'
   | 'project.archive'
-  | 'proposal.submit';
+  | 'proposal.submit'
+  | 'audience.change';
 
 interface MatrixRow {
   roles: ReadonlyArray<ProjectRole | 'participant'>;
@@ -55,6 +56,11 @@ export const PROJECT_MATRIX: Readonly<Record<ProjectAction, MatrixRow>> = {
     roles: ['pm', 'owner', 'sponsor'],
     states: ['closed'],
     refusal: 'Only the Project Manager, the Owner or a Sponsor can archive a project, and only once it is Closed.',
+  },
+  'audience.change': {
+    roles: ['pm', 'owner', 'sponsor'],
+    states: OPEN,
+    refusal: 'Only the Project Manager, Owner or a Sponsor can change who may read this, and not while the project is Deferred or Closed.',
   },
   'proposal.review': {
     roles: ['owner', 'sponsor'],
