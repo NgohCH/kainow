@@ -143,6 +143,23 @@ describe('minutes runner', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual((await drafts()).map((d) => [d.version_no, d.origin]), [[1, 'human'], [2, 'ai']]);
   });
 
+  test('automatic draft not saved when a person saved a version during the AI call', async () => {
+    await post(ada, 'Shall we ship on Friday?');
+    const auto = await queueRun({ requestedBy: null, trigger: 'quiet_period' });
+    const model = new FakeModel(async () => {
+      await t.pool.query(
+        `INSERT INTO minutes_drafts (id, thread_id, version_no, origin, body, covers_through_no, created_by, created_at) VALUES ($1, $2, 1, 'human', 'Edited by hand', 0, $3, $4)`,
+        [uuidv7(), meeting, ids.ada, t.clock.now()],
+      );
+      return { ...ANSWER, usage: USAGE };
+    });
+    assert.equal(await runner(model).process(auto, 1, false), 'blocked');
+    const row = await run(auto);
+    assert.deepEqual([row.status, row.failure_code, row.failure_detail, row.minutes_draft_id], ['blocked', 'human_edited', 'Automatic minutes paused: edited by a person.', null]);
+    assert.deepEqual((await drafts()).map((d) => d.origin), ['human']);
+    assert.equal((await entries()).length, 1, 'the call was made, so it stays charged');
+  });
+
   test('too long meeting fails without a request', async () => {
     for (let i = 0; i < 14; i++) await post(ada, 'y'.repeat(9_000));
     const model = new FakeModel();

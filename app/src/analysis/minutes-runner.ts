@@ -83,7 +83,10 @@ export class MinutesRunner {
     if (outcome.kind === 'retry') return this.requeue(run);
     if (outcome.kind !== 'ok') return this.end(run, outcome.kind, outcome);
     try {
-      await this.save(run, outcome.value, first, through);
+      if (!(await this.save(run, outcome.value, first, through))) {
+        // A person saved their own version while the AI call ran: human edits win (spec 5.2). The call is still charged.
+        return this.end(run, 'blocked', { code: 'human_edited', detail: PAUSED });
+      }
       return 'succeeded';
     } catch (err) {
       // The cost is already settled; saving failed, so the run is retried or ends as an internal error.
@@ -114,7 +117,7 @@ export class MinutesRunner {
   }
 
   /** The draft, the run's cursor and its success are stored together: no draft without its run result, and the reverse. */
-  private async save(run: RunRow, answer: MinutesAnswer, first: number, through: number): Promise<void> {
+  private async save(run: RunRow, answer: MinutesAnswer, first: number, through: number): Promise<boolean> {
     const present = (
       await this.d.pool.query<{ name: string }>(
         `SELECT u.display_name AS name FROM meeting_attendees a JOIN users u ON u.id = a.user_id WHERE a.thread_id = $1 ORDER BY u.display_name, u.id`,
@@ -125,6 +128,15 @@ export class MinutesRunner {
     const client = await this.d.pool.connect();
     try {
       await client.query('BEGIN');
+      if (run.trigger === 'quiet_period' || run.trigger === 'meeting_end') {
+        // Take the thread lock first, so a person's save either lands before this check or waits for this transaction.
+        await client.query(`SELECT 1 FROM discussion_threads WHERE id = $1 FOR NO KEY UPDATE`, [run.threadId]);
+        const human = await client.query(`SELECT 1 FROM minutes_drafts WHERE thread_id = $1 AND origin = 'human' LIMIT 1`, [run.threadId]);
+        if (human.rowCount) {
+          await client.query('ROLLBACK');
+          return false;
+        }
+      }
       const draft = await insertAiDraft(client, run.threadId, { body, coversThroughNo: through, analysisRunId: run.id }, this.d.clock);
       const draftId = (await client.query(`SELECT id FROM minutes_drafts WHERE thread_id = $1 AND version_no = $2`, [run.threadId, draft.versionNo])).rows[0].id;
       await client.query(
@@ -133,6 +145,7 @@ export class MinutesRunner {
         [run.id, draftId, first, through, this.d.clock()],
       );
       await client.query('COMMIT');
+      return true;
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
       throw err;
