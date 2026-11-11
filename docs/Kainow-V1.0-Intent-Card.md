@@ -40,7 +40,7 @@ A newcomer can supply real notes, receive reviewable and well-supported proposal
 
 ## Outside V1.0
 
-Native minute-taking, recording/transcription and OCR; Gantt and advanced portfolio planning; external-organisation participants or multi-organisation installation; public API or plugin loading; general-purpose chat/email/calendar/document editor; arbitrary executable workflow/custom-field builder; resource booking/allocation and full accounting. Future additions need their own scope decision.
+Audio recording, transcription and OCR (typed-meeting minutes are included, D74); Gantt and advanced portfolio planning; external-organisation participants or multi-organisation installation; public API or plugin loading; general-purpose chat/email/calendar/document editor; arbitrary executable workflow/custom-field builder; resource booking/allocation and full accounting. Future additions need their own scope decision.
 
 ## How this card relates to the handover
 

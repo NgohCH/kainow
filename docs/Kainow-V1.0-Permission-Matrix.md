@@ -85,6 +85,13 @@ Self-approval is allowed by default for an eligible O/S, including a valid combi
 | Edit own message | Author | New immutable version and attribution. |
 | Moderate shared discussion | PM or DPM | Recorded separately from original contribution. |
 | Import/publish minutes | PM, DPM or O/S | Members may submit for review; audience shown before publication. |
+| Start Restricted meeting | PM, DPM or O/S | Audience shown before starting; the meeting and its published minutes share one audience (D75). |
+| End meeting | Starter, PM, DPM or O/S | Triggers a final AI minutes draft (D74). |
+| Edit draft minutes | Starter, PM, DPM or O/S | Once edited, automatic refreshes stop for that meeting (D74). |
+| Publish draft minutes / submission | PM, DPM or O/S | A chosen draft version becomes a minutes source with its audience (D74). |
+| Submit minutes for review | Participant | Reviewed by PM, DPM or O/S before publication. |
+| Return submission | PM, DPM or O/S | Returned to the submitter with a reason. |
+| Escalate AI feedback | PM or DPM | Provider/configuration issues to EA (see Review/close AI feedback). |
 | Designate source Project-wide or Restricted; change audience | PM or O/S | Administrator bounds, confirmation and history; O09. |
 | Review/publish wider summary from restricted source | PM or O/S | Explicit intended-audience approval; sanitised summary does not widen original. |
 | Receive AI answer from restricted material | Requester with source permission | Separately permissioned result; shared reply only if whole intended audience can access. |

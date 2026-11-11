@@ -138,7 +138,7 @@ Acceptance must demonstrate:
 9. Draft outputs remain distinct from approved deliverables and follow external filing permissions.
 10. User-initiated and automatic AI usage are attributed and constrained by configured limits.
 
-These extend the existing journey and acceptance document. They do not establish that the capability has been implemented or assessed. Native meeting minute-taking remains a future-version feature; V1.0 still accepts supplied notes and minutes.
+These extend the existing journey and acceptance document. They do not establish that the capability has been implemented or assessed. Typed-meeting minute-taking is included (D74); audio recording and transcription are not. V1.0 still accepts supplied notes and minutes.
 
 ## 11. Detailed design handover
 
