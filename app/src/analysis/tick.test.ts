@@ -194,6 +194,64 @@ describe('analysis tick', { skip: SKIP_NO_DB }, () => {
     assert.equal((await tick.run()).started, 1);
   });
 
+  test('a blocked automatic run is not repeated without a new message, and is repeated after one', async () => {
+    const thread = await start(ada, 'discussion');
+    await post(ada, thread);
+    t.clock.advanceMinutes(5);
+    assert.equal((await tick.run()).started, 1);
+    await t.pool.query(`UPDATE analysis_runs SET status = 'blocked', failure_code = 'cap_would_be_exceeded', finished_at = $1`, [t.clock.now()]);
+    for (let i = 0; i < 3; i++) {
+      t.clock.advanceMinutes(1);
+      assert.equal((await tick.run()).started, 0, 'no run every minute');
+    }
+    assert.equal((await runs()).length, 1);
+    const status = await ada.request('GET', `/threads/${thread}/analysis`);
+    assert.equal(status.body.status.state, 'paused');
+    assert.equal(status.body.lastFailure, 'cap_would_be_exceeded');
+    await post(ada, thread, 'A new message.');
+    t.clock.advanceMinutes(5);
+    assert.equal((await tick.run()).started, 1);
+    assert.equal((await runs()).length, 2);
+  });
+
+  test('two blocked quiet_period runs inside 20 minutes make the thread wait for the limit', async () => {
+    const thread = await start(ada, 'discussion');
+    const block = () => t.pool.query(`UPDATE analysis_runs SET status = 'blocked', failure_code = 'cap_would_be_exceeded', finished_at = $1 WHERE status = 'queued'`, [t.clock.now()]);
+    await post(ada, thread);
+    t.clock.advanceMinutes(5);
+    assert.equal((await tick.run()).started, 1); // 10:05
+    await block();
+    t.clock.advanceMinutes(1);
+    await post(ada, thread); // a message after the blocked run lets the next automatic run start
+    t.clock.advanceMinutes(5);
+    assert.equal((await tick.run()).started, 1); // 10:11
+    await block();
+    t.clock.advanceMinutes(1);
+    await post(ada, thread);
+    t.clock.advanceMinutes(5);
+    assert.equal((await tick.run()).started, 0, '10:17: blocked runs count toward the limit');
+    const line = (await ada.request('GET', `/threads/${thread}/analysis`)).body.line;
+    assert.match(line, /^Limit reached — next eligible /);
+    t.clock.advanceMinutes(8);
+    assert.equal((await tick.run()).started, 1, '10:25: the first blocked run has left the window');
+  });
+
+  test('a thread whose start throws does not stop a later thread from starting', async () => {
+    const first = await start(ada, 'discussion', 'First');
+    const second = await start(ada, 'discussion', 'Second');
+    await post(ada, first);
+    await post(ada, second);
+    await t.pool.query(`CREATE FUNCTION fail_first() RETURNS trigger AS $$ BEGIN
+        IF NEW.thread_id = '${first}' THEN RAISE EXCEPTION 'boom'; END IF; RETURN NEW; END; $$ LANGUAGE plpgsql`);
+    await t.pool.query(`CREATE TRIGGER fail_first BEFORE INSERT ON analysis_runs FOR EACH ROW EXECUTE FUNCTION fail_first()`);
+    t.clock.advanceMinutes(5);
+    const logs: string[] = [];
+    const guarded = new AnalysisTick({ pool: t.pool, clock: t.clock.now, queue, spend: new SpendService(t.pool, t.clock.now), log: (m) => logs.push(m) });
+    assert.deepEqual(await guarded.run(), { started: 1 });
+    assert.deepEqual((await runs()).map((r) => r.thread_id), [second]);
+    assert.deepEqual(logs, ['An analysis could not be started for one thread; the other threads continue.']);
+  });
+
   test('a queue that refuses the job leaves a failed run, not a stuck one', async () => {
     const thread = await start(ada, 'discussion');
     await post(ada, thread);
@@ -203,6 +261,9 @@ describe('analysis tick', { skip: SKIP_NO_DB }, () => {
     const [run] = await runs();
     assert.deepEqual([run.status, run.failure_code], ['failed', 'queue_unavailable']);
     t.clock.advanceMinutes(1);
-    assert.deepEqual(await tick.run(), { started: 1 }, 'the next tick starts it again');
+    assert.deepEqual(await tick.run(), { started: 0 }, 'a failed automatic run is not repeated without a new message');
+    await post(ada, thread, 'One more point.');
+    t.clock.advanceMinutes(5);
+    assert.deepEqual(await tick.run(), { started: 1 }, 'a new message lets the next tick start it again');
   });
 });

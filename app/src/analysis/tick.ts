@@ -7,6 +7,9 @@ import { enqueueOrFail, insertRun, isActiveRunConflict } from './runs';
 import { effectiveAnalysisSettingsMany } from './settings.service';
 import { type Readiness, analysisState } from './state';
 
+/** Fixed text: no thread, project or message content. */
+export const THREAD_FAILED = 'An analysis could not be started for one thread; the other threads continue.';
+
 /** Readiness for automatic runs (ruling R5): approved spend settings, and something left of every cap that applies. */
 export async function readiness(spend: Pick<SpendService, 'summary'>): Promise<Readiness> {
   const s = await spend.summary();
@@ -21,7 +24,7 @@ export async function readiness(spend: Pick<SpendService, 'summary'>): Promise<R
  * so two overlapping ticks, or a tick racing a button, can never start a thread twice.
  */
 export class AnalysisTick {
-  constructor(private readonly d: { pool: Pool; clock: Clock; queue: AnalysisQueue; spend: Pick<SpendService, 'summary'> }) {}
+  constructor(private readonly d: { pool: Pool; clock: Clock; queue: AnalysisQueue; spend: Pick<SpendService, 'summary'>; log?: (message: string) => void }) {}
 
   async run(): Promise<{ started: number }> {
     const now = this.d.clock();
@@ -35,8 +38,13 @@ export class AnalysisTick {
     for (const c of candidates) {
       const s = settings.get(c.projectId);
       if (!s || !analysisState(c.facts, s, ready, now).due) continue;
-      const id = await this.startOne(c.threadId, c.projectId, ready, now);
-      if (id && (await enqueueOrFail(this.d.pool, this.d.queue, id, now))) started++;
+      // One thread that cannot be started must not stop the threads after it; the next tick tries it again.
+      try {
+        const id = await this.startOne(c.threadId, c.projectId, ready, now);
+        if (id && (await enqueueOrFail(this.d.pool, this.d.queue, id, now))) started++;
+      } catch {
+        (this.d.log ?? ((m: string) => console.error(m)))(THREAD_FAILED);
+      }
     }
     return { started };
   }

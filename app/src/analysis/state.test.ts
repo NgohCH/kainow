@@ -13,7 +13,7 @@ const settings = (o: Partial<EffectiveAnalysisSettings> = {}): EffectiveAnalysis
 const ready: Readiness = { spendApproved: true, allowanceLeft: true };
 const facts = (o: Partial<ThreadFacts> = {}): ThreadFacts => ({
   kind: 'discussion', projectStatus: 'active', meetingState: null, newestVisibleAt: ago(6), unanalysedCount: 3, activeRun: null,
-  recentAutoStarts: [], hasHumanDraft: false, lastAnalysedAt: ago(60), lastFailure: null, ...o,
+  recentAutoStarts: [], hasHumanDraft: false, lastAnalysedAt: ago(60), lastFailure: null, lastAutoFailedAt: null, ...o,
 });
 const run = (f: Partial<ThreadFacts> = {}, s = settings(), r = ready) => analysisState(facts(f), s, r, NOW);
 
@@ -65,6 +65,17 @@ describe('analysisState', () => {
     // With three in the window the limit lifts when the second-newest leaves it.
     const r = run({ recentAutoStarts: [ago(18), ago(10), ago(2)] });
     assert.deepEqual(r.status, { state: 'waiting', at: new Date(ago(10).getTime() + 20 * MIN), reason: 'limit' });
+  });
+  test('a failed or blocked automatic run is not repeated until a newer message (R22)', () => {
+    const paused = run({ newestVisibleAt: ago(8), lastAutoFailedAt: ago(7) });
+    assert.equal(paused.status.state, 'paused');
+    assert.equal(paused.due, false);
+    assert.equal(run({ newestVisibleAt: ago(7), lastAutoFailedAt: ago(7) }).due, false, 'a message at the same instant is not newer');
+    assert.equal(run({ newestVisibleAt: ago(6), lastAutoFailedAt: ago(8) }).due, true, 'a message written after the run');
+    // It sits just before the quiet-period rule, so the quiet period is not shown for it.
+    assert.equal(run({ newestVisibleAt: ago(3), lastAutoFailedAt: ago(2) }).due, false);
+    assert.equal(run({ newestVisibleAt: ago(1), lastAutoFailedAt: ago(3) }).status.state, 'waiting');
+    assert.equal(run({ unanalysedCount: 0, lastAutoFailedAt: ago(2) }).status.state, 'up_to_date');
   });
   test('spend not approved is blocked', () => {
     const r = run({}, settings(), { spendApproved: false, allowanceLeft: false });

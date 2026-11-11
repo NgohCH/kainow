@@ -28,8 +28,10 @@ export async function loadThreadFacts(db: Db, now: Date, threadId?: string): Pro
             u.n AS "unanalysedCount", u.newest AS "newestVisibleAt",
             (SELECT r.status FROM analysis_runs r WHERE r.thread_id = b.id AND r.status IN ('queued', 'running')) AS "activeRun",
             COALESCE((SELECT array_agg(r.created_at ORDER BY r.created_at) FROM analysis_runs r
-                       WHERE r.thread_id = b.id AND r.trigger = 'quiet_period' AND r.status <> 'blocked'
+                       WHERE r.thread_id = b.id AND r.trigger = 'quiet_period'
                          AND r.created_at > $2::timestamptz - make_interval(mins => $3)), '{}') AS "recentAutoStarts",
+            (SELECT CASE WHEN r.status IN ('failed', 'blocked') THEN r.created_at END
+               FROM analysis_runs r WHERE r.thread_id = b.id AND r.trigger = 'quiet_period' ORDER BY r.created_at DESC, r.id DESC LIMIT 1) AS "lastAutoFailedAt",
             EXISTS (SELECT 1 FROM minutes_drafts d WHERE d.thread_id = b.id AND d.origin = 'human') AS "hasHumanDraft",
             (SELECT max(r.finished_at) FROM analysis_runs r WHERE r.thread_id = b.id AND r.status = 'succeeded' AND r.trigger <> 'selection') AS "lastAnalysedAt",
             (SELECT CASE WHEN r.status IN ('failed', 'blocked') THEN COALESCE(r.failure_detail, r.failure_code) END
@@ -67,6 +69,7 @@ export async function loadThreadFacts(db: Db, now: Date, threadId?: string): Pro
       hasHumanDraft: r.hasHumanDraft,
       lastAnalysedAt: r.lastAnalysedAt,
       lastFailure: r.lastFailure,
+      lastAutoFailedAt: r.lastAutoFailedAt,
     },
   }));
 }

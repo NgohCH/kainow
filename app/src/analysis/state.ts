@@ -15,6 +15,8 @@ export interface ThreadFacts {
   hasHumanDraft: boolean;
   lastAnalysedAt: Date | null;
   lastFailure: string | null;
+  /** When the thread's newest automatic (quiet_period) run was created, if that run ended failed or blocked (ruling R22). */
+  lastAutoFailedAt: Date | null;
 }
 
 /** Whether an automatic run could be paid for. A missing AI key is not a status reason: it shows as a run failure (ruling R5). */
@@ -48,6 +50,10 @@ export function analysisState(t: ThreadFacts, s: EffectiveAnalysisSettings, r: R
   if (!s.automatic) return show({ state: 'paused', reason: 'Automatic analysis is off for this project.' });
   if (t.kind === 'meeting' && t.hasHumanDraft) return show({ state: 'paused', reason: 'Automatic minutes paused: edited by a person.' });
   const newest = t.newestVisibleAt ?? now;
+  // R22: an automatic run that failed or blocked is not repeated until someone writes a new message after it.
+  if (t.lastAutoFailedAt && newest <= t.lastAutoFailedAt) {
+    return show({ state: 'paused', reason: 'The last automatic analysis did not finish; it will try again after the next new message.' });
+  }
   const quietEnds = new Date(newest.getTime() + s.quietMinutes * MINUTE);
   if (now < quietEnds) return show({ state: 'waiting', at: quietEnds, reason: 'quiet' });
   const windowStart = now.getTime() - ROLLING_WINDOW_MINUTES * MINUTE;
