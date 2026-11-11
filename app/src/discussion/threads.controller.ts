@@ -62,4 +62,32 @@ export class ThreadsController {
   async versions(@Param('messageId') messageId: string, @Req() req: HttpRequest) {
     return { versions: await this.threads.versions(who(req), messageId) };
   }
+
+  @Post('messages/:messageId/hide')
+  @AnySignedInUser()
+  @HttpCode(200)
+  hide(@Param('messageId') messageId: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    return this.threads.hide(who(req), messageId, { reason: field(body, 'reason') });
+  }
+
+  @Post('messages/:messageId/unhide')
+  @AnySignedInUser()
+  @HttpCode(200)
+  unhide(@Param('messageId') messageId: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    return this.threads.unhide(who(req), messageId, { reason: field(body, 'reason') });
+  }
+
+  @Post('messages/:messageId/delete')
+  @AnySignedInUser()
+  @HttpCode(200)
+  delete(@Param('messageId') messageId: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    return this.threads.delete(who(req), messageId, { reason: field(body, 'reason') });
+  }
+
+  @Post('messages/:messageId/restore')
+  @AnySignedInUser()
+  @HttpCode(200)
+  restore(@Param('messageId') messageId: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    return this.threads.restore(who(req), messageId, { reason: field(body, 'reason') });
+  }
 }

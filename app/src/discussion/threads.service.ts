@@ -75,7 +75,21 @@ const THREAD_COLUMNS = `id, project_id AS "projectId", kind, title, audience_id 
 
 export const STALE_EDIT = 'Someone changed this since you opened it';
 const MEETING_ENDED = 'This meeting has ended.';
+const REASON_REQUIRED = 'A reason is required (up to 500 characters).';
 const BAD_TITLE = 'A title of 1 to 200 characters is required.';
+
+type ModerationAction = 'hide' | 'unhide' | 'delete' | 'restore';
+
+/** Which states each move starts from and ends in (spec 4.1, 4.3). Restoring is for Deleted messages; unhiding for Hidden ones. */
+const MODERATION: Record<
+  ModerationAction,
+  { matrix: ProjectAction; from: MessageState[]; to: MessageState; event: 'hidden' | 'unhidden' | 'deleted' | 'restored'; refusal: (s: MessageState) => string }
+> = {
+  hide: { matrix: 'message.moderate', from: ['visible'], to: 'hidden', event: 'hidden', refusal: (s) => `This message is already ${s}.` },
+  unhide: { matrix: 'message.moderate', from: ['hidden'], to: 'visible', event: 'unhidden', refusal: (s) => (s === 'deleted' ? 'This message is deleted; restore it instead.' : 'This message is not hidden.') },
+  delete: { matrix: 'message.moderate', from: ['visible', 'hidden'], to: 'deleted', event: 'deleted', refusal: () => 'This message is already deleted.' },
+  restore: { matrix: 'message.restore', from: ['deleted'], to: 'visible', event: 'restored', refusal: (s) => (s === 'hidden' ? 'This message is hidden; unhide it instead.' : 'This message is not deleted.') },
+};
 
 const meta = (text: string) => ({ length: text.length, sha256: sha256Hex(text) });
 
@@ -342,6 +356,46 @@ export class ThreadsService {
       );
     });
     return (await this.messageViews(this.pool, user.id, 'm.id = $1', [messageId]))[0];
+  }
+
+  private async moderate(user: AuthUser, messageId: string, action: ModerationAction, body: { reason: unknown }): Promise<MessageView> {
+    await this.inTransaction(async (db) => {
+      // Thread row first, then message row: the order posts and edits use, so moderation cannot deadlock with them.
+      const m = await this.messageRow(db, messageId, true);
+      await this.readable(db, user, m.t);
+      // Deleting one's own message needs only the right to post; every other move needs the moderator's (or restorer's) action.
+      if (action === 'delete' && m.authorId === user.id) await this.access.authorize(user, 'discussion.post', m.t.projectId, db);
+      else await this.access.authorize(user, MODERATION[action].matrix, m.t.projectId, db);
+      const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
+      if (reason === '' || reason.length > 500) throw new BadRequestException(REASON_REQUIRED);
+      const rule = MODERATION[action];
+      if (!rule.from.includes(m.state)) throw new ConflictException(rule.refusal(m.state));
+      const at = this.now();
+      await db.query(
+        rule.to === 'visible'
+          ? `UPDATE discussion_messages SET state = 'visible', state_reason = NULL, state_by = NULL, state_at = NULL WHERE id = $1`
+          : `UPDATE discussion_messages SET state = $2, state_reason = $3, state_by = $4, state_at = $5 WHERE id = $1`,
+        rule.to === 'visible' ? [messageId] : [messageId, rule.to, reason, user.id, at],
+      );
+      await db.query(
+        `INSERT INTO discussion_events (id, thread_id, message_id, actor_id, action, reason, at) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
+        [uuidv7(at.getTime()), m.t.id, messageId, user.id, rule.event, reason, at],
+      );
+    });
+    return (await this.messageViews(this.pool, user.id, 'm.id = $1', [messageId]))[0];
+  }
+
+  hide(user: AuthUser, messageId: string, body: { reason: unknown }) {
+    return this.moderate(user, messageId, 'hide', body);
+  }
+  unhide(user: AuthUser, messageId: string, body: { reason: unknown }) {
+    return this.moderate(user, messageId, 'unhide', body);
+  }
+  delete(user: AuthUser, messageId: string, body: { reason: unknown }) {
+    return this.moderate(user, messageId, 'delete', body);
+  }
+  restore(user: AuthUser, messageId: string, body: { reason: unknown }) {
+    return this.moderate(user, messageId, 'restore', body);
   }
 
   /**

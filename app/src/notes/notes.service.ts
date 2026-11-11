@@ -1,3 +1,4 @@
+import { maskedVersionText } from '../discussion/masking';
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool } from 'pg';
 import { writeAudit } from '../audit/audit';
@@ -231,7 +232,8 @@ export class NotesService {
       [sourceId, versionNo],
     );
     if (!rows[0]) throw new NotFoundException();
-    return rows[0];
+    // A discussion transcript keeps its stored text, but messages hidden or deleted since are masked when shown.
+    return { ...rows[0], text: await maskedVersionText(this.pool, rows[0].id, rows[0].text) };
   }
 
   async getOriginal(sourceId: string, versionNo: number): Promise<{ filename: string; mediaType: string; bytes: Buffer }> {

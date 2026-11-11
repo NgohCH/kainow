@@ -1,3 +1,4 @@
+import { itemSourceFlags } from '../discussion/masking';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
@@ -565,7 +566,7 @@ export class RecordsService {
                 t.owner_as_written AS "ownerAsWritten", to_char(t.due_on, 'YYYY-MM-DD') AS "dueOn", t.status,
                 to_char(p.due_on, 'YYYY-MM-DD') AS "parentDueOn",
                 CASE WHEN i.id IS NULL THEN NULL WHEN i.status = 'invited' AND i.expires_at <= now() THEN 'expired' ELSE i.status END AS "invitationStatus",
-                x.quote, p.status AS "parentStatus",
+                x.quote, x.id AS "itemId", p.status AS "parentStatus",
                 CASE WHEN fo.id IS NULL THEN NULL ELSE json_build_object('id', fo.id, 'title', fo.title) END AS follows,
                 (SELECT json_build_object('id', n.id, 'title', n.title) FROM tasks n WHERE n.follows_task_id = t.id ORDER BY n.authorised_at, n.id LIMIT 1) AS "followedBy",
                 EXISTS (SELECT 1 FROM change_requests r WHERE r.target_kind = 'task' AND r.target_id = t.id AND r.status = 'pending') AS "changeWaiting",
@@ -580,6 +581,7 @@ export class RecordsService {
         [ctx.project.id],
       )
     ).rows;
+    const flags = await itemSourceFlags(this.pool, tasks.filter((t) => t.itemId).map((t) => t.itemId as string));
     const view = tasks.map((t) => ({
       id: t.id,
       parentId: t.parentId,
@@ -598,7 +600,7 @@ export class RecordsService {
         today: ctx.today,
         deadlineReviewRequired: t.deadlineReviewRequired,
       }),
-      source: t.quote ? { quote: t.quote as string } : null,
+      source: t.quote ? { quote: t.quote as string, sourceFlag: flags.get(t.itemId) ?? null } : null,
       changeWaiting: t.changeWaiting as boolean,
       parentCancelled: t.parentStatus === 'cancelled' && t.status !== 'cancelled' && t.status !== 'completed',
       follows: (t.follows ?? null) as { id: string; title: string } | null,

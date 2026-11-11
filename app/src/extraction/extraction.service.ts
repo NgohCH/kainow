@@ -1,3 +1,4 @@
+import { itemSourceFlags } from '../discussion/masking';
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
@@ -201,6 +202,8 @@ export class ExtractionService {
       const withDue = { ...item, reviewerDue: reviewerDueOf(dueRow), dueReading: dueReadingOf(dueRow, meeting.meetingDate), approvedWithoutRecord: item.reviewStatus === 'approved' && item.record === null };
       return item.edited ? { ...withDue, original: { text: originalText, owner: originalOwner, due: originalDue } } : withDue;
     });
+    const flags = await itemSourceFlags(this.pool, shaped.map((i) => i.id));
+    const flagged = shaped.map((i) => ({ ...i, sourceFlag: flags.get(i.id) ?? null }));
     Object.assign(run.rows[0], meeting);
     const src = await this.pool.query(
       `SELECT s.id AS "sourceId", s.title, v.version_no AS "versionNo"
@@ -208,7 +211,7 @@ export class ExtractionService {
         WHERE r.id = $1`,
       [runId],
     );
-    return { run: run.rows[0], source: src.rows[0], items: await this.withOccurrences(run.rows[0].sourceVersionId, shaped) };
+    return { run: run.rows[0], source: src.rows[0], items: await this.withOccurrences(run.rows[0].sourceVersionId, flagged) };
   }
 
   /** The due inputs of one item as they stand now (wording, model's event, latest reviewer due). */
