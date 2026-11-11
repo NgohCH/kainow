@@ -14,6 +14,7 @@ import { NotesModule } from './notes/notes.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { DigestsModule } from './digests/digests.module';
 import { DiscussionModule } from './discussion/discussion.module';
+import type { MeetingEndHook } from './discussion/meetings.service';
 import { OrganisationModule } from './organisation/organisation.module';
 import { ProjectsModule } from './projects/projects.module';
 import { SearchModule } from './search/search.module';
@@ -38,6 +39,8 @@ export interface AppOptions extends AuthOptions {
   extractionQueue?: ExtractionQueue;
   /** Tests only: replaces the pg-boss job that wakes the email worker. */
   emailNudge?: EmailNudge;
+  /** Tests only: replaces what happens when a meeting ends (Task 10 binds the real one). */
+  meetingEndHook?: MeetingEndHook;
 }
 
 @Module({})
@@ -62,7 +65,7 @@ export class AppModule {
         DigestsModule,
         GoLiveModule,
         SearchModule,
-        DiscussionModule,
+        DiscussionModule.register(options.meetingEndHook),
       ],
       controllers: [HealthController],
     };

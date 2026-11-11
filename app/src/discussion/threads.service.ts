@@ -41,6 +41,8 @@ export interface ThreadView {
   meetingDate: string | null;
   state: 'open' | 'ended' | null;
   messages: MessageView[];
+  /** The Present list of a meeting (empty for a discussion). */
+  present: Person[];
   canPost: boolean;
   canModerate: boolean;
 }
@@ -60,7 +62,7 @@ export interface DiscussionListItem {
   messageCount: number | null;
 }
 
-interface ThreadRow {
+export interface ThreadRow {
   id: string;
   projectId: string;
   kind: 'discussion' | 'meeting';
@@ -74,7 +76,7 @@ const THREAD_COLUMNS = `id, project_id AS "projectId", kind, title, audience_id 
   to_char(meeting_date, 'YYYY-MM-DD') AS "meetingDate", state`;
 
 export const STALE_EDIT = 'Someone changed this since you opened it';
-const MEETING_ENDED = 'This meeting has ended.';
+export const MEETING_ENDED = 'This meeting has ended.';
 const REASON_REQUIRED = 'A reason is required (up to 500 characters).';
 const BAD_TITLE = 'A title of 1 to 200 characters is required.';
 
@@ -122,7 +124,7 @@ export class ThreadsService {
     private readonly audiences: AudienceService,
   ) {}
 
-  private async inTransaction<T>(work: (db: PoolClient) => Promise<T>): Promise<T> {
+  async inTransaction<T>(work: (db: PoolClient) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -137,25 +139,25 @@ export class ThreadsService {
     }
   }
 
-  private async threadRow(db: Db, threadId: string, lock = false): Promise<ThreadRow> {
+  async threadRow(db: Db, threadId: string, lock = false): Promise<ThreadRow> {
     const { rows } = await db.query(`SELECT ${THREAD_COLUMNS} FROM discussion_threads WHERE id = $1 ${lock ? 'FOR NO KEY UPDATE' : ''}`, [uuidOrNotFound(threadId)]);
     if (!rows[0]) throw new NotFoundException();
     return rows[0] as ThreadRow;
   }
 
   /** Reading: a participant or valid grant holder inside the audience; anyone else finds nothing (404). */
-  private async readable(db: Db, user: AuthUser, t: ThreadRow): Promise<{ ctx: ProjectContext; audience: AudienceRow }> {
+  async readable(db: Db, user: AuthUser, t: ThreadRow): Promise<{ ctx: ProjectContext; audience: AudienceRow }> {
     const ctx = await this.access.authorize(user, 'note.view', t.projectId, db);
     const audience = await this.audiences.load(t.audienceId, db);
     this.audiences.assertReadable(ctx, audience);
     return { ctx, audience };
   }
 
-  private allowed(ctx: ProjectContext, action: ProjectAction): boolean {
+  allowed(ctx: ProjectContext, action: ProjectAction): boolean {
     return decide({ action, roles: ctx.roles, status: ctx.project.status }).allowed;
   }
 
-  private async people(db: Db, ids: string[]): Promise<Person[]> {
+  async people(db: Db, ids: string[]): Promise<Person[]> {
     if (ids.length === 0) return [];
     const { rows } = await db.query(`SELECT id, display_name AS "displayName" FROM users WHERE id = ANY($1::uuid[]) ORDER BY display_name, id`, [ids]);
     return rows as Person[];
@@ -266,6 +268,10 @@ export class ThreadsService {
       meetingDate: t.meetingDate,
       state: t.state,
       messages: await this.messageViews(this.pool, user.id, 'm.thread_id = $1 AND m.message_no > $2', [t.id, afterNo]),
+      present: await this.people(
+        this.pool,
+        (await this.pool.query(`SELECT user_id AS id FROM meeting_attendees WHERE thread_id = $1`, [t.id])).rows.map((r) => r.id),
+      ),
       canPost: this.allowed(ctx, 'discussion.post') && t.state !== 'ended',
       canModerate: this.allowed(ctx, 'message.moderate'),
     };

@@ -2,6 +2,7 @@ import 'reflect-metadata';
 import type { INestApplication } from '@nestjs/common';
 import { Pool } from 'pg';
 import { createApp } from '../bootstrap';
+import type { MeetingEndHook } from '../discussion/meetings.service';
 import { loadConfig } from '../config';
 import { runMigrations } from '../db/migrate';
 import { resetPublicSchema, testDatabaseUrl } from './db';
@@ -63,7 +64,7 @@ async function send(base: string, method: string, path: string, body: unknown, h
  * Starts the whole application on an empty migrated database, with a fake clock and a code-capturing sender.
  * The organisation is already set up unless `organisation: false` (for onboarding tests).
  */
-export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opts: { organisation?: boolean; emailNudge?: { nudge(): Promise<void> } } = {}): Promise<TestApp> {
+export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opts: { organisation?: boolean; emailNudge?: { nudge(): Promise<void> }; meetingEndHook?: MeetingEndHook } = {}): Promise<TestApp> {
   const sender = new CaptureSender();
   const clock = new FakeClock(startAt);
   const config = loadConfig(testEnv(testDatabaseUrl() as string));
@@ -71,7 +72,7 @@ export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opt
   await resetPublicSchema(pool);
   await runMigrations(pool, config.migrationsDir);
   if (opts.organisation !== false) await seedOrganisation(pool);
-  const app = await createApp(config, { codeSender: sender, clock: clock.now, logger: false, extractionQueue: { enqueue: async () => undefined }, emailNudge: opts.emailNudge ?? { nudge: async () => undefined } });
+  const app = await createApp(config, { codeSender: sender, clock: clock.now, logger: false, extractionQueue: { enqueue: async () => undefined }, emailNudge: opts.emailNudge ?? { nudge: async () => undefined }, meetingEndHook: opts.meetingEndHook });
   await app.listen(0);
   const base = await app.getUrl();
 
