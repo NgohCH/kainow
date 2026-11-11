@@ -2,6 +2,7 @@ import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { ApiError, api, type DueReading } from '../api.ts';
 import { formatWhen } from '../format.ts';
 import { AuthoriseForm, type Person } from './AuthoriseForm.tsx';
+import { useFocusItem } from './useFocusItem.ts';
 import { ChangeRequestPanel, pendingAuthorisation, useRequests } from './ChangeRequest.tsx';
 import { waitingLine, type RequestView } from '../changes.ts';
 
@@ -30,12 +31,14 @@ export function HumanProposals({
   canReview,
   people,
   meId,
+  focusId,
 }: {
   projectId: string;
   canPropose: boolean;
   canReview: boolean;
   people: Person[];
   meId: string;
+  focusId?: string;
 }) {
   const [proposals, setProposals] = useState<Proposal[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -52,6 +55,7 @@ export function HumanProposals({
     reloadRequests();
   }, [projectId, reloadRequests]);
   useEffect(load, [load]);
+  useFocusItem(focusId, proposals.length > 0);
 
   async function run(work: () => Promise<unknown>, done: string | ((result: unknown) => string)) {
     setError(null);
@@ -124,7 +128,7 @@ export function HumanProposals({
       ) : (
         <ul className="plain work-list">
           {proposals.map((p) => (
-            <li key={p.id} className="work-item">
+            <li key={p.id} id={`item-${p.id}`} tabIndex={-1} className="work-item">
               <div>
                 <span className="badge">{KIND_LABEL[p.kind]}</span> <strong>{p.text}</strong>
               </div>

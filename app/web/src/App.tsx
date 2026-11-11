@@ -13,6 +13,7 @@ import { People } from './views/People.tsx';
 import { ProjectPage } from './views/ProjectPage.tsx';
 import { Projects } from './views/Projects.tsx';
 import { Review } from './views/Review.tsx';
+import { HeaderSearch, isSearchHash, Search } from './views/Search.tsx';
 import { Spending } from './views/Spending.tsx';
 
 function useHash(): string {
@@ -234,7 +235,8 @@ export function App() {
   }
   const note = /^#\/notes\/([0-9a-f-]{36})(?:\/v\/(\d+))?$/i.exec(hash);
   const run = /^#\/runs\/([0-9a-f-]{36})$/i.exec(hash);
-  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work|closing|deadline-review))?$/i.exec(hash);
+  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work|closing|deadline-review)(?:\/([0-9a-f-]{36}))?)?$/i.exec(hash);
+  const searching = isSearchHash(hash);
   const adminPage = /^#\/(people|spending|departments|domains|organisation|approvals)$/.exec(hash)?.[1];
 
   let page;
@@ -245,9 +247,10 @@ export function App() {
   else if (isAdmin && adminPage === 'domains') page = <Domains />;
   else if (isAdmin && adminPage === 'organisation') page = <OrganisationScreen onBrandingChanged={loadBranding} />;
   else if (isAdmin && adminPage === 'approvals') page = <ApprovalSettings />;
+  else if (searching) page = <Search hash={hash} />;
   else if (run) page = <Review runId={run[1]} meId={user.id} />;
   else if (note) page = <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} />;
-  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | 'closing' | 'deadline-review' | undefined) ?? 'overview'} />;
+  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | 'closing' | 'deadline-review' | undefined) ?? 'overview'} itemId={project[3]} />;
   else page = <Projects isAdmin={isAdmin} />;
 
   return (
@@ -269,6 +272,7 @@ export function App() {
             </>
           )}
         </nav>
+        <HeaderSearch hash={hash} />
         <SpendMeter />
         <span className="who">
           {user.displayName}

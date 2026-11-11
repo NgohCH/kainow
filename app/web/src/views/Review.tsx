@@ -4,6 +4,7 @@ import { AuthoriseForm, type Person } from './AuthoriseForm.tsx';
 import { ChangeRequestPanel, pendingAuthorisation, useRequests } from './ChangeRequest.tsx';
 import { waitingLine, type RequestView } from '../changes.ts';
 import { KIND_LABEL, plural } from '../format.ts';
+import { REVIEW_STATUS_LABEL } from '../records.ts';
 import { buildSegments, contextAround, markedSpan } from '../segments.ts';
 import { type EditFields, blocksApproval, dueLine, editFormFrom, formatDay } from '../due.ts';
 
@@ -16,7 +17,7 @@ interface RunView {
   permissions: { approve: boolean; reject: boolean; edit: boolean; note: string | null };
 }
 
-const STATUS_LABEL = { pending: 'Not reviewed', approved: 'Approved', rejected: 'Rejected' } as const;
+const STATUS_LABEL = REVIEW_STATUS_LABEL;
 
 export function Review({ runId, meId }: { runId: string; meId: string }) {
   const [view, setView] = useState<RunView | null>(null);

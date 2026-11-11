@@ -30,7 +30,7 @@ type Tab = 'overview' | 'people' | 'notes' | 'work' | 'closing' | 'deadline-revi
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
-export function ProjectPage({ projectId, tab, meId }: { projectId: string; tab: Tab; meId: string }) {
+export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: string; tab: Tab; meId: string; itemId?: string }) {
   const [project, setProject] = useState<Project | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -142,11 +142,12 @@ export function ProjectPage({ projectId, tab, meId }: { projectId: string; tab: 
             canReview={roles.some((r) => r === 'owner' || r === 'sponsor') && ['planned', 'active'].includes(project.status)}
             people={people}
             meId={meId}
+            focusId={itemId}
           />
         </>
       )}
       {tab === 'work' && contentAllowed && (
-        <Work projectId={project.id} people={people} canPropose={roles.length > 0} canClear={roles.some((r) => r === 'pm' || r === 'deputy_pm')} />
+        <Work projectId={project.id} people={people} canPropose={roles.length > 0} canClear={roles.some((r) => r === 'pm' || r === 'deputy_pm')} focusId={itemId} />
       )}
     </main>
   );
