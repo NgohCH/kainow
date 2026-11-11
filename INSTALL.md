@@ -186,7 +186,7 @@ Go live on a new, empty database so nothing from development or testing comes wi
 
 ## Recovery custodian
 
-**Two Administrators come first.** The everyday safeguard is a second Enterprise Administrator (step 3 of the Go-live checklist). If one Administrator loses access to their mailbox, the other disables that account. Recovery is only for when Kainow has **no Active Enterprise Administrator at all**.
+**Two Administrators come first.** The everyday safeguard is a second Enterprise Administrator (step 3 of the Go-live checklist). If one Administrator loses access to their mailbox, the other disables that account on the **People** page. Always try a second Administrator first. Recovery is only for when **no Administrator can sign in**.
 
 **Record the custodian in Kainow.** The recovery custodian is the person in your organisation who may run the recovery command on the server when every Administrator is locked out. An Administrator records their name and how to reach them on the **Organisation** page, under "Recovery custodian". Step 4 of the Go-live checklist can be marked done only once both are recorded.
 
@@ -196,21 +196,23 @@ Go live on a new, empty database so nothing from development or testing comes wi
 docker compose run --rm api node dist/golive/recover-admin-cli.js admin@example.org "Admin Name" --reason "Pre-go-live test" --dry-run
 ```
 
-Outside Docker: `npm run recover-admin -- admin@example.org "Admin Name" --reason "Pre-go-live test" --dry-run`. While an Administrator is active it answers "Would be refused now: an Administrator is active. All other checks passed." That is the expected result before go-live. A dry run sends nothing, changes nothing and writes nothing to the audit trail.
+Outside Docker: `npm run recover-admin -- admin@example.org "Admin Name" --reason "Pre-go-live test" --dry-run`. While Administrators are active it lists them ("Dry run: these Administrators would be disabled first: ..."), then answers "Would be refused now: an Administrator is active. All other checks passed." and says what `--disable-active-administrators` would do. That is the expected result before go-live. A dry run sends nothing, changes nothing and writes nothing to the audit trail.
 
-**Real recovery, only when no Administrator is active.** The custodian names the person who will become an Administrator, on one of the organisation's email domains, and gives a reason:
+**Real recovery, when no Administrator can sign in.** The custodian names the person who will become an Administrator, on one of the organisation's email domains, and gives a reason. Run the dry run first and check the Administrators it lists. If Administrators are still Active in Kainow but none of them can sign in, add `--disable-active-administrators`:
 
 ```
-docker compose run --rm api node dist/golive/recover-admin-cli.js admin@example.org "Admin Name" --reason "Why recovery is needed"
+docker compose run --rm api node dist/golive/recover-admin-cli.js admin@example.org "Admin Name" --reason "Why recovery is needed" --disable-active-administrators
 ```
 
-Outside Docker: `npm run recover-admin -- admin@example.org "Admin Name" --reason "Why recovery is needed"`.
+Outside Docker: `npm run recover-admin -- admin@example.org "Admin Name" --reason "Why recovery is needed" --disable-active-administrators`. The name is required when the address has no account in Kainow yet; for an existing account it may be left out, and the account's name is kept.
 
-The command refuses, and changes nothing, when the reason is missing, when Kainow is not set up yet (use `golive-init` or `setup-invite` instead), when an Administrator is still active, or when the email is not on an eligible domain. Otherwise it emails a one-time link that is valid for 7 days. If the email cannot be sent, the link is still recorded; fix the email settings and run the same command again, which replaces the earlier link.
+The command refuses, and changes nothing, when the reason is missing, when Kainow is not set up yet (use `golive-init` or `setup-invite` instead), when an Administrator is still active and `--disable-active-administrators` is not given, when the email is not on an eligible domain, when the link would go to one of the Administrators being disabled, or when a new person has no name. Otherwise, in one step, it disables every still-Active Administrator, lists them, and emails a one-time recovery link that is valid for 7 days. If the email cannot be sent, the link is still recorded; fix the email settings and run the same command again, which replaces the earlier link. (`setup-invite` is only for before the organisation is set up; afterwards it refuses and points here.)
 
-**What recovery does and does not restore.** When the person signs in with the link, their account becomes an Active Enterprise Administrator. If they already had an account (for example, a disabled one), the same account is used, so their identity and history are kept. Their project roles, holds and Audit or Oversight access are **not** restored automatically, and recovery does not change them.
+**What happens to the disabled Administrators.** Each is disabled the same way as on the People page: their sessions end, their unused sign-in codes stop working, their current project memberships are placed **On Hold**, and each affected project's Project Manager (or its Owner and Sponsors) is alerted by email. Each disabled Administrator is also emailed that their access was disabled, when, and the reason given; the email never carries the recovery link. Once the new Administrator is in, they can re-enable any of them on the **People** page; held memberships stay On Hold until the project resolves them.
 
-**Every use is recorded.** Each recovery link is in the audit trail with its reason and recipient, and so is its acceptance at sign-in. Every change to the custodian is recorded too.
+**What recovery does and does not restore.** If the person already has an account, the same account is used, so their identity and history are kept. Nothing about the account changes until they sign in with the link, except that a disabled account is allowed to sign in. When they sign in, the account becomes an Active Enterprise Administrator. Their project roles, holds and Audit or Oversight access are **not** restored automatically, and recovery does not change them. If the link is replaced by a new run for another address, or has expired by the next run, the account it was for is put back as it was (an account the link created is disabled). If an Administrator is active again by the time the person signs in, the link can no longer be used.
+
+**Every use is recorded.** Each recovery link is in the audit trail with its reason, its recipient, what their account was before and which Administrators were disabled; each disabled Administrator has their own entry; and so is the acceptance at sign-in. Every change to the custodian is recorded too.
 
 ## What this does and does not protect
 
