@@ -5,13 +5,10 @@
  */
 export const ACTIONS = [
   'user.manage',
-  'note.import',
-  'note.view',
-  'extraction.run',
-  'proposal.review',
   'ai.settings.manage',
   'spend.view',
   'audit.view',
+  'organisation.manage',
 ] as const;
 
 export type Action = (typeof ACTIONS)[number];

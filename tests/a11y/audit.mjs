@@ -20,15 +20,27 @@ const cookie = v.headers.get('set-cookie').split(';')[0];
 const csrf = (await v.json()).csrfToken;
 const api = (m, p, b) => fetch(base + p, { method: m, headers: { 'content-type': 'application/json', cookie, 'x-csrf-token': csrf }, body: b && JSON.stringify(b) }).then((r) => r.json());
 
-const text = 'We agreed to ship on Friday.\nWe agreed to ship on Friday.\nSam will send the budget to Priya by 12 December.\nRisk: the venue may not be free.';
-const created = await api('POST', '/notes', { title: 'Access check note', text });
-const sourceId = created.source?.id ?? created.id;
-const note = await api('GET', `/notes/${sourceId}`);
-const versionId = (note.versions?.[0] ?? note.version ?? created.version).id;
-
+// The organisation set-up an administrator does first, then one project the administrator also works in.
+const department = (await api('POST', '/departments', { name: 'Access Check Department' })).department;
+await api('POST', '/domains', { domain: 'example.org' });
+const projectId = (await api('POST', '/projects', { name: 'Access check project', purpose: 'Check every screen with axe.', owningDepartmentId: department.id })).project.id;
 const db = new pg.Client({ connectionString: process.env.DATABASE_URL });
 await db.connect();
 const user = (await db.query("select id from users where email=$1", [EMAIL])).rows[0].id;
+// The administrator also holds Project Manager and Owner here, with a separate Member, so every project screen has content.
+const memberId = randomUUID();
+await db.query("insert into users (id, email, display_name, role) values ($1, 'member.a11y@example.org', 'Member', 'member')", [memberId]);
+for (const [who, role] of [[user, 'pm'], [user, 'owner'], [memberId, 'member']]) {
+  await db.query("insert into memberships (id, project_id, user_id, role, starts_on) values ($1, $2, $3, $4, (now() at time zone 'Asia/Kuala_Lumpur')::date)", [randomUUID(), projectId, who, role]);
+}
+await db.query("update projects set status = 'active' where id = $1", [projectId]);
+const invited = await api('POST', `/projects/${projectId}/invitations`, { email: 'sponsor.a11y@example.org', role: 'sponsor', startsOn: new Date(Date.now() + 8 * 3600e3).toISOString().slice(0, 10) });
+if (!invited.invitation) throw new Error('invitation not created: ' + JSON.stringify(invited));
+
+const text = 'We agreed to ship on Friday.\nWe agreed to ship on Friday.\nSam will send the budget to Priya by 12 December.\nRisk: the venue may not be free.';
+const created = await api('POST', `/projects/${projectId}/notes`, { title: 'Access check note', text });
+const sourceId = created.source?.id ?? created.id;
+const versionId = created.version.id;
 const runId = randomUUID();
 await db.query("insert into extraction_runs (id, source_version_id, requested_by, status, model_id, attempts, item_count, unlocated_count, created_at, finished_at) values ($1,$2,$3,'succeeded','gpt-6.1-sol',1,4,1,now(),now())", [runId, versionId, user]);
 const items = [
@@ -41,6 +53,9 @@ for (const [i, it] of items.entries()) {
   await db.query('insert into extraction_items (id, run_id, source_version_id, position, kind, text, owner, due, quote, quote_start, quote_end, quote_matches, created_at) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())', [randomUUID(), runId, versionId, i, it[0], it[1], it[2], it[3], it[4], it[5], it[6], it[7]]);
 }
 await db.end();
+// The invitation link is written to the API log (LOG_SIGN_IN_CODES); read it after the invitation was sent.
+await new Promise((r) => setTimeout(r, 300));
+const inviteToken = [...readFileSync(API_LOG, 'utf8').matchAll(/sponsor\.a11y@example\.org: .*#\/invitations\/([A-Za-z0-9_-]+)/g)].pop()[1];
 
 const axe = readFileSync(createRequire(import.meta.url).resolve('axe-core/axe.min.js'), 'utf8');
 const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox'] });
@@ -72,12 +87,27 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
   await page.click('form button').catch(() => {});
   await wait(600);
   await check(`${theme}: sign-in, wrong code error shown`, page);
+  await page.goto(`${base}/#/invitations/${inviteToken}`, { waitUntil: 'networkidle0' });
+  await wait(300);
+  await check(`${theme}: invitation, signed out`, page);
   await ctx.close();
   // Signed in
   page = await open(browser.defaultBrowserContext());
   const [n, ...val] = cookie.split('=');
   await page.setCookie({ name: n, value: val.join('='), domain: 'localhost', path: '/' });
-  for (const [label, hash] of [['notes', '#/'], ['note', `#/notes/${sourceId}`], ['review', `#/runs/${runId}`], ['people', '#/people'], ['spending', '#/spending']]) {
+  const screens = [
+    ['my projects', '#/'],
+    ['project overview', `#/projects/${projectId}`],
+    ['project people', `#/projects/${projectId}/people`],
+    ['project notes', `#/projects/${projectId}/notes`],
+    ['note', `#/notes/${sourceId}`],
+    ['review', `#/runs/${runId}`],
+    ['administrators', '#/people'],
+    ['departments', '#/departments'],
+    ['domains', '#/domains'],
+    ['spending', '#/spending'],
+  ];
+  for (const [label, hash] of screens) {
     await page.goto(`${base}/${hash}`, { waitUntil: 'networkidle0' });
     await page.reload({ waitUntil: 'networkidle0' });
     await wait(300);
@@ -85,8 +115,21 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
   }
   await page.goto(`${base}/#/runs/${runId}`, { waitUntil: 'networkidle0' });
   await page.reload({ waitUntil: 'networkidle0' });
-  const edit = await page.$('button.link-button');
+  const edit = await page.$('article button.link-button');
   if (edit) { await edit.click(); await wait(200); await check(`${theme}: review, editor open`, page); }
+  // Forms that open in place: a new project, and a lifecycle change.
+  await page.goto(`${base}/#/`, { waitUntil: 'networkidle0' });
+  await page.reload({ waitUntil: 'networkidle0' });
+  await page.click('main button.primary');
+  await wait(300);
+  await check(`${theme}: new project form open`, page);
+  await page.goto(`${base}/#/projects/${projectId}`, { waitUntil: 'networkidle0' });
+  await page.reload({ waitUntil: 'networkidle0' });
+  for (const b of await page.$$('main button')) {
+    if ((await b.evaluate((e) => e.textContent)) === 'Defer') { await b.click(); break; }
+  }
+  await wait(300);
+  await check(`${theme}: defer form open`, page);
   await page.close();
 }
 await browser.close();

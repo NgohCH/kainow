@@ -11,7 +11,7 @@ import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { runMigrations } from './migrate';
 
 const realMigrations = loadDatabaseConfig({ DATABASE_URL: 'x' }).migrationsDir;
-const REAL_FILES = ['0001_identity_and_audit.sql', '0002_sign_in_throttle.sql', '0003_ai_spend.sql', '0004_notes.sql', '0005_extraction.sql', '0006_review.sql', '0007_user_spend_limit.sql', '0008_chosen_occurrence.sql', '0009_proposal_edits.sql', '0010_due_dates_and_alternatives.sql', '0011_ignore_model_event.sql'];
+const REAL_FILES = ['0001_identity_and_audit.sql', '0002_sign_in_throttle.sql', '0003_ai_spend.sql', '0004_notes.sql', '0005_extraction.sql', '0006_review.sql', '0007_user_spend_limit.sql', '0008_chosen_occurrence.sql', '0009_proposal_edits.sql', '0010_due_dates_and_alternatives.sql', '0011_ignore_model_event.sql', '0012_projects_roles.sql'];
 
 describe('migrations', { skip: SKIP_NO_DB }, () => {
   let pool: Pool;

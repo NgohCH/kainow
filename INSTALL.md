@@ -2,7 +2,7 @@
 
 This starts Kainow with Docker Compose: a PostgreSQL database, the Kainow server (which also serves the review screen) and the background worker that talks to the AI. It is for one computer, reached at `http://localhost:3000`. There is no HTTPS and nothing is reachable from other computers.
 
-**Status: first built and run on 8 November 2026** on Windows 11, with Docker Desktop 29.9.2 (WSL 2 engine) and Compose 5.6.1. These steps worked as written: the build, the migrations, creating the administrator, saving the spend settings, signing in at `http://localhost:3000` in a browser, uploading a Word document, the Windows backup, and every step of "Check that it works" below. One extraction of a synthetic note with the real `gpt-6.1-sol` returned 11 proposals, all quotes found, for MYR 0.06. If a step fails on your computer, I want to hear about it.
+**Status: first built and run on 8 November 2026** on Windows 11, with Docker Desktop 29.9.2 (WSL 2 engine) and Compose 5.6.1. These steps worked as written: the build, the migrations, creating the administrator, saving the spend settings, signing in at `http://localhost:3000` in a browser, uploading a Word document, the Windows backup, and every step of "Check that it works" below. One extraction of a synthetic note with the real `gpt-6.1-sol` returned 11 proposals, all quotes found, for MYR 0.06. If a step fails on your computer, I want to hear about it. The projects steps (6 and "Check that it works" 2–6) were walked through on the same install later that day, with four test accounts.
 
 ## Windows
 
@@ -67,13 +67,27 @@ The PowerShell lines in this guide were run in Windows PowerShell 5.1 on 8 Novem
 
    A new code is made at most once a minute. If you ask again sooner, the screen looks the same but no new code is made, so use the latest code in the log.
 
+6. **Set up the organisation and the first project** (as the administrator):
+   - Under **Departments**, add at least one department. Every project belongs to one.
+   - Under **Domains**, add your organisation's email domain (for example `help.edu.my`). Only addresses at these domains can be invited, and a domain alone admits nobody.
+   - Under **My Projects**, choose **New project**. It starts as a Draft.
+   - On the project's **People** tab, invite a Project Manager and an Owner or Sponsor. The Project Manager then invites the Members. Each invitation is emailed (or, with `LOG_SIGN_IN_CODES=true`, written to `docker compose logs api`) as a link that expires after seven days.
+
+   Invitation links use `APP_URL` from `.env`, which defaults to `http://localhost:3000`. If other people reach this computer by another address, set `APP_URL` to it and run `docker compose up -d`.
+
+   After the first project, anyone with an account can create projects and becomes their Project Manager.
+
 ## Check that it works
 
-1. Sign in. The top bar should show "AI spend this month MYR 0.00 of MYR 20.00".
-2. Add notes: paste any meeting notes, or upload one of `tests/extraction/inputs/synthetic/*.md`.
-3. Choose "Find decisions and actions". The run should go from waiting to ready in under a minute.
-4. Choose Review, approve one proposal and reject another. The highlighted passage should change colour. The spend figure should rise by a few sen.
-5. If extraction says "No AI key is configured", the worker did not receive `OPENAI_API_KEY`: check `.env` and run `docker compose up -d` again.
+1. Sign in as the administrator. The top bar should show "AI spend this month MYR 0.00 of MYR 20.00".
+2. Add a department and your domain, create a project, and invite a Project Manager, an Owner and a Member (three addresses at your domain). Open each link from the log, sign in with the code for that address, and accept.
+3. As the Project Manager: **Move to Planned**, then **Make Active**. Until everyone has accepted, Kainow says which role is still needed.
+4. As the Project Manager, on the **Notes** tab, add notes: paste any meeting notes, or upload one of `tests/extraction/inputs/synthetic/*.md`.
+5. Choose "Find decisions and actions". The run should go from waiting to ready in under a minute.
+6. Sign in as the Owner, choose Review, approve one proposal and reject another. The highlighted passage should change colour. The spend figure should rise by a few sen. (The Project Manager and Members can read the proposals but cannot approve them.)
+7. If extraction says "No AI key is configured", the worker did not receive `OPENAI_API_KEY`: check `.env` and run `docker compose up -d` again.
+
+Notes added before projects existed (before 8 November 2026) stay in the database but are not shown.
 
 ## Everyday use
 

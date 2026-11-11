@@ -23,6 +23,18 @@ export class CaptureSender implements CodeSender {
     this.sent.push({ email, code, validForMinutes });
   }
 
+  readonly invitations: { email: string; link: string }[] = [];
+
+  async sendInvitation(email: string, link: string): Promise<void> {
+    this.invitations.push({ email, link });
+  }
+
+  lastInvitation(email: string): string {
+    const found = [...this.invitations].reverse().find((s) => s.email === email);
+    if (!found) throw new Error(`no invitation was sent to ${email}`);
+    return found.link;
+  }
+
   lastCode(email: string): string {
     const found = [...this.sent].reverse().find((s) => s.email === email);
     if (!found) {

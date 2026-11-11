@@ -8,6 +8,7 @@ import { loadConfig } from '../config';
 import { runMigrations } from '../db/migrate';
 import { uuidv7 } from '../common/uuid7';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
+import { seedWorkingProject } from '../testing/projects';
 import { CaptureSender, FakeClock, testEnv } from '../testing/fakes';
 import { UsersService } from '../users/users.service';
 
@@ -16,6 +17,7 @@ const TEXT = 'We agreed to ship on Friday.\nok. ok.\nRisk: vendor late.';
 const NEEDS_DATE = 'This action needs a due date, a date range or the event it waits on before it can be approved.';
 
 describe('due readings, meeting dates and the approval rule', { skip: SKIP_NO_DB }, () => {
+  let projectId: string;
   let app: INestApplication;
   let pool: Pool;
   let base: string;
@@ -57,8 +59,9 @@ describe('due readings, meeting dates and the approval rule', { skip: SKIP_NO_DB
     const verify = await fetch(`${base}/auth/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: EMAIL, code: sender.lastCode(EMAIL) }) });
     cookie = (verify.headers.getSetCookie()[0] ?? '').split(';')[0];
     csrf = ((await verify.json()) as { csrfToken: string }).csrfToken;
+    projectId = await seedWorkingProject(pool, (await pool.query('SELECT id FROM users WHERE email = $1', [EMAIL])).rows[0].id);
 
-    const created = (await api('POST', '/notes', { title: 'T', text: TEXT })).body;
+    const created = (await api('POST', `/projects/${projectId}/notes`, { title: 'T', text: TEXT })).body;
     sourceId = created.source.id;
     versionId = created.version.id;
     const userId = (await pool.query('SELECT id FROM users')).rows[0].id;

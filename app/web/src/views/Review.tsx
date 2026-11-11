@@ -8,6 +8,8 @@ interface RunView {
   run: Run;
   source: { sourceId: string; title: string; versionNo: number };
   items: Item[];
+  /** What this viewer may do here; note says why approving is not open to them, when it is not. */
+  permissions: { approve: boolean; reject: boolean; edit: boolean; note: string | null };
 }
 
 const STATUS_LABEL = { pending: 'Not reviewed', approved: 'Approved', rejected: 'Rejected' } as const;
@@ -137,12 +139,12 @@ export function Review({ runId }: { runId: string }) {
       const idx = items.findIndex((i) => i.id === selected);
       if (e.key === 'j' && idx < items.length - 1) select(items[idx + 1].id, true);
       else if (e.key === 'k' && idx > 0) select(items[idx - 1].id, true);
-      else if (current && e.key === 'a' && canApprove(current, pick)) void decide(current, 'approved');
-      else if (current && e.key === 'r') void decide(current, 'rejected');
+      else if (current && e.key === 'a' && view?.permissions.approve && canApprove(current, pick)) void decide(current, 'approved');
+      else if (current && e.key === 'r' && view?.permissions.reject) void decide(current, 'rejected');
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [items, selected, current, select, decide, pick]);
+  }, [items, selected, current, select, decide, pick, view]);
 
   if (error && !view) return <main className="page narrow"><p role="alert" className="error">{error}</p><a href="#/">Back to notes</a></main>;
   if (!view) return <p className="loading">Loading</p>;
@@ -162,13 +164,14 @@ export function Review({ runId }: { runId: string }) {
       </div>
       <p className="meta">
         From {view.source.title}, version {view.source.versionNo}. Approving a proposal confirms the quoted passage in this version says it.
-        Keys: j and k move, a approves, r rejects.
+        {view.permissions.reject ? 'Keys: j and k move, a approves, r rejects.' : 'Keys: j and k move.'}
       </p>
+      {view.permissions.note && <p className="warn">{view.permissions.note}</p>}
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
       {items.length > 0 && (
       <div className={`meeting-date${view.run.meetingDateSource === 'none' ? ' warn' : ''}`}>
-        {meetingInput !== null || view.run.meetingDateSource === 'none' ? (
+        {meetingInput !== null || (view.run.meetingDateSource === 'none' && view.permissions.edit) ? (
           <form
             onSubmit={(e) => {
               e.preventDefault();
@@ -189,7 +192,9 @@ export function Review({ runId }: { runId: string }) {
         ) : (
           <p>
             Meeting date: {formatDay(view.run.meetingDate as string)} ({view.run.meetingDateSource === 'reviewer' ? 'you entered it' : 'from the notes'}){' '}
-            <button type="button" className="link-button" onClick={() => setMeetingInput(view.run.meetingDate ?? '')}>Change</button>
+            {view.permissions.edit && (
+              <button type="button" className="link-button" onClick={() => setMeetingInput(view.run.meetingDate ?? '')}>Change</button>
+            )}
           </p>
         )}
       </div>
@@ -238,7 +243,7 @@ export function Review({ runId }: { runId: string }) {
                 const line = dueLine(item, view.run);
                 return line && <p id={`due-${item.id}`} role="note" className={line.tone === 'warn' ? 'warn due-line' : 'meta due-line'}>{line.text}</p>;
               })()}
-              {blocksApproval(item) && editing?.id !== item.id && (
+              {view.permissions.edit && blocksApproval(item) && editing?.id !== item.id && (
                 <button
                   type="button"
                   className="link-button"
@@ -326,7 +331,7 @@ export function Review({ runId }: { runId: string }) {
                     <button type="button" onClick={() => setEditing(null)}>Cancel</button>
                   </div>
                 </form>
-              ) : (
+              ) : view.permissions.edit && (
                 <button
                   type="button"
                   className="link-button"
@@ -378,6 +383,7 @@ export function Review({ runId }: { runId: string }) {
               )}
               <div className="decision">
                 <span className={`badge badge-${item.reviewStatus}`}>{STATUS_LABEL[item.reviewStatus]}</span>
+                {view.permissions.approve && (
                 <button
                   className="approve"
                   disabled={saving.has(item.id) || isCurrentApproval(item, pick) || !canApprove(item, pick)}
@@ -387,9 +393,12 @@ export function Review({ runId }: { runId: string }) {
                 >
                   Approve
                 </button>
+                )}
+                {view.permissions.reject && (
                 <button className="reject" disabled={saving.has(item.id) || item.reviewStatus === 'rejected'} onClick={() => void decide(item, 'rejected')}>
                   Reject
                 </button>
+                )}
               </div>
             </article>
           ))}

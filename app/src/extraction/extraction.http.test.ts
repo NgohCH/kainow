@@ -10,6 +10,7 @@ import { MVP_SPEND_SETTINGS } from '../spend/mvp-settings';
 import { SpendService } from '../spend/spend.service';
 import { SpendSettingsService } from '../spend/spend.settings';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
+import { seedWorkingProject } from '../testing/projects';
 import { CaptureSender, FakeClock, testEnv } from '../testing/fakes';
 import { QUEUES, startQueues } from '../worker/queues';
 import { registerAiWorker } from '../worker/ai-worker';
@@ -23,6 +24,7 @@ const USAGE = { inputTokens: 10_000, cachedInputTokens: 0, outputTokens: 2_000 }
 const ITEM = { kind: 'decision' as const, text: 'Ship Friday', owner: null, due: null, due_event: null, alternatives: [], source_quote: 'We agreed to ship on Friday.' };
 
 describe('extraction over HTTP', { skip: SKIP_NO_DB }, () => {
+  let projectId: string;
   let app: INestApplication;
   let pool: Pool;
   let base: string;
@@ -60,6 +62,7 @@ describe('extraction over HTTP', { skip: SKIP_NO_DB }, () => {
     });
     cookie = (verify.headers.getSetCookie()[0] ?? '').split(';')[0];
     csrf = ((await verify.json()) as { csrfToken: string }).csrfToken;
+    projectId = await seedWorkingProject(pool, (await pool.query('SELECT id FROM users WHERE email = $1', [EMAIL])).rows[0].id);
   }
 
   async function api(method: string, path: string, body?: unknown, signedIn = true): Promise<{ status: number; body: any }> {
@@ -73,7 +76,7 @@ describe('extraction over HTTP', { skip: SKIP_NO_DB }, () => {
   }
 
   async function note(text = 'We agreed to ship on Friday.\nAli will email Sam.'): Promise<string> {
-    return (await api('POST', '/notes', { title: 'T', text })).body.source.id;
+    return (await api('POST', `/projects/${projectId}/notes`, { title: 'T', text })).body.source.id;
   }
 
   afterEach(async () => {

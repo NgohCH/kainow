@@ -4,33 +4,49 @@ import { go } from '../App.tsx';
 import { formatWhen, plural } from '../format.ts';
 import { Intake } from './Intake.tsx';
 
-export function Notes() {
+/** The notes of one project, shown in its Notes tab. */
+export function Notes({ projectId, canAdd }: { projectId: string; canAdd: boolean }) {
   const [sources, setSources] = useState<SourceSummary[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
 
   useEffect(() => {
-    api.get<{ sources: SourceSummary[] }>('/notes').then(
+    api.get<{ sources: SourceSummary[] }>(`/projects/${projectId}/notes`).then(
       (r) => setSources(r.sources),
       (e: Error) => setError(e.message),
     );
-  }, []);
+  }, [projectId]);
 
   return (
-    <main className="page narrow">
+    <section aria-labelledby="notes-heading">
       <div className="row">
-        <h1>Meeting notes</h1>
-        <button className="primary" onClick={() => setAdding((a) => !a)} aria-expanded={adding}>{adding ? 'Close' : 'Add notes'}</button>
+        <h2 id="notes-heading">Meeting notes</h2>
+        {canAdd && (
+          <button className="primary" onClick={() => setAdding((a) => !a)} aria-expanded={adding}>
+            {adding ? 'Close' : 'Add notes'}
+          </button>
+        )}
       </div>
       {adding && (
         <section className="panel" aria-label="Add notes">
-          <Intake withTitle pasteUrl="/notes" uploadUrl="/notes/upload" submitLabel="Add notes" onDone={(r) => go(`#/notes/${r.source.id}`)} />
+          <Intake
+            withTitle
+            pasteUrl={`/projects/${projectId}/notes`}
+            uploadUrl={`/projects/${projectId}/notes/upload`}
+            submitLabel="Add notes"
+            onDone={(r) => go(`#/notes/${r.source.id}`)}
+          />
         </section>
       )}
       {error && <p role="alert" className="error">{error}</p>}
       {sources === null && !error && <p className="loading">Loading</p>}
       {sources?.length === 0 && !adding && (
-        <p className="empty">No notes yet. Add the notes from a meeting and Kainow will propose the decisions, actions, open questions and risks, each linked to the passage it came from.</p>
+        <p className="empty">
+          No notes yet.{' '}
+          {canAdd
+            ? 'Add the notes from a meeting and Kainow will propose the decisions, actions, open questions and risks, each linked to the passage it came from.'
+            : 'The Project Manager, a Deputy, the Owner or a Sponsor adds them.'}
+        </p>
       )}
       {sources && sources.length > 0 && (
         <ul className="list">
@@ -44,6 +60,6 @@ export function Notes() {
           ))}
         </ul>
       )}
-    </main>
+    </section>
   );
 }

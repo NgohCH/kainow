@@ -8,6 +8,7 @@ import { loadConfig } from '../config';
 import { runMigrations } from '../db/migrate';
 import { uuidv7 } from '../common/uuid7';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
+import { seedWorkingProject } from '../testing/projects';
 import { CaptureSender, FakeClock, testEnv } from '../testing/fakes';
 import { UsersService } from '../users/users.service';
 
@@ -15,6 +16,7 @@ const EMAIL = 'admin@example.org';
 const TEXT = 'We agreed to ship on Friday.\nok. ok.\nRisk: vendor late.';
 
 describe('reviewing proposals', { skip: SKIP_NO_DB }, () => {
+  let projectId: string;
   let app: INestApplication;
   let pool: Pool;
   let base: string;
@@ -51,8 +53,9 @@ describe('reviewing proposals', { skip: SKIP_NO_DB }, () => {
     const verify = await fetch(`${base}/auth/verify`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ email: EMAIL, code: sender.lastCode(EMAIL) }) });
     cookie = (verify.headers.getSetCookie()[0] ?? '').split(';')[0];
     csrf = ((await verify.json()) as { csrfToken: string }).csrfToken;
+    projectId = await seedWorkingProject(pool, (await pool.query('SELECT id FROM users WHERE email = $1', [EMAIL])).rows[0].id);
 
-    const created = (await api('POST', '/notes', { title: 'T', text: TEXT })).body;
+    const created = (await api('POST', `/projects/${projectId}/notes`, { title: 'T', text: TEXT })).body;
     versionId = created.version.id;
     const userId = (await pool.query('SELECT id FROM users')).rows[0].id;
     runId = uuidv7();
@@ -99,7 +102,7 @@ describe('reviewing proposals', { skip: SKIP_NO_DB }, () => {
   });
 
   test('a decision is refused if it names a different version than the proposal belongs to', async () => {
-    const other = (await api('POST', '/notes', { title: 'Other', text: 'Different notes' })).body.version.id;
+    const other = (await api('POST', `/projects/${projectId}/notes`, { title: 'Other', text: 'Different notes' })).body.version.id;
     const r = await api('POST', `/extractions/${runId}/items/${item.ok}/review`, { decision: 'approved', sourceVersionId: other });
     assert.equal(r.status, 409);
     assert.match(JSON.stringify(r.body), /different version/);
@@ -193,5 +196,24 @@ describe('reviewing proposals', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(view.items.map((i: any) => i.reviewStatus), ['approved', 'pending', 'pending']);
     assert.equal(view.run.sourceVersionId, versionId);
     assert.deepEqual([view.source.title, view.source.versionNo], ['T', 1]);
+  });
+  test('the run says what the viewer may do, and why not', async () => {
+    const perms = async () => (await api('GET', `/extractions/${runId}`)).body.permissions;
+    assert.deepEqual(await perms(), { approve: true, reject: true, edit: true, note: null });
+
+    await pool.query(`UPDATE memberships SET revoked_at = now() WHERE project_id = $1 AND role = 'member'`, [projectId]);
+    assert.deepEqual(await perms(), {
+      approve: false,
+      reject: true,
+      edit: true,
+      note: 'The project is missing a required role, so proposals cannot be approved until it is repaired.',
+    });
+
+    await pool.query(`DELETE FROM memberships WHERE project_id = $1 AND role = 'owner'`, [projectId]);
+    const reviewRefusal = 'Only the Owner or a Sponsor can approve or reject proposals, and only while the project is Planned or Active.';
+    assert.deepEqual(await perms(), { approve: false, reject: false, edit: true, note: reviewRefusal });
+
+    await pool.query(`UPDATE projects SET status = 'deferred' WHERE id = $1`, [projectId]);
+    assert.deepEqual(await perms(), { approve: false, reject: false, edit: false, note: reviewRefusal });
   });
 });

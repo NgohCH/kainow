@@ -19,6 +19,8 @@ export class AuthModule {
   static register(options: AuthOptions = {}): DynamicModule {
     return {
       module: AuthModule,
+      // Global so other modules (project invitations) send email through the same sender.
+      global: true,
       controllers: [AuthController, UsersController],
       providers: [
         AuthService,
@@ -30,7 +32,7 @@ export class AuthModule {
           useFactory: (config: AppConfig) => options.codeSender ?? createCodeSender(config.codeDelivery),
         },
       ],
-      exports: [AuthService, UsersService],
+      exports: [AuthService, UsersService, CODE_SENDER],
     };
   }
 }
