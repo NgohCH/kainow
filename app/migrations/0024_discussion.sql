@@ -159,9 +159,14 @@ ALTER TABLE sources ALTER COLUMN audience_id SET NOT NULL;
 CREATE INDEX sources_audience_idx ON sources (audience_id);
 CREATE INDEX sources_thread_idx ON sources (thread_id) WHERE thread_id IS NOT NULL;
 
--- A source inserted without an audience (older code paths) gets its own Project-wide one.
+-- Only a plain notes source inserted without an audience (older code paths) gets its own Project-wide one.
+-- Minutes, discussion and thread-linked sources must name their audience: failing loudly here stops a
+-- Restricted meeting from silently becoming visible to the whole project.
 CREATE FUNCTION sources_default_audience() RETURNS trigger AS $$
 BEGIN
+  IF NEW.audience_id IS NULL AND (NEW.kind <> 'notes' OR NEW.thread_id IS NOT NULL) THEN
+    RAISE EXCEPTION 'a % source linked to a thread must name its audience', NEW.kind USING ERRCODE = 'not_null_violation';
+  END IF;
   IF NEW.audience_id IS NULL THEN
     NEW.audience_id := gen_random_uuid();
     INSERT INTO audiences (id, project_id, mode, created_at) VALUES (NEW.audience_id, NEW.project_id, 'project', NEW.created_at);

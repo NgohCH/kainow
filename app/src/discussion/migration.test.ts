@@ -115,6 +115,21 @@ describe('migration 0024 (discussion)', { skip: SKIP_NO_DB }, () => {
     assert.equal(col.rows[0].is_nullable, 'NO');
   });
 
+  test('minutes and discussion sources without an audience are refused', async () => {
+    const threadId = await thread('meeting');
+    for (const kind of ['minutes', 'discussion']) {
+      assert.equal(
+        await sqlState(pool, `INSERT INTO sources (id, title, created_by, created_at, project_id, kind, thread_id) VALUES ($1, 'X', $2, now(), $3, $4, $5)`, [uuidv7(), userId, projectId, kind, threadId]),
+        '23502',
+        kind,
+      );
+    }
+    assert.equal(
+      await sqlState(pool, `INSERT INTO sources (id, title, created_by, created_at, project_id, thread_id) VALUES ($1, 'X', $2, now(), $3, $4)`, [uuidv7(), userId, projectId, threadId]),
+      '23502',
+    );
+  });
+
   test('message_versions and minutes_drafts are immutable', async () => {
     const threadId = await thread('meeting');
     const { versionId } = await message(threadId);
