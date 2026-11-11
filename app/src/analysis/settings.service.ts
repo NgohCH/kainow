@@ -42,16 +42,36 @@ async function loadProject(db: Db, projectId: string, lock = false): Promise<Pro
   return rows[0] ?? { automatic: null, quietMinutes: null };
 }
 
+/**
+ * Effective values for many projects with two queries in all (the tick covers every project with unanalysed messages).
+ * Importable without Nest (the worker tick passes a plain Pool).
+ */
+export async function effectiveAnalysisSettingsMany(db: Db, projectIds: string[]): Promise<Map<string, EffectiveAnalysisSettings>> {
+  const org = await loadOrg(db);
+  const own = new Map<string, ProjectRow>();
+  if (projectIds.length > 0) {
+    const { rows } = await db.query(
+      `SELECT project_id AS "projectId", automatic, quiet_minutes AS "quietMinutes" FROM project_analysis_settings WHERE project_id = ANY($1::uuid[])`,
+      [projectIds],
+    );
+    for (const r of rows) own.set(r.projectId, r);
+  }
+  const out = new Map<string, EffectiveAnalysisSettings>();
+  for (const id of projectIds) {
+    const p = own.get(id) ?? { automatic: null, quietMinutes: null };
+    out.set(id, {
+      automatic: p.automatic ?? org.automatic,
+      quietMinutes: p.quietMinutes ?? org.quietMinutes,
+      projectsMayChange: org.projectsMayChange,
+      source: { automatic: p.automatic === null ? 'organisation' : 'project', quietMinutes: p.quietMinutes === null ? 'organisation' : 'project' },
+    });
+  }
+  return out;
+}
+
 /** Importable without Nest (the worker tick passes a plain Pool). */
 export async function effectiveAnalysisSettings(db: Db, projectId: string): Promise<EffectiveAnalysisSettings> {
-  const org = await loadOrg(db);
-  const own = await loadProject(db, projectId);
-  return {
-    automatic: own.automatic ?? org.automatic,
-    quietMinutes: own.quietMinutes ?? org.quietMinutes,
-    projectsMayChange: org.projectsMayChange,
-    source: { automatic: own.automatic === null ? 'organisation' : 'project', quietMinutes: own.quietMinutes === null ? 'organisation' : 'project' },
-  };
+  return (await effectiveAnalysisSettingsMany(db, [projectId])).get(projectId) as EffectiveAnalysisSettings;
 }
 
 const reasonOf = (v: unknown): string => {

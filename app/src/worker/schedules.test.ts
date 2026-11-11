@@ -82,3 +82,27 @@ test('a handler that throws is logged with a fixed message and does not stop lat
     await boss.stop({ graceful: true, timeout: 5000 });
   }
 });
+
+test('the analysis tick is scheduled every minute, and a failing tick is logged with a fixed message', { skip: SKIP_NO_DB }, async () => {
+  const logs: string[] = [];
+  let calls = 0;
+  const analysis = {
+    run: async () => {
+      calls++;
+      throw new Error('postgres://user:hunter2@db.example.org refused');
+    },
+  };
+  const boss = await startQueues(testDatabaseUrl() as string, SCHEMA, { schedule: true });
+  await registerSchedules(boss, { sweep: { runIfDue: async () => true } as unknown as Sweep, dispatcher: { dispatchDue: async () => ({}) } as unknown as EmailDispatcher, analysis, log: (m) => logs.push(m) });
+  try {
+    const s = (await boss.getSchedules()).find((x) => x.name === QUEUES.analysis);
+    assert.equal(s?.cron, '* * * * *');
+    await boss.unschedule(QUEUES.analysis, 'tick');
+    await boss.send(QUEUES.analysis, {});
+    await until(() => calls >= 1 && logs.length >= 1);
+    assert.deepEqual(logs, ['The analysis tick failed; it will run again on the next tick.']);
+    assert.ok(!logs.join(' ').includes('hunter2'));
+  } finally {
+    await boss.stop({ graceful: true, timeout: 5000 });
+  }
+});

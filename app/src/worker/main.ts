@@ -1,4 +1,6 @@
 import { Pool } from 'pg';
+import { AnalysisTick } from '../analysis/tick';
+import { bossAnalysisQueue } from '../analysis/queue';
 import { ExtractionRunner } from '../extraction/runner';
 import { OpenAiModelClient } from '../extraction/model';
 import { SpendService } from '../spend/spend.service';
@@ -48,7 +50,8 @@ async function main(): Promise<void> {
     clock,
     log,
   });
-  await registerSchedules(boss, { sweep, dispatcher });
+  const analysis = new AnalysisTick({ pool, clock, queue: bossAnalysisQueue(boss), spend: new SpendService(pool, clock) });
+  await registerSchedules(boss, { sweep, dispatcher, analysis });
   console.log(`kainow worker started (AI requests at once: ${AI_CONCURRENCY})`);
 
   const stop = async (): Promise<void> => {

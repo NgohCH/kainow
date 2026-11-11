@@ -5,6 +5,7 @@ import { ClockModule } from './common/clock.module';
 import { APP_CONFIG, type AppConfig } from './config';
 import { DatabaseModule } from './db/database.module';
 import { HealthController } from './health/health.controller';
+import type { AnalysisQueue } from './analysis/queue';
 import { ChangesModule } from './changes/changes.module';
 import { EmailModule, type EmailNudge } from './email/nudge';
 import { ExtractionModule } from './extraction/extraction.module';
@@ -40,7 +41,9 @@ export interface AppOptions extends AuthOptions {
   extractionQueue?: ExtractionQueue;
   /** Tests only: replaces the pg-boss job that wakes the email worker. */
   emailNudge?: EmailNudge;
-  /** Tests only: replaces what happens when a meeting ends (Task 10 binds the real one). */
+  /** Tests only: replaces the pg-boss queue that carries analysis runs to the worker. */
+  analysisQueue?: AnalysisQueue;
+  /** Tests only: replaces what happens when a meeting ends (the real one requests the final draft). */
   meetingEndHook?: MeetingEndHook;
   /** Tests only: replaces the reader of the project's automatic-analysis setting (Task 9 binds the real one). */
   automaticAnalysis?: AutomaticAnalysis;
@@ -68,7 +71,7 @@ export class AppModule {
         DigestsModule,
         GoLiveModule,
         SearchModule,
-        DiscussionModule.register(options.meetingEndHook, options.automaticAnalysis),
+        DiscussionModule.register(options.meetingEndHook, options.automaticAnalysis, options.analysisQueue),
       ],
       controllers: [HealthController],
     };

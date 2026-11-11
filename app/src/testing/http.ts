@@ -3,7 +3,8 @@ import type { INestApplication } from '@nestjs/common';
 import { Pool } from 'pg';
 import { createApp } from '../bootstrap';
 import type { AutomaticAnalysis } from '../discussion/automatic-analysis';
-import type { MeetingEndHook } from '../discussion/meetings.service';
+import type { AnalysisQueue } from '../analysis/queue';
+import { NO_MEETING_END_HOOK, type MeetingEndHook } from '../discussion/meetings.service';
 import { loadConfig } from '../config';
 import { runMigrations } from '../db/migrate';
 import { resetPublicSchema, testDatabaseUrl } from './db';
@@ -65,7 +66,8 @@ async function send(base: string, method: string, path: string, body: unknown, h
  * Starts the whole application on an empty migrated database, with a fake clock and a code-capturing sender.
  * The organisation is already set up unless `organisation: false` (for onboarding tests).
  */
-export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opts: { organisation?: boolean; emailNudge?: { nudge(): Promise<void> }; meetingEndHook?: MeetingEndHook; automaticAnalysis?: AutomaticAnalysis } = {}): Promise<TestApp> {
+/** Ending a meeting does nothing unless a test gives a hook, or an analysis queue (then the real hook requests the final draft). */
+export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opts: { organisation?: boolean; emailNudge?: { nudge(): Promise<void> }; meetingEndHook?: MeetingEndHook; automaticAnalysis?: AutomaticAnalysis; analysisQueue?: AnalysisQueue } = {}): Promise<TestApp> {
   const sender = new CaptureSender();
   const clock = new FakeClock(startAt);
   const config = loadConfig(testEnv(testDatabaseUrl() as string));
@@ -73,7 +75,7 @@ export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opt
   await resetPublicSchema(pool);
   await runMigrations(pool, config.migrationsDir);
   if (opts.organisation !== false) await seedOrganisation(pool);
-  const app = await createApp(config, { codeSender: sender, clock: clock.now, logger: false, extractionQueue: { enqueue: async () => undefined }, emailNudge: opts.emailNudge ?? { nudge: async () => undefined }, meetingEndHook: opts.meetingEndHook, automaticAnalysis: opts.automaticAnalysis });
+  const app = await createApp(config, { codeSender: sender, clock: clock.now, logger: false, extractionQueue: { enqueue: async () => undefined }, emailNudge: opts.emailNudge ?? { nudge: async () => undefined }, meetingEndHook: opts.meetingEndHook ?? (opts.analysisQueue ? undefined : NO_MEETING_END_HOOK), automaticAnalysis: opts.automaticAnalysis, analysisQueue: opts.analysisQueue ?? { enqueue: async () => undefined } });
   await app.listen(0);
   const base = await app.getUrl();
 
