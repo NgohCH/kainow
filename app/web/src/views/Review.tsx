@@ -6,14 +6,14 @@ import { ChangeRequestPanel, pendingAuthorisation, useRequests } from './ChangeR
 import { waitingLine, type RequestView } from '../changes.ts';
 import { KIND_LABEL, plural } from '../format.ts';
 import { REVIEW_STATUS_LABEL } from '../records.ts';
-import { canMarkByOffset, evidenceView } from '../discussion.ts';
+import { canMarkByOffset, evidenceView, occurrenceChoiceText } from '../discussion.ts';
 import { buildSegments, contextAround, markedSpan } from '../segments.ts';
 import { type EditFields, blocksApproval, dueLine, editFormFrom, formatDay } from '../due.ts';
 
 interface RunView {
   projectId: string;
   run: Run;
-  source: { sourceId: string; title: string; versionNo: number };
+  source: { sourceId: string; title: string; versionNo: number; sourceKind?: string };
   items: Item[];
   /** What this viewer may do here; note says why approving is not open to them, when it is not. */
   permissions: { approve: boolean; reject: boolean; edit: boolean; note: string | null };
@@ -104,7 +104,7 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
 
   const items = view?.items ?? [];
   // A discussion transcript is shown with hidden and deleted messages masked, so its quote offsets no longer fit the text: no passage is marked there.
-  const offsetsFit = canMarkByOffset(items);
+  const offsetsFit = canMarkByOffset(view?.source.sourceKind);
   const segments = useMemo(
     () => (text === null ? [] : buildSegments(text, offsetsFit ? items.map((i) => ({ id: i.id, ...markedSpan(i, pick[i.id]) })) : [])),
     [text, items, pick, offsetsFit],
@@ -430,9 +430,15 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                         />
                         <span>
                           <span className="meta">Place {n + 1}: </span>
-                          {ctx.before}
-                          <strong>{ctx.match}</strong>
-                          {ctx.after}
+                          {offsetsFit ? (
+                            <>
+                              {ctx.before}
+                              <strong>{ctx.match}</strong>
+                              {ctx.after}
+                            </>
+                          ) : (
+                            occurrenceChoiceText(o.label)
+                          )}
                         </span>
                       </label>
                     );

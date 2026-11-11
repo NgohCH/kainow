@@ -1,4 +1,4 @@
-import { itemDiscussionEvidence, itemSourceFlags } from '../discussion/masking';
+import { itemDiscussionEvidence, itemSourceFlags, occurrenceLabels } from '../discussion/masking';
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
@@ -246,7 +246,7 @@ export class ExtractionService {
     const flagged = shaped.map((i) => ({ ...i, sourceFlag: flags.get(i.id) ?? null, discussionEvidence: evidence.get(i.id) ?? null }));
     Object.assign(run.rows[0], meeting);
     const src = await this.pool.query(
-      `SELECT s.id AS "sourceId", s.title, v.version_no AS "versionNo"
+      `SELECT s.id AS "sourceId", s.title, s.kind AS "sourceKind", v.version_no AS "versionNo"
          FROM extraction_runs r JOIN source_versions v ON v.id = r.source_version_id JOIN sources s ON s.id = v.source_id
         WHERE r.id = $1`,
       [runId],
@@ -319,11 +319,19 @@ export class ExtractionService {
     if (!items.some((i) => i.quoteMatches > 1)) return items;
     const { rows } = await this.pool.query<{ text: string }>('SELECT text_content AS text FROM source_versions WHERE id = $1', [sourceVersionId]);
     const text = rows[0]?.text ?? '';
-    return items.map((i) =>
-      i.quoteMatches > 1
-        ? { ...i, occurrences: locateQuote(text, i.quote).slice(0, MAX_OCCURRENCE_CHOICES).map(({ start, end }) => ({ start, end })) }
-        : i,
-    );
+    const out = [];
+    for (const i of items) {
+      if (i.quoteMatches <= 1) {
+        out.push(i);
+        continue;
+      }
+      const places = locateQuote(text, i.quote).slice(0, MAX_OCCURRENCE_CHOICES).map(({ start, end }) => ({ start, end }));
+      // For a discussion transcript each place also says which message it is in (null for any other source).
+      const labels = await occurrenceLabels(this.pool, sourceVersionId, places);
+      const named = labels.some((l) => l !== null);
+      out.push({ ...i, occurrences: places.map((p, n) => (named ? { ...p, label: labels[n] } : p)) });
+    }
+    return out;
   }
 
   async listForVersion(sourceId: string, versionNo: number) {

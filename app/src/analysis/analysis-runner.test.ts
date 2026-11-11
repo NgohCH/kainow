@@ -380,6 +380,27 @@ describe('analysis runner (discussion proposals)', { skip: SKIP_NO_DB }, () => {
     assert.equal((await pm.request('GET', `/extractions/${run.extraction_run_id}`)).body.items[0].discussionEvidence, null);
   });
 
+  test('a repeated quote in a transcript lists which message each place is in, without message text', async () => {
+    const pm = await t.signIn('pm@example.org');
+    await post(ada, 'We decided to ship on Friday.');
+    const second = await post(ada, 'Again: ship on Friday.');
+    const id = await queueRun();
+    assert.equal(await runner(new FakeModel(() => answer([item('ship on Friday', 'Ship on Friday', 'action')]))).process(id, 1, false), 'succeeded');
+    const run = await analysisRun(id);
+    const view = await pm.request('GET', `/extractions/${run.extraction_run_id}`);
+    assert.equal(view.status, 200, JSON.stringify(view.body));
+    assert.equal(view.body.source.sourceKind, 'discussion');
+    const labels = view.body.items[0].occurrences.map((o: { label: string }) => o.label);
+    assert.equal(labels.length, 2);
+    assert.match(labels[0], /^Message #1 by ada, \d{1,2} \w{3} \d{2}:\d{2}$/);
+    assert.match(labels[1], /^Message #2 by ada, /);
+    assert.ok(labels.every((l: string) => !l.includes('Friday')), 'no message text in a label');
+
+    await t.pool.query(`UPDATE discussion_messages SET state = 'hidden', state_reason = 'off topic', state_by = $2, state_at = $3 WHERE id = $1`, [second, ids.pm, t.clock.now()]);
+    const after = await pm.request('GET', `/extractions/${run.extraction_run_id}`);
+    assert.deepEqual(after.body.items[0].occurrences.map((o: { label: string }) => o.label).slice(1), ['Hidden or deleted message']);
+  });
+
   test('a restricted source gives an outsider no evidence', async () => {
     const pm = await t.signIn('pm@example.org');
     const bob = await t.signIn('bob@example.org');

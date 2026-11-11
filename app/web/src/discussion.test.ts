@@ -167,6 +167,8 @@ test('parseThreadHash reads the project, the thread and the message number', () 
 // --- Task 16: meetings, minutes, publishing, audiences, evidence ---
 import {
   accessChangedLabel,
+  canMarkByOffset,
+  occurrenceChoiceText,
   AI_DRAFT_LABEL,
   type AudienceView,
   diffLines,
@@ -269,6 +271,19 @@ test('record evidence shows restricted text for outsiders', () => {
     href: '#/projects/p1/threads/t1?m=12',
   });
   assert.equal(sourceFlagText('deleted'), 'Source message deleted — review');
+});
+
+test('offsets are never used to mark a discussion source, with or without evidence on the items', () => {
+  assert.equal(canMarkByOffset('discussion'), false);
+  assert.equal(canMarkByOffset('notes'), true);
+  assert.equal(canMarkByOffset('minutes'), true);
+  assert.equal(canMarkByOffset(undefined), true);
+});
+
+test('the occurrence chooser uses the server label', () => {
+  assert.equal(occurrenceChoiceText('Message #2 by Ada Member, 11 Nov 10:31'), 'Message #2 by Ada Member, 11 Nov 10:31');
+  assert.equal(occurrenceChoiceText('Hidden or deleted message'), 'Hidden or deleted message');
+  assert.equal(occurrenceChoiceText(null), 'A place in the discussion');
 });
 
 test('Source restricted and Access changed labels', () => {

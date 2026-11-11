@@ -421,8 +421,12 @@ export function evidenceView(source: EvidenceSource, projectId?: string): Eviden
 
 /**
  * Whether the quote offsets of a proposal run can be used to mark passages in the text shown. A discussion transcript is shown
- * with hidden and deleted messages masked, which changes the length of the text, so offsets are never used there.
+ * with hidden and deleted messages masked, which changes the length of the text, so offsets are never used for a discussion source,
+ * whatever the items say.
  */
-export function canMarkByOffset(items: Array<{ sourceFlag?: SourceFlag | null; discussionEvidence?: DiscussionEvidence | null }>): boolean {
-  return !items.some((i) => i.sourceFlag || i.discussionEvidence);
+export function canMarkByOffset(sourceKind: string | undefined): boolean {
+  return sourceKind !== 'discussion';
 }
+
+/** What the occurrence chooser prints for a place in a discussion transcript: the server's message label, never message text. */
+export const occurrenceChoiceText = (label: string | null | undefined): string => label ?? 'A place in the discussion';

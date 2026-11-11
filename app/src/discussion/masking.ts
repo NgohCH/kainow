@@ -158,3 +158,32 @@ export async function itemDiscussionEvidence(db: Db, itemIds: string[]): Promise
   }
   return evidence;
 }
+
+const LABEL_TIME = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kuala_Lumpur', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' });
+
+/**
+ * A label for each place a repeated quote occurs in a stored transcript, so a reviewer can choose without the masked text:
+ * "Message #n by <name>, d MMM HH:mm" inside a visible new message, "Hidden or deleted message" once that message is no longer visible,
+ * "Earlier message #n (context)" for a context message, "Message #n" for a header. No message text is used. Null where no message lies at the offset.
+ */
+export async function occurrenceLabels(db: Db, sourceVersionId: string, places: Array<{ start: number }>): Promise<Array<string | null>> {
+  const { rows } = await db.query(
+    `SELECT sp.message_no AS "no", sp.header_start AS "headerStart", sp.body_start AS "bodyStart", sp.body_end AS "bodyEnd", sp.is_context AS "ctx",
+            m.state, m.created_at AS "at", u.display_name AS "name"
+       FROM transcript_spans sp
+       JOIN source_versions v ON v.id = sp.source_version_id
+       JOIN sources s ON s.id = v.source_id AND s.kind = 'discussion'
+       JOIN discussion_messages m ON m.thread_id = s.thread_id AND m.message_no = sp.message_no
+       JOIN users u ON u.id = sp.author_id
+      WHERE sp.source_version_id = $1 ORDER BY sp.header_start`,
+    [sourceVersionId],
+  );
+  return places.map(({ start }) => {
+    const sp = rows.find((r) => start >= r.headerStart && start < r.bodyEnd);
+    if (!sp) return null;
+    if (sp.state !== 'visible') return 'Hidden or deleted message';
+    if (sp.ctx) return `Earlier message #${sp.no} (context)`;
+    if (start < sp.bodyStart) return `Message #${sp.no}`;
+    return `Message #${sp.no} by ${sp.name}, ${LABEL_TIME.format(sp.at as Date).replace(',', '').replace(/\bSept\b/, 'Sep')}`;
+  });
+}
