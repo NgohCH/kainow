@@ -300,3 +300,19 @@ mark { background: var(--marker-wash); color: inherit; font-weight: 700; padding
 .golive-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
 .golive-form { margin-top: 0.5rem; }
 .golive-form input[type="text"] { width: 100%; }
+
+/* Notes & discussion */
+.actions { display: flex; flex-wrap: wrap; gap: 0.5rem; align-items: center; }
+.thread .analysis-line { font-weight: 600; margin: 0 0 0.25rem; }
+.messages { list-style: none; margin: 1rem 0; padding: 0; border-top: 1px solid var(--rule); }
+.message { padding: 0.85rem 0.5rem; border-bottom: 1px solid var(--rule); background: var(--surface); }
+.message:focus-visible { outline: 3px solid var(--teal); outline-offset: -3px; }
+.message .byline { margin: 0 0 0.25rem; display: flex; align-items: center; flex-wrap: wrap; gap: 0.25rem; }
+.message-text { margin: 0.25rem 0; white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--serif); }
+.reply-quote { margin: 0.25rem 0; padding-left: 0.75rem; border-left: 3px solid var(--rule); color: var(--muted); font-size: 0.9rem; overflow-wrap: anywhere; }
+.message .notice { margin: 0.25rem 0; color: var(--muted); font-style: italic; }
+.message-hidden, .message-deleted { background: var(--paper); }
+.inline-check { display: inline-flex; margin-right: 0.25rem; }
+.inline-check input { width: auto; }
+.versions-list { margin: 0.25rem 0 0.5rem; padding-left: 1.25rem; }
+.composer { margin: 1.5rem 0; }

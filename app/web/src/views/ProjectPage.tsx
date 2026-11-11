@@ -22,7 +22,7 @@ import { HumanProposals } from './HumanProposals.tsx';
 import { ProjectApprovals } from './ApprovalSettings.tsx';
 import { Closing, DelegationControl, type ClosedSummary, type ClosureView } from './Closing.tsx';
 import { DeadlineReview } from './DeadlineReview.tsx';
-import { Notes } from './Notes.tsx';
+import { Discussion } from './Discussion.tsx';
 import { Work } from './Work.tsx';
 import { DeliveryHistory } from './Deliveries.tsx';
 import { DigestSend, EscalationFlags } from './DigestSend.tsx';
@@ -82,7 +82,7 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
   const tabs: Array<[Tab, string]> = [
     ['overview', 'Overview'],
     ['people', 'People'],
-    ...(contentAllowed ? ([['notes', 'Notes'], ['work', 'Work']] as Array<[Tab, string]>) : []),
+    ...(contentAllowed ? ([['notes', 'Notes & discussion'], ['work', 'Work']] as Array<[Tab, string]>) : []),
     ['settings', 'Settings'],
   ];
   // The project's current people, for choosing assignees, requesters and responsible people.
@@ -143,7 +143,7 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
       {tab === 'people' && <People project={project} act={act} />}
       {tab === 'notes' && contentAllowed && (
         <>
-          <Notes projectId={project.id} canAdd={roles.some((r) => r !== 'member') && open} />
+          <Discussion projectId={project.id} canAdd={roles.some((r) => r !== 'member') && open} canStart={roles.length > 0 && open} />
           <HumanProposals
             projectId={project.id}
             canPropose={roles.length > 0 && open}

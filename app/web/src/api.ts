@@ -1,11 +1,17 @@
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  readonly status: number;
+  /** The parsed body of the refusal, when the server sent one (a 409 may carry the current copy). */
+  readonly data: unknown;
+  constructor(message: string, status: number, data?: unknown) {
     super(message);
+    this.status = status;
+    this.data = data;
   }
 }
 
+// (import.meta.env is missing when the pure helpers are tested under plain node.)
 // In development Vite serves the page and proxies /api to the API; in production the API serves the page itself.
-const BASE = import.meta.env.DEV ? '/api' : '';
+const BASE = import.meta.env?.DEV ? '/api' : '';
 
 // Given by the server at sign-in and on /auth/me; sent back on every request that changes something.
 let csrfToken: string | null = null;
@@ -40,7 +46,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   if (!res.ok) {
     const m = (data as { message?: string | string[] } | undefined)?.message;
     const message = Array.isArray(m) ? m.join(' ') : m;
-    throw new ApiError(message || `The server answered ${res.status}.`, res.status);
+    throw new ApiError(message || `The server answered ${res.status}.`, res.status, data);
   }
   return data as T;
 }

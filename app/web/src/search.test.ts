@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { highlight, parseSearchHash, searchedLine, searchPath, searchWords, snippetRepeatsTitle, statusLabel } from './search.ts';
+import { highlight, KIND_LABELS, parseSearchHash, searchedLine, searchPath, SEARCH_KINDS, searchWords, snippetRepeatsTitle, statusLabel } from './search.ts';
 
 test('highlight marks each word, ignoring case', () => {
   assert.deepEqual(highlight('Choose Vendor in Penang', ['vendor', 'pen']), [
@@ -73,4 +73,9 @@ test('snippetRepeatsTitle ignores case and spacing', () => {
   assert.equal(snippetRepeatsTitle('Choose  vendor', 'choose vendor '), true);
   assert.equal(snippetRepeatsTitle('Choose vendor', 'Choose vendor for Penang'), false);
   assert.equal(snippetRepeatsTitle('x', null), false);
+});
+
+test('a message result has its own label and can be filtered', () => {
+  assert.equal(KIND_LABELS.message, 'Message');
+  assert.ok(SEARCH_KINDS.includes('message'));
 });
