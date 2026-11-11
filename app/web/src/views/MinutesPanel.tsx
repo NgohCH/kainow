@@ -16,7 +16,9 @@ import {
   saveMinutes,
   submitDraft,
 } from '../discussion.ts';
+import { canFlagDraft } from '../feedback.ts';
 import { formatWhen } from '../format.ts';
+import { FeedbackButton } from './Feedback.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
 
@@ -43,6 +45,7 @@ type Mode = 'view' | 'edit' | 'compare';
 /** The Draft minutes panel: current draft, version list, compare, Edit, Draft minutes, Publish and Submit for publication. */
 export function MinutesPanel({
   threadId,
+  projectId,
   title,
   minutes,
   reload,
@@ -50,6 +53,7 @@ export function MinutesPanel({
   memberships,
 }: {
   threadId: string;
+  projectId: string;
   title: string;
   minutes: MinutesView | null;
   reload: () => void;
@@ -269,6 +273,9 @@ export function MinutesPanel({
         )}
         {minutes?.canPublish && shown && <button type="button" className="primary" disabled={busy} onClick={() => setConfirming('publish')}>Publish</button>}
         {canSubmit && shown && <button type="button" className="primary" disabled={busy} onClick={() => setConfirming('submit')}>Submit for publication</button>}
+        {shown && mode === 'view' && canFlagDraft(shown) && shown.id && (
+          <FeedbackButton projectId={projectId} targetKind="minutes_draft" targetId={shown.id} label={`Give feedback on version ${shown.versionNo}`} />
+        )}
       </div>
       {warning && <p className="warn" role="note">{warning}</p>}
       {confirming && shown && (

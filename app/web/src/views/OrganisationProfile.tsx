@@ -1,6 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import { type LogoShape, type OrganisationProfile as Profile, SHAPE_HELP, logoUploadError, previewPlaces } from '../branding.ts';
+import { OrganisationAnalysisSettings } from './AnalysisSettings.tsx';
 import { CUSTODIAN_HELP, type RecoveryCustodian as Custodian, custodianError } from '../custodian.ts';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
@@ -209,6 +210,7 @@ export function OrganisationScreen({ onBrandingChanged }: { onBrandingChanged: (
           <OrganisationName current={profile.name} onSaved={changed} />
           <LogoUploads profile={profile} onChanged={changed} />
           <RecoveryCustodian />
+          <OrganisationAnalysisSettings />
         </>
       )}
     </main>

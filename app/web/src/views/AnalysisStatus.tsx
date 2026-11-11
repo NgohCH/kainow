@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ApiError } from '../api.ts';
+import { FeedbackButton } from './Feedback.tsx';
 import { analyseNow, analyseSelected, analysisBox, analysisStatus, type AnalysisStatusView } from '../discussion.ts';
 
 /**
@@ -8,12 +9,14 @@ import { analyseNow, analyseSelected, analysisBox, analysisStatus, type Analysis
  */
 export function AnalysisStatus({
   threadId,
+  projectId,
   refresh,
   canRequest,
   selected,
   onRequested,
 }: {
   threadId: string;
+  projectId: string;
   refresh: number;
   canRequest: boolean;
   selected: string[];
@@ -83,6 +86,9 @@ export function AnalysisStatus({
         </div>
       )}
       {canRequest && selected.length > 50 && <p className="error" role="alert">Choose at most 50 messages.</p>}
+      {status?.lastRunId && (
+        <FeedbackButton projectId={projectId} targetKind="analysis_run" targetId={status.lastRunId} label="The analysis missed an item or got one wrong" defaultCategory="missed_item" />
+      )}
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
     </section>

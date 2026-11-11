@@ -38,6 +38,8 @@ export interface StatusView {
   line: string;
   explanation: string;
   lastFailure: string | null;
+  /** The newest analysis run that finished well, the target of "missed an item" feedback; null before any. */
+  lastRunId: string | null;
 }
 
 type Plan = Omit<NewRun, 'threadId' | 'requestedBy' | 'at'>;
@@ -61,7 +63,8 @@ export class AnalysisService implements MeetingEndHook {
     const [loaded] = await loadThreadFacts(this.pool, now, t.id);
     const settings = await effectiveAnalysisSettings(this.pool, t.projectId);
     const { status } = analysisState(loaded.facts, settings, await readiness(this.spend), now);
-    return { status, line: statusLine(status), explanation: explanation(settings), lastFailure: loaded.facts.lastFailure };
+    const last = await this.pool.query(`SELECT id FROM analysis_runs WHERE thread_id = $1 AND status = 'succeeded' ORDER BY created_at DESC, id DESC LIMIT 1`, [t.id]);
+    return { status, line: statusLine(status), explanation: explanation(settings), lastFailure: loaded.facts.lastFailure, lastRunId: (last.rows[0]?.id as string | undefined) ?? null };
   }
 
   /** Analyse the whole thread: its unanalysed messages, or (once confirmed) everything again. */

@@ -205,7 +205,7 @@ export class FeedbackService {
       for (const a of admins) {
         await db.query(
           `INSERT INTO notifications (id, user_id, project_id, kind, summary, link, created_at, email_off)
-           VALUES ($1, $2, $3, 'feedback_escalated', $4, '/admin/feedback', $5, EXISTS (SELECT 1 FROM email_preferences WHERE user_id = $2 AND project_id = $3 AND choice = 'off'))`,
+           VALUES ($1, $2, $3, 'feedback_escalated', $4, '#/escalated-feedback', $5, EXISTS (SELECT 1 FROM email_preferences WHERE user_id = $2 AND project_id = $3 AND choice = 'off'))`,
           [uuidv7(at.getTime()), a.id, f.projectId, `AI feedback escalated from ${name}`, at],
         );
       }

@@ -24,6 +24,7 @@ const AI_LABEL = 'AI draft — not official minutes';
 const MAX_PRESENT = 500;
 
 export interface DraftView {
+  id: string;
   versionNo: number;
   origin: 'ai' | 'human';
   body: string;
@@ -53,7 +54,7 @@ export interface MinutesView {
 
 const meta = (text: string) => ({ length: text.length, sha256: sha256Hex(text) });
 
-const DRAFT_SELECT = `SELECT d.version_no AS "versionNo", d.origin, d.body, d.covers_through_no AS "coversThroughNo", d.created_at AS "createdAt",
+const DRAFT_SELECT = `SELECT d.id, d.version_no AS "versionNo", d.origin, d.body, d.covers_through_no AS "coversThroughNo", d.created_at AS "createdAt",
        d.created_by AS "authorId", u.display_name AS "authorName", f.version_no AS "editedFromVersion", r.trigger AS "trigger"
   FROM minutes_drafts d
   LEFT JOIN users u ON u.id = d.created_by
@@ -63,6 +64,7 @@ const DRAFT_SELECT = `SELECT d.version_no AS "versionNo", d.origin, d.body, d.co
 function draftView(r: Record<string, any>): DraftView {
   const author = r.authorId ? { id: r.authorId as string, displayName: r.authorName as string } : null;
   return {
+    id: r.id,
     versionNo: r.versionNo,
     origin: r.origin,
     body: r.body,

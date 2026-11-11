@@ -194,7 +194,7 @@ function ThreadBody({ first, projectId, meId, messageNo, project }: { first: Thr
       {pollError && <p role="status" className="warn">Could not refresh just now: {pollError}. Trying again.</p>}
       <div className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{s.announce}</div>
 
-      <AnalysisStatus threadId={t.id} refresh={tick} canRequest={t.kind === 'discussion' && t.canPost} selected={chosen} onRequested={() => undefined} />
+      <AnalysisStatus threadId={t.id} projectId={projectId} refresh={tick} canRequest={t.kind === 'discussion' && t.canPost} selected={chosen} onRequested={() => undefined} />
 
       <div className={meeting ? 'meeting-split' : undefined}>
       <div>
@@ -241,7 +241,7 @@ function ThreadBody({ first, projectId, meId, messageNo, project }: { first: Thr
         </form>
       )}
       </div>
-      {meeting && <MinutesPanel threadId={t.id} title={t.title} minutes={minutes} reload={reload} audience={t.audience} memberships={memberships} />}
+      {meeting && <MinutesPanel threadId={t.id} projectId={projectId} title={t.title} minutes={minutes} reload={reload} audience={t.audience} memberships={memberships} />}
       </div>
     </main>
   );

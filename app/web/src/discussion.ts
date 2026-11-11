@@ -66,6 +66,7 @@ export interface AnalysisStatusView {
   line: string;
   explanation: string;
   lastFailure: string | null;
+  lastRunId?: string | null;
 }
 
 export type ModerationAction = 'hide' | 'unhide' | 'delete' | 'restore';
@@ -233,6 +234,7 @@ export interface MinutesVersionSummary {
 }
 
 export interface DraftView {
+  id: string;
   versionNo: number;
   origin: 'ai' | 'human';
   body: string;

@@ -26,11 +26,12 @@ import { Discussion } from './Discussion.tsx';
 import { Work } from './Work.tsx';
 import { DeliveryHistory } from './Deliveries.tsx';
 import { DigestSend, EscalationFlags } from './DigestSend.tsx';
+import { Feedback } from './Feedback.tsx';
 import { ProjectSettings } from './NotificationSettings.tsx';
 import { ProjectCalendarProvider } from './ProjectCalendar.tsx';
 import { type Act, ArchivePanel, DepartmentMove, GrantsSection, HandoverForm, HoldActions } from './ProjectAccessPanels.tsx';
 
-type Tab = 'overview' | 'people' | 'notes' | 'work' | 'settings' | 'closing' | 'deadline-review';
+type Tab = 'overview' | 'people' | 'notes' | 'work' | 'settings' | 'feedback' | 'closing' | 'deadline-review';
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
@@ -83,6 +84,7 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
     ['overview', 'Overview'],
     ['people', 'People'],
     ...(contentAllowed ? ([['notes', 'Notes & discussion'], ['work', 'Work']] as Array<[Tab, string]>) : []),
+    ...(contentAllowed ? ([['feedback', 'Feedback']] as Array<[Tab, string]>) : []),
     ['settings', 'Settings'],
   ];
   // The project's current people, for choosing assignees, requesters and responsible people.
@@ -137,6 +139,7 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
       {tab === 'overview' && <Overview project={project} act={act} />}
+      {tab === 'feedback' && contentAllowed && <Feedback projectId={project.id} />}
       {tab === 'settings' && <ProjectSettings projectId={project.id} />}
       {tab === 'closing' && <Closing project={project} act={act} />}
       {tab === 'deadline-review' && <DeadlineReview project={project} />}

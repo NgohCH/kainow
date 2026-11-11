@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, api, type Item, type Project, type Run } from '../api.ts';
+import { FeedbackButton } from './Feedback.tsx';
 import { AuthoriseForm, type Person } from './AuthoriseForm.tsx';
 import { ProjectCalendarProvider } from './ProjectCalendar.tsx';
 import { ChangeRequestPanel, pendingAuthorisation, useRequests } from './ChangeRequest.tsx';
@@ -458,6 +459,7 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                 ) : (
                   <span className={`badge badge-${item.reviewStatus}`}>{STATUS_LABEL[item.reviewStatus]}</span>
                 )}
+                <FeedbackButton projectId={view.projectId} targetKind="proposal" targetId={item.id} label="Flag this proposal" />
                 {view.permissions.approve && !item.record && !pendingAuthorisation(requests, item.id) && (
                 <button
                   className="approve"

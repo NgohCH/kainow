@@ -4,6 +4,7 @@ import { formatWhen, noticesStartLine } from '../format.ts';
 import {
   type Current, type Draft, type Preview, FIELD_LABEL, WEEKDAY_NAMES, afterSave, buildChanges, changeErrors, draftFrom, leadDaysText,
 } from '../settings.ts';
+import { ProjectAnalysisSettings } from './AnalysisSettings.tsx';
 import { Holidays } from './Holidays.tsx';
 import { useRefreshCalendar } from './ProjectCalendar.tsx';
 import { PreviewList } from './PreviewList.tsx';
@@ -357,6 +358,7 @@ export function ProjectSettings({ projectId }: { projectId: string }) {
       <h2>Notification settings</h2>
       <NotificationSettingsForm projectId={projectId} />
       <Holidays projectId={projectId} canEdit={canEditCalendar} notice={blocked} onChanged={refreshCalendar} />
+      <ProjectAnalysisSettings projectId={projectId} />
     </>
   );
 }
