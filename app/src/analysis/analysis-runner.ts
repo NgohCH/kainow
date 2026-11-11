@@ -94,7 +94,22 @@ export class AnalysisRunner {
       return 'blocked';
     }
 
-    if (!run.extractionRunId) {
+    if (run.extractionRunId) {
+      // A retry reuses the stored transcript, so a message hidden or deleted since it was built must stop the run (ruling R23).
+      const gone = await this.d.pool.query(
+        `SELECT 1 FROM transcript_spans sp
+           JOIN source_versions v ON v.id = sp.source_version_id
+           JOIN sources s ON s.id = v.source_id
+           JOIN discussion_messages m ON m.thread_id = s.thread_id AND m.message_no = sp.message_no
+          WHERE sp.source_version_id = $1 AND m.state <> 'visible'
+            AND EXISTS (SELECT 1 FROM extraction_runs x WHERE x.id = $2 AND x.status IN ('queued', 'running')) LIMIT 1`,
+        [run.sourceVersionId, run.extractionRunId],
+      );
+      if (gone.rowCount) {
+        await this.end(run, 'blocked', 'source_changed', 'A message in this analysis was hidden or deleted before it could be sent; ask for a new analysis.');
+        return 'blocked';
+      }
+    } else {
       const blocked = await this.snapshot(run);
       if (blocked) {
         await this.end(run, 'blocked', blocked.code, blocked.detail);

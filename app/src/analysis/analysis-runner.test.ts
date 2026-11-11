@@ -400,6 +400,38 @@ describe('analysis runner (discussion proposals)', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(task.source, { restricted: true });
   });
 
+  test('a message deleted between attempts blocks the retry without a model call or spend', async () => {
+    const m = await post(ada, 'We decided to ship on Friday.');
+    await post(ada, 'Bob will email the vendor.');
+    const id = await queueRun();
+    const model = new FakeModel(() => {
+      throw new ModelCallError('The AI service did not answer.', 'unknown', true);
+    });
+    assert.equal(await runner(model).process(id, 1, false), 'retry');
+    assert.equal(model.calls.length, 1);
+    const spentBefore = (await spendEntries()).length;
+    await t.pool.query(`UPDATE discussion_messages SET state = 'deleted', state_reason = 'removed', state_by = $2, state_at = $3 WHERE id = $1`, [m, ids.pm, t.clock.now()]);
+    assert.equal(await runner(model).process(id, 2, false), 'blocked');
+    const run = await analysisRun(id);
+    const ex = (await t.pool.query(`SELECT status, failure_code FROM extraction_runs WHERE id = $1`, [run.extraction_run_id])).rows[0];
+    assert.deepEqual([run.status, run.failure_code, ex.status, ex.failure_code], ['blocked', 'source_changed', 'blocked', 'source_changed']);
+    assert.equal(run.failure_detail, 'A message in this analysis was hidden or deleted before it could be sent; ask for a new analysis.');
+    assert.deepEqual([model.calls.length, (await spendEntries()).length], [1, spentBefore], 'no further call and no further spend');
+  });
+
+  test('a stored transcript cannot be extracted directly', async () => {
+    const pm = await t.signIn('pm@example.org');
+    await post(ada, 'We decided to ship on Friday.');
+    const id = await queueRun();
+    assert.equal(await runner(new FakeModel(() => answer([]))).process(id, 1, false), 'succeeded');
+    const run = await analysisRun(id);
+    const src = (await t.pool.query(`SELECT s.id FROM sources s JOIN source_versions v ON v.source_id = s.id WHERE v.id = $1`, [run.source_version_id])).rows[0].id;
+    const before = (await t.pool.query(`SELECT count(*)::int AS n FROM extraction_runs`)).rows[0].n;
+    const r = await pm.request('POST', `/notes/${src}/versions/1/extractions`, {});
+    assert.equal(r.status, 404, JSON.stringify(r.body));
+    assert.equal((await t.pool.query(`SELECT count(*)::int AS n FROM extraction_runs`)).rows[0].n, before, 'no run was created');
+  });
+
   test('a finished run is skipped', async () => {
     await post(ada, 'We decided to ship on Friday.');
     const id = await queueRun();

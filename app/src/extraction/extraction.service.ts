@@ -124,12 +124,13 @@ export class ExtractionService {
 
   /** Starts an extraction of one exact version. The worker does the work later; this only records and queues it. */
   async request(sourceId: string, versionNo: number, actorUserId: string) {
-    const found = await this.pool.query<{ id: string; publication: string }>(
-      `SELECT v.id, s.publication FROM source_versions v JOIN sources s ON s.id = v.source_id
+    const found = await this.pool.query<{ id: string; publication: string; kind: string }>(
+      `SELECT v.id, s.publication, s.kind FROM source_versions v JOIN sources s ON s.id = v.source_id
         WHERE v.source_id = $1 AND v.version_no = $2 AND s.status = 'active'`,
       [sourceId, versionNo],
     );
-    if (!found.rows[0]) throw new NotFoundException();
+    // A discussion transcript is analysed only by the analysis runner, which rebuilds it from the messages visible at that moment.
+    if (!found.rows[0] || found.rows[0].kind === 'discussion') throw new NotFoundException();
     if (found.rows[0].publication !== 'published') throw new ConflictException('A submission is analysed only after a reviewer publishes it.');
     const versionId = found.rows[0].id;
 

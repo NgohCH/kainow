@@ -32,6 +32,8 @@ interface RunRow {
   requested_by: string | null;
   /** 'discussion' for a stored transcript of a project discussion; 'notes' and 'minutes' are read as notes. */
   source_kind: string;
+  /** 'discussion' only for a run made by the analysis runner, which has already rechecked the requester. */
+  trigger: string;
   user_status: string;
   user_role: string;
   text: string;
@@ -59,7 +61,7 @@ export class ExtractionRunner {
     const project = p.rows[0];
     if (!project?.project_id || !project.status) return false;
     // An automatic run has no requester to recheck: it runs while the project is open.
-    if (run.requested_by === null || run.source_kind === 'discussion') return OPEN_STATES.includes(project.status);
+    if (run.requested_by === null || run.trigger === 'discussion') return OPEN_STATES.includes(project.status);
     const requester = run.requested_by;
     const m = await this.d.pool.query<MembershipRow>(
       `SELECT user_id AS "userId", role, to_char(starts_on, 'YYYY-MM-DD') AS "startsOn", to_char(expires_on, 'YYYY-MM-DD') AS "expiresOn",
@@ -74,7 +76,7 @@ export class ExtractionRunner {
   async process(runId: string, attemptNo: number, isLastAttempt: boolean): Promise<RunOutcome> {
     const { pool, spend } = this.d;
     const { rows } = await pool.query<RunRow>(
-      `SELECT r.id, r.status, r.source_version_id, r.requested_by, s.kind AS source_kind, u.status AS user_status, u.role AS user_role,
+      `SELECT r.id, r.status, r.source_version_id, r.requested_by, r.trigger, s.kind AS source_kind, u.status AS user_status, u.role AS user_role,
               v.text_content AS text
          FROM extraction_runs r
          JOIN source_versions v ON v.id = r.source_version_id
