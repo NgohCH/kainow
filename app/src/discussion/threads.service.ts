@@ -7,7 +7,8 @@ import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { type ProjectAction, decide } from '../projects/matrix';
 import { todayUtc8 } from '../projects/membership';
 import { sha256Hex } from '../notes/text';
-import { type AudienceChange, type AudienceMode, type AudienceRow, type Person, audienceVisibleSql, parseAudienceChange } from './audience';
+import { type AudienceChange, type AudienceMode, type AudienceRow, type Person, RESTRICTED_ROLES, audienceVisibleSql, parseAudienceChange } from './audience';
+import { MINUTES_LABEL } from '../notes/notes.service';
 import { AudienceService } from './audience.service';
 import { type MessageState, cleanBody, displayBody, refuseSecrets, replyQuote } from './messages';
 
@@ -48,11 +49,11 @@ export interface ThreadView {
 }
 
 /**
- * One entry of a project's discussion list. Threads and meetings carry `messageCount`; notes carry none.
- * Task 7 adds minutes and member submissions as further kinds by extending `list`.
+ * One entry of a project's discussion list. Threads and meetings carry `messageCount`; notes, minutes and
+ * submissions carry none. `label` is the short tag the screen shows ("Minutes — from meeting", "Submitted for review").
  */
 export interface DiscussionListItem {
-  kind: 'discussion' | 'meeting' | 'notes';
+  kind: 'discussion' | 'meeting' | 'notes' | 'minutes' | 'submission';
   id: string;
   title: string;
   lastActivityAt: Date;
@@ -60,6 +61,7 @@ export interface DiscussionListItem {
   state: 'open' | 'ended' | null;
   audienceMode: AudienceMode;
   messageCount: number | null;
+  label: string | null;
 }
 
 export interface ThreadRow {
@@ -236,22 +238,27 @@ export class ThreadsService {
 
   /** Threads, meetings and published notes in the project the viewer may read, newest activity first. */
   async list(user: AuthUser, projectId: string): Promise<DiscussionListItem[]> {
-    await this.access.authorize(user, 'note.view', projectId);
+    const ctx = await this.access.authorize(user, 'note.view', projectId);
     const visible = (alias: string) => audienceVisibleSql(alias, '$2', '$3');
-    // Extension point (Task 7): minutes and member submissions join this union, each filtered by its own audience.
+    // A submission is for its submitter and for PM, Deputy, Owner and Sponsor, whatever audience is intended (spec 5.4).
+    const reviewer = ctx.roles.some((r) => RESTRICTED_ROLES.includes(r));
     const { rows } = await this.pool.query(
       `SELECT * FROM (
          SELECT t.kind, t.id, t.title, COALESCE(t.last_message_at, t.created_at) AS "lastActivityAt",
-                to_char(t.meeting_date, 'YYYY-MM-DD') AS "meetingDate", t.state, a.mode AS "audienceMode", t.next_message_no - 1 AS "messageCount"
+                to_char(t.meeting_date, 'YYYY-MM-DD') AS "meetingDate", t.state, a.mode AS "audienceMode", t.next_message_no - 1 AS "messageCount", NULL AS label
            FROM discussion_threads t JOIN audiences a ON a.id = t.audience_id
           WHERE t.project_id = $1 AND ${visible('a')}
          UNION ALL
-         SELECT 'notes', s.id, s.title, max(v.created_at), NULL, NULL, a.mode, NULL
+         SELECT CASE WHEN s.publication <> 'published' THEN 'submission' WHEN s.kind = 'minutes' THEN 'minutes' ELSE 'notes' END,
+                s.id, s.title, max(v.created_at), NULL, NULL, a.mode, NULL,
+                CASE WHEN s.publication = 'submitted' THEN 'Submitted for review' WHEN s.publication = 'returned' THEN 'Returned'
+                     WHEN s.kind = 'minutes' THEN '${MINUTES_LABEL}' END
            FROM sources s JOIN audiences a ON a.id = s.audience_id JOIN source_versions v ON v.source_id = s.id
-          WHERE s.project_id = $1 AND s.status = 'active' AND s.kind = 'notes' AND s.publication = 'published' AND ${visible('a')}
+          WHERE s.project_id = $1 AND s.status = 'active' AND s.kind IN ('notes', 'minutes')
+            AND ((s.publication = 'published' AND ${visible('a')}) OR (s.publication <> 'published' AND ($4::boolean OR s.submitted_by = $2::uuid)))
           GROUP BY s.id, a.mode
        ) items ORDER BY "lastActivityAt" DESC, id DESC`,
-      [projectId, user.id, this.access.today()],
+      [projectId, user.id, this.access.today(), reviewer],
     );
     return rows as DiscussionListItem[];
   }

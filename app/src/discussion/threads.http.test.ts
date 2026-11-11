@@ -328,8 +328,9 @@ describe('threads and messages', { skip: SKIP_NO_DB }, () => {
     assert.equal(items[1].messageCount, null);
     assert.equal(items[2].id, meeting.id);
     assert.equal(items[2].state, 'open');
-    // A submitted (unpublished) note is not listed.
+    // A submitted (unpublished) note is listed as a submission for its submitter only; others do not see it at all.
     await t.pool.query(`UPDATE sources SET publication = 'submitted', submitted_by = $1 WHERE title = 'Site visit notes'`, [ids.ada]);
-    assert.equal((await ada.request('GET', `/projects/${project}/discussion`)).body.items.length, 2);
+    assert.equal((await ben.request('GET', `/projects/${project}/discussion`)).body.items.length, 2);
+    assert.deepEqual((await ada.request('GET', `/projects/${project}/discussion`)).body.items.filter((i: { kind: string }) => i.kind === 'submission').length, 1);
   });
 });

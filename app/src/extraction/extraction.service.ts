@@ -124,12 +124,13 @@ export class ExtractionService {
 
   /** Starts an extraction of one exact version. The worker does the work later; this only records and queues it. */
   async request(sourceId: string, versionNo: number, actorUserId: string) {
-    const found = await this.pool.query<{ id: string }>(
-      `SELECT v.id FROM source_versions v JOIN sources s ON s.id = v.source_id
+    const found = await this.pool.query<{ id: string; publication: string }>(
+      `SELECT v.id, s.publication FROM source_versions v JOIN sources s ON s.id = v.source_id
         WHERE v.source_id = $1 AND v.version_no = $2 AND s.status = 'active'`,
       [sourceId, versionNo],
     );
     if (!found.rows[0]) throw new NotFoundException();
+    if (found.rows[0].publication !== 'published') throw new ConflictException('A submission is analysed only after a reviewer publishes it.');
     const versionId = found.rows[0].id;
 
     const at = this.now();
@@ -171,6 +172,43 @@ export class ExtractionService {
       throw new ServiceUnavailableException('The extraction could not be queued. Try again shortly.');
     }
     return this.getRun(runId);
+  }
+
+  /**
+   * Starts an extraction that no person asked for (published minutes, a discussion), recorded with no requester and
+   * the reason it started. Queued like any run; the runner rechecks the project, the spend caps and the model when it
+   * starts, so this only records and queues. Returns the run id.
+   */
+  async requestAutomatic(versionId: string, trigger: 'minutes_published' | 'discussion'): Promise<string> {
+    const at = this.now();
+    const runId = uuidv7(at.getTime());
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `INSERT INTO extraction_runs (id, source_version_id, requested_by, trigger, status, created_at) VALUES ($1, $2, NULL, $3, 'queued', $4)`,
+        [runId, versionId, trigger, at],
+      );
+      await writeAudit(client, { at, action: 'extraction.requested', subjectType: 'extraction_run', subjectId: runId, detail: { sourceVersionId: versionId, trigger } });
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      if ((err as { code?: string }).code === '23505') throw new ConflictException('An extraction of this version is already queued or running');
+      throw err;
+    } finally {
+      client.release();
+    }
+    try {
+      await this.queue.enqueue(runId);
+    } catch {
+      await this.pool.query(
+        `UPDATE extraction_runs SET status = 'failed', failure_code = 'queue_unavailable',
+                failure_detail = 'The job could not be queued. Nothing was sent or charged.', finished_at = $2 WHERE id = $1`,
+        [runId, this.now()],
+      );
+      throw new ServiceUnavailableException('The extraction could not be queued.');
+    }
+    return runId;
   }
 
   async getRun(runId: string) {

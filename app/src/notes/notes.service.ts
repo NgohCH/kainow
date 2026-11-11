@@ -1,10 +1,12 @@
 import { maskedVersionText } from '../discussion/masking';
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type Clock } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
+import { audienceVisibleSql } from '../discussion/audience';
+import { ProjectAccess } from '../projects/access.service';
 import { UploadRejected, readUpload } from './readers';
 import { NoteTextError, normaliseText, sha256Hex } from './text';
 
@@ -15,7 +17,7 @@ export interface NewContent {
 }
 
 interface Prepared {
-  origin: 'paste' | 'upload';
+  origin: 'paste' | 'upload' | 'meeting';
   text: string;
   filename: string | null;
   mediaType: string | null;
@@ -30,11 +32,29 @@ export interface SourceSummary {
   versionCount: number;
 }
 
+/** One line of a project's notes list: published notes, and minutes published from a meeting (labelled as such). */
+export interface ListedSource extends SourceSummary {
+  kind: 'notes' | 'minutes';
+  label: string | null;
+}
+
+export const MINUTES_LABEL = 'Minutes — from meeting';
+
+/** What a plain-notes submission adds to creating a source (spec 5.4). */
+export interface SubmissionInput {
+  submittedBy: string;
+  intendedMode: 'project' | 'restricted';
+  /** Throws to refuse the extracted text before anything is stored. */
+  refuse(text: string): void;
+  /** Runs in the same transaction, after the source is stored. */
+  after(client: PoolClient, source: { id: string; title: string }, at: Date): Promise<void>;
+}
+
 export interface VersionSummary {
   id: string;
   sourceId: string;
   versionNo: number;
-  origin: 'paste' | 'upload';
+  origin: 'paste' | 'upload' | 'meeting' | 'discussion';
   filename: string | null;
   mediaType: string | null;
   charCount: number;
@@ -61,6 +81,7 @@ export class NotesService {
   constructor(
     @Inject(PG_POOL) private readonly pool: Pool,
     @Inject(CLOCK) private readonly now: Clock,
+    private readonly access: ProjectAccess,
   ) {}
 
   private async prepare(content: NewContent): Promise<Prepared> {
@@ -93,21 +114,32 @@ export class NotesService {
     return title.trim();
   }
 
-  async createSource(input: { projectId: string; title?: unknown; content: NewContent; actorUserId: string }): Promise<{ source: SourceSummary; version: VersionSummary }> {
+  async createSource(input: {
+    projectId: string;
+    title?: unknown;
+    content: NewContent;
+    actorUserId: string;
+    submission?: SubmissionInput;
+  }): Promise<{ source: SourceSummary; version: VersionSummary }> {
     const prepared = await this.prepare(input.content);
+    input.submission?.refuse(prepared.text);
     const title = this.checkTitle(input.title ?? (prepared.filename ? prepared.filename.replace(/\.[^.]*$/, '') || prepared.filename : undefined));
     const at = this.now();
     const sourceId = uuidv7(at.getTime());
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query('INSERT INTO sources (id, title, created_by, created_at, project_id) VALUES ($1, $2, $3, $4, $5)', [
-        sourceId, title, input.actorUserId, at, input.projectId,
-      ]);
+      // The database gives a plain note its own Project-wide audience; a submission gets its real one when published.
+      await client.query(
+        `INSERT INTO sources (id, title, created_by, created_at, project_id, publication, submitted_by, intended_mode)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
+        [sourceId, title, input.actorUserId, at, input.projectId, input.submission ? 'submitted' : 'published', input.submission?.submittedBy ?? null, input.submission?.intendedMode ?? null],
+      );
       const version = await this.insertVersion(client, sourceId, 1, prepared, input.actorUserId, at);
+      await input.submission?.after(client, { id: sourceId, title }, at);
       await writeAudit(client, {
         at,
-        action: 'note.created',
+        action: input.submission ? 'note.submitted' : 'note.created',
         actorUserId: input.actorUserId,
         subjectType: 'source',
         subjectId: sourceId,
@@ -130,8 +162,13 @@ export class NotesService {
     try {
       await client.query('BEGIN');
       // The source row is the lock that keeps version numbers gap-free when two people add at once.
-      const src = await client.query('SELECT id FROM sources WHERE id = $1 AND status = \'active\' FOR UPDATE', [sourceId]);
+      const src = await client.query<{ kind: string; publication: string }>(
+        'SELECT kind, publication FROM sources WHERE id = $1 AND status = \'active\' FOR UPDATE',
+        [sourceId],
+      );
       if (src.rowCount === 0) throw new NotFoundException();
+      if (src.rows[0].kind !== 'notes') throw new ConflictException('Minutes get a new version by publishing a draft from the meeting.');
+      if (src.rows[0].publication !== 'published') throw new ConflictException('This submission is waiting for a reviewer; publish or return it first.');
       const latest = await client.query<{ version_no: number; text_sha256: string }>(
         'SELECT version_no, text_sha256 FROM source_versions WHERE source_id = $1 ORDER BY version_no DESC LIMIT 1',
         [sourceId],
@@ -159,6 +196,23 @@ export class NotesService {
     }
   }
 
+  /**
+   * Adds text as the next version of a source the caller has already locked (FOR UPDATE) inside `client`'s
+   * transaction, so numbers stay gap-free. Refuses text identical to the newest version (409). With a minutes draft
+   * the version's origin is `meeting`; otherwise it is a paste. The caller writes the audit event.
+   */
+  async addVersionText(client: PoolClient, sourceId: string, text: string, actorId: string, at: Date, extra: { minutesDraftId?: string } = {}): Promise<VersionSummary> {
+    const latest = await client.query<{ version_no: number; text_sha256: string }>(
+      'SELECT version_no, text_sha256 FROM source_versions WHERE source_id = $1 ORDER BY version_no DESC LIMIT 1',
+      [sourceId],
+    );
+    if (latest.rows[0]?.text_sha256 === sha256Hex(text)) {
+      throw new ConflictException('This text is identical to the latest version, so no new version was made');
+    }
+    const prepared: Prepared = { origin: extra.minutesDraftId ? 'meeting' : 'paste', text, filename: null, mediaType: null, original: null };
+    return this.insertVersion(client, sourceId, (latest.rows[0]?.version_no ?? 0) + 1, prepared, actorId, at, extra.minutesDraftId ?? null);
+  }
+
   /** Metadata and hashes only. The note text is never written to the audit trail. */
   private auditDetail(v: VersionSummary, p: Prepared): Record<string, unknown> {
     return {
@@ -181,39 +235,59 @@ export class NotesService {
     p: Prepared,
     actorUserId: string,
     at: Date,
+    minutesDraftId: string | null = null,
   ): Promise<VersionSummary> {
     const id = uuidv7(at.getTime());
     const { rows } = await client.query<VersionSummary>(
       `INSERT INTO source_versions
          (id, source_id, version_no, origin, filename, media_type, original_bytes, original_sha256,
-          text_content, text_sha256, char_count, created_by, created_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)
+          text_content, text_sha256, char_count, created_by, created_at, minutes_draft_id)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)
        RETURNING ${VERSION_COLUMNS}`,
       [
         id, sourceId, versionNo, p.origin, p.filename, p.mediaType, p.original,
         p.original ? sha256Hex(p.original) : null,
-        p.text, sha256Hex(p.text), p.text.length, actorUserId, at,
+        p.text, sha256Hex(p.text), p.text.length, actorUserId, at, minutesDraftId,
       ],
     );
     return rows[0];
   }
 
-  /** The notes of one project. Notes from before projects belong to none and are never listed. */
-  async list(projectId: string): Promise<SourceSummary[]> {
-    const { rows } = await this.pool.query<SourceSummary>(
-      `SELECT s.id, s.title, s.created_at AS "createdAt",
+  /**
+   * The published notes and meeting minutes of one project that the viewer's audience rule lets them read, newest
+   * first. Submissions and discussion transcripts are never listed here. Notes from before projects belong to none.
+   */
+  async list(userId: string, projectId: string): Promise<ListedSource[]> {
+    const { rows } = await this.pool.query<ListedSource>(
+      `SELECT s.id, s.title, s.created_at AS "createdAt", s.kind,
+              CASE WHEN s.kind = 'minutes' THEN $4::text END AS label,
               max(v.version_no)::int AS "latestVersion", count(v.id)::int AS "versionCount"
-         FROM sources s JOIN source_versions v ON v.source_id = s.id
-        WHERE s.status = 'active' AND s.project_id = $1
+         FROM sources s JOIN source_versions v ON v.source_id = s.id JOIN audiences a ON a.id = s.audience_id
+        WHERE s.status = 'active' AND s.project_id = $1 AND s.kind IN ('notes', 'minutes') AND s.publication = 'published'
+          AND ${audienceVisibleSql('a', '$2', '$3')}
         GROUP BY s.id ORDER BY s.created_at DESC, s.id DESC`,
-      [projectId],
+      [projectId, userId, this.access.today(), MINUTES_LABEL],
     );
     return rows;
   }
 
-  async get(sourceId: string): Promise<{ source: Pick<SourceSummary, 'id' | 'title' | 'createdAt'> & { projectId: string }; versions: VersionSummary[] }> {
-    const src = await this.pool.query<{ id: string; title: string; createdAt: Date; projectId: string }>(
-      `SELECT id, title, created_at AS "createdAt", project_id AS "projectId" FROM sources WHERE id = $1 AND status = 'active'`,
+  /** The note and its versions. The caller has already checked the viewer may see this source (AudienceService.assertSourceReadable). */
+  async get(sourceId: string): Promise<{
+    source: Pick<SourceSummary, 'id' | 'title' | 'createdAt'> & {
+      projectId: string;
+      kind: string;
+      label: string | null;
+      publication: string;
+      intendedMode: string | null;
+      returnedReason: string | null;
+      provenance: string | null;
+    };
+    versions: VersionSummary[];
+  }> {
+    const src = await this.pool.query(
+      `SELECT id, title, created_at AS "createdAt", project_id AS "projectId", kind, publication, intended_mode AS "intendedMode",
+              returned_reason AS "returnedReason"
+         FROM sources WHERE id = $1 AND status = 'active'`,
       [sourceId],
     );
     if (src.rowCount === 0) throw new NotFoundException();
@@ -221,10 +295,47 @@ export class NotesService {
       `SELECT ${VERSION_COLUMNS} FROM source_versions WHERE source_id = $1 ORDER BY version_no`,
       [sourceId],
     );
-    return { source: src.rows[0], versions: rows };
+    const s = src.rows[0];
+    return {
+      source: { ...s, label: s.kind === 'minutes' ? MINUTES_LABEL : null, provenance: rows.length ? await this.provenance(rows[rows.length - 1].id) : null },
+      versions: rows,
+    };
   }
 
-  async getVersion(sourceId: string, versionNo: number): Promise<VersionSummary & { text: string }> {
+  /**
+   * "Drafted by AI from meeting <title>; edited by <names>; published by <name> on <date>" for a version published
+   * from a meeting's draft minutes (spec 5.3); null for any other version. A draft no AI wrote reads "Written by".
+   */
+  async provenance(versionId: string): Promise<string | null> {
+    const found = await this.pool.query(
+      `SELECT t.title, v.created_at AS "at", u.display_name AS "publisher", d.id AS "draftId"
+         FROM source_versions v
+         JOIN minutes_drafts d ON d.id = v.minutes_draft_id
+         JOIN discussion_threads t ON t.id = d.thread_id
+         LEFT JOIN users u ON u.id = v.created_by
+        WHERE v.id = $1`,
+      [versionId],
+    );
+    if (!found.rows[0]) return null;
+    const r = found.rows[0];
+    const chain = await this.pool.query<{ origin: string; name: string | null }>(
+      `WITH RECURSIVE chain AS (
+         SELECT id, edited_from_id, origin, created_by, 0 AS depth FROM minutes_drafts WHERE id = $1
+         UNION ALL
+         SELECT m.id, m.edited_from_id, m.origin, m.created_by, c.depth + 1 FROM minutes_drafts m JOIN chain c ON m.id = c.edited_from_id
+       )
+       SELECT c.origin, u.display_name AS name FROM chain c LEFT JOIN users u ON u.id = c.created_by ORDER BY c.depth`,
+      [r.draftId],
+    );
+    const editors = [...new Set(chain.rows.filter((c) => c.origin === 'human' && c.name).map((c) => c.name as string))].sort();
+    const byAi = chain.rows.some((c) => c.origin === 'ai');
+    const parts = [byAi ? `Drafted by AI from meeting ${r.title}` : `Written by ${editors.join(', ')} for meeting ${r.title}`];
+    if (byAi && editors.length > 0) parts.push(`edited by ${editors.join(', ')}`);
+    parts.push(`published by ${r.publisher ?? 'a person'} on ${formatDay(r.at)}`);
+    return parts.join('; ');
+  }
+
+  async getVersion(sourceId: string, versionNo: number): Promise<VersionSummary & { text: string; provenance: string | null }> {
     const { rows } = await this.pool.query<VersionSummary & { text: string }>(
       `SELECT ${VERSION_COLUMNS.split(',').map((c) => 'v.' + c.trim()).join(', ')}, v.text_content AS text
          FROM source_versions v JOIN sources s ON s.id = v.source_id
@@ -233,7 +344,7 @@ export class NotesService {
     );
     if (!rows[0]) throw new NotFoundException();
     // A discussion transcript keeps its stored text, but messages hidden or deleted since are masked when shown.
-    return { ...rows[0], text: await maskedVersionText(this.pool, rows[0].id, rows[0].text) };
+    return { ...rows[0], text: await maskedVersionText(this.pool, rows[0].id, rows[0].text), provenance: await this.provenance(rows[0].id) };
   }
 
   async getOriginal(sourceId: string, versionNo: number): Promise<{ filename: string; mediaType: string; bytes: Buffer }> {
@@ -246,4 +357,12 @@ export class NotesService {
     if (!rows[0]) throw new NotFoundException();
     return { filename: rows[0].filename, mediaType: rows[0].media_type, bytes: rows[0].original_bytes };
   }
+}
+
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+/** "9 Nov 2026" for a moment, as the calendar day in UTC+8. */
+export function formatDay(at: Date): string {
+  const d = new Date(at.getTime() + 8 * 3600_000);
+  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
 }

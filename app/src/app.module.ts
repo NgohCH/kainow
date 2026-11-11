@@ -14,6 +14,7 @@ import { NotesModule } from './notes/notes.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { DigestsModule } from './digests/digests.module';
 import { DiscussionModule } from './discussion/discussion.module';
+import type { AutomaticAnalysis } from './discussion/automatic-analysis';
 import type { MeetingEndHook } from './discussion/meetings.service';
 import { OrganisationModule } from './organisation/organisation.module';
 import { ProjectsModule } from './projects/projects.module';
@@ -41,6 +42,8 @@ export interface AppOptions extends AuthOptions {
   emailNudge?: EmailNudge;
   /** Tests only: replaces what happens when a meeting ends (Task 10 binds the real one). */
   meetingEndHook?: MeetingEndHook;
+  /** Tests only: replaces the reader of the project's automatic-analysis setting (Task 9 binds the real one). */
+  automaticAnalysis?: AutomaticAnalysis;
 }
 
 @Module({})
@@ -65,7 +68,7 @@ export class AppModule {
         DigestsModule,
         GoLiveModule,
         SearchModule,
-        DiscussionModule.register(options.meetingEndHook),
+        DiscussionModule.register(options.meetingEndHook, options.automaticAnalysis),
       ],
       controllers: [HealthController],
     };

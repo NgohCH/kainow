@@ -75,7 +75,7 @@ WITH hits AS (
      -- The one place that decides whether this person may read a note's content. Restricted note audiences (O09)
      -- and quarantine and logical deletion (sub-project 5) add their conditions here, so every result derived
      -- from a note (its text, its title, its AI proposals) obeys them.
-     AND (d.source_id IS NULL OR EXISTS (SELECT 1 FROM sources s WHERE s.id = d.source_id AND s.status <> 'deleted'))
+     AND (d.source_id IS NULL OR EXISTS (SELECT 1 FROM sources s WHERE s.id = d.source_id AND s.status <> 'deleted' AND s.publication = 'published' AND s.kind <> 'discussion'))
      AND (d.kind <> 'person' OR d.ends_on IS NULL OR d.ends_on >= $3::date)
 ), best AS (
   SELECT DISTINCT ON (project_id, kind, item_id) * FROM hits

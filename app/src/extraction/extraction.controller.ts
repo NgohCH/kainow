@@ -1,7 +1,10 @@
-import { Body, ConflictException, Controller, Get, HttpCode, NotFoundException, Param, Post, Req } from '@nestjs/common';
+import { Body, ConflictException, Controller, Get, HttpCode, Inject, NotFoundException, Param, Post, Req } from '@nestjs/common';
+import type { Pool } from 'pg';
+import { PG_POOL } from '../db/database.module';
 import { AnySignedInUser } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
+import { AudienceService } from '../discussion/audience.service';
 import { ProjectAccess } from '../projects/access.service';
 import { type ProjectAction, decide } from '../projects/matrix';
 import { ExtractionService } from './extraction.service';
@@ -22,15 +25,24 @@ export const MISSING_ACCOUNTABILITY = 'The project is missing a required role, s
 export class ExtractionController {
   constructor(
     private readonly extraction: ExtractionService,
+    @Inject(PG_POOL) private readonly pool: Pool,
     private readonly access: ProjectAccess,
+    private readonly audiences: AudienceService,
   ) {}
 
+  /** Outside the note's audience (or its submitter and reviewers) the note, its runs and proposals do not exist (404). */
   private async forSource(req: HttpRequest, sourceId: string, action: ProjectAction) {
-    return this.access.authorize(who(req), action, await this.access.projectOfSource(uuid(sourceId)));
+    const { row } = await this.audiences.assertSourceReadable(who(req), uuid(sourceId));
+    return this.access.authorize(who(req), action, row.projectId);
   }
 
   private async forRun(req: HttpRequest, runId: string, action: ProjectAction) {
-    return this.access.authorize(who(req), action, await this.access.projectOfRun(uuid(runId)));
+    await this.access.projectOfRun(uuid(runId));
+    const { rows } = await this.pool.query(
+      `SELECT v.source_id AS "sourceId" FROM extraction_runs r JOIN source_versions v ON v.id = r.source_version_id WHERE r.id = $1`,
+      [runId],
+    );
+    return this.forSource(req, rows[0].sourceId, action);
   }
 
   /** Asks the AI to propose decisions, actions, questions and risks from one exact version. Returns at once (202). */

@@ -5,6 +5,7 @@ import { memoryStorage } from 'multer';
 import { AnySignedInUser } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
+import { AudienceService } from '../discussion/audience.service';
 import { ProjectAccess } from '../projects/access.service';
 import type { ProjectAction } from '../projects/matrix';
 import { MAX_UPLOAD_BYTES } from './text';
@@ -13,7 +14,7 @@ import { NotesService } from './notes.service';
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /** Memory storage with hard limits: one file, one small text field set, nothing written to disk. */
-const upload = FileInterceptor('file', {
+export const noteUpload = FileInterceptor('file', {
   storage: memoryStorage(),
   limits: { fileSize: MAX_UPLOAD_BYTES, files: 1, fields: 5, fieldSize: 64 * 1024, parts: 8 },
 });
@@ -46,12 +47,16 @@ export class NotesController {
   constructor(
     private readonly notes: NotesService,
     private readonly access: ProjectAccess,
+    private readonly audiences: AudienceService,
   ) {}
 
-  /** Checks the action against the project the note belongs to (404 for notes outside the person's projects). */
+  /**
+   * The note must be one this person may see (404 for notes outside their projects or audience, and for
+   * submissions that are not theirs to see), then the action is checked against its project.
+   */
   private async forSource(req: HttpRequest, sourceId: string, action: ProjectAction): Promise<string> {
-    const projectId = await this.access.projectOfSource(id(sourceId));
-    await this.access.authorize(who(req), action, projectId);
+    const { row } = await this.audiences.assertSourceReadable(who(req), id(sourceId));
+    await this.access.authorize(who(req), action, row.projectId);
     return sourceId;
   }
 
@@ -68,7 +73,7 @@ export class NotesController {
   @Post('projects/:projectId/notes/upload')
   @AnySignedInUser()
   @HttpCode(201)
-  @UseInterceptors(upload)
+  @UseInterceptors(noteUpload)
   async createFromFile(@Param('projectId') projectId: string, @UploadedFile() file: UploadedBuffer, @Body() body: unknown, @Req() req: HttpRequest) {
     await this.access.authorize(who(req), 'note.import', projectId);
     return this.notes.createSource({ projectId, title: field(body, 'title'), content: { file }, actorUserId: who(req).id });
@@ -78,7 +83,7 @@ export class NotesController {
   @AnySignedInUser()
   async list(@Param('projectId') projectId: string, @Req() req: HttpRequest) {
     await this.access.authorize(who(req), 'note.view', projectId);
-    return { sources: await this.notes.list(projectId) };
+    return { sources: await this.notes.list(who(req).id, projectId) };
   }
 
   /** New version by paste: { text }. */
@@ -94,7 +99,7 @@ export class NotesController {
   @Post('notes/:id/versions/upload')
   @AnySignedInUser()
   @HttpCode(201)
-  @UseInterceptors(upload)
+  @UseInterceptors(noteUpload)
   async addVersionFromFile(@Param('id') sourceId: string, @UploadedFile() file: UploadedBuffer, @Req() req: HttpRequest) {
     await this.forSource(req, sourceId, 'note.import');
     return { version: await this.notes.addVersion(sourceId, { file }, who(req).id) };

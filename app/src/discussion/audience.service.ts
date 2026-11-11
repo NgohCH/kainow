@@ -4,12 +4,22 @@ import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
-import { type ProjectContext, ProjectAccess } from '../projects/access.service';
+import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { grantGivesAccess } from '../projects/grants';
 import { effectiveRoles } from '../projects/membership';
-import { type AudienceChange, type AudienceRow, type Person, inAudience } from './audience';
+import { type AudienceChange, type AudienceRow, type Person, RESTRICTED_ROLES, inAudience } from './audience';
 
 type Db = Pool | PoolClient;
+
+/** What decides whether a viewer may see one source: its kind, whether it is published, who submitted it, and its audience. */
+export interface SourceAccessRow {
+  id: string;
+  projectId: string;
+  kind: 'notes' | 'minutes' | 'discussion';
+  publication: 'published' | 'submitted' | 'returned';
+  submittedBy: string | null;
+  audience: AudienceRow;
+}
 
 export const NAMED_OUTSIDE = 'Only people in this project can be named.';
 const REASON_REQUIRED = 'A reason is required (up to 500 characters).';
@@ -52,6 +62,34 @@ export class AudienceService {
   /** Outside the audience the item does not exist (404), like other hidden content. */
   assertReadable(ctx: ProjectContext, a: AudienceRow): void {
     if (!inAudience(ctx, a)) throw new NotFoundException();
+  }
+
+  /**
+   * A published source follows its audience. A submission (or a returned one) is for its submitter and for people
+   * holding PM, Deputy, Owner or Sponsor today, whatever audience is intended (spec 5.4).
+   */
+  canSeeSource(ctx: ProjectContext, user: AuthUser, row: SourceAccessRow): boolean {
+    if (row.publication === 'published') return inAudience(ctx, row.audience);
+    if (!canReadContent(ctx)) return false;
+    return row.submittedBy === user.id || ctx.roles.some((r) => RESTRICTED_ROLES.includes(r));
+  }
+
+  /**
+   * The one check every route that reaches a source goes through: a participant or grant holder of the source's
+   * project, who may see this source. Anyone else, and sources from before projects existed, find nothing (404).
+   */
+  async assertSourceReadable(user: AuthUser, sourceId: string, db: Db = this.pool): Promise<{ ctx: ProjectContext; row: SourceAccessRow }> {
+    const projectId = await this.access.projectOfSource(sourceId, db);
+    const ctx = await this.access.authorize(user, 'note.view', projectId, db);
+    const { rows } = await db.query(
+      `SELECT id, project_id AS "projectId", kind, publication, submitted_by AS "submittedBy", audience_id AS "audienceId" FROM sources WHERE id = $1`,
+      [sourceId],
+    );
+    if (!rows[0]) throw new NotFoundException();
+    const { audienceId, ...rest } = rows[0];
+    const row: SourceAccessRow = { ...rest, audience: await this.load(audienceId, db) };
+    if (!this.canSeeSource(ctx, user, row)) throw new NotFoundException();
+    return { ctx, row };
   }
 
   /** Named people must hold a valid membership or a grant giving access in the project today. */
