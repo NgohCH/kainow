@@ -2,13 +2,17 @@ import { BadRequestException, ConflictException, ForbiddenException, Inject, Inj
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
-import { uuidv7 } from '../common/uuid7';
+import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { isCalendarDate } from '../extraction/due';
-import { type ProjectContext, ProjectAccess } from './access.service';
+import { type ProjectContext, ProjectAccess, managesGrants, managesRoles } from './access.service';
+import { archiveState } from './archive';
+import { OrganisationService } from './organisation.service';
+import { grantState } from './grants';
 import { type ClosureOutcome, STAGES, checkTransition } from './lifecycle';
-import { membershipState, requiredRolesCheck, separationCheck } from './membership';
+import { type MembershipRow, membershipState, requiredRolesCheck, separationCheck } from './membership';
 import { type ProjectStatus, PROJECT_STATUSES } from './matrix';
+
 
 /** The documents' optional default substages; projects may leave them unused. */
 export const SUBSTAGES: Readonly<Record<string, readonly string[]>> = {
@@ -41,6 +45,7 @@ export class ProjectsService {
     @Inject(PG_POOL) private readonly pool: Pool,
     @Inject(CLOCK) private readonly now: Clock,
     private readonly access: ProjectAccess,
+    private readonly org: OrganisationService,
   ) {}
 
   /** Checks a full or partial set of project details. Missing keys keep `current` values. */
@@ -58,7 +63,7 @@ export class ProjectsService {
     }
     const active = async (id: unknown) =>
       typeof id === 'string' &&
-      /^[0-9a-f-]{36}$/i.test(id) &&
+      UUID.test(id) &&
       ((await db.query(`SELECT 1 FROM departments WHERE id = $1 AND status = 'active'`, [id])).rowCount ?? 0) > 0;
     // A department retired later stays on the projects that already use it; only ones being added must be active.
     const kept = (id: unknown) => current !== undefined && (id === current.owningDepartmentId || current.contributingDepartmentIds.includes(id as string));
@@ -86,6 +91,10 @@ export class ProjectsService {
       const first = ((await client.query(`SELECT 1 FROM projects LIMIT 1`)).rowCount ?? 0) === 0;
       const isAdmin = user.role === 'enterprise_administrator';
       if (first && !isAdmin) throw new ForbiddenException('An Enterprise Administrator creates the first project.');
+      // Later projects are created by eligible existing users; eligibility is checked again now (V1.0 D01).
+      if (!isAdmin && !(await this.org.isEligible(user.email))) {
+        throw new ForbiddenException('Your email domain is no longer eligible; ask an Administrator.');
+      }
       const d = await this.cleanDetails(client, input);
       id = uuidv7(at.getTime());
       await client.query(
@@ -126,25 +135,44 @@ export class ProjectsService {
     const ids = await this.access.visibleProjectIds(user.id);
     const projects = [];
     for (const id of ids) {
-      const ctx = await this.access.context(user, id);
+      // A held membership or a suspended grant leaves a candidate with no access: it is simply not listed.
+      const ctx = await this.access.load(id, user);
+      if (!ctx || (ctx.roles.length === 0 && ctx.grantKinds.length === 0)) continue;
       const p = await this.summary(id);
-      projects.push({ ...p, myRoles: ctx.roles, missingAccountability: ctx.missingAccountability });
+      projects.push({
+        ...p,
+        myRoles: ctx.roles,
+        access: ctx.roles.length === 0 ? ctx.grantKinds[0] : null,
+        missingAccountability: ctx.missingAccountability,
+        onHold: managesRoles(ctx) && ctx.onHold,
+        ...(await this.archiveOf(this.pool, id, ctx.project.status, ctx.today)),
+      });
     }
     projects.sort((a, b) => a.name.localeCompare(b.name) || a.id.localeCompare(b.id));
     if (user.role !== 'enterprise_administrator') return { projects };
     const { rows } = await this.pool.query(
-      `SELECT p.id, p.name, p.status, d.name AS "owningDepartment" FROM projects p JOIN departments d ON d.id = p.owning_department_id ORDER BY lower(p.name), p.id`,
+      `SELECT p.id, p.name, p.status, d.name AS "owningDepartment",
+              COALESCE(json_agg(json_build_object(
+                'displayName', u.display_name, 'role', m.role, 'startsOn', to_char(m.starts_on, 'YYYY-MM-DD'),
+                'expiresOn', to_char(m.expires_on, 'YYYY-MM-DD'), 'revokedAt', m.revoked_at, 'heldAt', m.held_at, 'restoredAt', m.restored_at
+              ) ORDER BY m.starts_on, m.id) FILTER (WHERE m.id IS NOT NULL), '[]') AS members
+         FROM projects p JOIN departments d ON d.id = p.owning_department_id
+         LEFT JOIN memberships m ON m.project_id = p.id LEFT JOIN users u ON u.id = m.user_id
+        GROUP BY p.id, d.name ORDER BY lower(p.name), p.id`,
     );
-    const all = [];
-    for (const r of rows) {
-      const ctx = await this.access.load(r.id, user);
-      all.push({
-        ...r,
-        roleHolders: (ctx?.rows ?? [])
-          .map((m) => ({ displayName: m.displayName, role: m.role, state: membershipState(m, ctx!.today) }))
-          .filter((m) => m.state === 'active' || m.state === 'scheduled'),
-      });
-    }
+    const today = this.access.today();
+    const all = rows.map(({ members, ...r }) => ({
+      ...r,
+      roleHolders: (members as Array<MembershipRow & { displayName: string; heldAt: string | null; restoredAt: string | null; revokedAt: string | null }>)
+        .map((m) => ({
+          ...m,
+          revokedAt: m.revokedAt ? new Date(m.revokedAt) : null,
+          heldAt: m.heldAt ? new Date(m.heldAt) : null,
+          restoredAt: m.restoredAt ? new Date(m.restoredAt) : null,
+        }))
+        .map((m) => ({ displayName: m.displayName, role: m.role, state: membershipState(m, today) }))
+        .filter((m) => m.state === 'active' || m.state === 'scheduled'),
+    }));
     return { projects, all };
   }
 
@@ -199,7 +227,7 @@ export class ProjectsService {
     const now = this.now();
     const invitations = (
       await this.pool.query(
-        `SELECT id, email, role, to_char(starts_on, 'YYYY-MM-DD') AS "startsOn", to_char(expires_on, 'YYYY-MM-DD') AS "expiresOn",
+        `SELECT id, email, role, kind, to_char(starts_on, 'YYYY-MM-DD') AS "startsOn", to_char(expires_on, 'YYYY-MM-DD') AS "expiresOn",
                 issued_at AS "issuedAt", expires_at AS "expiresAt",
                 CASE WHEN status = 'invited' AND expires_at <= $2 THEN 'expired' ELSE status END AS status
            FROM invitations WHERE project_id = $1 AND status <> 'replaced' ORDER BY issued_at DESC, id`,
@@ -222,12 +250,117 @@ export class ProjectsService {
         startsOn: m.startsOn,
         expiresOn: m.expiresOn,
         state: membershipState(m, ctx.today),
+        ...(managesRoles(ctx) && membershipState(m, ctx.today) === 'on_hold' ? { holdReason: m.holdReason ?? null } : {}),
       })),
       myRoles: ctx.roles,
       isAdmin: ctx.isAdmin,
       missingAccountability: ctx.missingAccountability,
       missingRoles: ctx.missingRoles,
+      onHold: managesRoles(ctx) && ctx.onHold,
+      access: ctx.roles.length === 0 && ctx.grantKinds.length > 0 ? ctx.grantKinds[0] : null,
+      grants: await this.grantsFor(ctx),
+      ...(await this.archiveOf(this.pool, id, ctx.project.status, ctx.today)),
     };
+  }
+
+  /** Archived state, worked out from the latest closing and the archive history (V1.0 Q04). */
+  private async archiveOf(db: Pool | PoolClient, id: string, status: ProjectStatus, today: string) {
+    const closing = (
+      await db.query(`SELECT at FROM project_transitions WHERE project_id = $1 AND to_status = 'closed' ORDER BY at DESC, id DESC LIMIT 1`, [id])
+    ).rows[0];
+    const events = (await db.query(`SELECT kind, at FROM project_archive_events WHERE project_id = $1 ORDER BY at, id`, [id])).rows;
+    const s = archiveState({
+      status,
+      closedAt: closing ? new Date(closing.at).toISOString() : null,
+      events: events.map((e) => ({ kind: e.kind, at: new Date(e.at).toISOString() })),
+      today,
+    });
+    return { archived: s.archived, archivedAutomatically: s.automatic };
+  }
+
+  async archive(user: AuthUser, id: string, kind: 'archived' | 'unarchived', input: Record<string, unknown>) {
+    const at = this.now();
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const ctx = await this.access.authorize(user, 'project.archive', id, client, true);
+      const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
+      if (reason === '') throw new BadRequestException('A reason is required.');
+      const current = await this.archiveOf(client, id, ctx.project.status, ctx.today);
+      if (kind === 'archived' && current.archived) throw new ConflictException('This project is already archived.');
+      if (kind === 'unarchived' && !current.archived) throw new ConflictException('This project is not archived.');
+      await client.query(`INSERT INTO project_archive_events (id, project_id, kind, actor_id, reason, at) VALUES ($1, $2, $3, $4, $5, $6)`, [
+        uuidv7(at.getTime()), id, kind, user.id, reason, at,
+      ]);
+      await writeAudit(client, { at, action: `project.${kind}`, actorUserId: user.id, subjectType: 'project', subjectId: id });
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+    return this.detail(user, id);
+  }
+
+  /** The Administrator moves a project to another owning department (Consolidated Specification §3). */
+  async moveDepartment(user: AuthUser, id: string, input: Record<string, unknown>) {
+    const at = this.now();
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const ctx = await this.access.context(user, id, client, true);
+      if (!ctx.isAdmin) throw new ForbiddenException('Only an Enterprise Administrator can move a project to another owning department.');
+      const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
+      if (reason === '') throw new BadRequestException('A reason is required.');
+      const to = input.departmentId;
+      if (typeof to !== 'string' || !UUID.test(to)) throw new BadRequestException('Choose an active department.');
+      const dept = (await client.query(`SELECT id FROM departments WHERE id = $1 AND status = 'active'`, [to])).rows[0];
+      if (!dept) throw new BadRequestException('Choose an active department.');
+      const from = (await client.query(`SELECT owning_department_id AS d FROM projects WHERE id = $1`, [id])).rows[0].d as string;
+      if (from === to) throw new ConflictException('The project already belongs to that department.');
+      const contributes = (await client.query(`SELECT 1 FROM project_departments WHERE project_id = $1 AND department_id = $2`, [id, to])).rowCount;
+      if (contributes) throw new ConflictException('That department contributes to this project; remove it from the contributing departments first.');
+      await client.query(`UPDATE projects SET owning_department_id = $2 WHERE id = $1`, [id, to]);
+      await client.query(
+        `INSERT INTO project_department_changes (id, project_id, from_department_id, to_department_id, actor_id, reason, files_decision, at)
+         VALUES ($1, $2, $3, $4, $5, $6, 'kept_in_place', $7)`,
+        [uuidv7(at.getTime()), id, from, to, user.id, reason, at],
+      );
+      await writeAudit(client, { at, action: 'project.department_moved', actorUserId: user.id, subjectType: 'project', subjectId: id, detail: { from, to } });
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+    return this.detail(user, id);
+  }
+
+
+  /** Grant managers and the Administrator see every grant; anyone else only their own. */
+  private async grantsFor(ctx: ProjectContext) {
+    const all = managesGrants(ctx);
+    const { rows } = await this.pool.query(
+      `SELECT g.id, g.kind, g.purpose, g.scope, to_char(g.starts_on, 'YYYY-MM-DD') AS "startsOn", to_char(g.expires_on, 'YYYY-MM-DD') AS "expiresOn",
+              json_build_object('id', u.id, 'displayName', u.display_name, 'email', u.email) AS "user",
+              r.display_name AS "requestedBy", g.requested_by AS "requestedById", d.display_name AS "decidedBy", g.decision_reason AS "decisionReason",
+              g.suspend_reason AS "suspendReason", g.revoke_reason AS "revokeReason"
+         FROM access_grants g JOIN users u ON u.id = g.user_id JOIN users r ON r.id = g.requested_by LEFT JOIN users d ON d.id = g.decided_by
+        WHERE g.project_id = $1 ORDER BY g.requested_at, g.id`,
+      [ctx.project.id],
+    );
+    const viewer = ctx.viewerId;
+    return rows
+      .map(({ requestedById, ...r }) => {
+        const state = grantState(ctx.grants.find((g) => g.id === r.id)!, ctx.today);
+        // Only a manager who is neither the grantee nor the recorder decides a waiting request.
+        const mayDecide = all && state === 'requested' && r.user.id !== viewer && requestedById !== viewer;
+        // 'self': the viewer's own access, which they may not extend or restore.
+        return { ...r, state, mayDecide, self: r.user.id === viewer };
+      })
+      .filter((r) => all || r.user.id === viewer);
   }
 
   async edit(user: AuthUser, id: string, input: Record<string, unknown>) {

@@ -17,6 +17,9 @@ interface UserRow {
   failed_code_attempts: number;
 }
 
+/** Account states that may sign in: Active, and Invited (an invitee who has not signed in yet). */
+const SIGN_IN_STATUSES = ['active', 'invited'];
+
 export interface SignInResult {
   token: string;
   expiresAt: Date;
@@ -61,7 +64,7 @@ export class AuthService {
     const now = this.clock();
     const email = normaliseEmail(rawEmail);
     const user = email ? ((await this.findUser(this.pool, email)) ?? (await this.accountForInvitee(email, now))) : null;
-    if (!user || user.status !== 'active') {
+    if (!user || !SIGN_IN_STATUSES.includes(user.status)) {
       await this.ignored(now, 'unknown_or_disabled');
       return;
     }
@@ -113,7 +116,7 @@ export class AuthService {
     return this.tx(async (c) => {
       // Lock the account row so concurrent guesses are counted one at a time.
       const user = await this.findUser(c, email, true);
-      if (!user || user.status !== 'active') {
+      if (!user || !SIGN_IN_STATUSES.includes(user.status)) {
         await writeAudit(c, { at: now, action: 'auth.sign_in_failed', detail: { reason: 'unknown_or_disabled' } });
         return null;
       }
@@ -152,7 +155,8 @@ export class AuthService {
       }
 
       await c.query('UPDATE login_codes SET consumed_at = $2 WHERE id = $1', [current.id, now]);
-      await c.query('UPDATE users SET failed_code_attempts = 0, updated_at = $2 WHERE id = $1', [user.id, now]);
+      // The first successful sign-in of an invitee's account makes it Active.
+      await c.query(`UPDATE users SET failed_code_attempts = 0, status = 'active', updated_at = $2 WHERE id = $1`, [user.id, now]);
       const token = randomBytes(32).toString('base64url');
       const expiresAt = new Date(now.getTime() + sessionHours * 3_600_000);
       const sessionId = uuidv7(now.getTime());
@@ -185,6 +189,13 @@ export class AuthService {
     return createHmac('sha256', this.config.authSecret).update(`csrf:${sessionId}`).digest('hex');
   }
 
+  /** Ends every session of the signed-in person (V1.0: "Sign out all sessions"). */
+  async signOutAll(auth: AuthContext): Promise<void> {
+    const now = this.clock();
+    await this.pool.query('UPDATE sessions SET revoked_at = $2 WHERE user_id = $1 AND revoked_at IS NULL', [auth.user.id, now]);
+    await writeAudit(this.pool, { at: now, action: 'auth.signed_out_everywhere', actorUserId: auth.user.id, subjectType: 'user', subjectId: auth.user.id });
+  }
+
   async signOut(auth: AuthContext): Promise<void> {
     const now = this.clock();
     await this.pool.query('UPDATE sessions SET revoked_at = $2 WHERE id = $1 AND revoked_at IS NULL', [auth.sessionId, now]);
@@ -212,7 +223,7 @@ export class AuthService {
     const id = uuidv7(now.getTime());
     const displayName = rows[0].display_name?.trim() || email.split('@')[0];
     await this.pool.query(
-      `INSERT INTO users (id, email, display_name, role, created_at, updated_at) VALUES ($1, $2, $3, 'member', $4, $4)
+      `INSERT INTO users (id, email, display_name, role, status, created_at, updated_at) VALUES ($1, $2, $3, 'member', 'invited', $4, $4)
        ON CONFLICT DO NOTHING`,
       [id, email, displayName, now],
     );

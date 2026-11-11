@@ -70,3 +70,12 @@ test('config objects do not share mutable auth settings', () => {
   a.auth.sessionHours = 99;
   assert.equal(loadConfig(base).auth.sessionHours, 12);
 });
+
+test('a missing APP_URL in production is warned about', async () => {
+  const { appUrlWarning } = await import('./config');
+  const text = 'APP_URL is not set; invitation links will point to http://localhost:3000.';
+  assert.equal(appUrlWarning({ NODE_ENV: 'production' }), text);
+  assert.equal(appUrlWarning({ NODE_ENV: 'production', APP_URL: '' }), text);
+  assert.equal(appUrlWarning({ NODE_ENV: 'production', APP_URL: 'https://kainow.example.org' }), null);
+  assert.equal(appUrlWarning({ NODE_ENV: 'development' }), null);
+});

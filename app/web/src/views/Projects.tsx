@@ -1,7 +1,24 @@
 import { type FormEvent, useEffect, useState } from 'react';
 import { ApiError, api, type AdminProjectRow, type Department, type Project, type ProjectSummary } from '../api.ts';
 import { go } from '../App.tsx';
-import { STATUS_LABEL, roleLabel } from '../projects.ts';
+import { STATUS_LABEL, accessLabel, roleLabel } from '../projects.ts';
+
+/** One row of My Projects. */
+function ProjectItem({ p }: { p: ProjectSummary }) {
+  return (
+    <li>
+      <a href={`#/projects/${p.id}`}>
+        <strong>{p.name}</strong>
+        <span className="meta">
+          {STATUS_LABEL[p.status]}
+          {p.stage ? `, ${p.stage.stage}` : ''} · {p.owningDepartment} · {p.access ? accessLabel(p.access) : `You: ${p.myRoles.map(roleLabel).join(', ')}`}
+        </span>
+        {p.missingAccountability && <span className="warn inline">Missing a required role</span>}
+        {p.onHold && <span className="warn inline">A member is On Hold — investigation needed</span>}
+      </a>
+    </li>
+  );
+}
 
 /** The home page: the person's projects, a new-project form, and for administrators every project's role holders. */
 export function Projects({ isAdmin }: { isAdmin: boolean }) {
@@ -36,21 +53,26 @@ export function Projects({ isAdmin }: { isAdmin: boolean }) {
           You are not in any project yet. Create one, or accept an invitation from its Project Manager, Owner or a Sponsor.
         </p>
       )}
-      {projects && projects.length > 0 && (
+      {projects && projects.some((p) => !p.archived) && (
         <ul className="list">
-          {projects.map((p) => (
-            <li key={p.id}>
-              <a href={`#/projects/${p.id}`}>
-                <strong>{p.name}</strong>
-                <span className="meta">
-                  {STATUS_LABEL[p.status]}
-                  {p.stage ? `, ${p.stage.stage}` : ''} · {p.owningDepartment} · You: {p.myRoles.map(roleLabel).join(', ')}
-                </span>
-                {p.missingAccountability && <span className="warn inline">Missing a required role</span>}
-              </a>
-            </li>
-          ))}
+          {projects
+            .filter((p) => !p.archived)
+            .map((p) => (
+              <ProjectItem key={p.id} p={p} />
+            ))}
         </ul>
+      )}
+      {projects && projects.some((p) => p.archived) && (
+        <details className="archived">
+          <summary>Archived ({projects.filter((p) => p.archived).length})</summary>
+          <ul className="list">
+            {projects
+              .filter((p) => p.archived)
+              .map((p) => (
+                <ProjectItem key={p.id} p={p} />
+              ))}
+          </ul>
+        </details>
       )}
       {isAdmin && all && (
         <section aria-labelledby="all-heading">

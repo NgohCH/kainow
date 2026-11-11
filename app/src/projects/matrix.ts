@@ -17,7 +17,8 @@ export type ProjectAction =
   | 'extraction.run'
   | 'proposal.edit'
   | 'meeting_date.set'
-  | 'proposal.review';
+  | 'proposal.review'
+  | 'project.archive';
 
 interface MatrixRow {
   roles: ReadonlyArray<ProjectRole | 'participant'>;
@@ -44,12 +45,21 @@ export const PROJECT_MATRIX: Readonly<Record<ProjectAction, MatrixRow>> = {
   'extraction.run': { roles: ['pm', 'deputy_pm', 'owner', 'sponsor'], states: OPEN, refusal: IMPORT },
   'proposal.edit': { roles: ['pm', 'owner', 'sponsor'], states: OPEN, refusal: EDIT_PROPOSALS },
   'meeting_date.set': { roles: ['pm', 'owner', 'sponsor'], states: OPEN, refusal: EDIT_PROPOSALS },
+  'project.archive': {
+    roles: ['pm', 'owner', 'sponsor'],
+    states: ['closed'],
+    refusal: 'Only the Project Manager, the Owner or a Sponsor can archive a project, and only once it is Closed.',
+  },
   'proposal.review': {
     roles: ['owner', 'sponsor'],
     states: ['planned', 'active'],
     refusal: 'Only the Owner or a Sponsor can approve or reject proposals, and only while the project is Planned or Active.',
   },
 };
+
+/** What an Active Audit or Oversight grant allows: reading only. */
+export const GRANT_ACTIONS: readonly ProjectAction[] = ['project.view', 'note.view'];
+export const GRANT_READ_ONLY = 'Audit and Oversight access is read-only.';
 
 export function decide(input: { action: ProjectAction; roles: ProjectRole[]; status: ProjectStatus }): { allowed: true } | { allowed: false; reason: string } {
   const row = PROJECT_MATRIX[input.action];

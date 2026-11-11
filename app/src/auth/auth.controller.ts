@@ -59,6 +59,16 @@ export class AuthController {
     return { user: req.auth?.user, csrfToken: req.auth ? this.auth.csrfToken(req.auth.sessionId) : null };
   }
 
+  @Post('logout-all')
+  @AnySignedInUser()
+  @HttpCode(204)
+  async logoutAll(@Req() req: HttpRequest, @Res({ passthrough: true }) res: HttpResponse): Promise<void> {
+    if (req.auth) {
+      await this.auth.signOutAll(req.auth);
+    }
+    res.setHeader('Set-Cookie', clearedCookie(SESSION_COOKIE, this.config.cookieSecure));
+  }
+
   @Post('logout')
   @AnySignedInUser()
   @HttpCode(204)

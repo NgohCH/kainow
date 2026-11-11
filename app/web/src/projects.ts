@@ -5,7 +5,9 @@
 
 export type ProjectRole = 'pm' | 'deputy_pm' | 'owner' | 'sponsor' | 'member';
 export type ProjectStatus = 'draft' | 'planned' | 'active' | 'deferred' | 'closed';
-export type MembershipState = 'scheduled' | 'active' | 'expired' | 'revoked';
+export type MembershipState = 'scheduled' | 'active' | 'on_hold' | 'expired' | 'revoked';
+export type GrantState = 'requested' | 'declined' | 'scheduled' | 'active' | 'suspended' | 'expired' | 'revoked';
+export type GrantKind = 'audit' | 'oversight';
 export type ClosureOutcome = 'delivered' | 'partially_delivered' | 'abandoned';
 
 export const ROLES: readonly ProjectRole[] = ['pm', 'deputy_pm', 'owner', 'sponsor', 'member'];
@@ -27,7 +29,7 @@ const ROLE_LABEL: Record<ProjectRole, string> = {
 };
 export const roleLabel = (r: ProjectRole): string => ROLE_LABEL[r];
 
-const STATE_LABEL: Record<MembershipState, string> = { scheduled: 'Starts later', active: 'Active', expired: 'Expired', revoked: 'Revoked' };
+const STATE_LABEL: Record<MembershipState, string> = { scheduled: 'Starts later', active: 'Active', on_hold: 'On Hold', expired: 'Expired', revoked: 'Revoked' };
 export const membershipStateLabel = (s: MembershipState): string => STATE_LABEL[s];
 
 export const STATUS_LABEL: Record<ProjectStatus, string> = { draft: 'Draft', planned: 'Planned', active: 'Active', deferred: 'Deferred', closed: 'Closed' };
@@ -101,4 +103,27 @@ export function stageDuration(startedAt: string, now: Date = new Date()): string
   const day = (d: Date) => Math.floor((d.getTime() + 8 * 3600 * 1000) / 86_400_000);
   const days = day(now) - day(new Date(startedAt));
   return days <= 0 ? 'started today' : days === 1 ? '1 day in this stage' : `${days} days in this stage`;
+}
+
+const GRANT_STATE_LABEL: Record<GrantState, string> = {
+  requested: 'Waiting for approval',
+  declined: 'Declined',
+  scheduled: 'Starts later',
+  active: 'Active',
+  suspended: 'Suspended',
+  expired: 'Expired',
+  revoked: 'Revoked',
+};
+export const grantStateLabel = (s: GrantState): string => GRANT_STATE_LABEL[s];
+
+export const accessLabel = (a: GrantKind): string => (a === 'audit' ? 'Audit access' : 'Oversight access');
+
+/** The Administrator, the Owner and Sponsors record and manage Audit/Oversight access (as on the server). */
+export function canManageGrants(roles: ProjectRole[], isAdmin: boolean): boolean {
+  return isAdmin || roles.some((r) => r === 'owner' || r === 'sponsor');
+}
+
+/** Archive and unarchive: the Project Manager, Owner or a Sponsor, once the project is Closed. */
+export function canArchive(status: ProjectStatus, roles: ProjectRole[]): boolean {
+  return status === 'closed' && roles.some((r) => r === 'pm' || r === 'owner' || r === 'sponsor');
 }

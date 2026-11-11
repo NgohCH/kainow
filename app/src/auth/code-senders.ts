@@ -11,6 +11,10 @@ export class LogCodeSender implements CodeSender {
   async sendInvitation(email: string, link: string, projectName: string, role: string, expiresAt: Date): Promise<void> {
     console.log(`[invitation, development only] ${email}: ${role} in "${projectName}" until ${expiresAt.toISOString()}: ${link}`);
   }
+
+  async sendHoldAlert(email: string, projectName: string, link: string): Promise<void> {
+    console.log(`[hold alert, development only] ${email}: "${projectName}" ${link}`);
+  }
 }
 
 /** Sends the code by email. This is the only email the MVP sends; other email is deferred. */
@@ -45,6 +49,20 @@ export class SmtpCodeSender implements CodeSender {
         `You have been invited to the project "${projectName}" in Kainow as ${role}.\n\n` +
         `Open this link, sign in with the code Kainow emails you, then accept or decline:\n${link}\n\n` +
         `The invitation expires on ${expiresAt.toISOString().slice(0, 16).replace('T', ' ')} UTC.`,
+    });
+  }
+
+  async sendHoldAlert(email: string, projectName: string, link: string): Promise<void> {
+    await this.transport.sendMail({
+      from: this.from,
+      to: email,
+      subject: `Kainow: action needed in ${projectName}`,
+      text:
+        `A member of the project "${projectName}" is On Hold and needs investigating.
+
+` +
+        `Open the project's People tab to record a finding and restore or remove the membership:
+${link}`,
     });
   }
 }

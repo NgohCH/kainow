@@ -1,9 +1,11 @@
 import 'reflect-metadata';
 import { createApp } from './bootstrap';
-import { loadConfig } from './config';
+import { appUrlWarning, loadConfig } from './config';
 
 async function bootstrap(): Promise<void> {
   const config = loadConfig();
+  const warning = appUrlWarning(process.env);
+  if (warning) console.warn(warning);
   const app = await createApp(config);
   app.enableShutdownHooks();
   await app.listen(config.port);

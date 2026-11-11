@@ -17,6 +17,7 @@ test('the matrix holds exactly the agreed rows', () => {
     'proposal.edit': ['pm,owner,sponsor', 'draft,planned,active'],
     'meeting_date.set': ['pm,owner,sponsor', 'draft,planned,active'],
     'proposal.review': ['owner,sponsor', 'planned,active'],
+    'project.archive': ['pm,owner,sponsor', 'closed'],
   });
   assert.equal(PROJECT_MATRIX['proposal.review'].refusal, 'Only the Owner or a Sponsor can approve or reject proposals, and only while the project is Planned or Active.');
 });
@@ -71,4 +72,9 @@ test('role managers follow the accepted matrix for every target, manager and sta
   assert.deepEqual(member, { allowed: false, reason: 'Only the Project Manager, the Owner or a Sponsor can invite for the Member role, and not while the project is Deferred or Closed.' });
   const locked = canManageRole({ target: 'member', roles: ['pm'], isAdmin: false, status: 'deferred', via: 'invitation' });
   assert.deepEqual(locked, { allowed: false, reason: 'Only the Project Manager, the Owner or a Sponsor can invite for the Member role, and not while the project is Deferred or Closed.' });
+});
+
+test('a grant allows reading only', async () => {
+  const { GRANT_ACTIONS } = await import('./matrix');
+  assert.deepEqual(GRANT_ACTIONS, ['project.view', 'note.view']);
 });

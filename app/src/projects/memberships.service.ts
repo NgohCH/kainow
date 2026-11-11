@@ -2,7 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Inject, Inj
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
-import { uuidv7 } from '../common/uuid7';
+import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { isCalendarDate } from '../extraction/due';
 import { type ProjectContext, ProjectAccess } from './access.service';
@@ -170,7 +170,7 @@ export class MembershipsService {
       const ctx = await this.access.context(user, projectId, c, true);
       this.mayManage(ctx, role);
       const { startsOn, expiresOn } = cleanDates(ctx.project.createdOn, input.startsOn, input.expiresOn);
-      const target = typeof input.userId === 'string' && /^[0-9a-f-]{36}$/i.test(input.userId)
+      const target = typeof input.userId === 'string' && UUID.test(input.userId)
         ? (await c.query(`SELECT id FROM users WHERE id = $1 AND status = 'active'`, [input.userId])).rows[0]
         : undefined;
       if (!target) throw new BadRequestException('Choose an active person to appoint.');
@@ -183,7 +183,7 @@ export class MembershipsService {
 
   /** Loads one membership and its project under lock, and checks the person may manage that role. */
   private async loadForChange(c: PoolClient, user: AuthUser, membershipId: string) {
-    if (!/^[0-9a-f-]{36}$/i.test(membershipId)) throw new NotFoundException();
+    if (!UUID.test(membershipId)) throw new NotFoundException();
     const m = (await c.query(`SELECT project_id FROM memberships WHERE id = $1`, [membershipId])).rows[0];
     if (!m) throw new NotFoundException();
     const ctx = await this.access.context(user, m.project_id, c, true);

@@ -11,6 +11,7 @@ interface Shown {
   expiresOn: string | null;
   expiresAt: string;
   status: string;
+  kind?: 'role' | 'handover';
 }
 
 /** The page an invitation link opens. Works before sign-in: it shows the invitation, then asks the person to sign in. */
@@ -59,8 +60,17 @@ export function Invitation({ token, user, onSignedIn }: { token: string; user: U
   const open = inv.status === 'invited';
   const summary = (
     <p>
-      You are invited to <strong>{inv.projectName}</strong> as <strong>{roleLabel(inv.role)}</strong>, from {inv.startsOn}
-      {inv.expiresOn ? ` to ${inv.expiresOn}` : ''}. The invitation was sent to {inv.email}. {open ? `${formatExpiry(inv.expiresAt)}.` : ''}
+      {inv.kind === 'handover' ? (
+        <>
+          You are asked to take over as Project Manager of <strong>{inv.projectName}</strong>, from the day you accept.
+        </>
+      ) : (
+        <>
+          You are invited to <strong>{inv.projectName}</strong> as <strong>{roleLabel(inv.role)}</strong>, from {inv.startsOn}
+          {inv.expiresOn ? ` to ${inv.expiresOn}` : ''}.
+        </>
+      )}{' '}
+      The invitation was sent to {inv.email}. {open ? `${formatExpiry(inv.expiresAt)}.` : ''}
     </p>
   );
 

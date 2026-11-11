@@ -5,7 +5,7 @@
  */
 
 export type ProjectRole = 'pm' | 'deputy_pm' | 'owner' | 'sponsor' | 'member';
-export type MembershipState = 'scheduled' | 'active' | 'expired' | 'revoked';
+export type MembershipState = 'scheduled' | 'active' | 'on_hold' | 'expired' | 'revoked';
 
 export interface MembershipRow {
   userId: string;
@@ -13,6 +13,14 @@ export interface MembershipRow {
   startsOn: string;
   expiresOn: string | null;
   revokedAt: Date | null;
+  /** A hold (account disabled, investigation) is current when heldAt is set and not followed by restoredAt. */
+  heldAt?: Date | null;
+  restoredAt?: Date | null;
+}
+
+export function isHeld(m: MembershipRow): boolean {
+  if (!m.heldAt) return false;
+  return !m.restoredAt || new Date(m.restoredAt).getTime() < new Date(m.heldAt).getTime();
 }
 
 const UTC8_MS = 8 * 60 * 60 * 1000;
@@ -24,8 +32,9 @@ export function todayUtc8(now: Date): string {
 
 export function membershipState(m: MembershipRow, today: string): MembershipState {
   if (m.revokedAt) return 'revoked';
-  if (today < m.startsOn) return 'scheduled';
   if (m.expiresOn !== null && today > m.expiresOn) return 'expired';
+  if (isHeld(m)) return 'on_hold';
+  if (today < m.startsOn) return 'scheduled';
   return 'active';
 }
 

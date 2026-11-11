@@ -9,6 +9,8 @@ export interface CodeSender {
   send(email: string, code: string, validForMinutes: number): Promise<void>;
   /** A project invitation: the link opens the invitation page, which asks the person to sign in first. */
   sendInvitation(email: string, link: string, projectName: string, role: string, expiresAt: Date): Promise<void>;
+  /** A member of the project is On Hold and needs investigating; names the project only, never the reason. */
+  sendHoldAlert(email: string, projectName: string, link: string): Promise<void>;
 }
 
 export interface AuthUser {

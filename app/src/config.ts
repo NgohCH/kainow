@@ -93,6 +93,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   };
 }
 
+/** In production, invitation links need the real address people use (review minor). */
+export function appUrlWarning(env: Record<string, string | undefined>): string | null {
+  if (env.NODE_ENV === 'production' && !env.APP_URL) return 'APP_URL is not set; invitation links will point to http://localhost:3000.';
+  return null;
+}
+
 export interface WorkerConfig extends DatabaseConfig {
   /** Absent means AI runs fail with a clear reason and nothing is sent or charged. */
   openAiApiKey: string | null;

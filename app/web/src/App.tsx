@@ -145,6 +145,13 @@ export function App() {
     go('#/');
   }, []);
 
+  // Ends every session of this person, on every device (V1.0 sign-in rules §7).
+  const signOutEverywhere = useCallback(async () => {
+    await api.post('/auth/logout-all').catch(() => undefined);
+    setUser(null);
+    go('#/');
+  }, []);
+
   if (user === undefined) return <p className="loading">Loading</p>;
   // An invitation link works before sign-in: it shows the invitation and then asks the person to sign in.
   const invitation = /^#\/invitations\/([A-Za-z0-9_-]{20,})$/.exec(hash);
@@ -187,6 +194,7 @@ export function App() {
         <span className="who">
           {user.displayName}
           <button className="quiet" onClick={signOut}>Sign out</button>
+          <button className="quiet" onClick={signOutEverywhere}>Sign out everywhere</button>
         </span>
       </header>
       <div id="main">

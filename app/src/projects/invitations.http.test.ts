@@ -40,7 +40,7 @@ describe('project invitations', { skip: SKIP_NO_DB }, () => {
     assert.match(t.sender.lastInvitation('lee@help.edu.my'), /^http:\/\/localhost:3000\/#\/invitations\/[A-Za-z0-9_-]{43}$/);
     const shown = await t.anonymous('GET', `/invitations/by-token/${tokenFor('lee@help.edu.my')}`);
     assert.equal(shown.status, 200);
-    assert.deepEqual(Object.keys(shown.body.invitation).sort(), ['email', 'expiresAt', 'expiresOn', 'projectName', 'role', 'startsOn', 'status']);
+    assert.deepEqual(Object.keys(shown.body.invitation).sort(), ['email', 'expiresAt', 'expiresOn', 'kind', 'projectName', 'role', 'startsOn', 'status']);
   });
 
   test('a new person requests a code, signs in and accepts; the membership follows the invitation dates', async () => {

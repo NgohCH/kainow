@@ -1,15 +1,17 @@
 import { ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
+import { UUID } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { type MembershipRow, type ProjectRole, effectiveRoles, membershipState, requiredRolesCheck, todayUtc8 } from './membership';
-import { type ProjectAction, type ProjectStatus, decide } from './matrix';
+import { type GrantKind, type GrantRow, grantGivesAccess } from './grants';
+import { GRANT_ACTIONS, GRANT_READ_ONLY, type ProjectAction, type ProjectStatus, decide } from './matrix';
 
 export const NOT_FOUND = 'Project not found';
-const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface MembershipRecord extends MembershipRow {
   id: string;
+  holdReason?: string | null;
   displayName: string;
   email: string;
 }
@@ -24,6 +26,24 @@ export interface ProjectContext {
   /** An Active project whose required roles are not all Active today. */
   missingAccountability: boolean;
   missingRoles: string[];
+  /** A membership in this project is On Hold and needs investigating. */
+  onHold: boolean;
+  /** Every Audit/Oversight grant recorded for this project. */
+  grants: GrantRow[];
+  /** This person's grants that give read-only access right now. */
+  grantKinds: GrantKind[];
+  /** Who is asking. */
+  viewerId: string;
+}
+
+/** The Administrator, the Owner and Sponsors record, decide and manage Audit/Oversight grants. */
+export function managesGrants(ctx: ProjectContext): boolean {
+  return ctx.isAdmin || ctx.roles.some((r) => r === 'owner' || r === 'sponsor');
+}
+
+/** People who manage roles here (or the Administrator) see holds and their reasons. */
+export function managesRoles(ctx: ProjectContext): boolean {
+  return ctx.isAdmin || ctx.roles.some((r) => r === 'pm' || r === 'owner' || r === 'sponsor');
 }
 
 type Db = Pool | PoolClient;
@@ -55,12 +75,21 @@ export class ProjectAccess {
     const m = await db.query(
       `SELECT m.id, m.user_id AS "userId", m.role, to_char(m.starts_on, 'YYYY-MM-DD') AS "startsOn",
               to_char(m.expires_on, 'YYYY-MM-DD') AS "expiresOn", m.revoked_at AS "revokedAt",
+              m.held_at AS "heldAt", m.restored_at AS "restoredAt", m.hold_reason AS "holdReason",
               u.display_name AS "displayName", u.email
          FROM memberships m JOIN users u ON u.id = m.user_id
         WHERE m.project_id = $1 ORDER BY m.starts_on, m.id`,
       [projectId],
     );
     const rows = m.rows as MembershipRecord[];
+    const grants = (
+      await db.query(
+        `SELECT id, user_id AS "userId", kind, to_char(starts_on, 'YYYY-MM-DD') AS "startsOn", to_char(expires_on, 'YYYY-MM-DD') AS "expiresOn",
+                requested_by AS "requestedBy", decision, suspended_at AS "suspendedAt", revoked_at AS "revokedAt"
+           FROM access_grants WHERE project_id = $1 ORDER BY requested_at, id`,
+        [projectId],
+      )
+    ).rows as GrantRow[];
     const today = this.today();
     const status = p.rows[0].status as ProjectStatus;
     const required = requiredRolesCheck(rows, today, 'active');
@@ -73,30 +102,47 @@ export class ProjectAccess {
       today,
       missingAccountability: missing,
       missingRoles: missing ? required.missing : [],
+      onHold: rows.some((r) => membershipState(r, today) === 'on_hold'),
+      grants,
+      viewerId: user.id,
+      grantKinds: [...new Set(grants.filter((g) => g.userId === user.id && grantGivesAccess(g, today, rows)).map((g) => g.kind))],
     };
   }
 
   /** A participant, or an administrator (who may manage appointments and see the details, never content). */
   async context(user: AuthUser, projectId: string, db: Db = this.pool, lock = false): Promise<ProjectContext> {
     const ctx = await this.load(projectId, user, db, lock);
-    if (!ctx || (ctx.roles.length === 0 && !ctx.isAdmin)) throw new NotFoundException(NOT_FOUND);
+    if (!ctx || (ctx.roles.length === 0 && !ctx.isAdmin && ctx.grantKinds.length === 0)) throw new NotFoundException(NOT_FOUND);
     return ctx;
   }
 
   /** Allowed by the matrix for this person in this project now, or 404 (not a participant) / 403 (with the reason). */
   async authorize(user: AuthUser, action: ProjectAction, projectId: string, db: Db = this.pool, lock = false): Promise<ProjectContext> {
     const ctx = await this.load(projectId, user, db, lock);
-    if (!ctx || ctx.roles.length === 0) throw new NotFoundException(NOT_FOUND);
+    if (!ctx) throw new NotFoundException(NOT_FOUND);
+    if (ctx.roles.length === 0) {
+      // A grant holder may read, nothing more; anyone else sees nothing of the project.
+      if (ctx.grantKinds.length === 0) throw new NotFoundException(NOT_FOUND);
+      if (!GRANT_ACTIONS.includes(action)) throw new ForbiddenException(GRANT_READ_ONLY);
+      return ctx;
+    }
     const verdict = decide({ action, roles: ctx.roles, status: ctx.project.status });
     if (!verdict.allowed) throw new ForbiddenException(verdict.reason);
     return ctx;
   }
 
-  /** The projects where this person has an Active membership today. */
+  /**
+   * Candidate projects for this person: a membership or an approved grant covering today. Holds and
+   * suspensions are checked by the caller through load(), which applies the full rules.
+   */
   async visibleProjectIds(userId: string, db: Db = this.pool): Promise<string[]> {
     const { rows } = await db.query(
-      `SELECT DISTINCT m.project_id AS id FROM memberships m
-        WHERE m.user_id = $1 AND m.revoked_at IS NULL AND m.starts_on <= $2::date AND (m.expires_on IS NULL OR m.expires_on >= $2::date)`,
+      `SELECT m.project_id AS id FROM memberships m
+        WHERE m.user_id = $1 AND m.revoked_at IS NULL AND m.starts_on <= $2::date AND (m.expires_on IS NULL OR m.expires_on >= $2::date)
+       UNION
+       SELECT g.project_id FROM access_grants g
+        WHERE g.user_id = $1 AND g.decision = 'approved' AND g.revoked_at IS NULL AND g.suspended_at IS NULL
+          AND g.starts_on <= $2::date AND g.expires_on >= $2::date`,
       [userId, this.today()],
     );
     return rows.map((r) => r.id);
