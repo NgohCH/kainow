@@ -13,6 +13,14 @@ const hashToken = (token: string): string => createHash('sha256').update(token).
 
 export const SETUP_CLOSED = 'Setup is closed: an Enterprise Administrator already exists. Add Administrators from the Administrators screen.';
 
+const DISPLAY_NAME_REQUIRED = 'A display name of 1 to 200 characters is required';
+
+/** NFC, whitespace collapsed, trimmed; null unless 1 to 200 characters. */
+function cleanDisplayName(v: unknown): string | null {
+  const name = typeof v === 'string' ? v.normalize('NFC').replace(/\s+/g, ' ').trim() : '';
+  return name.length < 1 || name.length > 200 ? null : name;
+}
+
 export type SetupState = 'valid' | 'used' | 'expired' | 'superseded';
 
 /**
@@ -30,8 +38,40 @@ export class SetupService {
   async issue(input: { email: unknown; displayName: unknown }, at: Date): Promise<{ link: string; email: string; expiresAt: Date }> {
     const email = normaliseEmail(input.email);
     if (!email) throw new BadRequestException('A valid email address is required');
-    const displayName = typeof input.displayName === 'string' ? input.displayName.normalize('NFC').replace(/\s+/g, ' ').trim() : '';
-    if (displayName.length < 1 || displayName.length > 200) throw new BadRequestException('A display name of 1 to 200 characters is required');
+    const displayName = cleanDisplayName(input.displayName);
+    if (displayName === null) throw new BadRequestException(DISPLAY_NAME_REQUIRED);
+    return this.issueLink(email, at, async (c, userId) => {
+      await writeAudit(c, { at, action: 'setup.invitation_issued', subjectType: 'user', subjectId: userId, detail: { email } });
+    }, SETUP_CLOSED, displayName);
+  }
+
+  /**
+   * Administrator recovery (O07): the same one-time link, issued when the organisation is registered but no Enterprise
+   * Administrator is Active. An existing account is reused (same id), its display name kept unless one is given; its
+   * memberships, holds and grants are never touched. Recorded as admin.recovery_issued, by the system, in the same
+   * transaction.
+   */
+  async issueRecovery(
+    input: { email: string; displayName?: string; reason: string },
+    at: Date,
+    refusal: string,
+  ): Promise<{ link: string; email: string; expiresAt: Date }> {
+    const email = normaliseEmail(input.email);
+    if (!email) throw new BadRequestException('A valid email address is required');
+    const given = input.displayName === undefined ? null : cleanDisplayName(input.displayName);
+    if (input.displayName !== undefined && given === null) throw new BadRequestException(DISPLAY_NAME_REQUIRED);
+    return this.issueLink(email, at, async (c, userId) => {
+      await writeAudit(c, { at, action: 'admin.recovery_issued', subjectType: 'user', subjectId: userId, detail: { reason: input.reason, userId, email } });
+    }, refusal, given);
+  }
+
+  private async issueLink(
+    email: string,
+    at: Date,
+    audit: (c: PoolClient, userId: string) => Promise<void>,
+    refusal: string,
+    displayName: string | null,
+  ): Promise<{ link: string; email: string; expiresAt: Date }> {
     const token = randomBytes(32).toString('base64url');
     const expiresAt = new Date(at.getTime() + VALID_FOR_MS);
 
@@ -41,7 +81,7 @@ export class SetupService {
       // One setup at a time: the lock keeps two runs of the command from both issuing.
       await c.query(`SELECT pg_advisory_xact_lock(hashtext('kainow.setup'))`);
       const active = (await c.query(`SELECT 1 FROM users WHERE role = 'enterprise_administrator' AND status = 'active' LIMIT 1`)).rowCount;
-      if (active) throw new ConflictException(SETUP_CLOSED);
+      if (active) throw new ConflictException(refusal);
       await this.supersedeOpen(c, email, at);
       const userId = await this.invitedAdministrator(c, email, displayName, at);
       const id = uuidv7(at.getTime());
@@ -49,7 +89,7 @@ export class SetupService {
         `INSERT INTO setup_invitations (id, user_id, email, token_hash, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6)`,
         [id, userId, email, hashToken(token), at, expiresAt],
       );
-      await writeAudit(c, { at, action: 'setup.invitation_issued', subjectType: 'user', subjectId: userId, detail: { email } });
+      await audit(c, userId);
       await c.query('COMMIT');
     } catch (err) {
       await c.query('ROLLBACK');
@@ -77,16 +117,20 @@ export class SetupService {
     }
   }
 
-  /** The account for the invitation: reused when it exists (made an Invited Administrator), created otherwise. */
-  private async invitedAdministrator(c: PoolClient, email: string, displayName: string, at: Date): Promise<string> {
+  /**
+   * The account for the invitation: reused when it exists (made an Invited Administrator, its name kept when none is
+   * given), created otherwise (a name is then required).
+   */
+  private async invitedAdministrator(c: PoolClient, email: string, displayName: string | null, at: Date): Promise<string> {
     const existing = (await c.query(`SELECT id FROM users WHERE email = $1 FOR UPDATE`, [email])).rows[0];
     if (existing) {
       await c.query(
-        `UPDATE users SET role = 'enterprise_administrator', status = 'invited', display_name = $2, updated_at = $3 WHERE id = $1`,
+        `UPDATE users SET role = 'enterprise_administrator', status = 'invited', display_name = COALESCE($2, display_name), updated_at = $3 WHERE id = $1`,
         [existing.id, displayName, at],
       );
       return existing.id as string;
     }
+    if (displayName === null) throw new BadRequestException(DISPLAY_NAME_REQUIRED);
     const id = uuidv7(at.getTime());
     await c.query(
       `INSERT INTO users (id, email, display_name, role, status, created_at, updated_at) VALUES ($1, $2, $3, 'enterprise_administrator', 'invited', $4, $4)`,
