@@ -12,6 +12,8 @@
     "build": "tsc -p tsconfig.json",
     "migrate": "node dist/db/migrate-cli.js",
     "probe-ai": "node dist/extraction/probe-cli.js",
+    "probe-minutes": "node dist/analysis/probe-minutes-cli.js",
+    "bench-analysis": "node dist/analysis/bench-cli.js",
     "setup-invite": "node dist/users/setup-invite-cli.js",
     "golive-init": "node dist/golive/golive-init-cli.js",
     "recover-admin": "node dist/golive/recover-admin-cli.js",
