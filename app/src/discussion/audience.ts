@@ -31,6 +31,7 @@ export const RESTRICTED_ROLES: readonly ProjectRole[] = ['pm', 'deputy_pm', 'own
  * with no role or grant is never in an audience.
  */
 export function inAudience(ctx: ProjectContext, a: AudienceRow): boolean {
+  if (a.projectId !== ctx.project.id) return false;
   if (!canReadContent(ctx)) return false;
   if (a.mode === 'project') return true;
   return ctx.roles.some((r) => RESTRICTED_ROLES.includes(r)) || a.namedUserIds.includes(ctx.viewerId);

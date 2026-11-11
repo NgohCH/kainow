@@ -74,6 +74,16 @@ describe('inAudience', () => {
   });
 });
 
+describe('inAudience across projects', () => {
+  test('an audience from another project, or from none, is refused', () => {
+    const ctx = ctxFor('u', [row('u', 'pm')]);
+    assert.equal(inAudience(ctx, { ...project, projectId: '00000000-0000-4000-8000-0000000000bb' }), false);
+    assert.equal(inAudience(ctx, { ...restricted(['u']), projectId: '00000000-0000-4000-8000-0000000000bb' }), false);
+    assert.equal(inAudience(ctx, { ...project, projectId: null }), false);
+    assert.equal(inAudience(ctx, { ...restricted(), projectId: null }), false);
+  });
+});
+
 describe('parseAudienceChange', () => {
   const id = '00000000-0000-4000-8000-000000000001';
   test('accepts project and restricted with named people', () => {
