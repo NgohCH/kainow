@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { ApiError, api, setCsrfToken, type User } from './api.ts';
 import type { Branding } from './branding.ts';
 import { Invitation } from './views/Invitation.tsx';
+import { Bell } from './views/Bell.tsx';
 import { Letterhead, LogoImage } from './views/Letterhead.tsx';
 import { NoteDetail } from './views/NoteDetail.tsx';
 import { BeingSetUp, Onboarding } from './views/Onboarding.tsx';
@@ -11,6 +12,9 @@ import { OrganisationScreen } from './views/OrganisationProfile.tsx';
 import { Setup } from './views/Setup.tsx';
 import { People } from './views/People.tsx';
 import { ProjectPage } from './views/ProjectPage.tsx';
+import { Deliveries } from './views/Deliveries.tsx';
+import { Notifications } from './views/Notifications.tsx';
+import { NotificationsSettings } from './views/NotificationSettings.tsx';
 import { Projects } from './views/Projects.tsx';
 import { Review } from './views/Review.tsx';
 import { HeaderSearch, isSearchHash, Search } from './views/Search.tsx';
@@ -235,9 +239,9 @@ export function App() {
   }
   const note = /^#\/notes\/([0-9a-f-]{36})(?:\/v\/(\d+))?$/i.exec(hash);
   const run = /^#\/runs\/([0-9a-f-]{36})$/i.exec(hash);
-  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work|closing|deadline-review)(?:\/([0-9a-f-]{36}))?)?$/i.exec(hash);
+  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work|settings|closing|deadline-review)(?:\/([0-9a-f-]{36}))?)?$/i.exec(hash);
   const searching = isSearchHash(hash);
-  const adminPage = /^#\/(people|spending|departments|domains|organisation|approvals)$/.exec(hash)?.[1];
+  const adminPage = /^#\/(people|spending|departments|domains|organisation|approvals|notifications-settings|deliveries)$/.exec(hash)?.[1];
 
   let page;
   if (invitation) page = <Invitation token={invitation[1]} user={user} onSignedIn={setUser} />;
@@ -247,10 +251,13 @@ export function App() {
   else if (isAdmin && adminPage === 'domains') page = <Domains />;
   else if (isAdmin && adminPage === 'organisation') page = <OrganisationScreen onBrandingChanged={loadBranding} />;
   else if (isAdmin && adminPage === 'approvals') page = <ApprovalSettings />;
+  else if (isAdmin && adminPage === 'notifications-settings') page = <NotificationsSettings />;
+  else if (isAdmin && adminPage === 'deliveries') page = <Deliveries />;
+  else if (hash === '#/notifications') page = <Notifications />;
   else if (searching) page = <Search hash={hash} />;
   else if (run) page = <Review runId={run[1]} meId={user.id} />;
   else if (note) page = <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} />;
-  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | 'closing' | 'deadline-review' | undefined) ?? 'overview'} itemId={project[3]} />;
+  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | 'settings' | 'closing' | 'deadline-review' | undefined) ?? 'overview'} itemId={project[3]} />;
   else page = <Projects isAdmin={isAdmin} />;
 
   return (
@@ -267,12 +274,15 @@ export function App() {
               <a href="#/departments" aria-current={adminPage === 'departments' ? 'page' : undefined}>Departments</a>
               <a href="#/organisation" aria-current={adminPage === 'organisation' ? 'page' : undefined}>Organisation</a>
               <a href="#/approvals" aria-current={adminPage === 'approvals' ? 'page' : undefined}>Approvals</a>
+              <a href="#/notifications-settings" aria-current={adminPage === 'notifications-settings' ? 'page' : undefined}>Notifications and email</a>
+              <a href="#/deliveries" aria-current={adminPage === 'deliveries' ? 'page' : undefined}>Email delivery</a>
               <a href="#/domains" aria-current={adminPage === 'domains' ? 'page' : undefined}>Domains</a>
               <a href="#/spending" aria-current={adminPage === 'spending' ? 'page' : undefined}>AI spending</a>
             </>
           )}
         </nav>
         <HeaderSearch hash={hash} />
+        <Bell hash={hash} />
         <SpendMeter />
         <span className="who">
           {user.displayName}

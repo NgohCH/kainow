@@ -23,40 +23,10 @@ export class CaptureSender implements CodeSender {
     this.sent.push({ email, code, validForMinutes });
   }
 
-  readonly invitations: { email: string; link: string }[] = [];
-
-  failNextInvitation = false;
-
-  async sendInvitation(email: string, link: string): Promise<void> {
-    if (this.failNextInvitation) {
-      this.failNextInvitation = false;
-      throw new Error('mail server unavailable');
-    }
-    this.invitations.push({ email, link });
-  }
-
-  readonly holdAlerts: { email: string; projectName: string; link: string }[] = [];
-
-  async sendHoldAlert(email: string, projectName: string, link: string): Promise<void> {
-    this.holdAlerts.push({ email, projectName, link });
-  }
-
   readonly setupInvitations: { email: string; link: string; expiresAt: Date }[] = [];
 
   async sendSetupInvitation(email: string, link: string, expiresAt: Date): Promise<void> {
     this.setupInvitations.push({ email, link, expiresAt });
-  }
-
-  readonly closureNotices: { email: string; projectName: string; outcome: string; link: string }[] = [];
-
-  async sendDelegatedClosureNotice(email: string, projectName: string, outcome: string, link: string): Promise<void> {
-    this.closureNotices.push({ email, projectName, outcome, link });
-  }
-
-  lastInvitation(email: string): string {
-    const found = [...this.invitations].reverse().find((s) => s.email === email);
-    if (!found) throw new Error(`no invitation was sent to ${email}`);
-    return found.link;
   }
 
   lastCode(email: string): string {

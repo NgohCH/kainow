@@ -4,6 +4,7 @@ import { writeAudit } from '../audit/audit';
 import { CLOCK, type Clock } from '../auth/tokens';
 import { PG_POOL } from '../db/database.module';
 import { type Box, DEFAULT_NAME, LOGO_SHAPES, type LogoShape, PLACES, type Place, chooseLogo, defaultLogo } from './branding';
+import { loadLetterhead } from '../email/letterhead';
 import { checkLogo } from './image';
 import { OrganisationState } from './state';
 
@@ -170,9 +171,6 @@ export class OrganisationProfileService {
 
   /** The name and logo for an email, report or other formal output. */
   async letterhead(place: Place): Promise<Letterhead> {
-    const { registered, name, uploaded } = await this.inUse();
-    const choice = chooseLogo(place, { wide: uploaded.wide !== null, square: uploaded.square !== null });
-    const image = choice.isDefault ? defaultLogo(choice.shape) : await this.logoInUse(choice.shape);
-    return { name, registered, logo: { content: image.content, mime: image.mime, box: choice.box } };
+    return loadLetterhead(this.pool, place);
   }
 }

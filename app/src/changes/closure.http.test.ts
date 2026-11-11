@@ -161,6 +161,7 @@ describe('closure accounting and delegated closure', { skip: SKIP_NO_DB }, () =>
     assert.deepEqual(await status(), { status: 'closed', closure_outcome: 'delivered' });
     const audit = (await t.pool.query(`SELECT detail FROM audit_events WHERE action = 'project.transition' AND subject_id = $1`, [projectId])).rows.at(-1);
     assert.equal(audit.detail.objectivesMet, true);
+    assert.equal((await t.outbox()).filter((r) => r.kind === 'closure_notice').length, 0, 'an ordinary close by an Owner queues no closure notice');
   });
 
   test('cancellations at closure follow the approval count', async () => {
@@ -270,12 +271,13 @@ describe('closure accounting and delegated closure', { skip: SKIP_NO_DB }, () =>
     assert.equal((await dispose(pm, 'task', a, 'keep', 'Operations will finish it')).status, 201);
     const closed = await close(pm, 'partially_delivered');
     assert.equal(closed.status, 200, JSON.stringify(closed.body));
-    assert.deepEqual(
-      t.sender.closureNotices.map((n) => n.email).sort(),
-      ['owner@example.org', 'sponsor@example.org'],
-    );
-    assert.equal(t.sender.closureNotices[0].projectName, 'Records Upgrade');
-    assert.ok(t.sender.closureNotices[0].link.endsWith(`/#/projects/${projectId}`));
+    const notices = (await t.outbox()).filter((r) => r.kind === 'closure_notice');
+    assert.deepEqual(notices.map((n) => n.to_address).sort(), ['owner@example.org', 'sponsor@example.org']);
+    assert.equal(notices[0].subject, 'Records Upgrade was closed by its Project Manager');
+    assert.equal(notices[0].status, 'queued');
+    assert.equal(notices[0].project_id, projectId);
+    assert.match(notices[0].text_body, /with the outcome Partially Delivered\./);
+    assert.match(notices[0].text_body, new RegExp(`/#/projects/${projectId}\n`));
     const del = (await t.pool.query(`SELECT revoked_by FROM closure_delegations WHERE project_id = $1`, [projectId])).rows[0];
     assert.equal(del.revoked_by, ids.pm, 'closing ends the delegation');
   });
@@ -290,6 +292,7 @@ describe('closure accounting and delegated closure', { skip: SKIP_NO_DB }, () =>
     const byPm = await pm.request('POST', `/changes/${r.body.request.id}/approve`, { version: 1 });
     assert.equal(byPm.status, 403);
     assert.equal((await close(pm, 'partially_delivered')).status, 409);
+    assert.equal((await t.outbox()).filter((r) => r.kind === 'closure_notice').length, 0, 'a refused delegated close leaves no closure notice');
     t.clock.advanceSeconds(60);
     assert.equal((await owner.request('POST', `/changes/${r.body.request.id}/approve`, { version: 1 })).status, 200);
     assert.equal((await t.pool.query(`SELECT status FROM tasks WHERE id = $1`, [a])).rows[0].status, 'cancelled');

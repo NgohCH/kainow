@@ -1,11 +1,14 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
-import { CLOCK, CODE_SENDER, type AuthUser, type Clock, type CodeSender } from '../auth/tokens';
+import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { assertClosureReady, finaliseClosure, openDelegation } from '../changes/closure';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { APP_CONFIG, type AppConfig } from '../config';
 import { PG_POOL } from '../db/database.module';
+import { closureNoticeEmail } from '../email/messages';
+import { EMAIL_NUDGE, type EmailNudge } from '../email/nudge';
+import { writeOutbox } from '../email/outbox';
 import { isCalendarDate } from '../extraction/due';
 import { type ProjectContext, ProjectAccess, managesGrants, managesRoles } from './access.service';
 import { loadArchiveState } from './archive';
@@ -48,8 +51,8 @@ export class ProjectsService {
     @Inject(CLOCK) private readonly now: Clock,
     private readonly access: ProjectAccess,
     private readonly org: OrganisationService,
-    @Inject(CODE_SENDER) private readonly sender: CodeSender,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
+    @Inject(EMAIL_NUDGE) private readonly nudge: EmailNudge,
   ) {}
 
   /** Checks a full or partial set of project details. Missing keys keep `current` values. */
@@ -406,7 +409,7 @@ export class ProjectsService {
     const stage = optionalText(input.stage);
     const objectivesMet = input.objectivesMet === true;
     const at = this.now();
-    let notify: { emails: string[]; name: string } | null = null;
+    let notified = 0;
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -437,11 +440,30 @@ export class ProjectsService {
         await assertClosureReady(client, id, { outcome, objectivesMet });
         await finaliseClosure(client, id, user.id, at);
         if (delegatedPm && !ctx.roles.some((r) => r === 'owner' || r === 'sponsor')) {
-          const emails = ctx.rows
-            .filter((m) => (m.role === 'owner' || m.role === 'sponsor') && membershipState(m, ctx.today) === 'active' && m.userId !== user.id)
-            .map((m) => m.email);
+          const recipients = new Map(
+            ctx.rows
+              .filter((m) => (m.role === 'owner' || m.role === 'sponsor') && membershipState(m, ctx.today) === 'active' && m.userId !== user.id)
+              .map((m) => [m.email, m.userId] as const),
+          );
           const name = (await client.query(`SELECT name FROM projects WHERE id = $1`, [id])).rows[0].name as string;
-          notify = { emails: [...new Set(emails)], name };
+          const outcomeLabel = { delivered: 'Delivered', partially_delivered: 'Partially Delivered', abandoned: 'Abandoned' }[outcome as ClosureOutcome];
+          const mail = closureNoticeEmail(name, outcomeLabel, `${this.config.appUrl}/#/projects/${id}`);
+          // Queued in this transaction, so the notice exists exactly when the closure does.
+          for (const [email, userId] of recipients) {
+            await writeOutbox(client, {
+              toUserId: userId,
+              toAddress: email,
+              subject: mail.subject,
+              body: mail.body,
+              kind: 'closure_notice',
+              projectId: id,
+              initiatedBy: 'person',
+              initiatedByUser: user.id,
+              relevance: { kind: 'none', scope: 'account' },
+              now: at,
+            });
+            notified += 1;
+          }
         }
       }
       await client.query(`UPDATE projects SET status = $2, closure_outcome = $3 WHERE id = $1`, [id, to, to === 'closed' ? outcome : null]);
@@ -471,10 +493,12 @@ export class ProjectsService {
     } finally {
       client.release();
     }
-    if (notify) {
-      const outcomeLabel = { delivered: 'Delivered', partially_delivered: 'Partially Delivered', abandoned: 'Abandoned' }[outcome as ClosureOutcome];
-      for (const email of notify.emails) {
-        await this.sender.sendDelegatedClosureNotice(email, notify.name, outcomeLabel, `${this.config.appUrl}/#/projects/${id}`).catch(() => undefined);
+    if (notified > 0) {
+      try {
+        await this.nudge.nudge();
+      } catch {
+        // The notices are committed; the scheduled email tick still sends them.
+        console.error('Could not nudge the email worker after a closure; the scheduled tick still sends the notices');
       }
     }
     return this.detail(user, id);

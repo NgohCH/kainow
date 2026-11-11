@@ -4,8 +4,11 @@ import { writeAudit } from '../audit/audit';
 import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { normaliseEmail } from '../auth/auth.service';
-import { CLOCK, CODE_SENDER, type AuthUser, type Clock, type CodeSender } from '../auth/tokens';
+import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { APP_CONFIG, type AppConfig } from '../config';
+import { holdAlertEmail } from '../email/messages';
+import { EMAIL_NUDGE, type EmailNudge } from '../email/nudge';
+import { writeOutbox } from '../email/outbox';
 import { alertRecipients, holdMembershipsOf } from '../projects/holds';
 import { todayUtc8 } from '../projects/membership';
 
@@ -16,8 +19,8 @@ export class UsersService {
   constructor(
     @Inject(PG_POOL) private readonly pool: Pool,
     @Inject(CLOCK) private readonly clock: Clock,
-    @Optional() @Inject(CODE_SENDER) private readonly sender?: CodeSender,
     @Optional() @Inject(APP_CONFIG) private readonly config?: AppConfig,
+    @Optional() @Inject(EMAIL_NUDGE) private readonly nudge?: EmailNudge,
   ) {}
 
   /** MVP: every user is an Enterprise Administrator (decision R03). */
@@ -72,7 +75,7 @@ export class UsersService {
       throw new NotFoundException();
     }
     const now = this.clock();
-    const alerts: Array<{ email: string; projectId: string; projectName: string }> = [];
+    let alerted = 0;
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
@@ -102,8 +105,25 @@ export class UsersService {
       // Current project memberships go On Hold for investigation (V1.0 account lifecycle §4).
       const today = todayUtc8(now);
       const held = await holdMembershipsOf(client, id, actorUserId, now, today);
+      // The alerts are queued in this transaction, so they exist exactly when the holds do.
+      const appUrl = this.config?.appUrl ?? 'http://localhost:3000';
       for (const h of held) {
-        for (const email of await alertRecipients(client, h.projectId, id, today)) alerts.push({ email, ...h });
+        const m = holdAlertEmail(h.projectName, `${appUrl}/#/projects/${h.projectId}/people`);
+        for (const to of await alertRecipients(client, h.projectId, id, today)) {
+          await writeOutbox(client, {
+            toUserId: to.userId,
+            toAddress: to.email,
+            subject: m.subject,
+            body: m.body,
+            kind: 'hold_alert',
+            projectId: h.projectId,
+            initiatedBy: actorUserId ? 'person' : 'system',
+            initiatedByUser: actorUserId ?? undefined,
+            relevance: { kind: 'none', scope: 'project' },
+            now,
+          });
+          alerted += 1;
+        }
       }
       await writeAudit(client, { at: now, action: 'user.disabled', actorUserId, subjectType: 'user', subjectId: id, detail: { heldProjects: held.length } });
       await client.query('COMMIT');
@@ -113,13 +133,12 @@ export class UsersService {
     } finally {
       client.release();
     }
-    // Alerts go out after the change is committed; a failed email does not undo the disable.
-    if (this.sender) {
-      const appUrl = this.config?.appUrl ?? 'http://localhost:3000';
-      for (const a of alerts) {
-        await this.sender
-          .sendHoldAlert(a.email, a.projectName, `${appUrl}/#/projects/${a.projectId}/people`)
-          .catch((err: Error) => new Logger('UsersService').warn(`Hold alert to a project manager was not sent: ${err.message}`));
+    if (alerted > 0 && this.nudge) {
+      try {
+        await this.nudge.nudge();
+      } catch {
+        // The alerts are committed; the scheduled email tick still sends them.
+        new Logger('UsersService').warn('Could not nudge the email worker after hold alerts; the scheduled tick still sends them');
       }
     }
   }

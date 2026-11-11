@@ -47,17 +47,18 @@ describe('review minors from sub-project 1', { skip: SKIP_NO_DB }, () => {
     assert.equal((await invite({ expiresOn: '2026-11-10' })).status, 201);
     t.clock.advanceSeconds(2 * 86400);
     const late = await t.signIn('new@example.org');
-    const token = t.sender.lastInvitation('new@example.org').split('#/invitations/')[1];
+    const token = (await t.lastInvitationLink('new@example.org')).split('#/invitations/')[1];
     const r = await late.request('POST', `/invitations/by-token/${token}/accept`);
     assert.equal(r.status, 409);
     assert.equal(r.body.message, 'That membership would already have ended.');
   });
 
-  test('a failed invitation email is reported', async () => {
-    t.sender.failNextInvitation = true;
+  test('an invitation is queued in the outbox, and the invitation stands whatever happens to delivery', async () => {
     const r = await invite();
     assert.equal(r.status, 201);
-    assert.equal(r.body.delivered, false);
+    assert.equal(r.body.delivered, true);
+    const rows = await t.outbox('new@example.org');
+    assert.deepEqual(rows.map((x) => [x.kind, x.status]), [['invitation', 'queued']]);
     assert.equal((await invite({ email: 'other@example.org' })).body.delivered, true);
   });
 
@@ -78,9 +79,9 @@ describe('review minors from sub-project 1', { skip: SKIP_NO_DB }, () => {
   });
 
   test("creating a project rechecks the creator's domain", async () => {
-    await seedUser(t.pool, 'x@other.org');
+    await seedUser(t.pool, 'x@outside.example.net');
     const dept = (await t.pool.query(`SELECT owning_department_id AS d FROM projects WHERE id = $1`, [projectId])).rows[0].d;
-    const x = await t.signIn('x@other.org');
+    const x = await t.signIn('x@outside.example.net');
     const r = await x.request('POST', '/projects', { name: 'New', purpose: 'p', owningDepartmentId: dept });
     assert.equal(r.status, 403);
     assert.equal(r.body.message, 'Your email domain is no longer eligible; ask an Administrator.');

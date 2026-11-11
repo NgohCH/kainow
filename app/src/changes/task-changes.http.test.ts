@@ -138,7 +138,7 @@ describe('amending and cancelling tasks', { skip: SKIP_NO_DB }, () => {
     assert.equal(a.status, 200, JSON.stringify(a.body));
     assert.equal(a.body.applied.delivered, true);
     assert.equal(await count(), 1);
-    assert.ok(t.sender.lastInvitation('new@example.org'));
+    assert.ok(await t.lastInvitationLink('new@example.org'));
     const now = await row(id);
     const newUser = (await t.pool.query(`SELECT id FROM users WHERE email = 'new@example.org'`)).rows[0].id;
     assert.equal(now.assignee_id, newUser);

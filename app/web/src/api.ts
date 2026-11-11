@@ -49,6 +49,7 @@ export const api = {
   get: <T>(path: string) => request<T>('GET', path),
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body),
   put: <T>(path: string, body?: unknown) => request<T>('PUT', path, body),
+  delete: <T>(path: string, body?: unknown) => request<T>('DELETE', path, body),
   originalUrl: (sourceId: string, versionNo: number) => `${BASE}/notes/${sourceId}/versions/${versionNo}/original`,
   /** Sends a file as the request body itself, with its own type (a logo). */
   upload: <T>(path: string, file: Blob) => request<T>('PUT', path, file),

@@ -29,7 +29,7 @@ describe('Project Manager handover', { skip: SKIP_NO_DB }, () => {
   });
 
   const handover = (by: Client, over: object = {}) => by.request('POST', `/projects/${projectId}/handover`, { email: 'lee@example.org', outgoingRole: 'member', ...over });
-  const tokenFor = (email: string) => t.sender.lastInvitation(email).split('#/invitations/')[1];
+  const tokenFor = async (email: string) => (await t.lastInvitationLink(email)).split('#/invitations/')[1];
   const rows = async () =>
     (
       await t.pool.query(
@@ -44,9 +44,9 @@ describe('Project Manager handover', { skip: SKIP_NO_DB }, () => {
     assert.equal(issued.status, 201, JSON.stringify(issued.body));
     const listed = (await pm.request('GET', `/projects/${projectId}`)).body.project.invitations.find((i: { email: string }) => i.email === 'lee@example.org');
     assert.equal(listed.kind, 'handover', 'the People tab can show it as a handover');
-    assert.equal((await t.anonymous('GET', `/invitations/by-token/${tokenFor('lee@example.org')}`)).body.invitation.kind, 'handover');
+    assert.equal((await t.anonymous('GET', `/invitations/by-token/${await tokenFor('lee@example.org')}`)).body.invitation.kind, 'handover');
     const lee = await t.signIn('lee@example.org');
-    const accepted = await lee.request('POST', `/invitations/by-token/${tokenFor('lee@example.org')}/accept`);
+    const accepted = await lee.request('POST', `/invitations/by-token/${await tokenFor('lee@example.org')}/accept`);
     assert.equal(accepted.status, 200, JSON.stringify(accepted.body));
     assert.deepEqual(await rows(), [
       { email: 'lee@example.org', role: 'pm', revoked: false, revoke_reason: null },
@@ -62,7 +62,7 @@ describe('Project Manager handover', { skip: SKIP_NO_DB }, () => {
   test('leaving the project', async () => {
     await handover(pm, { outgoingRole: 'leave' });
     const lee = await t.signIn('lee@example.org');
-    assert.equal((await lee.request('POST', `/invitations/by-token/${tokenFor('lee@example.org')}/accept`)).status, 200);
+    assert.equal((await lee.request('POST', `/invitations/by-token/${await tokenFor('lee@example.org')}/accept`)).status, 200);
     assert.equal((await pm.request('GET', `/projects/${projectId}`)).status, 404);
   });
 
@@ -85,7 +85,7 @@ describe('Project Manager handover', { skip: SKIP_NO_DB }, () => {
     t.clock.advanceSeconds(60);
     assert.equal((await owner.request('POST', `/projects/${projectId}/members`, { userId: ids.next, role: 'pm', startsOn: '2026-11-09' })).status, 201);
     const lee = await t.signIn('lee@example.org');
-    const late = await lee.request('POST', `/invitations/by-token/${tokenFor('lee@example.org')}/accept`);
+    const late = await lee.request('POST', `/invitations/by-token/${await tokenFor('lee@example.org')}/accept`);
     assert.equal(late.status, 409);
     assert.equal(late.body.message, 'This handover is no longer valid.');
   });
@@ -93,7 +93,7 @@ describe('Project Manager handover', { skip: SKIP_NO_DB }, () => {
   test('withdrawing a handover', async () => {
     const id = (await handover(pm)).body.invitation.id;
     assert.equal((await pm.request('POST', `/invitations/${id}/revoke`)).status, 200);
-    const page = await t.anonymous('GET', `/invitations/by-token/${tokenFor('lee@example.org')}`);
+    const page = await t.anonymous('GET', `/invitations/by-token/${await tokenFor('lee@example.org')}`);
     assert.equal(page.body.invitation.status, 'revoked');
   });
 
@@ -101,7 +101,7 @@ describe('Project Manager handover', { skip: SKIP_NO_DB }, () => {
     t.clock.advanceSeconds(60);
     await handover(pm, { email: 'mem@example.org', outgoingRole: 'leave' });
     const mem = await t.signIn('mem@example.org');
-    const r = await mem.request('POST', `/invitations/by-token/${tokenFor('mem@example.org')}/accept`);
+    const r = await mem.request('POST', `/invitations/by-token/${await tokenFor('mem@example.org')}/accept`);
     assert.equal(r.status, 409);
     assert.equal(r.body.message, 'Arrange a replacement first. Without this appointment the project would be missing a Member who is not the Project Manager.');
   });

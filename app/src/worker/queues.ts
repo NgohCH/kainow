@@ -5,6 +5,7 @@ export const QUEUES = {
   ai: 'ai',
   email: 'email',
   document: 'document',
+  sweep: 'sweep',
 } as const;
 
 export const BOSS_SCHEMA = 'pgboss';
@@ -23,7 +24,11 @@ export async function startQueues(
   boss.on('error', (err: Error) => console.error('pg-boss error:', err.message));
   await boss.start();
   for (const name of Object.values(QUEUES)) {
-    await boss.createQueue(name);
+    // 'stately' (one queued and one active job per key) keeps duplicate ticks from piling up on a new queue. It is
+    // only applied when the queue is first created: pg-boss cannot change the policy of an existing queue, so this
+    // is not what prevents overlapping runs (see registerSchedules).
+    if (name === QUEUES.sweep || name === QUEUES.email) await boss.createQueue(name, { policy: 'stately' });
+    else await boss.createQueue(name);
   }
   return boss;
 }

@@ -2,6 +2,7 @@ import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { ApiError, api, type Project } from '../api.ts';
 import { isPastDay, todayUtc8 } from '../changes.ts';
 import { membershipStateLabel, type MembershipState } from '../projects.ts';
+import { NonWorkingDayNote } from './ProjectCalendar.tsx';
 import { ChangeRequestPanel, useRequests } from './ChangeRequest.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
@@ -145,9 +146,10 @@ export function DeadlineReview({ project }: { project: Project }) {
                       type="date"
                       value={date}
                       onChange={(e) => setDates({ ...dates, [t.id]: e.target.value })}
-                      aria-describedby={`dr-hint-${t.id}`}
+                      aria-describedby={`dr-hint-${t.id} dr-nwd-${t.id}`}
                     />
                   </label>
+                  <NonWorkingDayNote date={date} id={`dr-nwd-${t.id}`} />
                   <span id={`dr-hint-${t.id}`} className="hint">
                     {date !== '' && date === t.previousDueOn && 'This is the date it already has. Choose a different one.'}
                     {date !== '' && isPastDay(date) && `This date is before today (${todayUtc8()}).`}
