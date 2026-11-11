@@ -45,16 +45,21 @@ export function inAudience(ctx: ProjectContext, a: AudienceRow): boolean {
  */
 export function audienceVisibleSql(audienceAlias: string, userParam: string, todayParam: string): string {
   const a = audienceAlias;
-  const roles = RESTRICTED_ROLES.map((r) => `'${r}'`).join(', ');
   return `(${a}.mode = 'project'
     OR EXISTS (SELECT 1 FROM audience_members am WHERE am.audience_id = ${a}.id AND am.user_id = ${userParam}::uuid)
-    OR EXISTS (
+    OR ${activeManagerSql(`${a}.project_id`, userParam, todayParam)})`;
+}
+
+/** SQL: the person holds an Active PM, Deputy, Owner or Sponsor role on the project `projectExpr` today. */
+export function activeManagerSql(projectExpr: string, userParam: string, todayParam: string): string {
+  const roles = RESTRICTED_ROLES.map((r) => `'${r}'`).join(', ');
+  return `EXISTS (
       SELECT 1 FROM memberships rm
-       WHERE rm.project_id = ${a}.project_id AND rm.user_id = ${userParam}::uuid AND rm.role IN (${roles})
+       WHERE rm.project_id = ${projectExpr} AND rm.user_id = ${userParam}::uuid AND rm.role IN (${roles})
          AND rm.revoked_at IS NULL
          AND (rm.expires_on IS NULL OR rm.expires_on >= ${todayParam}::date)
          AND (rm.held_at IS NULL OR (rm.restored_at IS NOT NULL AND rm.restored_at >= rm.held_at))
-         AND rm.starts_on <= ${todayParam}::date))`;
+         AND rm.starts_on <= ${todayParam}::date)`;
 }
 
 const BAD_CHANGE = 'Choose Project-wide or Restricted, and name people only for a Restricted audience.';

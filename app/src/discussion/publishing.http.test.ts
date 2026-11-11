@@ -169,13 +169,13 @@ describe('publishing minutes, member submissions and note audiences', { skip: SK
     assert.equal((await ben.request('GET', `/notes/${id}`)).status, 404);
     assert.equal((await ben.request('GET', `/notes/${id}/versions/1`)).status, 404);
     assert.equal((await ben.request('GET', `/notes/${id}/versions/1/extractions`)).status, 404);
-    // Never in the notes list, never analysed, never searched.
+    // Never in the notes list, never analysed, never searched by anyone but the submitter and the managers.
     for (const c of [ada, pm, ben]) assert.deepEqual((await c.request('GET', `/projects/${project}/notes`)).body.sources, []);
     assert.equal((await pm.request('POST', `/notes/${id}/versions/1/extractions`)).status, 409);
     assert.equal((await pm.request('POST', `/notes/${id}/versions`, { text: 'more' })).status, 409);
-    for (const c of [ben, pm, ada]) {
+    for (const [c, n] of [[ben, 0], [pm, 1], [ada, 1], [deputy, 1], [sponsor, 1]] as Array<[Client, number]>) {
       const found = (await c.request('GET', '/search?q=Zebrafish')).body.projects.flatMap((p: any) => p.results);
-      assert.deepEqual(found, []);
+      assert.equal(found.length, n);
     }
     // The discussion list shows it to the submitter and managers only.
     const listed = async (c: Client) => (await c.request('GET', `/projects/${project}/discussion`)).body.items.filter((i: any) => i.kind === 'submission');
