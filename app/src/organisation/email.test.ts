@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { EmailCodeSender } from '../auth/code-senders';
+import { recoveryNoticeEmail } from '../email/messages';
 import type { MailTransport } from '../email/transport';
 import { composeEmail } from './email';
 import { LetterheadWiring } from './letterhead-wiring';
@@ -58,4 +59,35 @@ test('when the app starts, the email sender is given the letterhead for the emai
   new LetterheadWiring(sender, organisation).onModuleInit();
   assert.deepEqual(await source?.(), registered);
   assert.deepEqual(places, ['email']);
+});
+
+test('the setup and recovery invitations each have their own wording', async () => {
+  const sent: Array<{ subject: string; text: string }> = [];
+  const transport: MailTransport = { send: async (m) => (sent.push({ subject: String(m.subject), text: String(m.text) }), { messageId: null }) };
+  const sender = new EmailCodeSender(transport, 'kainow@example.org');
+  const expires = new Date(Date.UTC(2026, 10, 16, 2, 0));
+  await sender.sendSetupInvitation('first@example.org', 'http://localhost:3000/#/setup/t', expires);
+  await sender.sendSetupInvitation('first@example.org', 'http://localhost:3000/#/setup/t', expires, 'setup');
+  await sender.sendSetupInvitation('back@example.org', 'http://localhost:3000/#/setup/r', expires, 'recovery');
+  assert.equal(sent[0].subject, 'Set up Kainow');
+  assert.deepEqual(sent[1], sent[0], 'setup is the default');
+  assert.equal(sent[2].subject, 'Restore your Kainow Administrator access');
+  assert.ok(
+    sent[2].text.includes(
+      'Kainow Administrator access is being restored for you. Open this link and sign in with the code Kainow emails you; you will then be an Enterprise Administrator:\n' +
+        'http://localhost:3000/#/setup/r\n\n' +
+        "The link works once and expires on 2026-11-16 02:00 UTC. If you did not expect this, contact your organisation's recovery custodian.",
+    ),
+    sent[2].text,
+  );
+});
+
+test('the notice to a disabled Administrator gives the time in UTC+8 and the reason, and nothing else', () => {
+  const m = recoveryNoticeEmail(new Date(Date.UTC(2026, 10, 9, 2, 0)), 'Both locked out');
+  assert.equal(m.subject, 'Your Kainow Administrator access was disabled');
+  assert.equal(
+    m.body,
+    'Your Kainow Administrator account was disabled on Mon 9 Nov 2026, 10:00 (UTC+8) so that Administrator access could be restored. ' +
+      "Reason given: Both locked out. If you did not expect this, contact your organisation's recovery custodian.",
+  );
 });

@@ -64,9 +64,9 @@ export async function goliveInit(
   let sendFailed = false;
   const guarded: CodeSender = {
     send: (email, code, minutes) => sender.send(email, code, minutes),
-    sendSetupInvitation: async (email, link, expiresAt) => {
+    sendSetupInvitation: async (email, link, expiresAt, kind) => {
       try {
-        await sender.sendSetupInvitation(email, link, expiresAt);
+        await sender.sendSetupInvitation(email, link, expiresAt, kind);
       } catch (err) {
         sendFailed = true;
         throw err;

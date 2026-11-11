@@ -1,15 +1,18 @@
 import { Pool } from 'pg';
 import { createCodeSender } from '../auth/code-senders';
 import { loadConfig } from '../config';
+import { PgBossEmailNudge } from '../email/nudge';
 import { runRecoverAdmin } from './recover-admin';
 
 /**
- * Usage: npm run recover-admin -- person@example.org "Display Name" --reason "<why>" [--dry-run]
- * Administrator recovery: only when no Enterprise Administrator is active. See INSTALL.md, "Recovery custodian".
+ * Usage: npm run recover-admin -- person@example.org "Display Name" --reason "<why>" [--disable-active-administrators] [--dry-run]
+ * Administrator recovery, when no Administrator can sign in. See INSTALL.md, "Recovery custodian".
  */
 async function main(): Promise<number> {
   const config = loadConfig();
   const pool = new Pool({ connectionString: config.databaseUrl });
+  // Tells the worker that notices and hold alerts are queued; the worker's own tick sends them otherwise.
+  const nudge = new PgBossEmailNudge(config);
   try {
     return await runRecoverAdmin(process.argv.slice(2), {
       pool,
@@ -18,8 +21,10 @@ async function main(): Promise<number> {
       now: new Date(),
       out: (line) => console.log(line),
       err: (line) => console.error(line),
+      nudge,
     });
   } finally {
+    await nudge.onApplicationShutdown();
     await pool.end();
   }
 }

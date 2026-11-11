@@ -37,7 +37,7 @@ describe('setup invitation', { skip: SKIP_NO_DB }, () => {
     const { link } = await issue('first@example.org');
     assert.match(link, /^http:\/\/localhost:3000\/#\/setup\/[A-Za-z0-9_-]{40,}$/);
     assert.equal(t.sender.setupInvitations.at(-1)?.link, link);
-    assert.deepEqual(await status(link), { state: 'valid', email: 'first@example.org' });
+    assert.deepEqual(await status(link), { state: 'valid', email: 'first@example.org', kind: 'setup' });
     const user = (await t.pool.query(`SELECT role, status FROM users WHERE email = 'first@example.org'`)).rows[0];
     assert.deepEqual(user, { role: 'enterprise_administrator', status: 'invited' });
     assert.equal((await t.pool.query(`SELECT count(*)::int AS n FROM audit_events WHERE action = 'setup.invitation_issued'`)).rows[0].n, 1);
@@ -46,7 +46,7 @@ describe('setup invitation', { skip: SKIP_NO_DB }, () => {
   test('signing in through it closes setup for good', async () => {
     const { link } = await issue('first@example.org');
     await t.signIn('first@example.org');
-    assert.deepEqual(await status(link), { state: 'used', email: null });
+    assert.deepEqual(await status(link), { state: 'used', email: null, kind: 'setup' });
     assert.equal(await refusal(issue('second@example.org')), CLOSED);
     assert.equal((await t.pool.query(`SELECT count(*)::int AS n FROM audit_events WHERE action = 'setup.accepted'`)).rows[0].n, 1);
   });
@@ -69,8 +69,8 @@ describe('setup invitation', { skip: SKIP_NO_DB }, () => {
   test('an expired link says so', async () => {
     const { link } = await issue('first@example.org');
     t.clock.advanceSeconds(7 * 24 * 3600 + 1);
-    assert.deepEqual(await status(link), { state: 'expired', email: null });
-    assert.deepEqual((await t.anonymous('GET', '/setup/not-a-real-token')).body, { state: 'expired', email: null });
+    assert.deepEqual(await status(link), { state: 'expired', email: null, kind: 'setup' });
+    assert.deepEqual((await t.anonymous('GET', '/setup/not-a-real-token')).body, { state: 'expired', email: null, kind: 'setup' });
   });
 
   test('once the setup link has expired, its invited person cannot sign in and become an Administrator', async () => {
