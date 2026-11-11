@@ -7,6 +7,8 @@ import { ProjectsModule } from '../projects/projects.module';
 import type { AutomaticAnalysis } from './automatic-analysis';
 import { AudienceController } from './audience.controller';
 import { AudienceModule } from './audience.module';
+import { FeedbackController } from './feedback.controller';
+import { FeedbackService } from './feedback.service';
 import { MEETING_END_HOOK, type MeetingEndHook, MeetingsService } from './meetings.service';
 import { MeetingsController } from './meetings.controller';
 import { PublishingController } from './publishing.controller';
@@ -24,11 +26,12 @@ export class DiscussionModule {
     return {
       module: DiscussionModule,
       imports: [ProjectsModule, AudienceModule, NotesModule, AnalysisModule.register(automaticAnalysis, analysisQueue)],
-      controllers: [AudienceController, ThreadsController, MeetingsController, PublishingController],
+      controllers: [AudienceController, ThreadsController, MeetingsController, PublishingController, FeedbackController],
       providers: [
         ThreadsService,
         MeetingsService,
         PublishingService,
+        FeedbackService,
         { provide: MEETING_END_HOOK, inject: [AnalysisService], useFactory: (analysis: AnalysisService): MeetingEndHook => meetingEndHook ?? analysis },
       ],
       exports: [AudienceModule, ThreadsService, MeetingsService],
