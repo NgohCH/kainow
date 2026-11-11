@@ -2,10 +2,12 @@ import { maskedVersionText } from '../discussion/masking';
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
-import { CLOCK, type Clock } from '../auth/tokens';
+import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
-import { audienceVisibleSql } from '../discussion/audience';
+import { RESTRICTED_ROLES, audienceVisibleSql } from '../discussion/audience';
+import { refuseSecrets } from '../discussion/messages';
+import { effectiveRoles } from '../projects/membership';
 import { ProjectAccess } from '../projects/access.service';
 import { UploadRejected, readUpload } from './readers';
 import { NoteTextError, normaliseText, sha256Hex } from './text';
@@ -162,13 +164,17 @@ export class NotesService {
     try {
       await client.query('BEGIN');
       // The source row is the lock that keeps version numbers gap-free when two people add at once.
-      const src = await client.query<{ kind: string; publication: string }>(
-        'SELECT kind, publication FROM sources WHERE id = $1 AND status = \'active\' FOR UPDATE',
+      const src = await client.query<{ kind: string; publication: string; submittedBy: string | null; projectId: string; title: string }>(
+        'SELECT kind, publication, submitted_by AS "submittedBy", project_id AS "projectId", title FROM sources WHERE id = $1 AND status = \'active\' FOR UPDATE',
         [sourceId],
       );
       if (src.rowCount === 0) throw new NotFoundException();
-      if (src.rows[0].kind !== 'notes') throw new ConflictException('Minutes get a new version by publishing a draft from the meeting.');
-      if (src.rows[0].publication !== 'published') throw new ConflictException('This submission is waiting for a reviewer; publish or return it first.');
+      const row = src.rows[0];
+      if (row.kind !== 'notes') throw new ConflictException('Minutes get a new version by publishing a draft from the meeting.');
+      // A returned submission is revised by its submitter alone, and goes back to the reviewers.
+      const revising = row.publication === 'returned' && row.submittedBy === actorUserId;
+      if (row.publication !== 'published' && !revising) throw new ConflictException('This submission is waiting for a reviewer; publish or return it first.');
+      if (revising) refuseSecrets(prepared.text);
       const latest = await client.query<{ version_no: number; text_sha256: string }>(
         'SELECT version_no, text_sha256 FROM source_versions WHERE source_id = $1 ORDER BY version_no DESC LIMIT 1',
         [sourceId],
@@ -178,9 +184,13 @@ export class NotesService {
       }
       const versionNo = (latest.rows[0]?.version_no ?? 0) + 1;
       const version = await this.insertVersion(client, sourceId, versionNo, prepared, actorUserId, at);
+      if (revising) {
+        await client.query(`UPDATE sources SET publication = 'submitted', returned_reason = NULL WHERE id = $1`, [sourceId]);
+        await this.notifyReviewers(client, row.projectId, actorUserId, `Minutes submitted for review: ${row.title}`, `#/notes/${sourceId}`, at);
+      }
       await writeAudit(client, {
         at,
-        action: 'note.version_added',
+        action: revising ? 'note.resubmitted' : 'note.version_added',
         actorUserId,
         subjectType: 'source',
         subjectId: sourceId,
@@ -193,6 +203,23 @@ export class NotesService {
       throw err;
     } finally {
       client.release();
+    }
+  }
+
+  /** Tells everyone holding PM, Deputy, Owner or Sponsor today (except the actor) that minutes await review. Titles only. */
+  private async notifyReviewers(client: PoolClient, projectId: string, actorId: string, summary: string, link: string, at: Date): Promise<void> {
+    // Only the memberships and today's date are used from the context, so the viewer is irrelevant.
+    const ctx = await this.access.load(projectId, { id: actorId, role: 'member' } as AuthUser, client);
+    if (!ctx) return;
+    const ids = [...new Set(ctx.rows.map((r) => r.userId))].filter(
+      (id) => id !== actorId && effectiveRoles(ctx.rows, id, ctx.today).some((r) => RESTRICTED_ROLES.includes(r)),
+    );
+    for (const userId of ids) {
+      await client.query(
+        `INSERT INTO notifications (id, user_id, project_id, kind, summary, link, created_at, email_off)
+         VALUES ($1, $2, $3, 'minutes_submitted', $4, $5, $6, EXISTS (SELECT 1 FROM email_preferences WHERE user_id = $2 AND project_id = $3 AND choice = 'off'))`,
+        [uuidv7(at.getTime()), userId, projectId, summary, link, at],
+      );
     }
   }
 
@@ -308,11 +335,13 @@ export class NotesService {
    */
   async provenance(versionId: string): Promise<string | null> {
     const found = await this.pool.query(
-      `SELECT t.title, v.created_at AS "at", u.display_name AS "publisher", d.id AS "draftId"
+      `SELECT t.title, d.id AS "draftId", e.at AS "at", u.display_name AS "publisher"
          FROM source_versions v
          JOIN minutes_drafts d ON d.id = v.minutes_draft_id
          JOIN discussion_threads t ON t.id = d.thread_id
-         LEFT JOIN users u ON u.id = v.created_by
+         LEFT JOIN discussion_events e ON e.thread_id = t.id AND e.action = 'minutes_published'
+              AND e.detail->>'sourceId' = v.source_id::text AND (e.detail->>'versionNo')::int = v.version_no
+         LEFT JOIN users u ON u.id = e.actor_id
         WHERE v.id = $1`,
       [versionId],
     );
@@ -331,7 +360,8 @@ export class NotesService {
     const byAi = chain.rows.some((c) => c.origin === 'ai');
     const parts = [byAi ? `Drafted by AI from meeting ${r.title}` : `Written by ${editors.join(', ')} for meeting ${r.title}`];
     if (byAi && editors.length > 0) parts.push(`edited by ${editors.join(', ')}`);
-    parts.push(`published by ${r.publisher ?? 'a person'} on ${formatDay(r.at)}`);
+    // Who published and when come from the publication event, not from whoever created the version (a Member may have submitted it).
+    if (r.at) parts.push(`published by ${r.publisher} on ${formatDay(r.at)}`);
     return parts.join('; ');
   }
 

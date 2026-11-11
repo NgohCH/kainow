@@ -214,8 +214,12 @@ describe('publishing minutes, member submissions and note audiences', { skip: SK
     assert.equal((await t.pool.query(`SELECT 1 FROM notifications WHERE kind = 'minutes_submitted' AND summary = 'Minutes submitted for review: Weekly check-in'`)).rowCount, 3);
     assert.equal((await ben.request('GET', `/notes/${s.body.id}`)).status, 404);
     assert.equal((await pm.request('POST', `/notes/${s.body.id}/publish`, { audience: { mode: 'project' } })).status, 400, 'the meeting keeps its audience');
+    t.clock.advanceSeconds(86_400);
+    [pm, ada, ben] = [await t.signIn('pm@example.org'), await t.signIn('ada@example.org'), await t.signIn('ben@example.org')]; // old sessions have expired
     const pub = await pm.request('POST', `/notes/${s.body.id}/publish`);
     assert.equal(pub.status, 200, JSON.stringify(pub.body));
+    // The reviewer and the day of publication are named, not the submitter and the day of submission.
+    assert.equal((await pm.request('GET', `/notes/${s.body.id}`)).body.source.provenance, 'Written by ada for meeting Weekly check-in; published by pm on 10 Nov 2026');
     assert.ok(pub.body.extractionRunId);
     assert.equal((await ben.request('GET', `/notes/${s.body.id}`)).status, 200);
     assert.equal((await t.pool.query(`SELECT 1 FROM discussion_events WHERE thread_id = $1 AND action = 'minutes_published'`, [meeting])).rowCount, 1);
@@ -272,6 +276,27 @@ describe('publishing minutes, member submissions and note audiences', { skip: SK
     assert.equal(again.body.id, s.body.id);
     assert.equal(again.body.latestVersion, 2);
     assert.equal((await t.pool.query(`SELECT publication, returned_reason FROM sources WHERE id = $1`, [s.body.id])).rows[0].publication, 'submitted');
+  });
+
+  test('the submitter revises a returned submission; nobody else can', async () => {
+    const id = (await submitNote(ada)).body.id as string;
+    await t.pool.query(`DELETE FROM notifications`);
+    const add = (c: Client, text: string) => c.request('POST', `/notes/${id}/versions`, { text });
+    assert.equal((await add(ada, 'early revision')).status, 403, 'not while it waits for review');
+    assert.equal((await pm.request('POST', `/notes/${id}/return`, { reason: 'Add the attendees.' })).status, 200);
+    assert.equal((await add(ben, 'mine')).status, 404, 'another Member cannot see it');
+    assert.equal((await add(pm, 'manager edit')).status, 409, 'a manager cannot add a version to a submission');
+    assert.equal((await add(ada, `key ${KEY}`)).status, 400, 'secret check');
+    assert.equal((await t.pool.query(`SELECT publication FROM sources WHERE id = $1`, [id])).rows[0].publication, 'returned');
+    const ok = await add(ada, 'We saw the pump. Present: Ada, Ben.');
+    assert.equal(ok.status, 201, JSON.stringify(ok.body));
+    assert.equal(ok.body.version.versionNo, 2);
+    const row = (await t.pool.query(`SELECT publication, returned_reason FROM sources WHERE id = $1`, [id])).rows[0];
+    assert.deepEqual(row, { publication: 'submitted', returned_reason: null });
+    const notes = (await t.pool.query(`SELECT user_id, kind, summary FROM notifications WHERE kind = 'minutes_submitted'`)).rows;
+    assert.deepEqual(notes.map((n) => n.user_id).sort(), [ids.pm, ids.deputy, ids.sponsor].sort());
+    assert.ok(notes.every((n) => n.kind === 'minutes_submitted' && n.summary === 'Minutes submitted for review: Site visit notes'));
+    assert.equal((await pm.request('POST', `/notes/${id}/publish`, { audience: { mode: 'project' } })).status, 200);
   });
 
   test('Member cannot publish (403)', async () => {

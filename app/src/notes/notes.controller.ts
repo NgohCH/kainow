@@ -60,6 +60,13 @@ export class NotesController {
     return sourceId;
   }
 
+  /** Adding a version needs the right to import notes, except that a submitter revises their own returned submission (needs the right to submit). */
+  private async forVersionAdd(req: HttpRequest, sourceId: string): Promise<void> {
+    const { row } = await this.audiences.assertSourceReadable(who(req), id(sourceId));
+    const own = row.kind === 'notes' && row.publication === 'returned' && row.submittedBy === who(req).id;
+    await this.access.authorize(who(req), own ? 'notes.submit' : 'note.import', row.projectId);
+  }
+
   /** Paste: { title, text }. */
   @Post('projects/:projectId/notes')
   @AnySignedInUser()
@@ -91,7 +98,7 @@ export class NotesController {
   @AnySignedInUser()
   @HttpCode(201)
   async addVersion(@Param('id') sourceId: string, @Body() body: unknown, @Req() req: HttpRequest) {
-    await this.forSource(req, sourceId, 'note.import');
+    await this.forVersionAdd(req, sourceId);
     return { version: await this.notes.addVersion(sourceId, { text: field(body, 'text') ?? '' }, who(req).id) };
   }
 
@@ -101,7 +108,7 @@ export class NotesController {
   @HttpCode(201)
   @UseInterceptors(noteUpload)
   async addVersionFromFile(@Param('id') sourceId: string, @UploadedFile() file: UploadedBuffer, @Req() req: HttpRequest) {
-    await this.forSource(req, sourceId, 'note.import');
+    await this.forVersionAdd(req, sourceId);
     return { version: await this.notes.addVersion(sourceId, { file }, who(req).id) };
   }
 
