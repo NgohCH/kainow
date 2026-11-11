@@ -3,7 +3,7 @@ import type { Pool } from 'pg';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
-import { MSG, STEPS, TOTAL, refreshChecklist } from './checklist';
+import { MSG, STEPS, TOTAL, custodianRecorded, refreshChecklist } from './checklist';
 
 export interface StepView {
   key: string; position: number; text: string; explanation: string; link: string; mode: string; done: boolean;
@@ -30,6 +30,7 @@ export class GoLiveService {
          FROM golive_steps s LEFT JOIN users u ON u.id = s.ticked_by ORDER BY s.position`,
     )).rows;
     const sent = await this.testEmailSent();
+    const custodian = await custodianRecorded(this.pool);
     const steps: StepView[] = STEPS.map((def) => {
       const r = rows.find((x) => x.key === def.key);
       const done = r.ticked_at !== null;
@@ -39,7 +40,7 @@ export class GoLiveService {
         tickedAt: done ? (r.ticked_at as Date).toISOString() : null,
         note: r.note, skipped: r.skipped,
         canUntick: !closedAt && def.mode !== 'auto' && done && r.ticked_by !== null,
-        canTick: !closedAt && def.mode !== 'auto' && !done && (def.key !== 'test_email' || sent),
+        canTick: !closedAt && def.mode !== 'auto' && !done && (def.key !== 'test_email' || sent) && (def.key !== 'recovery' || custodian),
       };
     });
     // Not done at close: steps without a tick, or ticked only after the checklist closed.
@@ -94,6 +95,7 @@ export class GoLiveService {
         (await c.query(`SELECT 1 FROM email_outbox WHERE kind = 'test' AND status = 'sent' LIMIT 1`)).rowCount !== 1) {
         throw new ConflictException(MSG.testEmailFirst);
       }
+      if (action === 'tick' && key === 'recovery' && !(await custodianRecorded(c))) throw new ConflictException(MSG.custodianFirst);
       if (action === 'untick') {
         await c.query(`UPDATE golive_steps SET ticked_by = NULL, ticked_at = NULL, note = NULL, skipped = false WHERE key = $1`, [key]);
       } else {

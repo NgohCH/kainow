@@ -17,11 +17,11 @@ export const STEPS: readonly StepDef[] = [
   { key: 'organisation', mode: 'auto', link: '#/organisation', text: 'Register your organisation: its name and email domains', explanation: "Kainow needs the organisation's name and email domains before anyone can be invited." },
   { key: 'logos', mode: 'auto_or_skip', link: '#/organisation', text: "Upload your organisation's logos (optional)", explanation: 'Logos appear on sign-in and on exported documents. Upload one, or confirm that you are skipping it.' },
   { key: 'second_admin', mode: 'auto', link: '#/people', text: 'Appoint a second Enterprise Administrator', explanation: 'A second Administrator means the organisation is never locked out if one is unavailable.' },
-  { key: 'recovery', mode: 'confirm', link: 'INSTALL.md, the section on Recovery custodian', text: 'Nominate the recovery custodian and test the recovery procedure', explanation: "Agree who the recovery custodian is and record how to reach them. Kainow's recovery procedure is still being written; check it is in place before go-live." },
+  { key: 'recovery', mode: 'confirm', link: '#/organisation', text: 'Nominate the recovery custodian and test the recovery procedure', explanation: 'Record the custodian on the Organisation page, then test recovery on the server with recover-admin --dry-run.' },
   { key: 'mailbox', mode: 'confirm', link: 'INSTALL.md, the section on Microsoft 365 email', text: 'Set up the Microsoft 365 sender mailbox and its permissions (INSTALL.md), with an auto-reply saying it is not monitored', explanation: 'Kainow sends its emails from this mailbox; people must not expect replies to be read.' },
   { key: 'test_email', mode: 'confirm', link: '#/deliveries', text: 'Send a test email and check that it arrived', explanation: 'Send a test email, wait until it shows as sent, then check it reached the inbox.' },
   { key: 'calendar', mode: 'confirm', link: '#/notifications-settings', text: "Set the working weekdays and this year's holidays", explanation: 'Notice times follow the working days, so the weekdays and holidays must be right.' },
-  { key: 'backups', mode: 'confirm', link: 'INSTALL.md, the section on backups', text: 'Configure daily encrypted backups and complete a test restore', explanation: 'A backup is only real once a restore from it has worked.' },
+  { key: 'backups', mode: 'confirm', link: 'INSTALL.md, the section on Back up', text: 'Configure daily encrypted backups and complete a test restore', explanation: 'A backup is only real once a restore from it has worked.' },
   { key: 'department', mode: 'auto', link: '#/departments', text: 'Create a real department', explanation: 'Projects and people belong to a department.' },
   { key: 'users', mode: 'auto', link: '#/', text: 'Admit real users', explanation: 'At least one person who is not an Enterprise Administrator has accepted their invitation and is Active.' },
   { key: 'project', mode: 'auto', link: '#/', text: 'Launch the first real project', explanation: 'A real project has reached Active. When this and the two steps before it are done, the checklist closes.' },
@@ -32,6 +32,7 @@ export const CLOSING_KEYS = ['department', 'users', 'project'] as const;
 export const MSG = {
   autoStep: 'Kainow ticks this step itself.',
   testEmailFirst: 'Send a test email first, then check it arrived.',
+  custodianFirst: 'Record the recovery custodian on the Organisation page first.',
   closed: 'The go-live checklist is closed.',
   noteLong: 'A note can be at most 200 characters.',
   alreadyDone: 'This step is already done.',
@@ -39,6 +40,14 @@ export const MSG = {
 } as const;
 
 type Db = Pool | PoolClient;
+
+/** True once both recovery custodian fields are recorded (step 4 can then be marked done). */
+export async function custodianRecorded(db: Db): Promise<boolean> {
+  const { rowCount } = await db.query(
+    `SELECT 1 FROM organisation WHERE id = 1 AND recovery_custodian_name IS NOT NULL AND recovery_custodian_contact IS NOT NULL`,
+  );
+  return rowCount === 1;
+}
 
 /** Which automatic conditions hold now. */
 export async function conditions(db: Db): Promise<Record<string, boolean>> {

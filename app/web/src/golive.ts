@@ -59,8 +59,13 @@ export function installText(link: string): string {
 export const stepLinkHidden = (position: number): string => ` (step ${position})`;
 
 export const TEST_EMAIL_FIRST = 'Send a test email first, then check it arrived.';
+export const CUSTODIAN_FIRST = 'Record the recovery custodian on the Organisation page first.';
 
-/** Why the test-email step's Mark done is shown disabled; null when the button is not waiting for anything. */
+/** What a Confirm step's disabled Mark done is waiting for; only the test-email and recovery steps ever wait. */
+const WAITING_FOR: Record<string, string> = { test_email: TEST_EMAIL_FIRST, recovery: CUSTODIAN_FIRST };
+
+/** Why a step's Mark done is shown disabled; null when the button is not waiting for anything. */
 export function tickWaitText(s: Pick<GoLiveStep, 'key' | 'mode' | 'done' | 'canTick'>, closed: boolean): string | null {
-  return s.key === 'test_email' && s.mode === 'confirm' && !s.done && !s.canTick && !closed ? TEST_EMAIL_FIRST : null;
+  const text = WAITING_FOR[s.key];
+  return text !== undefined && s.mode === 'confirm' && !s.done && !s.canTick && !closed ? text : null;
 }

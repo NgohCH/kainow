@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { bannerText, closedText, installText, linkKind, stepLinkHidden, stepState, tickWaitText } from './golive.ts';
+import { CUSTODIAN_FIRST, bannerText, closedText, installText, linkKind, stepLinkHidden, stepState, tickWaitText } from './golive.ts';
 
 test('bannerText gives the count in words', () => {
   assert.equal(bannerText(3, 11), 'Go-live: 3 of 11 steps done');
@@ -22,9 +22,9 @@ test('closedText and linkKind', () => {
   assert.equal(linkKind('INSTALL.md, the section on backups'), 'text');
 });
 
-test('installText names the INSTALL.md section for the recovery and mailbox steps', () => {
-  assert.equal(installText('INSTALL.md, the section on Recovery custodian'), 'See INSTALL.md: Recovery custodian');
+test('installText names the INSTALL.md section for the mailbox and backups steps', () => {
   assert.equal(installText('INSTALL.md, the section on Microsoft 365 email'), 'See INSTALL.md: Microsoft 365 email');
+  assert.equal(installText('INSTALL.md, the section on Back up'), 'See INSTALL.md: Back up');
 });
 
 test('stepLinkHidden makes each step link unique for screen readers', () => {
@@ -39,4 +39,13 @@ test('tickWaitText explains a disabled test-email Mark done, and nothing else', 
   assert.equal(tickWaitText({ ...step, done: true }, false), null);
   assert.equal(tickWaitText(step, true), null, 'closed');
   assert.equal(tickWaitText({ ...step, key: 'calendar' }, false), null);
+});
+
+test('tickWaitText explains a disabled recovery Mark done until the custodian is recorded', () => {
+  const recovery = { ...step, key: 'recovery' } as const;
+  assert.equal(tickWaitText(recovery, false), 'Record the recovery custodian on the Organisation page first.');
+  assert.equal(CUSTODIAN_FIRST, 'Record the recovery custodian on the Organisation page first.');
+  assert.equal(tickWaitText({ ...recovery, canTick: true }, false), null, 'enabled once the custodian is recorded');
+  assert.equal(tickWaitText({ ...recovery, done: true }, false), null);
+  assert.equal(tickWaitText(recovery, true), null, 'closed');
 });

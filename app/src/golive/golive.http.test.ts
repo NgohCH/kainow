@@ -33,6 +33,11 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     );
   };
 
+  const recordCustodian = async () => {
+    const r = await admin.request('PUT', '/organisation/recovery-custodian', { name: 'Casey Custodian', contact: 'custodian@example.org' });
+    assert.equal(r.status, 200);
+  };
+
   test('everyone but an Active Enterprise Administrator gets 404 on every route', async () => {
     await seedUser(t.pool, 'member@example.org');
     const member = await t.signIn('member@example.org');
@@ -168,6 +173,7 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
   });
 
   test('a done step cannot be ticked again and a step that is not done cannot be unticked', async () => {
+    await recordCustodian();
     const first = await admin.request('POST', '/go-live/steps/recovery/tick', { note: 'First' });
     assert.equal(first.status, 200);
     assert.deepEqual([step(first.body, 'recovery').canTick, step(first.body, 'recovery').canUntick], [false, true], 'a done Confirm step');
@@ -193,17 +199,33 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual((await events(t)).filter((e) => e.step_key === 'logos').map((e) => [e.action, e.actor_id]), [['ticked', adminId], ['ticked', null]]);
   });
 
-  test('the recovery and mailbox steps point to INSTALL.md sections; the organisation text uses a straight apostrophe', async () => {
+  test('the recovery step points to the Organisation page; the mailbox and backups steps to INSTALL.md sections; the organisation text uses a straight apostrophe', async () => {
     const body = await get();
     assert.equal(step(body, 'recovery').text, 'Nominate the recovery custodian and test the recovery procedure');
-    assert.equal(step(body, 'recovery').explanation, "Agree who the recovery custodian is and record how to reach them. Kainow's recovery procedure is still being written; check it is in place before go-live.");
-    assert.equal(step(body, 'recovery').link, 'INSTALL.md, the section on Recovery custodian');
+    assert.equal(step(body, 'recovery').explanation, 'Record the custodian on the Organisation page, then test recovery on the server with recover-admin --dry-run.');
+    assert.equal(step(body, 'recovery').link, '#/organisation');
     assert.equal(step(body, 'mailbox').link, 'INSTALL.md, the section on Microsoft 365 email');
+    assert.equal(step(body, 'backups').link, 'INSTALL.md, the section on Back up');
     assert.ok(!body.steps.some((s: any) => /[‘’]/.test(s.text + s.explanation)), 'no curly apostrophes');
     assert.equal(step(body, 'organisation').explanation, "Kainow needs the organisation's name and email domains before anyone can be invited.");
   });
 
+  test('the recovery step is refused until both custodian fields are recorded, then allowed', async () => {
+    assert.equal(step(await get(), 'recovery').canTick, false);
+    const refused = await admin.request('POST', '/go-live/steps/recovery/tick', {});
+    assert.deepEqual([refused.status, refused.body.message], [409, 'Record the recovery custodian on the Organisation page first.']);
+    await t.pool.query(`UPDATE organisation SET recovery_custodian_name = 'Casey Custodian'`);
+    assert.equal(step(await get(), 'recovery').canTick, false, 'a name alone is not enough');
+    assert.equal((await admin.request('POST', '/go-live/steps/recovery/tick', {})).status, 409);
+    assert.deepEqual((await events(t)).filter((e) => e.step_key === 'recovery'), [], 'no history for refused ticks');
+    await recordCustodian();
+    assert.equal(step(await get(), 'recovery').canTick, true);
+    const ticked = await admin.request('POST', '/go-live/steps/recovery/tick', { note: 'Dry run passed' });
+    assert.deepEqual([ticked.status, step(ticked.body, 'recovery').done], [200, true]);
+  });
+
   test('after closing, no step can be ticked or unticked, Confirm steps included', async () => {
+    await recordCustodian();
     await admin.request('POST', '/go-live/steps/recovery/tick', {});
     await reachClose();
     const body = await get();
@@ -227,6 +249,7 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
   };
 
   test('the checklist closes when department, users and project are done, and lists what is open', async () => {
+    await recordCustodian();
     await admin.request('POST', '/go-live/steps/recovery/tick', { note: 'Done' });
     await reachClose();
     const body = await get();

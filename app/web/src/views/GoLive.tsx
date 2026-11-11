@@ -21,7 +21,7 @@ function Step({ s, closed, onAction, busy }: { s: GoLiveStep; closed: boolean; o
 
   const showTick = s.canTick && s.mode === 'confirm' && !s.done;
   const showSkip = s.canTick && s.key === 'logos' && !s.done;
-  // The test-email step's Mark done stays visible but disabled until a test email has been sent.
+  // The test-email and recovery steps' Mark done stays visible but disabled until what it waits for is done.
   const waiting = tickWaitText(s, closed);
   const waitId = `wait-${s.key}`;
   return (
