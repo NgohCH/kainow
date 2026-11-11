@@ -56,6 +56,16 @@ test('empty table cells keep their column and rows with no text are dropped', as
   assert.equal(r.text, 'Sam |  | Friday\n\n');
 });
 
+test('a word Word splits across runs in a table cell stays one word', async () => {
+  const r = await readUpload('t.docx', makeDocx([{ table: [[[['Sam']], [['Send the stakeholder', 's the ', 'compil', 'ation']]]] }]));
+  assert.equal(r.text, 'Sam | Send the stakeholders the compilation\n\n');
+});
+
+test('separate paragraphs in one table cell are joined with a space', async () => {
+  const r = await readUpload('t.docx', makeDocx([{ table: [[[['Book the hall'], ['Subject to approval']], 'Friday']] }]));
+  assert.equal(r.text, 'Book the hall Subject to approval | Friday\n\n');
+});
+
 test('table text with markup characters is not changed', async () => {
   const r = await readUpload('t.docx', makeDocx([{ table: [['R&D <team>', 'Café']] }]));
   assert.equal(r.text, 'R&D <team> | Café\n\n');

@@ -135,7 +135,14 @@ interface DocNode {
   children?: DocNode[];
 }
 
-const textOf = (n: DocNode): string => (n.type === 'text' ? n.value ?? '' : n.type === 'tab' ? ' ' : (n.children ?? []).map(textOf).join(' '));
+/** Word splits words across runs, so runs join with nothing; a paragraph, cell or row ends with a space. */
+const BLOCKS = new Set(['paragraph', 'tableCell', 'tableRow', 'table']);
+const textOf = (n: DocNode): string => {
+  if (n.type === 'text') return n.value ?? '';
+  if (n.type === 'tab' || n.type === 'break') return ' ';
+  const inner = (n.children ?? []).map(textOf).join('');
+  return BLOCKS.has(n.type) ? `${inner} ` : inner;
+};
 
 /**
  * A table row is one thing someone said, so each row becomes one line ("Sam | Send the budget | Friday")

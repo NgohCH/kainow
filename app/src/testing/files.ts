@@ -45,13 +45,18 @@ export function makeZip(entries: Array<{ name: string; data: Buffer | string }>)
 
 const xmlEscape = (s: string): string => s.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 
+/** A cell is one paragraph of text, or paragraphs given as their runs (Word often splits one word across runs). */
+export type DocxCell = string | string[][];
+
 export interface DocxTable {
-  table: string[][];
+  table: DocxCell[][];
 }
 
-const wPara = (p: string): string => `<w:p><w:r><w:t xml:space="preserve">${xmlEscape(p)}</w:t></w:r></w:p>`;
-const wTable = (rows: string[][]): string =>
-  `<w:tbl>${rows.map((r) => `<w:tr>${r.map((c) => `<w:tc>${wPara(c)}</w:tc>`).join('')}</w:tr>`).join('')}</w:tbl>`;
+const wRuns = (runs: string[]): string => `<w:p>${runs.map((t) => `<w:r><w:t xml:space="preserve">${xmlEscape(t)}</w:t></w:r>`).join('')}</w:p>`;
+const wPara = (p: string): string => wRuns([p]);
+const wCell = (c: DocxCell): string => (typeof c === 'string' ? wPara(c) : c.map(wRuns).join(''));
+const wTable = (rows: DocxCell[][]): string =>
+  `<w:tbl>${rows.map((r) => `<w:tr>${r.map((c) => `<w:tc>${wCell(c)}</w:tc>`).join('')}</w:tr>`).join('')}</w:tbl>`;
 
 /** A minimal but valid Word document with one paragraph per string, or a table for a { table } entry. */
 export function makeDocx(parts: Array<string | DocxTable>): Buffer {

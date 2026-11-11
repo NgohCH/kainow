@@ -90,6 +90,29 @@ export interface Run {
   unlocatedCount: number | null;
   createdAt: string;
   finishedAt: string | null;
+  /** The meeting date in force: the reviewer's for this version, else the one in the notes. */
+  meetingDate: string | null;
+  meetingDateSource: 'notes' | 'reviewer' | 'none';
+}
+
+/** Kainow's reading of a due (worked out by the server each time; never stored). Days are 'YYYY-MM-DD'. */
+export interface DueReading {
+  state: 'exact' | 'range' | 'event' | 'needs_date';
+  earliest: string | null;
+  latest: string | null;
+  event: string | null;
+  reason: string | null;
+  note: string | null;
+  usedMeetingDate: boolean;
+}
+
+/** A due a reviewer has set: dates, or the event the item waits on. */
+export interface ReviewerDue {
+  earliest: string | null;
+  latest: string | null;
+  event: string | null;
+  /** The reviewer says the event the model named does not apply. */
+  ignoreModelEvent: boolean;
 }
 
 export type Kind = 'decision' | 'action' | 'question' | 'risk';
@@ -101,7 +124,14 @@ export interface Item {
   kind: Kind;
   text: string;
   owner: string | null;
+  /** The due as worded (by the notes, or by a reviewer's edit). */
   due: string | null;
+  /** The event the model says the item waits on, if any. */
+  dueEvent: string | null;
+  /** For a question: possible answers taken from the notes. Empty otherwise. */
+  alternatives: string[];
+  dueReading: DueReading;
+  reviewerDue: ReviewerDue | null;
   quote: string;
   quoteStart: number | null;
   quoteEnd: number | null;

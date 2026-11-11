@@ -167,3 +167,13 @@ label.choice { display: flex; align-items: center; font-weight: 400; }
 .edit-form { display: grid; gap: 0.6rem; }
 .edit-form label { display: grid; gap: 0.25rem; font-weight: 500; }
 .edited { font-style: italic; }
+
+/* Due dates and the meeting date (design of 8 November 2026). */
+.meeting-date { margin: 0.5rem 0 1rem; padding: 0.5rem 0.75rem; border: 1px solid var(--rule); border-radius: 4px; background: var(--surface); }
+.meeting-date.warn { background: var(--rust-wash); border-color: var(--rust); }
+.meeting-date p, .meeting-date form { margin: 0; display: flex; flex-wrap: wrap; align-items: center; gap: 0.5rem; }
+.due-line { margin: 0.25rem 0; }
+.due-dates { border: 1px solid var(--rule); border-radius: 4px; padding: 0.5rem 0.75rem; display: grid; gap: 0.5rem; }
+.due-dates legend { font-size: 0.875rem; color: var(--muted); }
+.alternatives ul { margin: 0.25rem 0 0.5rem 1.25rem; padding: 0; }
+.due-dates label.check { display: flex; gap: 0.4rem; align-items: center; }

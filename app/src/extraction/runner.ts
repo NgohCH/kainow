@@ -8,7 +8,7 @@ import type { SpendService } from '../spend/spend.service';
 import { readSettings } from '../spend/spend.settings';
 import { locateQuote } from '../notes/text';
 import { findCredentials } from './credentials';
-import { ModelBadResponse, ModelCallError, type ModelClient, type RawItem } from './model';
+import { ModelBadResponse, ModelCallError, type ModelClient, type ModelAnswer } from './model';
 import { EXTRACTION_SYSTEM_PROMPT, MAX_OUTPUT_TOKENS, REQUEST_TIMEOUT_MS } from './prompt';
 
 export type RunOutcome = 'succeeded' | 'failed' | 'blocked' | 'retry' | 'skipped';
@@ -132,7 +132,7 @@ export class ExtractionRunner {
       });
       // The cost is recorded first, so it is counted even if saving the proposals fails.
       await spend.settle(entryId, result.usage);
-      return await this.saveItems(run, settings.modelId, result.items);
+      return await this.saveItems(run, settings.modelId, result);
     } catch (err) {
       return this.failed(run, entryId, sent, err, isLastAttempt);
     }
@@ -177,7 +177,8 @@ export class ExtractionRunner {
     return this.finish(run, 'failed', code, detail);
   }
 
-  private async saveItems(run: RunRow, modelId: string, items: RawItem[]): Promise<RunOutcome> {
+  private async saveItems(run: RunRow, modelId: string, answer: ModelAnswer): Promise<RunOutcome> {
+    const { items, meetingDate } = answer;
     const at = this.d.clock();
     const client = await this.d.pool.connect();
     try {
@@ -188,20 +189,22 @@ export class ExtractionRunner {
         if (matches.length === 0) unlocated++;
         await client.query(
           `INSERT INTO extraction_items
-             (id, run_id, source_version_id, position, kind, text, owner, due, quote, quote_start, quote_end, quote_matches, created_at)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+             (id, run_id, source_version_id, position, kind, text, owner, due, quote, quote_start, quote_end, quote_matches, created_at,
+              due_event, alternatives)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)`,
           [
             uuidv7(at.getTime()), run.id, run.source_version_id, position, item.kind, item.text, item.owner, item.due,
             item.source_quote, matches[0]?.start ?? null, matches[0]?.end ?? null, matches.length, at,
+            item.due_event, item.alternatives,
           ],
         );
       }
       await client.query(
         `UPDATE extraction_runs
             SET status = 'succeeded', model_id = $2, item_count = $3, unlocated_count = $4, finished_at = $5,
-                failure_code = NULL, failure_detail = NULL
+                failure_code = NULL, failure_detail = NULL, meeting_date = $6
           WHERE id = $1`,
-        [run.id, modelId, items.length, unlocated, at],
+        [run.id, modelId, items.length, unlocated, at, meetingDate],
       );
       await this.audit(client, run, 'succeeded', { items: items.length, unlocated, modelId });
       await client.query('COMMIT');

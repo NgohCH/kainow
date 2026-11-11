@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, api, type Item, type Run } from '../api.ts';
 import { KIND_LABEL, plural } from '../format.ts';
 import { buildSegments, contextAround, markedSpan } from '../segments.ts';
+import { type EditFields, blocksApproval, dueLine, editFormFrom, formatDay } from '../due.ts';
 
 interface RunView {
   run: Run;
@@ -20,7 +21,9 @@ export function Review({ runId }: { runId: string }) {
   const [pick, setPick] = useState<Record<string, number>>({});
   const [saving, setSaving] = useState<Set<string>>(new Set());
   // The proposal whose wording is being edited, and what has been typed so far.
-  const [editing, setEditing] = useState<{ id: string; text: string; owner: string; due: string } | null>(null);
+  const [editing, setEditing] = useState<(EditFields & { id: string; focusDue: boolean }) | null>(null);
+  // The meeting date being typed, while the banner's input is open.
+  const [meetingInput, setMeetingInput] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const marks = useRef(new Map<string, HTMLElement>());
   const cards = useRef(new Map<string, HTMLElement>());
@@ -36,6 +39,19 @@ export function Review({ runId }: { runId: string }) {
       (e: Error) => setError(e.message),
     );
   }, [runId]);
+
+  const saveMeeting = useCallback(async () => {
+    if (!view || meetingInput === null) return;
+    setError(null);
+    try {
+      await api.post(`/notes/${view.source.sourceId}/versions/${view.source.versionNo}/meeting-date`, { meetingDate: meetingInput });
+      setView(await api.get<RunView>(`/extractions/${runId}`));
+      setMeetingInput(null);
+      setNotice('Saved. The due dates were worked out again from this meeting date.');
+    } catch (e) {
+      setError(e instanceof ApiError ? e.message : 'The meeting date was not saved. Try again.');
+    }
+  }, [view, meetingInput, runId]);
 
   const items = view?.items ?? [];
   const segments = useMemo(
@@ -90,6 +106,10 @@ export function Review({ runId }: { runId: string }) {
         text: editing.text,
         owner: editing.owner,
         due: editing.due,
+        dueEarliest: editing.dueEarliest,
+        dueLatest: editing.dueLatest,
+        dueEvent: editing.dueEvent,
+        ignoreModelEvent: editing.ignoreModelEvent,
       });
       setView((v) => (v ? { ...v, items: v.items.map((i) => (i.id === id ? r.item : i)) } : v));
       setPick((p) => {
@@ -146,6 +166,34 @@ export function Review({ runId }: { runId: string }) {
       </p>
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
+      {items.length > 0 && (
+      <div className={`meeting-date${view.run.meetingDateSource === 'none' ? ' warn' : ''}`}>
+        {meetingInput !== null || view.run.meetingDateSource === 'none' ? (
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              void saveMeeting();
+            }}
+          >
+            <label>
+              {view.run.meetingDateSource === 'none'
+                ? 'The notes do not give a meeting date. Enter it to work out the due dates:'
+                : 'Meeting date:'}{' '}
+              <input type="date" required value={meetingInput ?? ''} onChange={(e) => setMeetingInput(e.target.value)} />
+            </label>{' '}
+            <button type="submit" disabled={!meetingInput}>Save</button>
+            {view.run.meetingDateSource !== 'none' && (
+              <button type="button" onClick={() => setMeetingInput(null)}>Cancel</button>
+            )}
+          </form>
+        ) : (
+          <p>
+            Meeting date: {formatDay(view.run.meetingDate as string)} ({view.run.meetingDateSource === 'reviewer' ? 'you entered it' : 'from the notes'}){' '}
+            <button type="button" className="link-button" onClick={() => setMeetingInput(view.run.meetingDate ?? '')}>Change</button>
+          </p>
+        )}
+      </div>
+      )}
       {items.length === 0 && <p className="empty">The model found nothing to propose in this version.</p>}
 
       <div className="split review-split">
@@ -184,10 +232,34 @@ export function Review({ runId }: { runId: string }) {
               <button className="proposal-main" onClick={() => select(item.id, true)}>
                 <span className="kind">{KIND_LABEL[item.kind]}</span>
                 <span className="proposal-text">{item.text}</span>
-                {(item.owner || item.due) && (
-                  <span className="meta">{[item.owner && `Owner: ${item.owner}`, item.due && `Due: ${item.due}`].filter(Boolean).join(', ')}</span>
-                )}
+                {item.owner && <span className="meta">Owner: {item.owner}</span>}
               </button>
+              {(() => {
+                const line = dueLine(item, view.run);
+                return line && <p id={`due-${item.id}`} role="note" className={line.tone === 'warn' ? 'warn due-line' : 'meta due-line'}>{line.text}</p>;
+              })()}
+              {blocksApproval(item) && editing?.id !== item.id && (
+                <button
+                  type="button"
+                  className="link-button"
+                  onClick={() => {
+                    setNotice(null);
+                    setEditing({ id: item.id, ...editFormFrom(item), focusDue: true });
+                  }}
+                >
+                  Add a date
+                </button>
+              )}
+              {item.kind === 'question' && item.alternatives.length > 0 && (
+                <div className="alternatives">
+                  <span className="meta">Possible answers:</span>
+                  <ul>
+                    {item.alternatives.map((a) => (
+                      <li key={a}>{a}</li>
+                    ))}
+                  </ul>
+                </div>
+              )}
               {item.edited && item.original && (
                 <p className="meta edited">
                   Edited. The model said: {item.original.text}
@@ -211,9 +283,43 @@ export function Review({ runId }: { runId: string }) {
                     <input maxLength={200} value={editing.owner} onChange={(e) => setEditing({ ...editing, owner: e.target.value })} />
                   </label>
                   <label>
-                    Due
+                    Due, as worded
                     <input maxLength={200} value={editing.due} onChange={(e) => setEditing({ ...editing, due: e.target.value })} />
                   </label>
+                  <fieldset className="due-dates">
+                    <legend>Due dates (a range is fine; the latest day is the deadline)</legend>
+                    <label>
+                      Earliest date
+                      <input
+                        type="date"
+                        autoFocus={editing.focusDue}
+                        value={editing.dueEarliest}
+                        onChange={(e) => setEditing({ ...editing, dueEarliest: e.target.value, dueEvent: '' })}
+                      />
+                    </label>
+                    <label>
+                      Latest date (leave blank for one day)
+                      <input type="date" value={editing.dueLatest} onChange={(e) => setEditing({ ...editing, dueLatest: e.target.value, dueEvent: '' })} />
+                    </label>
+                    <label>
+                      Or waits on an event
+                      <input
+                        maxLength={200}
+                        value={editing.dueEvent}
+                        onChange={(e) => setEditing({ ...editing, dueEvent: e.target.value, dueEarliest: '', dueLatest: '' })}
+                      />
+                    </label>
+                    {item.dueEvent && (
+                      <label className="check">
+                        <input
+                          type="checkbox"
+                          checked={editing.ignoreModelEvent}
+                          onChange={(e) => setEditing({ ...editing, ignoreModelEvent: e.target.checked })}
+                        />{' '}
+                        The event the AI named (“{item.dueEvent}”) does not apply
+                      </label>
+                    )}
+                  </fieldset>
                   <p className="meta">Saving sends this proposal back to review. The quoted passage does not change.</p>
                   <div className="decision">
                     <button type="submit" className="approve" disabled={saving.has(item.id) || editing.text.trim() === ''}>Save</button>
@@ -226,7 +332,7 @@ export function Review({ runId }: { runId: string }) {
                   className="link-button"
                   onClick={() => {
                     setNotice(null);
-                    setEditing({ id: item.id, text: item.text, owner: item.owner ?? '', due: item.due ?? '' });
+                    setEditing({ id: item.id, ...editFormFrom(item), focusDue: false });
                   }}
                 >
                   Edit wording
@@ -275,6 +381,8 @@ export function Review({ runId }: { runId: string }) {
                 <button
                   className="approve"
                   disabled={saving.has(item.id) || isCurrentApproval(item, pick) || !canApprove(item, pick)}
+                  title={blocksApproval(item) ? 'Add a due date, a date range or the event it waits on first' : undefined}
+                  aria-describedby={blocksApproval(item) ? `due-${item.id}` : undefined}
                   onClick={() => void decide(item, 'approved')}
                 >
                   Approve
@@ -292,6 +400,7 @@ export function Review({ runId }: { runId: string }) {
 }
 
 function canApprove(item: Item, pick: Record<string, number>): boolean {
+  if (blocksApproval(item)) return false;
   return item.quoteMatches === 1 || (item.quoteMatches > 1 && pick[item.id] !== undefined);
 }
 
