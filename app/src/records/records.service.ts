@@ -1,4 +1,4 @@
-import { itemSourceFlags } from '../discussion/masking';
+import { itemDiscussionEvidence, itemSourceFlags } from '../discussion/masking';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
@@ -587,7 +587,8 @@ export class RecordsService {
         [ctx.project.id, user.id, ctx.today],
       )
     ).rows;
-    const flags = await itemSourceFlags(this.pool, tasks.filter((t) => t.itemId).map((t) => t.itemId as string));
+    const itemIds = tasks.filter((t) => t.itemId).map((t) => t.itemId as string);
+    const [flags, evidence] = await Promise.all([itemSourceFlags(this.pool, itemIds), itemDiscussionEvidence(this.pool, itemIds)]);
     const view = tasks.map((t) => ({
       id: t.id,
       parentId: t.parentId,
@@ -607,7 +608,7 @@ export class RecordsService {
         deadlineReviewRequired: t.deadlineReviewRequired,
       }),
       // Outside a restricted source's audience the quote is withheld, and so is what it would reveal (spec 6.3).
-      source: t.quote ? (t.evidenceVisible && canReadContent(ctx) ? { quote: t.quote as string, sourceFlag: flags.get(t.itemId) ?? null } : { restricted: true as const }) : null,
+      source: t.quote ? (t.evidenceVisible && canReadContent(ctx) ? { quote: t.quote as string, sourceFlag: flags.get(t.itemId) ?? null, discussionEvidence: evidence.get(t.itemId) ?? null } : { restricted: true as const }) : null,
       changeWaiting: t.changeWaiting as boolean,
       parentCancelled: t.parentStatus === 'cancelled' && t.status !== 'cancelled' && t.status !== 'completed',
       follows: (t.follows ?? null) as { id: string; title: string } | null,

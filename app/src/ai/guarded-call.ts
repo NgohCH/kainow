@@ -108,7 +108,8 @@ export async function guardedAiCall<T>(deps: GuardedDeps, input: GuardedCallInpu
 async function failed<T>(deps: GuardedDeps, input: GuardedCallInput<T>, entryId: string, sent: boolean, err: unknown): Promise<GuardedOutcome<T>> {
   const { spend } = deps;
   let code = 'internal_error';
-  let detail = 'An unexpected error stopped the extraction.';
+  const noun = input.purpose === 'discussion_analysis' ? 'analysis' : input.purpose === 'minutes_draft' ? 'minutes drafting' : 'extraction';
+  let detail = `An unexpected error stopped the ${noun}.`;
   let retryable = true;
 
   try {

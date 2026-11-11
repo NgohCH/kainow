@@ -13,6 +13,7 @@ import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { seedWorkingProject, seedOrganisation } from '../testing/projects';
 import { CaptureSender, FakeClock, testEnv } from '../testing/fakes';
 import { QUEUES, startQueues } from '../worker/queues';
+import { AnalysisRunner } from '../analysis/analysis-runner';
 import { registerAiWorker } from '../worker/ai-worker';
 import { UsersService } from '../users/users.service';
 import type { ModelClient, ModelRequest, ModelResult } from './model';
@@ -188,7 +189,7 @@ describe('extraction over HTTP', { skip: SKIP_NO_DB }, () => {
       boss = await startQueues(testDatabaseUrl() as string, SCHEMA);
       await start({ enqueue: async (runId) => void (await boss.send(QUEUES.ai, { runId })) });
       const runner = new ExtractionRunner({ pool, spend: new SpendService(pool, clock.now), model, clock: clock.now });
-      await registerAiWorker(boss, runner, pool);
+      await registerAiWorker(boss, { extraction: runner, analysis: new AnalysisRunner({ pool, clock: clock.now, extraction: runner }) }, pool);
     });
     afterEach(async () => {
       await boss.stop({ graceful: true, timeout: 5000 });

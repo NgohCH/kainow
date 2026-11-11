@@ -64,13 +64,19 @@ export async function maskedVersionText(db: Db, sourceVersionId: string, text: s
   return spans.length === 0 ? text : maskTranscript(text, spans);
 }
 
+interface ItemPlace {
+  versionId: string;
+  start: number;
+  end: number;
+}
+
 /**
- * The flag for each proposal (extraction item) whose quote lies in a message that is now hidden or deleted.
- * Items from any other kind of source, or with an unplaced quote, are absent from the result.
+ * Where each proposal's quote sits in its stored transcript: the first place, or the one the reviewer chose among repeats.
+ * Proposals from any other kind of source, or with an unplaced quote, are absent from the result.
  */
-export async function itemSourceFlags(db: Db, itemIds: string[]): Promise<Map<string, SourceFlag>> {
-  const flags = new Map<string, SourceFlag>();
-  if (itemIds.length === 0) return flags;
+async function discussionItemPlaces(db: Db, itemIds: string[]): Promise<Map<string, ItemPlace>> {
+  const places = new Map<string, ItemPlace>();
+  if (itemIds.length === 0) return places;
   const { rows } = await db.query(
     `SELECT i.id, i.source_version_id AS "versionId", i.quote, i.quote_start AS "quoteStart", i.quote_end AS "quoteEnd",
             i.chosen_occurrence AS "chosen"
@@ -80,12 +86,8 @@ export async function itemSourceFlags(db: Db, itemIds: string[]): Promise<Map<st
       WHERE i.id = ANY($1::uuid[]) AND i.quote_start IS NOT NULL`,
     [itemIds],
   );
-  const spansByVersion = new Map<string, SpanState[]>();
   const textByVersion = new Map<string, string>();
   for (const r of rows) {
-    if (!spansByVersion.has(r.versionId)) spansByVersion.set(r.versionId, await loadSpanStates(db, r.versionId));
-    const spans = spansByVersion.get(r.versionId) as SpanState[];
-    if (spans.every((s) => s.state === 'visible')) continue;
     let start: number = r.quoteStart;
     let end: number = r.quoteEnd;
     if (r.chosen) {
@@ -96,8 +98,63 @@ export async function itemSourceFlags(db: Db, itemIds: string[]): Promise<Map<st
       const place = locateQuote(textByVersion.get(r.versionId) as string, r.quote)[r.chosen];
       if (place) ({ start, end } = place);
     }
-    const flag = quoteSourceFlag(start, end, spans);
-    if (flag) flags.set(r.id, flag);
+    places.set(r.id, { versionId: r.versionId, start, end });
+  }
+  return places;
+}
+
+/**
+ * The flag for each proposal (extraction item) whose quote lies in a message that is now hidden or deleted.
+ * Items from any other kind of source, or with an unplaced quote, are absent from the result.
+ */
+export async function itemSourceFlags(db: Db, itemIds: string[]): Promise<Map<string, SourceFlag>> {
+  const flags = new Map<string, SourceFlag>();
+  const places = await discussionItemPlaces(db, itemIds);
+  const spansByVersion = new Map<string, SpanState[]>();
+  for (const [id, place] of places) {
+    if (!spansByVersion.has(place.versionId)) spansByVersion.set(place.versionId, await loadSpanStates(db, place.versionId));
+    const spans = spansByVersion.get(place.versionId) as SpanState[];
+    if (spans.every((s) => s.state === 'visible')) continue;
+    const flag = quoteSourceFlag(place.start, place.end, spans);
+    if (flag) flags.set(id, flag);
   }
   return flags;
+}
+
+/** Where a proposal came from in a discussion: the message, who wrote it and when. */
+export interface DiscussionEvidence {
+  threadId: string;
+  messageNo: number;
+  authorName: string;
+  at: string;
+}
+
+/**
+ * For each proposal whose quote lies in a discussion transcript: "Message #12 by <name>" from the transcript span at the start of the
+ * quote (spec 7.4). A message now hidden or deleted gives no evidence (its header is masked, so the author is not named). Proposals
+ * from any other kind of source are absent.
+ */
+export async function itemDiscussionEvidence(db: Db, itemIds: string[]): Promise<Map<string, DiscussionEvidence>> {
+  const evidence = new Map<string, DiscussionEvidence>();
+  const places = await discussionItemPlaces(db, itemIds);
+  const byVersion = new Map<string, Array<DiscussionEvidence & { headerStart: number; bodyEnd: number }>>();
+  for (const [id, place] of places) {
+    if (!byVersion.has(place.versionId)) {
+      const { rows } = await db.query(
+        `SELECT s.thread_id AS "threadId", sp.message_no AS "messageNo", u.display_name AS "authorName", m.created_at AS at,
+                sp.header_start AS "headerStart", sp.body_end AS "bodyEnd"
+           FROM transcript_spans sp
+           JOIN source_versions v ON v.id = sp.source_version_id
+           JOIN sources s ON s.id = v.source_id AND s.kind = 'discussion'
+           JOIN discussion_messages m ON m.thread_id = s.thread_id AND m.message_no = sp.message_no AND m.state = 'visible'
+           JOIN users u ON u.id = sp.author_id
+          WHERE sp.source_version_id = $1 ORDER BY sp.header_start`,
+        [place.versionId],
+      );
+      byVersion.set(place.versionId, rows.map((r) => ({ ...r, at: (r.at as Date).toISOString() })));
+    }
+    const span = (byVersion.get(place.versionId) ?? []).find((s) => place.start >= s.headerStart && place.start < s.bodyEnd);
+    if (span) evidence.set(id, { threadId: span.threadId, messageNo: span.messageNo, authorName: span.authorName, at: span.at });
+  }
+  return evidence;
 }

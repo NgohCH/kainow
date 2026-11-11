@@ -1,4 +1,4 @@
-import { itemSourceFlags } from '../discussion/masking';
+import { itemDiscussionEvidence, itemSourceFlags } from '../discussion/masking';
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
@@ -240,8 +240,9 @@ export class ExtractionService {
       const withDue = { ...item, reviewerDue: reviewerDueOf(dueRow), dueReading: dueReadingOf(dueRow, meeting.meetingDate), approvedWithoutRecord: item.reviewStatus === 'approved' && item.record === null };
       return item.edited ? { ...withDue, original: { text: originalText, owner: originalOwner, due: originalDue } } : withDue;
     });
-    const flags = await itemSourceFlags(this.pool, shaped.map((i) => i.id));
-    const flagged = shaped.map((i) => ({ ...i, sourceFlag: flags.get(i.id) ?? null }));
+    const itemIds = shaped.map((i) => i.id);
+    const [flags, evidence] = await Promise.all([itemSourceFlags(this.pool, itemIds), itemDiscussionEvidence(this.pool, itemIds)]);
+    const flagged = shaped.map((i) => ({ ...i, sourceFlag: flags.get(i.id) ?? null, discussionEvidence: evidence.get(i.id) ?? null }));
     Object.assign(run.rows[0], meeting);
     const src = await this.pool.query(
       `SELECT s.id AS "sourceId", s.title, v.version_no AS "versionNo"

@@ -1,4 +1,5 @@
 import { Pool } from 'pg';
+import { AnalysisRunner } from '../analysis/analysis-runner';
 import { AnalysisTick } from '../analysis/tick';
 import { bossAnalysisQueue } from '../analysis/queue';
 import { ExtractionRunner } from '../extraction/runner';
@@ -17,19 +18,20 @@ async function main(): Promise<void> {
   const config = loadWorkerConfig();
   const pool = new Pool({ connectionString: config.databaseUrl });
   const clock = () => new Date();
-  const runner = new ExtractionRunner({
+  const extraction = new ExtractionRunner({
     pool,
     spend: new SpendService(pool, clock),
     model: config.openAiApiKey ? new OpenAiModelClient(config.openAiApiKey) : null,
     clock,
     log: (m) => console.error(m),
   });
+  const analysisRunner = new AnalysisRunner({ pool, clock, extraction, log: (m) => console.error(m) });
   if (!config.openAiApiKey) {
     console.warn('OPENAI_API_KEY is not set: extraction runs will fail without sending anything.');
   }
 
   const boss = await startQueues(config.databaseUrl, undefined, { schedule: true });
-  await registerAiWorker(boss, runner, pool);
+  await registerAiWorker(boss, { extraction, analysis: analysisRunner }, pool);
 
   // The sweep nudges the dispatcher through the same boss instance; a lost nudge is caught by the next tick.
   const nudge: EmailNudge = {

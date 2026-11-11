@@ -237,7 +237,9 @@ describe('extraction runner', { skip: SKIP_NO_DB }, () => {
     await pool.query("UPDATE projects SET status = 'deferred' WHERE id = $1", [projectId]);
     const model = new FakeModel(() => answer([]));
     assert.equal(await runner(model).process(id, 1, false), 'blocked');
-    assert.equal((await run(id)).failure_code, 'requester_not_allowed');
+    const r = await run(id);
+    assert.equal(r.failure_code, 'project_not_open');
+    assert.ok(!/person|who asked/i.test(r.failure_detail), 'an automatic run names no person');
     assert.equal(model.calls.length, 0);
     assert.deepEqual(await entries(id), []);
   });
