@@ -1,7 +1,8 @@
 import { type DynamicModule, Module } from '@nestjs/common';
+import { AnalysisModule } from '../analysis/analysis.module';
 import { NotesModule } from '../notes/notes.module';
 import { ProjectsModule } from '../projects/projects.module';
-import { AUTOMATIC_ANALYSIS, type AutomaticAnalysis, ALWAYS_AUTOMATIC } from './automatic-analysis';
+import type { AutomaticAnalysis } from './automatic-analysis';
 import { AudienceController } from './audience.controller';
 import { AudienceModule } from './audience.module';
 import { MEETING_END_HOOK, type MeetingEndHook, NO_MEETING_END_HOOK, MeetingsService } from './meetings.service';
@@ -15,19 +16,18 @@ import { ThreadsService } from './threads.service';
 export class DiscussionModule {
   /**
    * Pass a hook only in tests (or when Task 10 binds the real one); the default does nothing when a meeting ends.
-   * Likewise `automaticAnalysis`: tests override it; Task 9 binds the real settings reader.
+   * `automaticAnalysis` replaces the real settings reader in tests only (AnalysisModule binds the token).
    */
-  static register(meetingEndHook: MeetingEndHook = NO_MEETING_END_HOOK, automaticAnalysis: AutomaticAnalysis = ALWAYS_AUTOMATIC): DynamicModule {
+  static register(meetingEndHook: MeetingEndHook = NO_MEETING_END_HOOK, automaticAnalysis?: AutomaticAnalysis): DynamicModule {
     return {
       module: DiscussionModule,
-      imports: [ProjectsModule, AudienceModule, NotesModule],
+      imports: [ProjectsModule, AudienceModule, NotesModule, AnalysisModule.register(automaticAnalysis)],
       controllers: [AudienceController, ThreadsController, MeetingsController, PublishingController],
       providers: [
         ThreadsService,
         MeetingsService,
         PublishingService,
         { provide: MEETING_END_HOOK, useValue: meetingEndHook },
-        { provide: AUTOMATIC_ANALYSIS, useValue: automaticAnalysis },
       ],
       exports: [AudienceModule, ThreadsService, MeetingsService],
     };
