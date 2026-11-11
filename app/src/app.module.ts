@@ -13,6 +13,7 @@ import { GoLiveModule } from './golive/golive.module';
 import { NotesModule } from './notes/notes.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { DigestsModule } from './digests/digests.module';
+import { DiscussionModule } from './discussion/discussion.module';
 import { OrganisationModule } from './organisation/organisation.module';
 import { ProjectsModule } from './projects/projects.module';
 import { SearchModule } from './search/search.module';
@@ -61,6 +62,7 @@ export class AppModule {
         DigestsModule,
         GoLiveModule,
         SearchModule,
+        DiscussionModule,
       ],
       controllers: [HealthController],
     };

@@ -20,7 +20,15 @@ export type ProjectAction =
   | 'proposal.review'
   | 'project.archive'
   | 'proposal.submit'
-  | 'audience.change';
+  | 'audience.change'
+  | 'discussion.post'
+  | 'analysis.request'
+  | 'notes.submit'
+  | 'meeting.restricted'
+  | 'minutes.publish'
+  | 'message.moderate'
+  | 'message.restore'
+  | 'feedback.review';
 
 interface MatrixRow {
   roles: ReadonlyArray<ProjectRole | 'participant'>;
@@ -61,6 +69,46 @@ export const PROJECT_MATRIX: Readonly<Record<ProjectAction, MatrixRow>> = {
     roles: ['pm', 'owner', 'sponsor'],
     states: OPEN,
     refusal: 'Only the Project Manager, Owner or a Sponsor can change who may read this, and not while the project is Deferred or Closed.',
+  },
+  'discussion.post': {
+    roles: ['participant'],
+    states: OPEN,
+    refusal: 'Only people in the project can post, and not while the project is Deferred or Closed.',
+  },
+  'analysis.request': {
+    roles: ['participant'],
+    states: OPEN,
+    refusal: 'Only people in the project can ask for analysis, and not while the project is Deferred or Closed.',
+  },
+  'notes.submit': {
+    roles: ['participant'],
+    states: OPEN,
+    refusal: 'Only people in the project can submit notes, and not while the project is Deferred or Closed.',
+  },
+  'meeting.restricted': {
+    roles: ['pm', 'deputy_pm', 'owner', 'sponsor'],
+    states: OPEN,
+    refusal: 'Only the Project Manager, a Deputy, the Owner or a Sponsor can start a Restricted meeting, and not while the project is Deferred or Closed.',
+  },
+  'minutes.publish': {
+    roles: ['pm', 'deputy_pm', 'owner', 'sponsor'],
+    states: OPEN,
+    refusal: 'Only the Project Manager, a Deputy, the Owner or a Sponsor can publish minutes, and not while the project is Deferred or Closed.',
+  },
+  'message.moderate': {
+    roles: ['pm', 'deputy_pm'],
+    states: OPEN,
+    refusal: 'Only the Project Manager or a Deputy can hide or delete messages written by others, and not while the project is Deferred or Closed.',
+  },
+  'message.restore': {
+    roles: ['pm', 'deputy_pm'],
+    states: ALL,
+    refusal: 'Only the Project Manager or a Deputy can restore a message.',
+  },
+  'feedback.review': {
+    roles: ['pm', 'deputy_pm'],
+    states: ALL,
+    refusal: 'Only the Project Manager or a Deputy can review feedback on AI output.',
   },
   'proposal.review': {
     roles: ['owner', 'sponsor'],

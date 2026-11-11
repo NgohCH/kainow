@@ -20,6 +20,14 @@ test('the matrix holds exactly the agreed rows', () => {
     'project.archive': ['pm,owner,sponsor', 'closed'],
     'proposal.submit': ['participant', 'draft,planned,active'],
     'audience.change': ['pm,owner,sponsor', 'draft,planned,active'],
+    'discussion.post': ['participant', 'draft,planned,active'],
+    'analysis.request': ['participant', 'draft,planned,active'],
+    'notes.submit': ['participant', 'draft,planned,active'],
+    'meeting.restricted': ['pm,deputy_pm,owner,sponsor', 'draft,planned,active'],
+    'minutes.publish': ['pm,deputy_pm,owner,sponsor', 'draft,planned,active'],
+    'message.moderate': ['pm,deputy_pm', 'draft,planned,active'],
+    'message.restore': ['pm,deputy_pm', 'draft,planned,active,deferred,closed'],
+    'feedback.review': ['pm,deputy_pm', 'draft,planned,active,deferred,closed'],
   });
   assert.equal(PROJECT_MATRIX['proposal.review'].refusal, 'Only the Owner or a Sponsor can approve or reject proposals, and only while the project is Planned or Active.');
 });
@@ -79,4 +87,21 @@ test('role managers follow the accepted matrix for every target, manager and sta
 test('a grant allows reading only', async () => {
   const { GRANT_ACTIONS } = await import('./matrix');
   assert.deepEqual(GRANT_ACTIONS, ['project.view', 'note.view']);
+});
+
+test('discussion actions: members post, leaders moderate, restore and feedback review work in every state', () => {
+  assert.equal(decide({ action: 'discussion.post', roles: ['member'], status: 'active' }).allowed, true);
+  assert.equal(decide({ action: 'discussion.post', roles: ['member'], status: 'deferred' }).allowed, false);
+  assert.equal(decide({ action: 'discussion.post', roles: [], status: 'active' }).allowed, false);
+  assert.equal(decide({ action: 'analysis.request', roles: ['member'], status: 'planned' }).allowed, true);
+  assert.equal(decide({ action: 'notes.submit', roles: ['member'], status: 'closed' }).allowed, false);
+  assert.equal(decide({ action: 'meeting.restricted', roles: ['member'], status: 'active' }).allowed, false);
+  assert.equal(decide({ action: 'meeting.restricted', roles: ['sponsor'], status: 'active' }).allowed, true);
+  assert.equal(decide({ action: 'minutes.publish', roles: ['deputy_pm'], status: 'draft' }).allowed, true);
+  assert.equal(decide({ action: 'message.moderate', roles: ['owner'], status: 'active' }).allowed, false);
+  assert.equal(decide({ action: 'message.moderate', roles: ['deputy_pm'], status: 'closed' }).allowed, false);
+  assert.equal(decide({ action: 'message.restore', roles: ['pm'], status: 'closed' }).allowed, true);
+  assert.equal(decide({ action: 'message.restore', roles: ['sponsor'], status: 'active' }).allowed, false);
+  assert.equal(decide({ action: 'feedback.review', roles: ['deputy_pm'], status: 'deferred' }).allowed, true);
+  assert.equal(decide({ action: 'feedback.review', roles: ['member'], status: 'active' }).allowed, false);
 });
