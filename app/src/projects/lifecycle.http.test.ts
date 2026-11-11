@@ -45,7 +45,7 @@ describe('project lifecycle', { skip: SKIP_NO_DB }, () => {
     const resumed = await move(admin, id, { to: 'active', reason: 'Budget approved', stage: 'Execution' });
     assert.equal(resumed.status, 200);
     assert.equal(resumed.body.project.stage.stage, 'Execution');
-    assert.equal((await move(owner, id, { to: 'closed', reason: 'Done', outcome: 'delivered' })).status, 200);
+    assert.equal((await move(owner, id, { to: 'closed', reason: 'Done', outcome: 'delivered', objectivesMet: true })).status, 200);
     assert.deepEqual(await status(id), { status: 'closed', closure_outcome: 'delivered' });
     assert.equal((await move(owner, id, { to: 'active', reason: 'More work', stage: 'Review & Acceptance' })).status, 200);
     assert.deepEqual(await status(id), { status: 'active', closure_outcome: null });

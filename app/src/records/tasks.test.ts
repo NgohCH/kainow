@@ -76,7 +76,9 @@ test('indicators, with Overdue at the UTC+8 boundary', () => {
   assert.equal(taskIndicators({ ...base, today: todayUtc8(new Date('2026-11-09T16:00:00Z')) }).overdue, true);
   assert.equal(taskIndicators({ ...base, status: 'completed', today: '2026-12-01' }).overdue, false);
   assert.deepEqual(taskIndicators({ ...base, assigneeActive: false, invitationStatus: 'invited', today: '2026-11-01' }), {
-    overdue: false, awaitingMembership: true, invitation: 'invited', dueAfterParent: false,
+    overdue: false, awaitingMembership: true, invitation: 'invited', dueAfterParent: false, deadlineReviewRequired: false,
   });
+  const marked = taskIndicators({ ...base, deadlineReviewRequired: true, today: '2026-12-01' });
+  assert.deepEqual([marked.overdue, marked.deadlineReviewRequired], [false, true], 'Deadline review required replaces Overdue');
   assert.equal(taskIndicators({ ...base, parentDueOn: '2026-11-05', today: '2026-11-01' }).dueAfterParent, true);
 });

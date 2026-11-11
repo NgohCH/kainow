@@ -28,7 +28,7 @@ describe('archive and department transfer', { skip: SKIP_NO_DB }, () => {
     await t?.close();
   });
 
-  const close = () => owner.request('POST', `/projects/${projectId}/transition`, { to: 'closed', outcome: 'delivered', reason: 'Done' });
+  const close = () => owner.request('POST', `/projects/${projectId}/transition`, { to: 'closed', outcome: 'delivered', reason: 'Done', objectivesMet: true });
   const project = async (c: Client) => (await c.request('GET', `/projects/${projectId}`)).body.project;
 
   test('only a Closed project can be archived, by its PM, Owner or Sponsor', async () => {

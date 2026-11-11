@@ -19,6 +19,15 @@ import {
   historyLine,
 } from '../records.ts';
 import type { Person } from './AuthoriseForm.tsx';
+import { type RequestView } from '../changes.ts';
+import { ChangeRequestPanel, useRequests } from './ChangeRequest.tsx';
+import { AddSubtaskForm, AmendForm, CancelForm, FollowUpForm, SupersedeForm, WithdrawForm, type WorkContext } from './ChangeForms.tsx';
+
+interface ReviewFlag {
+  id: string;
+  decision: { id: string; statement: string; status: string };
+  raisedAt: string;
+}
 
 interface TaskView {
   id: string;
@@ -35,6 +44,12 @@ interface TaskView {
   dueAfterParent: boolean;
   mayAct: TaskAction[];
   source: { quote: string } | null;
+  changeWaiting: boolean;
+  parentCancelled: boolean;
+  deadlineReviewRequired: boolean;
+  follows: { id: string; title: string } | null;
+  followedBy: { id: string; title: string } | null;
+  reviewFlags: ReviewFlag[];
 }
 interface QuestionView {
   id: string;
@@ -43,6 +58,7 @@ interface QuestionView {
   requester: { id: string; displayName: string };
   answers: Array<{ answer: string; author: string; at: string }>;
   mayAct: QuestionAction[];
+  reviewFlags: ReviewFlag[];
 }
 interface RiskView {
   id: string;
@@ -53,14 +69,21 @@ interface RiskView {
   reviewOn: string | null;
   responsible: { id: string; displayName: string } | null;
   mayAct: RiskAction[];
+  handedOverTo: { projectId: string; name: string } | null;
+  handedOverFrom: { projectId: string; name: string } | null;
+  reviewFlags: ReviewFlag[];
 }
 interface DecisionView {
   id: string;
   statement: string;
   rationale: string | null;
-  status: string;
+  status: 'active' | 'superseded' | 'withdrawn' | string;
   authorisedBy: string;
   authorisedAt: string;
+  replaces: { id: string; statement: string } | null;
+  replacedBy: { id: string; statement: string } | null;
+  changeWaiting: boolean;
+  mayAct: Array<'supersede' | 'withdraw'>;
 }
 interface Records {
   tasks: TaskView[];
@@ -72,13 +95,15 @@ interface Records {
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
 /** The project's authorised work: tasks (with subtasks), questions, decisions and risks. */
-export function Work({ projectId, people, canSplit }: { projectId: string; people: Person[]; canSplit: boolean }) {
+export function Work({ projectId, people, canPropose, canClear }: { projectId: string; people: Person[]; canPropose: boolean; canClear: boolean }) {
   const [records, setRecords] = useState<Records | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const { requests, reload: reloadRequests } = useRequests(projectId);
   const load = useCallback(() => {
     api.get<Records>(`/projects/${projectId}/records`).then(setRecords, (e: Error) => setError(e.message));
-  }, [projectId]);
+    reloadRequests();
+  }, [projectId, reloadRequests]);
   useEffect(load, [load]);
 
   /** Sends one change and reloads; shows the server's reason when it is refused. */
@@ -99,12 +124,47 @@ export function Work({ projectId, people, canSplit }: { projectId: string; peopl
     [load],
   );
 
+  /** Proposes a change for authorisation; the request then appears under Waiting for authorisation. */
+  const propose = useCallback(
+    async (kind: string, targetKind: string, targetId: string, terms: Record<string, unknown>) => {
+      setError(null);
+      setNotice(null);
+      try {
+        await api.post(`/projects/${projectId}/changes`, { kind, targetKind, targetId, terms, reason: String(terms.reason ?? '') });
+        setNotice('Proposed. It now waits for authorisation.');
+        load();
+        return true;
+      } catch (e) {
+        setError(errText(e, 'That did not work. Try again.'));
+        return false;
+      }
+    },
+    [projectId, load],
+  );
+
   if (!records) return error ? <p role="alert" className="error">{error}</p> : <p className="loading">Loading</p>;
   const hasChildren = new Set(records.tasks.map((t) => t.parentId).filter(Boolean));
+  const work: WorkContext = { people, tasks: records.tasks, decisions: records.decisions, questions: records.questions, risks: records.risks };
+  // Waiting requests: those the viewer may approve first, then the ones they can revise, then the rest.
+  const rank = (r: RequestView) => (r.mayApprove ? 0 : r.mayRevise ? 1 : 2);
+  const waiting = requests.filter((r) => r.status === 'pending').sort((a, b) => rank(a) - rank(b));
+  const changed = (message: string) => {
+    setError(null);
+    setNotice(message);
+    load();
+  };
   return (
     <>
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
+      <section aria-labelledby="waiting-heading">
+        <h2 id="waiting-heading">Waiting for authorisation</h2>
+        {waiting.length === 0 ? (
+          <p className="meta">Nothing is waiting for authorisation.</p>
+        ) : (
+          waiting.map((r) => <ChangeRequestPanel key={`${r.id}:${r.version}`} request={r} work={work} onChanged={changed} />)
+        )}
+      </section>
       <section aria-labelledby="tasks-heading">
         <h2 id="tasks-heading">Tasks</h2>
         {records.tasks.length === 0 ? (
@@ -112,7 +172,7 @@ export function Work({ projectId, people, canSplit }: { projectId: string; peopl
         ) : (
           <ul className="plain work-list">
             {records.tasks.map((t) => (
-              <TaskRow key={t.id} t={t} hasChildren={hasChildren.has(t.id)} people={people} act={act} canSplit={canSplit} />
+              <TaskRow key={t.id} t={t} hasChildren={hasChildren.has(t.id)} work={work} act={act} propose={propose} canPropose={canPropose} canClear={canClear} />
             ))}
           </ul>
         )}
@@ -124,7 +184,7 @@ export function Work({ projectId, people, canSplit }: { projectId: string; peopl
         ) : (
           <ul className="plain work-list">
             {records.questions.map((q) => (
-              <QuestionRow key={q.id} q={q} act={act} />
+              <QuestionRow key={q.id} q={q} act={act} canClear={canClear} />
             ))}
           </ul>
         )}
@@ -136,14 +196,7 @@ export function Work({ projectId, people, canSplit }: { projectId: string; peopl
         ) : (
           <ul className="plain work-list">
             {records.decisions.map((d) => (
-              <li key={d.id} className="work-item">
-                <strong>{d.statement}</strong>
-                <span className="meta">
-                  {' '}
-                  Active · authorised by {d.authorisedBy}, {formatWhen(d.authorisedAt)}
-                  {d.rationale ? ` · ${d.rationale}` : ''}
-                </span>
-              </li>
+              <DecisionRow key={d.id} d={d} work={work} propose={propose} />
             ))}
           </ul>
         )}
@@ -155,7 +208,7 @@ export function Work({ projectId, people, canSplit }: { projectId: string; peopl
         ) : (
           <ul className="plain work-list">
             {records.risks.map((r) => (
-              <RiskRow key={r.id} r={r} people={people} act={act} />
+              <RiskRow key={r.id} r={r} people={people} act={act} canClear={canClear} />
             ))}
           </ul>
         )}
@@ -164,13 +217,68 @@ export function Work({ projectId, people, canSplit }: { projectId: string; peopl
   );
 }
 
-type Act = (path: string, body: object, done: string) => Promise<boolean>;
+type Propose = (kind: string, targetKind: string, targetId: string, terms: Record<string, unknown>) => Promise<boolean>;
 
-function TaskRow({ t, hasChildren, people, act, canSplit }: { t: TaskView; hasChildren: boolean; people: Person[]; act: Act; canSplit: boolean }) {
-  const [open, setOpen] = useState<TaskAction | 'subtask' | null>(null);
+/** "Review: decision changed" flags on a record, each with the decision and (for the Project Manager or a Deputy) Clear. */
+function Flags({ flags, canClear }: { flags: ReviewFlag[]; canClear: boolean }) {
+  const [open, setOpen] = useState<string | null>(null);
+  const [note, setNote] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [cleared, setCleared] = useState<Set<string>>(new Set());
+  const shown = flags.filter((f) => !cleared.has(f.id));
+  if (shown.length === 0) return null;
+  return (
+    <ul className="plain review-flags">
+      {shown.map((f) => (
+        <li key={f.id}>
+          <span className="badge badge-pending">Review: decision changed</span>{' '}
+          <span className="meta">
+            “{f.decision.statement}” is now {f.decision.status}
+          </span>
+          {canClear && open !== f.id && (
+            <button className="link-button" onClick={() => { setOpen(f.id); setError(null); }}>Clear</button>
+          )}
+          {open === f.id && (
+            <form
+              className="inline-form"
+              aria-label="Clear this review flag"
+              onSubmit={async (e) => {
+                e.preventDefault();
+                try {
+                  await api.post(`/review-flags/${f.id}/clear`, { note });
+                  setCleared(new Set([...cleared, f.id]));
+                  setOpen(null);
+                  setNote('');
+                } catch (err) {
+                  setError(errText(err, 'That did not work. Try again.'));
+                }
+              }}
+            >
+              <label>
+                Note: what was reviewed <input required value={note} onChange={(e) => setNote(e.target.value)} />
+              </label>
+              <button className="primary">Clear</button>
+              <button type="button" onClick={() => setOpen(null)}>Cancel</button>
+              {error && <span role="alert" className="error">{error}</span>}
+            </form>
+          )}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+type Act = (path: string, body: object, done: string) => Promise<boolean>;
+type TaskForm = TaskAction | 'amend' | 'subtask' | 'cancel' | 'followup';
+
+function TaskRow({
+  t, hasChildren, work, act, propose, canPropose, canClear,
+}: {
+  t: TaskView; hasChildren: boolean; work: WorkContext; act: Act; propose: Propose; canPropose: boolean; canClear: boolean;
+}) {
+  const [open, setOpen] = useState<TaskForm | null>(null);
   const [note, setNote] = useState('');
   const [override, setOverride] = useState('');
-  const [sub, setSub] = useState({ title: '', assigneeId: '', dueOn: t.dueOn, reason: '' });
   const [history, setHistory] = useState<TaskHistoryEntry[] | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
   async function toggleHistory() {
@@ -187,21 +295,28 @@ function TaskRow({ t, hasChildren, people, act, canSplit }: { t: TaskView; hasCh
     setOpen(action);
     return true;
   }
+  const isAction = (o: TaskForm | null): o is TaskAction => o !== null && o in TASK_ACTION_LABEL;
   async function submit(e: FormEvent) {
     e.preventDefault();
-    if (open === 'subtask') {
-      if (await act(`/records/tasks/${t.id}/subtasks`, sub, 'Subtask added.')) setOpen(null);
-      return;
-    }
-    if (!open) return;
+    if (!isAction(open)) return;
     if (await act(`/records/tasks/${t.id}/${open}`, { note, ...(override ? { overrideReason: override } : {}) }, `${TASK_ACTION_LABEL[open]}: done.`)) {
       setOpen(null);
       setNote('');
       setOverride('');
     }
   }
-  // The Project Manager or a Deputy splits work, two levels deep at most, while the project is Active (the server checks).
-  const mayAddSubtask = canSplit && t.depth < 2 && t.status !== 'completed' && t.status !== 'cancelled';
+  /** Sends a proposal; closes the form when it was accepted. */
+  const send = (kind: string) => async (terms: Record<string, unknown>) => {
+    const ok = await propose(kind, 'task', t.id, terms);
+    if (ok) setOpen(null);
+    return ok;
+  };
+  const finished = t.status === 'completed' || t.status === 'cancelled';
+  // Whether the viewer may propose is the server's call (an assignee, PM, Deputy, Owner or Sponsor); it answers with the reason.
+  const mayProposeChange = canPropose && !finished && !t.changeWaiting;
+  const mayAddSubtask = mayProposeChange && t.depth < 2 && work.people.length > 0;
+  const mayFollowUp = canPropose && t.status === 'cancelled';
+  const cancel = () => setOpen(null);
   return (
     <li className={`work-item depth-${t.depth}`}>
       <div>
@@ -210,12 +325,18 @@ function TaskRow({ t, hasChildren, people, act, canSplit }: { t: TaskView; hasCh
         {t.overdue && <span className="badge badge-rejected">Overdue</span>}
         {t.awaitingMembership && <span className="badge badge-pending">Awaiting Membership{t.invitation ? ` (invitation ${t.invitation})` : ''}</span>}
         {t.dueAfterParent && <span className="badge badge-pending">Due after its parent task</span>}
+        {t.changeWaiting && <span className="badge badge-pending">Change waiting</span>}
+        {t.deadlineReviewRequired && <span className="badge badge-rejected">Deadline review required</span>}
+        {t.parentCancelled && <span className="badge badge-pending">Parent cancelled</span>}
       </div>
       <span className="meta">
         {t.assignee.displayName} · due {t.dueOn}
         {t.ownerAsWritten ? ` · the notes say: ${t.ownerAsWritten}` : ''}
+        {t.follows ? ` · Follows ${t.follows.title}` : ''}
+        {t.followedBy ? ` · Followed by ${t.followedBy.title}` : ''}
       </span>
       {t.source && <blockquote className="quote">{t.source.quote}</blockquote>}
+      <Flags flags={t.reviewFlags} canClear={canClear} />
       {open === null && (
         <div className="decision">
           {t.mayAct.map((a) => (
@@ -223,7 +344,10 @@ function TaskRow({ t, hasChildren, people, act, canSplit }: { t: TaskView; hasCh
               {TASK_ACTION_LABEL[a]}
             </button>
           ))}
-          {mayAddSubtask && people.length > 0 && <button className="link-button" onClick={() => setOpen('subtask')}>Add subtask</button>}
+          {mayProposeChange && <button className="link-button" onClick={() => setOpen('amend')}>Propose a change</button>}
+          {mayAddSubtask && <button className="link-button" onClick={() => setOpen('subtask')}>Add subtask</button>}
+          {mayProposeChange && <button className="link-button" onClick={() => setOpen('cancel')}>Propose cancellation</button>}
+          {mayFollowUp && <button className="link-button" onClick={() => setOpen('followup')}>Propose follow-up task</button>}
           <button className="link-button" aria-expanded={history !== null} onClick={() => void toggleHistory()}>
             {history ? 'Hide history' : 'History'}
           </button>
@@ -237,7 +361,7 @@ function TaskRow({ t, hasChildren, people, act, canSplit }: { t: TaskView; hasCh
           ))}
         </ol>
       )}
-      {open !== null && open !== 'subtask' && (
+      {isAction(open) && (
         <form className="inline-form stack" onSubmit={submit} aria-label={`${TASK_ACTION_LABEL[open]} task`}>
           <label>
             {TASK_ACTION_PROMPT[open]} <input required value={note} onChange={(e) => setNote(e.target.value)} />
@@ -249,35 +373,56 @@ function TaskRow({ t, hasChildren, people, act, canSplit }: { t: TaskView; hasCh
             </label>
           )}
           <button className="primary">{TASK_ACTION_LABEL[open]}</button>
-          <button type="button" onClick={() => setOpen(null)}>Cancel</button>
+          <button type="button" onClick={cancel}>Cancel</button>
         </form>
       )}
-      {open === 'subtask' && (
-        <form className="inline-form stack" onSubmit={submit} aria-label="Add a subtask">
-          <label>
-            Wording <input required value={sub.title} onChange={(e) => setSub({ ...sub, title: e.target.value })} />
-          </label>
-          <label>
-            Assignee
-            <select required value={sub.assigneeId} onChange={(e) => setSub({ ...sub, assigneeId: e.target.value })}>
-              <option value="">Choose a person</option>
-              {people.map((p) => (
-                <option key={p.userId} value={p.userId}>
-                  {p.displayName}
-                </option>
-              ))}
-            </select>
-          </label>
-          <label>
-            Due date <input type="date" required value={sub.dueOn} onChange={(e) => setSub({ ...sub, dueOn: e.target.value })} />
-          </label>
-          <label>
-            Reason <input required value={sub.reason} onChange={(e) => setSub({ ...sub, reason: e.target.value })} />
-          </label>
-          <button className="primary">Add subtask</button>
-          <button type="button" onClick={() => setOpen(null)}>Cancel</button>
-        </form>
+      {open === 'amend' && <AmendForm task={t} people={work.people} onSubmit={send('amend_task')} onCancel={cancel} />}
+      {open === 'subtask' && <AddSubtaskForm task={t} people={work.people} onSubmit={send('amend_task')} onCancel={cancel} />}
+      {open === 'cancel' && <CancelForm task={t} tasks={work.tasks} onSubmit={send('cancel_task')} onCancel={cancel} />}
+      {open === 'followup' && (
+        <FollowUpForm
+          task={t}
+          onCancel={cancel}
+          onSubmit={async (body) => {
+            const ok = await act(`/records/tasks/${t.id}/follow-up`, body, 'Follow-up proposed. An Owner or Sponsor can authorise it from the Notes tab.');
+            if (ok) setOpen(null);
+            return ok;
+          }}
+        />
       )}
+    </li>
+  );
+}
+
+const DECISION_STATUS: Record<string, string> = { active: 'Active', superseded: 'Superseded', withdrawn: 'Withdrawn' };
+
+function DecisionRow({ d, work, propose }: { d: DecisionView; work: WorkContext; propose: Propose }) {
+  const [open, setOpen] = useState<'supersede' | 'withdraw' | null>(null);
+  const send = (kind: string) => async (terms: Record<string, unknown>) => {
+    const ok = await propose(kind, 'decision', d.id, terms);
+    if (ok) setOpen(null);
+    return ok;
+  };
+  return (
+    <li className="work-item">
+      <strong>{d.statement}</strong>{' '}
+      <span className={`badge ${d.status === 'active' ? 'badge-approved' : 'badge-pending'}`}>{DECISION_STATUS[d.status] ?? d.status}</span>
+      {d.changeWaiting && <span className="badge badge-pending">Change waiting</span>}
+      <span className="meta">
+        {' '}
+        authorised by {d.authorisedBy}, {formatWhen(d.authorisedAt)}
+        {d.rationale ? ` · ${d.rationale}` : ''}
+        {d.replaces ? ` · Replaces: ${d.replaces.statement}` : ''}
+        {d.replacedBy ? ` · Replaced by: ${d.replacedBy.statement}` : ''}
+      </span>
+      {open === null && d.mayAct.length > 0 && !d.changeWaiting && (
+        <div className="decision">
+          {d.mayAct.includes('supersede') && <button className="link-button" onClick={() => setOpen('supersede')}>Propose a replacement</button>}
+          {d.mayAct.includes('withdraw') && <button className="link-button" onClick={() => setOpen('withdraw')}>Propose withdrawal</button>}
+        </div>
+      )}
+      {open === 'supersede' && <SupersedeForm decision={d} work={work} onSubmit={send('supersede_decision')} onCancel={() => setOpen(null)} />}
+      {open === 'withdraw' && <WithdrawForm decision={d} work={work} onSubmit={send('withdraw_decision')} onCancel={() => setOpen(null)} />}
     </li>
   );
 }
@@ -290,7 +435,7 @@ const Q_FIELD: Record<QuestionAction, { name: string; prompt: string } | null> =
   withdraw: { name: 'reason', prompt: 'Why withdraw it?' },
 };
 
-function QuestionRow({ q, act }: { q: QuestionView; act: Act }) {
+function QuestionRow({ q, act, canClear }: { q: QuestionView; act: Act; canClear: boolean }) {
   const [open, setOpen] = useState<QuestionAction | null>(null);
   const [value, setValue] = useState('');
   return (
@@ -299,6 +444,7 @@ function QuestionRow({ q, act }: { q: QuestionView; act: Act }) {
         <strong>{q.text}</strong> <span className="badge badge-pending">{QUESTION_STATUS_LABEL[q.status]}</span>
       </div>
       <span className="meta">Requested by {q.requester.displayName}</span>
+      <Flags flags={q.reviewFlags} canClear={canClear} />
       {q.answers.length > 0 && (
         <ul className="plain answers">
           {q.answers.map((a, i) => (
@@ -341,7 +487,7 @@ function QuestionRow({ q, act }: { q: QuestionView; act: Act }) {
 
 const R_LABEL: Record<RiskAction, string> = { mitigate: 'Start mitigating', update: 'Update', accept: 'Accept exposure', resolve: 'Approve resolution', reopen: 'Reopen' };
 
-function RiskRow({ r, people, act }: { r: RiskView; people: Person[]; act: Act }) {
+function RiskRow({ r, people, act, canClear }: { r: RiskView; people: Person[]; act: Act; canClear: boolean }) {
   const [open, setOpen] = useState<RiskAction | null>(null);
   const [note, setNote] = useState('');
   const [mitigation, setMitigation] = useState(r.mitigation ?? '');
@@ -358,7 +504,10 @@ function RiskRow({ r, people, act }: { r: RiskView; people: Person[]; act: Act }
         {r.responsible ? `Responsible: ${r.responsible.displayName}` : 'No responsible person yet'}
         {r.reviewOn ? ` · review on ${r.reviewOn}` : ''}
         {r.mitigation ? ` · mitigation: ${r.mitigation}` : ''}
+        {r.handedOverFrom ? ` · Handed over from ${r.handedOverFrom.name}` : ''}
+        {r.handedOverTo ? ` · Handed over to ${r.handedOverTo.name}` : ''}
       </span>
+      <Flags flags={r.reviewFlags} canClear={canClear} />
       {open === null ? (
         <div className="decision">
           {r.mayAct.map((a) => (

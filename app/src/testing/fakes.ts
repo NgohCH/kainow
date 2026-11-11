@@ -47,6 +47,12 @@ export class CaptureSender implements CodeSender {
     this.setupInvitations.push({ email, link, expiresAt });
   }
 
+  readonly closureNotices: { email: string; projectName: string; outcome: string; link: string }[] = [];
+
+  async sendDelegatedClosureNotice(email: string, projectName: string, outcome: string, link: string): Promise<void> {
+    this.closureNotices.push({ email, projectName, outcome, link });
+  }
+
   lastInvitation(email: string): string {
     const found = [...this.invitations].reverse().find((s) => s.email === email);
     if (!found) throw new Error(`no invitation was sent to ${email}`);

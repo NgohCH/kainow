@@ -3,6 +3,7 @@ import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type Clock } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
+import { PROPOSAL_REJECTED_REASON, lockPendingAuthorisation, rejectPendingAuthorisation } from '../changes/end-pending';
 import { PG_POOL } from '../db/database.module';
 import { locateQuote } from '../notes/text';
 import { type DueReading, type ReviewerDue, isCalendarDate, readDue } from './due';
@@ -314,6 +315,7 @@ export class ExtractionService {
       if (input.decision === 'approved') {
         await this.approveInTx(client, runId, itemId, input, actorUserId, at);
       } else {
+        await lockPendingAuthorisation(client, 'extraction_item', itemId);
         const item = await this.lockForReview(client, runId, itemId, input.sourceVersionId);
         await this.refuseIfAuthorised(client, itemId);
         await client.query(
@@ -328,6 +330,7 @@ export class ExtractionService {
           subjectId: itemId,
           detail: { runId, sourceVersionId: item.source_version_id, previousStatus: item.review_status },
         });
+        await rejectPendingAuthorisation(client, 'extraction_item', itemId, actorUserId, at, PROPOSAL_REJECTED_REASON);
       }
       await client.query('COMMIT');
     } catch (err) {
@@ -455,6 +458,11 @@ export class ExtractionService {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      // A pending authorisation of this item is taken before the item, in the order approving takes them.
+      await client.query(
+        `SELECT id FROM change_requests WHERE target_kind = 'extraction_item' AND target_id = $1 AND status = 'pending' FOR UPDATE`,
+        [itemId],
+      );
       const found = await client.query(
         `SELECT i.id, i.source_version_id, i.review_status, r.status AS run_status
            FROM extraction_items i
@@ -503,6 +511,22 @@ export class ExtractionService {
           `UPDATE extraction_items SET review_status = 'pending', chosen_occurrence = NULL, reviewed_by = NULL, reviewed_at = NULL WHERE id = $1`,
           [itemId],
         );
+      }
+      // Approvals were given on the old wording: a pending authorisation is set aside and starts again (spec §3.3).
+      const superseded = await client.query(
+        `UPDATE change_requests SET status = 'superseded', decided_by = $2, decided_at = $3
+          WHERE target_kind = 'extraction_item' AND target_id = $1 AND status = 'pending' RETURNING id, project_id`,
+        [itemId, actorUserId, at],
+      );
+      for (const r of superseded.rows) {
+        await writeAudit(client, {
+          at,
+          action: 'change.superseded',
+          actorUserId,
+          subjectType: 'change_request',
+          subjectId: r.id,
+          detail: { projectId: r.project_id, itemId },
+        });
       }
       // The audit trail names what changed, never the wording itself.
       await writeAudit(client, {

@@ -22,6 +22,8 @@ export interface TransitionRequest {
   /** Required roles not Active today, in plain words; empty when all are. */
   missingActive: string[];
   separationOk: boolean;
+  /** The Project Manager, while an Owner or Sponsor has let them close the project (spec §6.1). */
+  delegatedPm?: boolean;
 }
 
 interface Rule {
@@ -64,7 +66,8 @@ const refuse = (reason: string) => ({ allowed: false as const, reason });
 export function checkTransition(r: TransitionRequest): { allowed: true } | { allowed: false; reason: string } {
   const rule = TRANSITIONS[`${r.from}>${r.to}`];
   if (!rule) return refuse('That status change is not allowed.');
-  const actor = (r.isAdmin && rule.who.includes('administrator')) || r.roles.some((role) => rule.who.includes(role));
+  const delegated = r.to === 'closed' && !!r.delegatedPm && r.roles.includes('pm');
+  const actor = (r.isAdmin && rule.who.includes('administrator')) || r.roles.some((role) => rule.who.includes(role)) || delegated;
   if (!actor) return refuse(`Only ${rule.whoText} can ${rule.verb}.`);
   if (rule.reason && (r.reason === null || r.reason.trim() === '')) return refuse('A reason is required.');
   if (rule.outcome && r.outcome === null) return refuse('Choose a closure outcome.');

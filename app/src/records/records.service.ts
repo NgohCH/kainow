@@ -3,9 +3,16 @@ import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID, uuidv7 } from '../common/uuid7';
+import { type RequestView, ChangesService } from '../changes/changes.service';
+import { AlreadyAuthorised, authoriseProposalHandler } from '../changes/handlers';
+import { decisionHandlers } from '../changes/decision-handlers';
+import { lockPendingAuthorisation, rejectPendingAuthorisation } from '../changes/end-pending';
+import { deadlineHandlers } from '../changes/deadline-handlers';
+import { handoverHandler } from '../changes/handover-handler';
+import { taskHandlers } from '../changes/task-handlers';
 import { PG_POOL } from '../db/database.module';
 import { isCalendarDate, readDue } from '../extraction/due';
-import { type ApprovedItem, ExtractionService } from '../extraction/extraction.service';
+import { ExtractionService } from '../extraction/extraction.service';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { InvitationsService } from '../projects/invitations.service';
 import { GRANT_READ_ONLY } from '../projects/matrix';
@@ -25,12 +32,19 @@ export interface Created {
   delivered?: boolean;
 }
 
+/** What authorising a proposal answers: the record (made now, or already), or the request still waiting for approvers. */
+export type Authorised = (Created & { created: boolean }) | { request: RequestView; created: false; waiting: true };
+
 /** What a human proposal or an approved extraction item contributes to a record. */
 export interface Content {
   kind: 'action' | 'decision' | 'question' | 'risk';
   text: string;
   owner: string | null;
 }
+
+export const NEEDS_NEW_DATE = 'This task needs a new authorised due date first.';
+/** The task actions refused on a task marked for deadline review. */
+const MARKED_REFUSES: readonly TaskAction[] = ['start', 'unblock', 'complete'];
 
 type Origin = { itemId: string } | { proposalId: string };
 const originColumns = (o: Origin) => ('itemId' in o ? { item: o.itemId, proposal: null } : { item: null, proposal: o.proposalId });
@@ -51,7 +65,14 @@ export class RecordsService {
     private readonly access: ProjectAccess,
     private readonly extraction: ExtractionService,
     private readonly invitations: InvitationsService,
-  ) {}
+    private readonly changes: ChangesService,
+  ) {
+    changes.register(authoriseProposalHandler({ records: this, extraction }));
+    for (const h of taskHandlers({ records: this })) changes.register(h);
+    for (const h of decisionHandlers()) changes.register(h);
+    changes.register(handoverHandler());
+    for (const h of deadlineHandlers()) changes.register(h);
+  }
 
   async tx<T>(work: (c: PoolClient) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();
@@ -82,34 +103,35 @@ export class RecordsService {
     return rows[0] ? { kind: rows[0].kind, id: rows[0].id } : null;
   }
 
-  /** Authorise one extraction proposal: approve it and create its record, once (V1.0 proposals §7). */
-  async authoriseItem(user: AuthUser, runId: string, itemId: string, body: Record<string, unknown>): Promise<Created & { created: boolean }> {
+  /** Authorise one extraction proposal: approve it and create its record, once (V1.0 proposals §7), through an authorise_proposal request. */
+  async authoriseItem(user: AuthUser, runId: string, itemId: string, body: Record<string, unknown>): Promise<Authorised> {
     if (!UUID.test(itemId)) throw new NotFoundException();
     const projectId = await this.access.projectOfRun(runId);
-    const at = this.now();
-    let deliver: (() => Promise<boolean>) | null = null;
-    const result = await this.tx(async (c) => {
-      const ctx = await this.authoriser(c, user, projectId);
-      const existing = await this.existingRecord(c, { itemId });
-      if (existing) return { record: existing, created: false };
-      const approved: ApprovedItem = await this.extraction.approveInTx(c, runId, itemId, { sourceVersionId: body.sourceVersionId, occurrence: body.occurrence }, user.id, at);
-      const made = await this.createFrom(c, ctx, { itemId }, approved, body, user, at);
-      deliver = made.deliver;
-      return { record: made.record, created: true };
-    });
-    const delivered = deliver ? await (deliver as () => Promise<boolean>)() : undefined;
-    return { ...result, ...(delivered !== undefined ? { delivered } : {}) };
+    const item = (await this.pool.query(`SELECT run_id FROM extraction_items WHERE id = $1`, [itemId])).rows[0];
+    if (!item || item.run_id !== runId) throw new NotFoundException();
+    return this.authoriseThrough(user, projectId, 'extraction_item', itemId, body);
   }
 
-  /** Owner or Sponsor, project Planned or Active, no required role missing; the project row is locked. */
-  async authoriser(c: PoolClient, user: AuthUser, projectId: string): Promise<ProjectContext> {
-    const ctx = await this.access.authorize(user, 'proposal.review', projectId, c, true);
-    if (ctx.missingAccountability) throw new ConflictException(MISSING_ACCOUNTABILITY);
-    return ctx;
+  /**
+   * The authoriser's click submits an authorise_proposal request and is its first approval. When that completes the
+   * count the record is made at once (2a's 201); otherwise the request waits for more approvers (202). A proposal
+   * that already has its record answers with it (200).
+   */
+  private async authoriseThrough(user: AuthUser, projectId: string, targetKind: 'extraction_item' | 'human_proposal', targetId: string, body: Record<string, unknown>): Promise<Authorised> {
+    try {
+      const out = await this.changes.submit(user, projectId, { kind: 'authorise_proposal', targetKind, targetId, terms: body }, { approveNow: true });
+      if (out.applied?.record) {
+        return { record: out.applied.record, created: true, ...(out.applied.delivered !== undefined ? { delivered: out.applied.delivered } : {}) };
+      }
+      return { request: out.request, created: false, waiting: true };
+    } catch (err) {
+      if (err instanceof AlreadyAuthorised) return { record: err.record, created: false };
+      throw err;
+    }
   }
 
   /** Resolve a task assignee: a project person, or an eligible email (account made Invited, invitation issued). */
-  private async assignee(c: PoolClient, ctx: ProjectContext, user: AuthUser, body: Record<string, unknown>, at: Date) {
+  async assignee(c: PoolClient, ctx: ProjectContext, user: AuthUser, body: Record<string, unknown>, at: Date) {
     if (body.assigneeId !== undefined && body.assigneeId !== null && body.assigneeId !== '') {
       if (!isProjectPerson(ctx, body.assigneeId)) throw new BadRequestException(NEEDS_ASSIGNEE);
       return { userId: body.assigneeId as string, invitationId: null as string | null, deliver: null as null | (() => Promise<boolean>) };
@@ -141,15 +163,15 @@ export class RecordsService {
     return { userId, invitationId: inv.id, deliver: inv.deliver };
   }
 
-  private dueOf(v: unknown): string {
+  dueOf(v: unknown): string {
     if (typeof v !== 'string' || !isCalendarDate(v)) throw new BadRequestException(NEEDS_ASSIGNEE);
     return v;
   }
 
-  private async insertTask(
+  async insertTask(
     c: PoolClient,
     ctx: ProjectContext,
-    t: { parentId: string | null; depth: number; title: string; assigneeId: string; ownerAsWritten: string | null; dueOn: string; invitationId: string | null; origin: Origin | null },
+    t: { parentId: string | null; depth: number; title: string; assigneeId: string; ownerAsWritten: string | null; dueOn: string; invitationId: string | null; origin: Origin | null; followsTaskId?: string | null },
     user: AuthUser,
     at: Date,
     note: string | null,
@@ -157,9 +179,9 @@ export class RecordsService {
     const id = uuidv7(at.getTime());
     const o = t.origin ? originColumns(t.origin) : { item: null, proposal: null };
     await c.query(
-      `INSERT INTO tasks (id, project_id, parent_id, depth, title, assignee_id, owner_as_written, due_on, invitation_id, origin_item_id, origin_proposal_id, authorised_by, authorised_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)`,
-      [id, ctx.project.id, t.parentId, t.depth, t.title, t.assigneeId, t.ownerAsWritten, t.dueOn, t.invitationId, o.item, o.proposal, user.id, at],
+      `INSERT INTO tasks (id, project_id, parent_id, depth, title, assignee_id, owner_as_written, due_on, invitation_id, origin_item_id, origin_proposal_id, authorised_by, authorised_at, follows_task_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
+      [id, ctx.project.id, t.parentId, t.depth, t.title, t.assigneeId, t.ownerAsWritten, t.dueOn, t.invitationId, o.item, o.proposal, user.id, at, t.followsTaskId ?? null],
     );
     await c.query(`INSERT INTO task_events (id, task_id, kind, to_status, note, actor_id, at) VALUES ($1, $2, 'authorised', 'not_started', $3, $4, $5)`, [
       uuidv7(at.getTime()), id, note, user.id, at,
@@ -186,9 +208,12 @@ export class RecordsService {
         const who = await this.assignee(c, ctx, user, body, at);
         const dueOn = this.dueOf(body.dueOn);
         deliver = who.deliver;
+        const follows = 'proposalId' in origin
+          ? ((await c.query(`SELECT follows_task_id FROM human_proposals WHERE id = $1`, [origin.proposalId])).rows[0]?.follows_task_id as string | null) ?? null
+          : null;
         const taskId = await this.insertTask(
           c, ctx,
-          { parentId: null, depth: 0, title: content.text, assigneeId: who.userId, ownerAsWritten: content.owner, dueOn, invitationId: who.invitationId, origin },
+          { parentId: null, depth: 0, title: content.text, assigneeId: who.userId, ownerAsWritten: content.owner, dueOn, invitationId: who.invitationId, origin, followsTaskId: follows },
           user, at, null,
         );
         const subtaskIds: string[] = [];
@@ -271,11 +296,31 @@ export class RecordsService {
     });
   }
 
+  /** A cancelled task offers a follow-up: a people's proposal that, once authorised, becomes a task linked to it (spec 4.3). */
+  async followUp(user: AuthUser, taskId: string, input: Record<string, unknown>) {
+    const text = typeof input.text === 'string' ? input.text.trim() : '';
+    if (text === '' || text.length > 2000) throw new BadRequestException('Write the proposal (up to 2000 characters).');
+    const opt = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? v.trim().slice(0, 200) : null);
+    const at = this.now();
+    return this.tx(async (c) => {
+      const { ctx, task } = await this.taskContext(c, user, taskId, true);
+      await this.access.authorize(user, 'proposal.submit', ctx.project.id, c, true);
+      if (task.status !== 'cancelled') throw new ConflictException('A follow-up task can be proposed only for a cancelled task.');
+      const id = uuidv7(at.getTime());
+      await c.query(
+        `INSERT INTO human_proposals (id, project_id, kind, text, owner, due, proposed_by, proposed_at, follows_task_id) VALUES ($1, $2, 'action', $3, $4, $5, $6, $7, $8)`,
+        [id, ctx.project.id, text, opt(input.owner), opt(input.due), user.id, at, task.id],
+      );
+      await writeAudit(c, { at, action: 'proposal.submitted', actorUserId: user.id, subjectType: 'project', subjectId: ctx.project.id, detail: { proposalId: id, kind: 'action', followsTaskId: task.id } });
+      return { proposal: { id, kind: 'action', text, followsTaskId: task.id } };
+    });
+  }
+
   async proposals(user: AuthUser, projectId: string) {
     await this.access.authorize(user, 'project.view', projectId);
     const { rows } = await this.pool.query(
       `SELECT h.id, h.kind, h.text, h.owner, h.due, u.display_name AS "proposedBy", h.proposed_at AS "proposedAt",
-              h.review_status AS "reviewStatus", h.reject_reason AS "rejectReason"
+              h.review_status AS "reviewStatus", h.reject_reason AS "rejectReason", h.follows_task_id AS "followsTaskId"
          FROM human_proposals h JOIN users u ON u.id = h.proposed_by WHERE h.project_id = $1 ORDER BY h.proposed_at, h.id`,
       [projectId],
     );
@@ -296,23 +341,11 @@ export class RecordsService {
     return p as { id: string; project_id: string; kind: Content['kind']; text: string; owner: string | null; review_status: string };
   }
 
-  async authoriseProposal(user: AuthUser, proposalId: string, body: Record<string, unknown>): Promise<Created & { created: boolean }> {
-    const at = this.now();
-    let deliver: (() => Promise<boolean>) | null = null;
-    const result = await this.tx(async (c) => {
-      const peek = await this.lockProposal(c, proposalId);
-      const ctx = await this.authoriser(c, user, peek.project_id);
-      const p = (await c.query(`SELECT review_status FROM human_proposals WHERE id = $1 FOR UPDATE`, [proposalId])).rows[0];
-      const existing = await this.existingRecord(c, { proposalId });
-      if (existing) return { record: existing, created: false };
-      if (p.review_status === 'rejected') throw new ConflictException('This proposal was rejected.');
-      const made = await this.createFrom(c, ctx, { proposalId }, { kind: peek.kind, text: peek.text, owner: peek.owner }, body, user, at);
-      await c.query(`UPDATE human_proposals SET review_status = 'approved', reviewed_by = $2, reviewed_at = $3 WHERE id = $1`, [proposalId, user.id, at]);
-      deliver = made.deliver;
-      return { record: made.record, created: true };
-    });
-    const delivered = deliver ? await (deliver as () => Promise<boolean>)() : undefined;
-    return { ...result, ...(delivered !== undefined ? { delivered } : {}) };
+  async authoriseProposal(user: AuthUser, proposalId: string, body: Record<string, unknown>): Promise<Authorised> {
+    if (!UUID.test(proposalId)) throw new NotFoundException();
+    const p = (await this.pool.query(`SELECT project_id FROM human_proposals WHERE id = $1`, [proposalId])).rows[0];
+    if (!p) throw new NotFoundException();
+    return this.authoriseThrough(user, p.project_id, 'human_proposal', proposalId, body);
   }
 
   async rejectProposal(user: AuthUser, proposalId: string, input: Record<string, unknown>) {
@@ -322,9 +355,11 @@ export class RecordsService {
     return this.tx(async (c) => {
       const peek = await this.lockProposal(c, proposalId);
       await this.access.authorize(user, 'proposal.review', peek.project_id, c, true);
+      await lockPendingAuthorisation(c, 'human_proposal', proposalId);
       const p = (await c.query(`SELECT review_status FROM human_proposals WHERE id = $1 FOR UPDATE`, [proposalId])).rows[0];
       if (p.review_status !== 'pending') throw new ConflictException('Only a proposal waiting for review can be rejected.');
       await c.query(`UPDATE human_proposals SET review_status = 'rejected', reviewed_by = $2, reviewed_at = $3, reject_reason = $4 WHERE id = $1`, [proposalId, user.id, at, reason]);
+      await rejectPendingAuthorisation(c, 'human_proposal', proposalId, user.id, at, reason);
       await writeAudit(c, { at, action: 'proposal.rejected', actorUserId: user.id, subjectType: 'project', subjectId: peek.project_id, detail: { proposalId } });
       return { proposal: { id: proposalId, reviewStatus: 'rejected' } };
     });
@@ -370,6 +405,10 @@ export class RecordsService {
         note,
       });
       if (!verdict.allowed) RecordsService.refusal(verdict.reason);
+      // A task marked for deadline review needs a new authorised date before it starts, resumes or completes (spec §7).
+      if (MARKED_REFUSES.includes(action) && (await c.query(`SELECT deadline_review_required FROM tasks WHERE id = $1`, [task.id])).rows[0].deadline_review_required) {
+        RecordsService.refusal(NEEDS_NEW_DATE);
+      }
       let override = false;
       if (action === 'complete') {
         const children = (await c.query(`SELECT status FROM tasks WHERE parent_id = $1`, [task.id])).rows.map((r) => r.status as TaskStatus);
@@ -378,7 +417,7 @@ export class RecordsService {
         override = parentRule.override;
       }
       const change = async (id: string, from: TaskStatus, to: TaskStatus, kind: string, why: string | null, overrideWhy: string | null) => {
-        await c.query(`UPDATE tasks SET status = $2 WHERE id = $1`, [id, to]);
+        await c.query(`UPDATE tasks SET status = $2, completed_at = CASE WHEN $2 = 'completed' THEN $3::timestamptz ELSE NULL END WHERE id = $1`, [id, to, at]);
         await c.query(
           `INSERT INTO task_events (id, task_id, kind, from_status, to_status, note, override_reason, actor_id, at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
           [uuidv7(at.getTime()), id, kind, from, to, why, overrideWhy, user.id, at],
@@ -399,30 +438,6 @@ export class RecordsService {
       }
       await writeAudit(c, { at, action: `task.${KIND[action]}`, actorUserId: user.id, subjectType: 'project', subjectId: ctx.project.id, detail: { taskId: task.id } });
       return { task: { id: task.id, status: verdict.to } };
-    });
-  }
-
-  /** The Project Manager or a Deputy splits a task by adding a subtask (two levels at most), with a reason. */
-  async addSubtask(user: AuthUser, parentId: string, input: Record<string, unknown>) {
-    const title = typeof input.title === 'string' ? input.title.trim() : '';
-    const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
-    if (title === '') throw new BadRequestException('Give the subtask a title.');
-    if (reason === '') throw new BadRequestException('A reason is required.');
-    const at = this.now();
-    return this.tx(async (c) => {
-      const { ctx, task } = await this.taskContext(c, user, parentId, true);
-      if (!ctx.roles.includes('pm') && !ctx.roles.includes('deputy_pm')) throw new ForbiddenException('Only the Project Manager or a Deputy can add a subtask.');
-      if (ctx.project.status !== 'active') throw new ConflictException('Tasks change only while the project is Active.');
-      if (task.depth >= 2) throw new ConflictException('Subtasks go at most two levels deep.');
-      if (!isProjectPerson(ctx, input.assigneeId)) throw new BadRequestException(NEEDS_ASSIGNEE);
-      const dueOn = this.dueOf(input.dueOn);
-      const id = await this.insertTask(
-        c, ctx,
-        { parentId: task.id, depth: task.depth + 1, title, assigneeId: input.assigneeId as string, ownerAsWritten: null, dueOn, invitationId: null, origin: null },
-        user, at, reason,
-      );
-      await writeAudit(c, { at, action: 'task.subtask_added', actorUserId: user.id, subjectType: 'project', subjectId: ctx.project.id, detail: { taskId: id, parentId: task.id } });
-      return { task: { id, parentId: task.id, depth: task.depth + 1 } };
     });
   }
 
@@ -529,7 +544,7 @@ export class RecordsService {
     const view = list.tasks.find((t) => t.id === task.id);
     const history = (
       await this.pool.query(
-        `SELECT e.kind, e.from_status AS "from", e.to_status AS "to", e.note, e.override_reason AS "overrideReason", u.display_name AS actor, e.at
+        `SELECT e.kind, e.from_status AS "from", e.to_status AS "to", e.note, e.override_reason AS "overrideReason", e.detail, u.display_name AS actor, e.at
            FROM task_events e JOIN users u ON u.id = e.actor_id WHERE e.task_id = $1 ORDER BY e.at, e.id`,
         [taskId],
       )
@@ -550,9 +565,14 @@ export class RecordsService {
                 t.owner_as_written AS "ownerAsWritten", to_char(t.due_on, 'YYYY-MM-DD') AS "dueOn", t.status,
                 to_char(p.due_on, 'YYYY-MM-DD') AS "parentDueOn",
                 CASE WHEN i.id IS NULL THEN NULL WHEN i.status = 'invited' AND i.expires_at <= now() THEN 'expired' ELSE i.status END AS "invitationStatus",
-                x.quote
+                x.quote, p.status AS "parentStatus",
+                CASE WHEN fo.id IS NULL THEN NULL ELSE json_build_object('id', fo.id, 'title', fo.title) END AS follows,
+                (SELECT json_build_object('id', n.id, 'title', n.title) FROM tasks n WHERE n.follows_task_id = t.id ORDER BY n.authorised_at, n.id LIMIT 1) AS "followedBy",
+                EXISTS (SELECT 1 FROM change_requests r WHERE r.target_kind = 'task' AND r.target_id = t.id AND r.status = 'pending') AS "changeWaiting",
+                t.deadline_review_required AS "deadlineReviewRequired"
            FROM tasks t JOIN users u ON u.id = t.assignee_id
            LEFT JOIN tasks p ON p.id = t.parent_id
+           LEFT JOIN tasks fo ON fo.id = t.follows_task_id
            LEFT JOIN invitations i ON i.id = t.invitation_id
            LEFT JOIN extraction_items x ON x.id = t.origin_item_id
           WHERE t.project_id = $1
@@ -576,11 +596,17 @@ export class RecordsService {
         assigneeActive: isActiveIn(ctx, t.assigneeId),
         invitationStatus: t.invitationStatus,
         today: ctx.today,
+        deadlineReviewRequired: t.deadlineReviewRequired,
       }),
       source: t.quote ? { quote: t.quote as string } : null,
+      changeWaiting: t.changeWaiting as boolean,
+      parentCancelled: t.parentStatus === 'cancelled' && t.status !== 'cancelled' && t.status !== 'completed',
+      follows: (t.follows ?? null) as { id: string; title: string } | null,
+      followedBy: (t.followedBy ?? null) as { id: string; title: string } | null,
       // What this viewer may do now (notes are asked for when they act).
-      mayAct: ctx.roles.length === 0 ? [] : TASK_ACTIONS.filter(
+      mayAct: ctx.roles.length === 0 || t.status === 'cancelled' ? [] : TASK_ACTIONS.filter(
         (action) =>
+          !(t.deadlineReviewRequired && MARKED_REFUSES.includes(action)) &&
           taskTransition({
             action,
             status: t.status,
@@ -604,11 +630,19 @@ export class RecordsService {
     walk(null);
     const decisions = (
       await this.pool.query(
-        `SELECT d.id, d.statement, d.rationale, d.status, u.display_name AS "authorisedBy", d.authorised_at AS "authorisedAt"
-           FROM decisions d JOIN users u ON u.id = d.authorised_by WHERE d.project_id = $1 ORDER BY d.authorised_at, d.id`,
+        `SELECT d.id, d.statement, d.rationale, d.status, u.display_name AS "authorisedBy", d.authorised_at AS "authorisedAt",
+                CASE WHEN o.id IS NULL THEN NULL ELSE json_build_object('id', o.id, 'statement', o.statement) END AS replaces,
+                (SELECT json_build_object('id', n.id, 'statement', n.statement) FROM decisions n WHERE n.replaces_id = d.id ORDER BY n.authorised_at, n.id LIMIT 1) AS "replacedBy",
+                EXISTS (SELECT 1 FROM change_requests r WHERE r.target_kind = 'decision' AND r.target_id = d.id AND r.status = 'pending') AS "changeWaiting"
+           FROM decisions d JOIN users u ON u.id = d.authorised_by LEFT JOIN decisions o ON o.id = d.replaces_id
+          WHERE d.project_id = $1 ORDER BY d.authorised_at, d.id`,
         [ctx.project.id],
       )
-    ).rows;
+    ).rows.map((d) => ({
+      ...d,
+      // Only an Owner or Sponsor changes a decision, and only an Active one while the project is Active.
+      mayAct: d.status === 'active' && ctx.project.status === 'active' && ctx.roles.some((r) => r === 'owner' || r === 'sponsor') ? ['supersede', 'withdraw'] : [],
+    }));
     const questions = (
       await this.pool.query(
         `SELECT q.id, q.text, q.status, json_build_object('id', r.id, 'displayName', r.display_name) AS requester,
@@ -625,7 +659,11 @@ export class RecordsService {
     const risks = (
       await this.pool.query(
         `SELECT k.id, k.description, k.severity, k.status, k.mitigation, to_char(k.review_on, 'YYYY-MM-DD') AS "reviewOn",
-                CASE WHEN r.id IS NULL THEN NULL ELSE json_build_object('id', r.id, 'displayName', r.display_name) END AS responsible
+                CASE WHEN r.id IS NULL THEN NULL ELSE json_build_object('id', r.id, 'displayName', r.display_name) END AS responsible,
+                (SELECT json_build_object('projectId', e.detail->>'fromProjectId', 'name', e.detail->>'fromProjectName') FROM record_events e
+                  WHERE e.record_kind = 'risk' AND e.record_id = k.id AND e.kind = 'handed_over_from' ORDER BY e.at DESC, e.id DESC LIMIT 1) AS "handedOverFrom",
+                (SELECT json_build_object('projectId', e.detail->>'toProjectId', 'name', e.detail->>'toProjectName') FROM record_events e
+                  WHERE e.record_kind = 'risk' AND e.record_id = k.id AND e.kind = 'handed_over_to' ORDER BY e.at DESC, e.id DESC LIMIT 1) AS "handedOverTo"
            FROM risks k LEFT JOIN users r ON r.id = k.responsible_id WHERE k.project_id = $1 ORDER BY k.authorised_at, k.id`,
         [ctx.project.id],
       )
@@ -637,6 +675,21 @@ export class RecordsService {
       );
       return { ...k, mayAct };
     });
-    return { tasks: ordered, decisions, questions, risks };
+    const open = (
+      await this.pool.query(
+        `SELECT f.id, f.record_kind AS kind, f.record_id AS "recordId", f.raised_at AS "raisedAt",
+                json_build_object('id', d.id, 'statement', d.statement, 'status', d.status) AS decision
+           FROM review_flags f JOIN decisions d ON d.id = f.decision_id
+          WHERE f.project_id = $1 AND f.cleared_at IS NULL ORDER BY f.raised_at, f.id`,
+        [ctx.project.id],
+      )
+    ).rows;
+    const flagsOf = (kind: string, id: string) => open.filter((f) => f.kind === kind && f.recordId === id).map((f) => ({ id: f.id, decision: f.decision, raisedAt: f.raisedAt }));
+    return {
+      tasks: ordered.map((x) => ({ ...x, reviewFlags: flagsOf('task', x.id) })),
+      decisions,
+      questions: questions.map((x) => ({ ...x, reviewFlags: flagsOf('question', x.id) })),
+      risks: risks.map((x) => ({ ...x, reviewFlags: flagsOf('risk', x.id) })),
+    };
   }
 }

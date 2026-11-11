@@ -3,6 +3,7 @@ import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID, uuidv7 } from '../common/uuid7';
+import { endDelegation } from '../changes/closure';
 import { PG_POOL } from '../db/database.module';
 import { isCalendarDate } from '../extraction/due';
 import { type ProjectContext, ProjectAccess } from './access.service';
@@ -134,6 +135,8 @@ export class MembershipsService {
     at: Date,
   ): Promise<string> {
     const label = SINGLE_LABEL[candidate.role]?.one;
+    // A new Project Manager ends any permission an Owner or Sponsor gave the previous one to close (spec §6.1).
+    if (candidate.role === 'pm') await endDelegation(c, ctx.project.id, actorId, at, 'pm_changed');
     for (const { row: old, end } of planReplacement(ctx, candidate)) {
       if (end === null) {
         const why = `Replaced by a new ${label}`;

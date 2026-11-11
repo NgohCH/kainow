@@ -92,18 +92,6 @@ describe('the task lifecycle', { skip: SKIP_NO_DB }, () => {
     assert.equal(n, 3);
   });
 
-  test('subtasks go at most two levels deep', async () => {
-    const top = await task();
-    const add = (parent: string) => pm.request('POST', `/records/tasks/${parent}/subtasks`, { title: 'Part', assigneeId: ids.ben, dueOn: '2026-11-18', reason: 'Split the work' });
-    const mid = await add(top);
-    assert.equal(mid.status, 201, JSON.stringify(mid.body));
-    const low = await add(mid.body.task.id);
-    assert.equal(low.status, 201);
-    const deeper = await add(low.body.task.id);
-    assert.deepEqual([deeper.status, deeper.body.message], [409, 'Subtasks go at most two levels deep.']);
-    assert.equal((await ann.request('POST', `/records/tasks/${top}/subtasks`, { title: 'P', assigneeId: ids.ben, dueOn: '2026-11-18', reason: 'r' })).status, 403);
-  });
-
   test('nothing changes while Deferred; a grant holder reads but cannot act', async () => {
     const id = await task();
     await t.pool.query(`UPDATE projects SET status = 'deferred' WHERE id = $1`, [projectId]);

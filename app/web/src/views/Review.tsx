@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, api, type Item, type Project, type Run } from '../api.ts';
 import { AuthoriseForm, type Person } from './AuthoriseForm.tsx';
+import { ChangeRequestPanel, pendingAuthorisation, useRequests } from './ChangeRequest.tsx';
+import { waitingLine, type RequestView } from '../changes.ts';
 import { KIND_LABEL, plural } from '../format.ts';
 import { buildSegments, contextAround, markedSpan } from '../segments.ts';
 import { type EditFields, blocksApproval, dueLine, editFormFrom, formatDay } from '../due.ts';
@@ -32,6 +34,8 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
   // The proposal whose Authorise form is open, and the project's people to choose from.
   const [authorising, setAuthorising] = useState<string | null>(null);
   const [people, setPeople] = useState<Person[]>([]);
+  // Authorisations already waiting for more approvers (a second Owner sees the request, not a fresh form).
+  const { requests, reload: reloadRequests } = useRequests(view?.projectId);
   useEffect(() => {
     if (!view?.projectId) return;
     api.get<{ project: Project }>(`/projects/${view.projectId}`).then(
@@ -49,21 +53,23 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
       if (!view) return false;
       setError(null);
       try {
-        const r = await api.post<{ record: { kind: string }; delivered?: boolean }>(`/extractions/${runId}/items/${item.id}/authorise`, {
+        const r = await api.post<{ record?: { kind: string }; request?: RequestView; delivered?: boolean }>(`/extractions/${runId}/items/${item.id}/authorise`, {
           sourceVersionId: view.run.sourceVersionId,
           occurrence: item.quoteMatches > 1 ? pick[item.id] : undefined,
           ...body,
         });
         setView(await api.get<RunView>(`/extractions/${runId}`));
         setAuthorising(null);
-        setNotice(r.delivered === false ? 'Authorised. The invitation email was not sent; send it again from People.' : `Authorised: a ${r.record.kind} is now on the Work tab.`);
+        reloadRequests();
+        if (r.request) setNotice(`${waitingLine(r.request)}. Another Owner or Sponsor can approve it from this proposal.`);
+        else setNotice(r.delivered === false ? 'Authorised. The invitation email was not sent; send it again from People.' : `Authorised: a ${r.record?.kind ?? 'record'} is now on the Work tab.`);
         return true;
       } catch (e) {
         setError(e instanceof ApiError ? e.message : 'It was not authorised. Try again.');
         return false;
       }
     },
-    [view, runId, pick],
+    [view, runId, pick, reloadRequests],
   );
   const marks = useRef(new Map<string, HTMLElement>());
   const cards = useRef(new Map<string, HTMLElement>());
@@ -178,11 +184,12 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
       if (e.key === 'j' && idx < items.length - 1) select(items[idx + 1].id, true);
       else if (e.key === 'k' && idx > 0) select(items[idx - 1].id, true);
       else if (current && e.key === 'a' && view?.permissions.approve && canApprove(current, pick) && !current.record) setAuthorising(current.id);
-      else if (current && e.key === 'r' && view?.permissions.reject) void decide(current, 'rejected');
+      // While an authorisation waits for more approvers, its panel's Reject is the way to reject.
+      else if (current && e.key === 'r' && view?.permissions.reject && !pendingAuthorisation(requests, current.id)) void decide(current, 'rejected');
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [items, selected, current, select, decide, pick, view]);
+  }, [items, selected, current, select, decide, pick, view, requests]);
 
   if (error && !view) return <main className="page narrow"><p role="alert" className="error">{error}</p><a href="#/">Back to notes</a></main>;
   if (!view) return <p className="loading">Loading</p>;
@@ -429,7 +436,7 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                 ) : (
                   <span className={`badge badge-${item.reviewStatus}`}>{STATUS_LABEL[item.reviewStatus]}</span>
                 )}
-                {view.permissions.approve && !item.record && (
+                {view.permissions.approve && !item.record && !pendingAuthorisation(requests, item.id) && (
                 <button
                   className="approve"
                   disabled={saving.has(item.id) || !canApprove(item, pick)}
@@ -441,13 +448,23 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                   Authorise
                 </button>
                 )}
-                {view.permissions.reject && !item.record && (
+                {view.permissions.reject && !item.record && !pendingAuthorisation(requests, item.id) && (
                 <button className="reject" disabled={saving.has(item.id) || item.reviewStatus === 'rejected'} onClick={() => void decide(item, 'rejected')}>
                   Reject
                 </button>
                 )}
               </div>
-              {authorising === item.id && (
+              {!item.record && pendingAuthorisation(requests, item.id) && (
+                <ChangeRequestPanel
+                  request={pendingAuthorisation(requests, item.id) as RequestView}
+                  onChanged={(m) => {
+                    setNotice(m);
+                    reloadRequests();
+                    api.get<RunView>(`/extractions/${runId}`).then(setView, () => undefined);
+                  }}
+                />
+              )}
+              {authorising === item.id && !pendingAuthorisation(requests, item.id) && (
                 <AuthoriseForm
                   kind={item.kind}
                   text={item.text}

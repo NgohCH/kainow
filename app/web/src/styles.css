@@ -226,3 +226,13 @@ details.archived summary { cursor: pointer; font-weight: 600; }
 .logo-previews li { display: flex; flex-direction: column; gap: 0.25rem; }
 .preview-box { display: inline-flex; border: 1px dashed var(--rule); background: var(--surface); }
 .preview-box img { object-fit: contain; }
+
+/* Sub-project 2b: change requests, task and decision changes, review flags */
+.change-request h3 { margin: 0 0 0.25rem; font-size: 1.05rem; }
+.change-request .terms { margin: 0.5rem 0; }
+.change-request .terms th[scope="row"] { color: var(--ink); font-weight: 600; font-size: 0.9rem; }
+.change-form { margin-top: 0.5rem; max-width: 36rem; }
+.change-form label { display: grid; gap: 0.2rem; }
+.change-form label.check { display: flex; gap: 0.4rem; align-items: center; }
+.review-flags { margin: 0.35rem 0; }
+.review-flags .link-button { margin-left: 0.5rem; }

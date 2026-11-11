@@ -19,11 +19,14 @@ import {
   transitionsFor,
 } from '../projects.ts';
 import { HumanProposals } from './HumanProposals.tsx';
+import { ProjectApprovals } from './ApprovalSettings.tsx';
+import { Closing, DelegationControl, type ClosedSummary, type ClosureView } from './Closing.tsx';
+import { DeadlineReview } from './DeadlineReview.tsx';
 import { Notes } from './Notes.tsx';
 import { Work } from './Work.tsx';
 import { type Act, ArchivePanel, DepartmentMove, GrantsSection, HandoverForm, HoldActions } from './ProjectAccessPanels.tsx';
 
-type Tab = 'overview' | 'people' | 'notes' | 'work';
+type Tab = 'overview' | 'people' | 'notes' | 'work' | 'closing' | 'deadline-review';
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
@@ -127,6 +130,8 @@ export function ProjectPage({ projectId, tab, meId }: { projectId: string; tab: 
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
       {tab === 'overview' && <Overview project={project} act={act} />}
+      {tab === 'closing' && <Closing project={project} act={act} />}
+      {tab === 'deadline-review' && <DeadlineReview project={project} />}
       {tab === 'people' && <People project={project} act={act} />}
       {tab === 'notes' && contentAllowed && (
         <>
@@ -141,7 +146,7 @@ export function ProjectPage({ projectId, tab, meId }: { projectId: string; tab: 
         </>
       )}
       {tab === 'work' && contentAllowed && (
-        <Work projectId={project.id} people={people} canSplit={roles.some((r) => r === 'pm' || r === 'deputy_pm') && project.status === 'active'} />
+        <Work projectId={project.id} people={people} canPropose={roles.length > 0} canClear={roles.some((r) => r === 'pm' || r === 'deputy_pm')} />
       )}
     </main>
   );
@@ -154,6 +159,26 @@ function Overview({ project, act }: { project: Project; act: Act }) {
   const canStage = project.myRoles.includes('pm') && project.status === 'active';
   const [editing, setEditing] = useState(false);
   const [staging, setStaging] = useState(false);
+  const [closure, setClosure] = useState<ClosureView | null>(null);
+  const [markedTasks, setMarkedTasks] = useState(0);
+  const [atClosure, setAtClosure] = useState<ClosedSummary | null>(null);
+  const [tick, setTick] = useState(0);
+  const closable = ['planned', 'active', 'deferred'].includes(project.status);
+  const isOS = project.myRoles.some((r) => r === 'owner' || r === 'sponsor');
+  const isPmOrDeputy = project.myRoles.some((r) => r === 'pm' || r === 'deputy_pm');
+  useEffect(() => {
+    if (!closable || project.myRoles.length === 0) return setClosure(null);
+    api.get<ClosureView>(`/projects/${project.id}/closure`).then(setClosure, () => setClosure(null));
+  }, [project.id, project.status, project.myRoles.length, closable, tick]);
+  useEffect(() => {
+    if (project.status !== 'closed') return setAtClosure(null);
+    api.get<ClosureView>(`/projects/${project.id}/closure`).then((v) => setAtClosure(v.closedSummary ?? null), () => setAtClosure(null));
+  }, [project.id, project.status]);
+  useEffect(() => {
+    if (!isPmOrDeputy || !['active', 'deferred', 'closed'].includes(project.status)) return setMarkedTasks(0);
+    api.get<{ tasks: unknown[] }>(`/projects/${project.id}/deadline-review`).then((r) => setMarkedTasks(r.tasks.length), () => setMarkedTasks(0));
+  }, [project.id, project.status, isPmOrDeputy]);
+  const flags = project.openReviewFlags ?? 0;
 
   return (
     <>
@@ -192,15 +217,50 @@ function Overview({ project, act }: { project: Project; act: Act }) {
         )}
       </section>
 
+      {atClosure && (atClosure.kept.length > 0 || atClosure.unresolved.length > 0) && (
+        <section aria-labelledby="at-closure-heading">
+          <h2 id="at-closure-heading">At closure</h2>
+          {atClosure.kept.length > 0 && (
+            <>
+              <h3>Tasks kept outstanding</h3>
+              <ul className="plain">
+                {atClosure.kept.map((k) => (
+                  <li key={k.id}><strong>{k.title}</strong>: {k.reason}</li>
+                ))}
+              </ul>
+            </>
+          )}
+          {atClosure.unresolved.length > 0 && (
+            <>
+              <h3>Questions left unresolved</h3>
+              <ul className="plain">
+                {atClosure.unresolved.map((q) => (
+                  <li key={q.id}>
+                    <strong>{q.text}</strong>: {q.reason}
+                    {q.affectsDelivery ? ' (affects delivery acceptance)' : ''}
+                  </li>
+                ))}
+              </ul>
+            </>
+          )}
+        </section>
+      )}
+
       {(options.length > 0 || canStage) && (
         <section aria-labelledby="change-heading">
           <h2 id="change-heading">Change the project</h2>
           <div className="decision">
-            {options.map((o) => (
-              <button key={`${o.to}-${o.label}`} onClick={() => setChosen(o)} aria-expanded={chosen === o}>
-                {o.label}
-              </button>
-            ))}
+            {options.map((o) =>
+              o.to === 'closed' ? (
+                <a key={`${o.to}-${o.label}`} className="button" href={`#/projects/${project.id}/closing`}>
+                  {o.label}
+                </a>
+              ) : (
+                <button key={`${o.to}-${o.label}`} onClick={() => setChosen(o)} aria-expanded={chosen === o}>
+                  {o.label}
+                </button>
+              ),
+            )}
             {canStage && (
               <button onClick={() => setStaging((s) => !s)} aria-expanded={staging}>
                 Change stage
@@ -211,6 +271,37 @@ function Overview({ project, act }: { project: Project; act: Act }) {
           {staging && <StageForm project={project} act={act} onDone={() => setStaging(false)} />}
         </section>
       )}
+
+      {(closure?.mayPrepare || markedTasks > 0 || flags > 0 || (isOS && closable)) && (
+        <section aria-labelledby="records-heading">
+          <h2 id="records-heading">Closing and reviews</h2>
+          {flags > 0 && (
+            <p className="review-flags">
+              {flags} {flags === 1 ? 'item is' : 'items are'} flagged for review after a decision changed. <a href={`#/projects/${project.id}/work`}>Open Work</a>
+            </p>
+          )}
+          {markedTasks > 0 && (
+            <p>
+              {markedTasks} {markedTasks === 1 ? 'task needs' : 'tasks need'} a new authorised due date. <a href={`#/projects/${project.id}/deadline-review`}>Deadline review</a>
+            </p>
+          )}
+          {closure?.mayPrepare && <a className="button" href={`#/projects/${project.id}/closing`}>Prepare closure</a>}
+          {isOS && closable && closure && (
+            <DelegationControl
+              project={project}
+              view={closure}
+              run={async (work, done) => {
+                const ok = await act(work, done);
+                setTick((n) => n + 1);
+                return ok;
+              }}
+            />
+          )}
+          {closure?.delegation && <p className="meta">{closure.delegation.pm} may close this project. Allowed by {closure.delegation.by}: {closure.delegation.reason}</p>}
+        </section>
+      )}
+
+      <ProjectApprovals projectId={project.id} />
 
       <ArchivePanel project={project} act={act} />
       <DepartmentMove project={project} act={act} />
@@ -261,6 +352,7 @@ function TransitionForm({ project, option, act, onDone }: { project: Project; op
           to: option.to,
           reason: reason || null,
           outcome: option.needs.outcome ? outcome || null : null,
+          objectivesMet: false,
           stage: option.needs.stage ? stage : null,
         }),
       `${option.label}: done.`,
