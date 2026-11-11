@@ -7,6 +7,7 @@ import { Pool } from 'pg';
 import { AppModule } from '../app.module';
 import { loadConfig } from '../config';
 import { runMigrations } from '../db/migrate';
+import { seedOrganisation } from '../testing/projects';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { CaptureSender, FakeClock, testEnv } from '../testing/fakes';
 import { UsersService } from '../users/users.service';
@@ -36,6 +37,7 @@ describe('spend settings over HTTP', { skip: SKIP_NO_DB }, () => {
     const pool = new Pool({ connectionString: config.databaseUrl });
     await resetPublicSchema(pool);
     await runMigrations(pool, config.migrationsDir);
+    await seedOrganisation(pool);
     await new UsersService(pool, clock.now).create({ email: EMAIL, displayName: 'Admin' });
     await pool.end();
     app = await NestFactory.create(AppModule.register(config, { codeSender: sender, clock: clock.now }), { logger: false });

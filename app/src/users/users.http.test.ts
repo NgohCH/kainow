@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, test } from 'node:test';
 import type { INestApplication } from '@nestjs/common';
 import { Pool } from 'pg';
 import { createApp } from '../bootstrap';
+import { seedOrganisation } from '../testing/projects';
 import { loadConfig } from '../config';
 import { runMigrations } from '../db/migrate';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
@@ -38,6 +39,7 @@ describe('people over HTTP', { skip: SKIP_NO_DB }, () => {
     pool = new Pool({ connectionString: config.databaseUrl });
     await resetPublicSchema(pool);
     await runMigrations(pool, config.migrationsDir);
+    await seedOrganisation(pool);
     adminId = (await new UsersService(pool, clock.now).create({ email: EMAIL, displayName: 'Admin' })).id;
     app = await createApp(config, { codeSender: sender, clock: clock.now, logger: false, extractionQueue: { enqueue: async () => undefined } });
     await app.listen(0);

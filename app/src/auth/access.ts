@@ -17,3 +17,8 @@ export const AnySignedInUser = () => SetMetadata(ACCESS_KEY, { kind: 'session' }
 
 /** A signed-in person whose role is allowed to do this action. */
 export const RequireAction = (action: Action) => SetMetadata(ACCESS_KEY, { kind: 'action', action } satisfies Access);
+
+export const BEFORE_SETUP_KEY = 'kainow:before-setup';
+
+/** The route also answers before the organisation is set up. Every other route answers 409 until then. */
+export const BeforeSetup = () => SetMetadata(BEFORE_SETUP_KEY, true);

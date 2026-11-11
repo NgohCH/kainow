@@ -1,6 +1,6 @@
 import { BadRequestException, Body, Controller, Get, HttpCode, Inject, Post, Req, Res, UnauthorizedException } from '@nestjs/common';
 import { APP_CONFIG, type AppConfig } from '../config';
-import { AnySignedInUser, Public } from './access';
+import { AnySignedInUser, Public, BeforeSetup } from './access';
 import type { HttpRequest } from './auth.guard';
 import { AuthService } from './auth.service';
 import { clearedCookie, sessionCookie } from './cookies';
@@ -14,6 +14,7 @@ function field(body: unknown, name: string): unknown {
   return body && typeof body === 'object' ? (body as Record<string, unknown>)[name] : undefined;
 }
 
+@BeforeSetup()
 @Controller('auth')
 export class AuthController {
   constructor(

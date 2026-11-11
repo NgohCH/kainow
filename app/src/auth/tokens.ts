@@ -11,6 +11,8 @@ export interface CodeSender {
   sendInvitation(email: string, link: string, projectName: string, role: string, expiresAt: Date): Promise<void>;
   /** A member of the project is On Hold and needs investigating; names the project only, never the reason. */
   sendHoldAlert(email: string, projectName: string, link: string): Promise<void>;
+  /** The one-time link that makes the first Enterprise Administrator. */
+  sendSetupInvitation(email: string, link: string, expiresAt: Date): Promise<void>;
 }
 
 export interface AuthUser {

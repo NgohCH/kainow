@@ -15,16 +15,17 @@ export const setCsrfToken = (t: string | null | undefined): void => {
 
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const isForm = body instanceof FormData;
+  const isFile = body instanceof Blob;
   let res: Response;
   try {
     res = await fetch(BASE + path, {
       method,
       credentials: 'same-origin',
       headers: {
-        ...(body !== undefined && !isForm ? { 'Content-Type': 'application/json' } : {}),
+        ...(body !== undefined && !isForm ? { 'Content-Type': isFile ? body.type : 'application/json' } : {}),
         ...(method !== 'GET' && csrfToken ? { 'X-CSRF-Token': csrfToken } : {}),
       },
-      body: body === undefined ? undefined : isForm ? body : JSON.stringify(body),
+      body: body === undefined ? undefined : isForm || isFile ? body : JSON.stringify(body),
     });
   } catch {
     throw new ApiError('Cannot reach the Kainow server. Check that it is running, then try again.', 0);
@@ -49,6 +50,10 @@ export const api = {
   post: <T>(path: string, body?: unknown) => request<T>('POST', path, body),
   put: <T>(path: string, body?: unknown) => request<T>('PUT', path, body),
   originalUrl: (sourceId: string, versionNo: number) => `${BASE}/notes/${sourceId}/versions/${versionNo}/original`,
+  /** Sends a file as the request body itself, with its own type (a logo). */
+  upload: <T>(path: string, file: Blob) => request<T>('PUT', path, file),
+  /** The address of a server path for an <img> or <link>. */
+  url: (path: string) => BASE + path,
 };
 
 export interface User {

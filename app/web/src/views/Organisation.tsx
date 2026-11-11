@@ -4,7 +4,9 @@ import { ApiError, api, type Department } from '../api.ts';
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 
 /** Administrator screen: the department list projects choose their owning department from. */
-export function Departments() {
+export function Departments({ embedded = false }: { embedded?: boolean } = {}) {
+  const Wrapper = embedded ? 'section' : 'main';
+  const Heading = embedded ? 'h2' : 'h1';
   const [list, setList] = useState<Department[] | null>(null);
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -33,8 +35,8 @@ export function Departments() {
   }
 
   return (
-    <main className="page narrow">
-      <h1>Departments</h1>
+    <Wrapper className={embedded ? 'panel' : 'page narrow'} aria-labelledby={embedded ? 'departments-heading' : undefined}>
+      <Heading id="departments-heading">Departments</Heading>
       <p className="meta">Every project has one owning department and may have contributing ones. A retired department stays on existing projects but cannot be chosen for new ones.</p>
       <form className="row" onSubmit={add}>
         <label>
@@ -80,12 +82,14 @@ export function Departments() {
           ))}
         </ul>
       )}
-    </main>
+    </Wrapper>
   );
 }
 
 /** Administrator screen: the organisation email domains invitations may go to. */
-export function Domains() {
+export function Domains({ embedded = false }: { embedded?: boolean } = {}) {
+  const Wrapper = embedded ? 'section' : 'main';
+  const Heading = embedded ? 'h2' : 'h1';
   const [list, setList] = useState<Array<{ id: string; domain: string }> | null>(null);
   const [domain, setDomain] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -108,8 +112,8 @@ export function Domains() {
   }
 
   return (
-    <main className="page narrow">
-      <h1>Eligible email domains</h1>
+    <Wrapper className={embedded ? 'panel' : 'page narrow'} aria-labelledby={embedded ? 'domains-heading' : undefined}>
+      <Heading id="domains-heading">Eligible email domains</Heading>
       <p className="meta">People can be invited only at these domains, for example example.com. A domain alone admits nobody: each person still needs an invitation.</p>
       <form className="row" onSubmit={add}>
         <label>
@@ -142,6 +146,6 @@ export function Domains() {
           ))}
         </ul>
       )}
-    </main>
+    </Wrapper>
   );
 }

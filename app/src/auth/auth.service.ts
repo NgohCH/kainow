@@ -5,6 +5,7 @@ import { writeAudit } from '../audit/audit';
 import { uuidv7 } from '../common/uuid7';
 import { APP_CONFIG, type AppConfig } from '../config';
 import { PG_POOL } from '../db/database.module';
+import { acceptSetupOnSignIn, setupLapsed } from '../organisation/setup-accept';
 import { CODE_SENDER, CLOCK, type AuthContext, type AuthUser, type Clock, type CodeSender } from './tokens';
 
 interface UserRow {
@@ -72,6 +73,10 @@ export class AuthService {
       await this.ignored(now, 'locked', user.id);
       return;
     }
+    if (await setupLapsed(this.pool, user.id, user.status, now)) {
+      await this.ignored(now, 'setup_lapsed', user.id);
+      return;
+    }
     const since = new Date(now.getTime() - this.config.auth.codeResendSeconds * 1000);
     const recent = await this.pool.query('SELECT 1 FROM login_codes WHERE user_id = $1 AND created_at > $2 LIMIT 1', [
       user.id,
@@ -120,6 +125,11 @@ export class AuthService {
         await writeAudit(c, { at: now, action: 'auth.sign_in_failed', detail: { reason: 'unknown_or_disabled' } });
         return null;
       }
+      // A setup invitation that expired or was replaced no longer lets its person in.
+      if (await setupLapsed(c, user.id, user.status, now)) {
+        await writeAudit(c, { at: now, action: 'auth.sign_in_failed', actorUserId: user.id, detail: { reason: 'setup_lapsed' } });
+        return null;
+      }
       if (user.locked_until && user.locked_until > now) {
         await writeAudit(c, { at: now, action: 'auth.sign_in_failed', actorUserId: user.id, detail: { reason: 'locked' } });
         return null;
@@ -157,6 +167,7 @@ export class AuthService {
       await c.query('UPDATE login_codes SET consumed_at = $2 WHERE id = $1', [current.id, now]);
       // The first successful sign-in of an invitee's account makes it Active.
       await c.query(`UPDATE users SET failed_code_attempts = 0, status = 'active', updated_at = $2 WHERE id = $1`, [user.id, now]);
+      await acceptSetupOnSignIn(c, user.id, now);
       const token = randomBytes(32).toString('base64url');
       const expiresAt = new Date(now.getTime() + sessionHours * 3_600_000);
       const sessionId = uuidv7(now.getTime());

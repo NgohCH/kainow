@@ -5,6 +5,7 @@ import { ForbiddenException, UnauthorizedException, type ExecutionContext } from
 import { Reflector } from '@nestjs/core';
 import { AnySignedInUser, Public, RequireAction } from './access';
 import { AuthGuard, type HttpRequest } from './auth.guard';
+import { OrganisationState } from '../organisation/state';
 import type { AuthService } from './auth.service';
 import { ACTIONS } from './permissions';
 
@@ -26,7 +27,9 @@ const fakeAuth = {
   },
 } as unknown as AuthService;
 
-const guard = new AuthGuard(new Reflector(), fakeAuth);
+// The organisation is set up: these unit tests cover access, not the setup gate (see onboarding.http.test).
+const registered = { isRegistered: async () => true } as unknown as OrganisationState;
+const guard = new AuthGuard(new Reflector(), fakeAuth, registered);
 
 function contextFor(handler: () => void, cookie?: string): { ctx: ExecutionContext; req: HttpRequest } {
   const req: HttpRequest = { method: 'GET', headers: cookie ? { cookie: `kainow_session=${cookie}` } : {} };

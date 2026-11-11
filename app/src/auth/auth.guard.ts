@@ -1,7 +1,8 @@
 import { timingSafeEqual } from 'node:crypto';
-import { CanActivate, ExecutionContext, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
+import { CanActivate, ConflictException, ExecutionContext, ForbiddenException, Injectable, UnauthorizedException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
-import { ACCESS_KEY, type Access } from './access';
+import { OrganisationState } from '../organisation/state';
+import { ACCESS_KEY, BEFORE_SETUP_KEY, type Access } from './access';
 import { AuthService } from './auth.service';
 import { readCookie } from './cookies';
 import { can } from './permissions';
@@ -28,6 +29,7 @@ export class AuthGuard implements CanActivate {
   constructor(
     private readonly reflector: Reflector,
     private readonly auth: AuthService,
+    private readonly organisation: OrganisationState,
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
@@ -35,7 +37,14 @@ export class AuthGuard implements CanActivate {
     if (!access) {
       throw new ForbiddenException();
     }
+    // Until the organisation is set up, only sign-in, setup and onboarding answer. Someone not signed in is told to
+    // sign in first, as before; the setup state is no one else's business.
+    const beforeSetup = this.reflector.getAllAndOverride<boolean | undefined>(BEFORE_SETUP_KEY, [context.getHandler(), context.getClass()]);
+    const gate = async () => {
+      if (!beforeSetup && !(await this.organisation.isRegistered())) throw new ConflictException('Set up the organisation first.');
+    };
     if (access.kind === 'public') {
+      await gate();
       return true;
     }
     const request = context.switchToHttp().getRequest<HttpRequest>();
@@ -44,6 +53,7 @@ export class AuthGuard implements CanActivate {
     if (!auth) {
       throw new UnauthorizedException();
     }
+    await gate();
     if (access.kind === 'action' && !can(auth.user.role, access.action)) {
       throw new ForbiddenException();
     }

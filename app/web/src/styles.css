@@ -142,7 +142,7 @@ button.reject:not(:disabled):hover { background: var(--rust-wash); }
 }
 
 /* Admin screens */
-.mainnav { display: flex; gap: 1rem; }
+.mainnav { display: flex; flex-wrap: wrap; gap: 0.25rem 1rem; }
 .mainnav a { text-decoration: none; padding: 0.25rem 0; border-bottom: 3px solid transparent; }
 .mainnav a[aria-current='page'] { border-bottom-color: var(--teal); font-weight: 600; }
 .people > li { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 0.75rem 0.25rem; }
@@ -213,3 +213,16 @@ details.archived summary { cursor: pointer; font-weight: 600; }
 .answers li { margin-top: 0.25rem; }
 .authorise-form { margin-top: 0.75rem; }
 .subtask-row { border: 1px solid var(--line, #ddd); padding: 0.5rem 0.75rem; }
+
+/* Organisation branding: logos drawn in their place's box, never stretched. */
+.logo { object-fit: contain; display: inline-block; vertical-align: middle; }
+.letterhead { display: inline-flex; align-items: center; gap: 0.5rem; }
+.letterhead .org-name { font-weight: 600; color: var(--ink); }
+.signin .logo-signIn { display: block; margin-bottom: 0.75rem; }
+.signin .org-heading { font-family: var(--serif); font-size: 2rem; margin: 0; }
+.signin .signin-to { color: var(--muted, #52666b); margin: 0.25rem 0 1rem; }
+.logo-upload { border-top: 1px solid var(--rule); padding: 0.75rem 0; }
+.logo-previews { list-style: none; padding: 0; margin: 0.5rem 0; display: flex; flex-wrap: wrap; gap: 0.75rem 1.25rem; align-items: flex-end; }
+.logo-previews li { display: flex; flex-direction: column; gap: 0.25rem; }
+.preview-box { display: inline-flex; border: 1px dashed var(--rule); background: var(--surface); }
+.preview-box img { object-fit: contain; }

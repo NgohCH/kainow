@@ -1,5 +1,5 @@
 import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Query, Req } from '@nestjs/common';
-import { AnySignedInUser, RequireAction } from '../auth/access';
+import { AnySignedInUser, RequireAction, BeforeSetup } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import { can } from '../auth/permissions';
 import { OrganisationService } from './organisation.service';
@@ -16,6 +16,7 @@ const actor = (req: HttpRequest): string => {
   return userId;
 };
 
+@BeforeSetup()
 @Controller()
 export class OrganisationController {
   constructor(private readonly org: OrganisationService) {}

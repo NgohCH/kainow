@@ -4,6 +4,7 @@ import { writeAudit } from '../audit/audit';
 import { CLOCK, type Clock } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
+import { OrganisationState } from '../organisation/state';
 
 const DOMAIN = /^(?=.{3,253}$)([a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$/;
 const UNIQUE_VIOLATION = '23505';
@@ -21,6 +22,7 @@ export class OrganisationService {
   constructor(
     @Inject(PG_POOL) private readonly pool: Pool,
     @Inject(CLOCK) private readonly now: Clock,
+    private readonly organisation: OrganisationState,
   ) {}
 
   async listDepartments(includeRetired: boolean) {
@@ -65,10 +67,17 @@ export class OrganisationService {
   async retireDepartment(id: string, actorUserId: string) {
     const at = this.now();
     const { rows } = await this.pool.query(
-      `UPDATE departments SET status = 'retired', updated_by = $2, updated_at = $3 WHERE id = $1 RETURNING id, name, status`,
-      [id, actorUserId, at],
+      // After setup the organisation keeps at least one active department.
+      `UPDATE departments SET status = 'retired', updated_by = $2, updated_at = $3
+        WHERE id = $1 AND (NOT $4 OR EXISTS (SELECT 1 FROM departments WHERE status = 'active' AND id <> $1))
+        RETURNING id, name, status`,
+      [id, actorUserId, at, await this.organisation.isRegistered()],
     );
-    if (!rows[0]) throw new NotFoundException();
+    if (!rows[0]) {
+      const exists = (await this.pool.query(`SELECT 1 FROM departments WHERE id = $1`, [id])).rowCount;
+      if (exists) throw new ConflictException('The organisation needs at least one active department.');
+      throw new NotFoundException();
+    }
     await writeAudit(this.pool, { at, action: 'department.retired', actorUserId, subjectType: 'department', subjectId: id });
     return rows[0];
   }
@@ -96,10 +105,17 @@ export class OrganisationService {
   async removeDomain(id: string, actorUserId: string) {
     const at = this.now();
     const { rows } = await this.pool.query(
-      `UPDATE eligible_domains SET removed_by = $2, removed_at = $3 WHERE id = $1 AND removed_at IS NULL RETURNING domain`,
-      [id, actorUserId, at],
+      // After setup the organisation keeps at least one email domain.
+      `UPDATE eligible_domains SET removed_by = $2, removed_at = $3
+        WHERE id = $1 AND removed_at IS NULL AND (NOT $4 OR EXISTS (SELECT 1 FROM eligible_domains WHERE removed_at IS NULL AND id <> $1))
+        RETURNING domain`,
+      [id, actorUserId, at, await this.organisation.isRegistered()],
     );
-    if (!rows[0]) throw new NotFoundException();
+    if (!rows[0]) {
+      const open = (await this.pool.query(`SELECT 1 FROM eligible_domains WHERE id = $1 AND removed_at IS NULL`, [id])).rowCount;
+      if (open) throw new ConflictException('The organisation needs at least one email domain.');
+      throw new NotFoundException();
+    }
     await writeAudit(this.pool, { at, action: 'domain.removed', actorUserId, subjectType: 'eligible_domain', subjectId: id, detail: { domain: rows[0].domain } });
     return { removed: true };
   }

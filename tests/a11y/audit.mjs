@@ -13,6 +13,18 @@ const base = process.env.KAINOW_URL ?? 'http://localhost:3066';
 const EMAIL = process.env.KAINOW_EMAIL ?? 'a11y@example.org';
 const API_LOG = process.env.KAINOW_API_LOG ?? '/tmp/a11y/api.log';
 const CHROME = process.env.CHROME ?? '/usr/bin/google-chrome';
+const SETUP_LOG = process.env.KAINOW_SETUP_LOG ?? '/tmp/a11y/setup.log';
+const axe = readFileSync(createRequire(import.meta.url).resolve('axe-core/axe.min.js'), 'utf8');
+const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox'] });
+const results = [];
+async function check(name, page) {
+  const seen = await page.evaluate(() => ({ h: [...document.querySelectorAll('h1,h2')].map((e) => e.textContent.trim()).slice(0, 3), buttons: document.querySelectorAll('button').length, inputs: document.querySelectorAll('input,textarea,select').length, len: document.body.innerText.length }));
+  console.log('RENDERED', name, JSON.stringify(seen));
+  await page.evaluate(axe);
+  const r = await page.evaluate(() => axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa', 'best-practice'] } }));
+  results.push({ name, violations: r.violations.map((x) => ({ id: x.id, impact: x.impact, help: x.help, nodes: x.nodes.map((n) => n.target.join(' ') + ' :: ' + (n.failureSummary || '').split('\n').slice(1, 3).join(' ')) })) });
+}
+const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = readFileSync(API_LOG, 'utf8');
 const code = [...log.matchAll(new RegExp(EMAIL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ': (\\d{6})', 'g'))].pop()[1];
 const v = await fetch(`${base}/auth/verify`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: EMAIL, code }) });
@@ -20,9 +32,51 @@ const cookie = v.headers.get('set-cookie').split(';')[0];
 const csrf = (await v.json()).csrfToken;
 const api = (m, p, b) => fetch(base + p, { method: m, headers: { 'content-type': 'application/json', cookie, 'x-csrf-token': csrf }, body: b && JSON.stringify(b) }).then((r) => r.json());
 
-// The organisation set-up an administrator does first, then one project the administrator also works in.
-const department = (await api('POST', '/departments', { name: 'Access Check Department' })).department;
+// Onboarding comes first: nothing else opens until the organisation is set up.
+const setupToken = [...readFileSync(SETUP_LOG, 'utf8').matchAll(/#\/setup\/([A-Za-z0-9_-]+)/g)].pop()[1];
+const assets = join(here, '..', '..', 'app', 'assets', 'branding');
+const uploadLogo = (shape) =>
+  fetch(`${base}/organisation/logos/${shape}`, { method: 'PUT', headers: { 'content-type': 'image/png', cookie, 'x-csrf-token': csrf }, body: readFileSync(join(assets, `kainow-${shape}.png`)) });
+const removeLogo = (shape) => api('POST', `/organisation/logos/${shape}/remove`, {});
+const [cookieName, ...cookieValue] = cookie.split('=');
+const signedInPage = async (width) => {
+  const page = await browser.newPage();
+  await page.setViewport({ width, height: 800 });
+  await page.setCookie({ name: cookieName, value: cookieValue.join('='), domain: 'localhost', path: '/' });
+  return page;
+};
+const signedOutCheck = async (theme, width, label, hash) => {
+  const ctx = await browser.createBrowserContext();
+  const page = await ctx.newPage();
+  await page.setViewport({ width, height: 800 });
+  await page.goto(`${base}/${hash}`, { waitUntil: 'networkidle0' });
+  await wait(300);
+  await check(`${theme}: ${label}`, page);
+  await ctx.close();
+};
+for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
+  await signedOutCheck(theme, width, 'setup link page (already used), Kainow defaults', `#/setup/${setupToken}`);
+  await signedOutCheck(theme, width, 'sign-in before setup, Kainow defaults', '');
+  const page = await signedInPage(width);
+  await page.goto(`${base}/#/`, { waitUntil: 'networkidle0' });
+  await wait(300);
+  await check(`${theme}: onboarding, empty`, page);
+  await page.close();
+}
+await api('POST', '/organisation/name', { name: 'Example Organisation' });
 await api('POST', '/domains', { domain: 'example.org' });
+const department = (await api('POST', '/departments', { name: 'Access Check Department' })).department;
+for (const shape of ['wide', 'square']) if ((await uploadLogo(shape)).status !== 200) throw new Error('logo upload failed');
+for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
+  const page = await signedInPage(width);
+  await page.goto(`${base}/#/`, { waitUntil: 'networkidle0' });
+  await wait(300);
+  await check(`${theme}: onboarding, filled with both logos`, page);
+  await page.close();
+}
+if (!(await api('POST', '/organisation/finish', {})).registered) throw new Error('setup did not finish');
+
+// One project the administrator also works in.
 const projectId = (await api('POST', '/projects', { name: 'Access check project', purpose: 'Check every screen with axe.', owningDepartmentId: department.id })).project.id;
 const db = new pg.Client({ connectionString: process.env.DATABASE_URL });
 await db.connect();
@@ -91,17 +145,6 @@ await new Promise((r) => setTimeout(r, 300));
 const inviteToken = [...readFileSync(API_LOG, 'utf8').matchAll(/sponsor\.a11y@example\.org: .*#\/invitations\/([A-Za-z0-9_-]+)/g)].pop()[1];
 const handoverToken = [...readFileSync(API_LOG, 'utf8').matchAll(/next\.a11y@example\.org: .*#\/invitations\/([A-Za-z0-9_-]+)/g)].pop()[1];
 
-const axe = readFileSync(createRequire(import.meta.url).resolve('axe-core/axe.min.js'), 'utf8');
-const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox'] });
-const results = [];
-async function check(name, page) {
-  const seen = await page.evaluate(() => ({ h: [...document.querySelectorAll('h1,h2')].map((e) => e.textContent.trim()).slice(0, 3), buttons: document.querySelectorAll('button').length, inputs: document.querySelectorAll('input,textarea,select').length, len: document.body.innerText.length }));
-  console.log('RENDERED', name, JSON.stringify(seen));
-  await page.evaluate(axe);
-  const r = await page.evaluate(() => axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa', 'best-practice'] } }));
-  results.push({ name, violations: r.violations.map((x) => ({ id: x.id, impact: x.impact, help: x.help, nodes: x.nodes.map((n) => n.target.join(' ') + ' :: ' + (n.failureSummary || '').split('\n').slice(1, 3).join(' ')) })) });
-}
-const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
   const open = async (ctx) => {
     const page = await ctx.newPage();
@@ -145,6 +188,7 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
     ['administrators', '#/people'],
     ['departments', '#/departments'],
     ['domains', '#/domains'],
+    ['organisation (name and logos)', '#/organisation'],
     ['spending', '#/spending'],
   ];
   for (const [label, hash] of screens) {
@@ -194,6 +238,24 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
   }
   await page.close();
 }
+// The organisation's branding after setup, then with only one logo of each shape.
+for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
+  await signedOutCheck(theme, width, 'sign-in after setup, both logos', '');
+}
+await removeLogo('square');
+for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
+  const page = await signedInPage(width);
+  await page.goto(`${base}/#/`, { waitUntil: 'networkidle0' });
+  await wait(300);
+  await check(`${theme}: header with the wide logo only`, page);
+  await page.close();
+}
+await uploadLogo('square');
+await removeLogo('wide');
+for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
+  await signedOutCheck(theme, width, 'sign-in with the square logo only', '');
+}
+await uploadLogo('wide');
 await browser.close();
 let total = 0;
 for (const r of results) {

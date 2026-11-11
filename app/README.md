@@ -11,7 +11,8 @@ cp .env.example .env          # then fill in the values (see below)
 npm run build
 npm run build:web        # the review screen; the API serves it at /
 npm run migrate
-npm run create-admin -- you@example.org "Your Name"   # the first Enterprise Administrator
+npm run setup-invite -- you@example.org "Your Name"   # one-time setup link for the first Enterprise Administrator
+# or, for a demonstration on an empty database: npm run seed-demo
 npm run start:api             # GET /health
 npm run start:worker
 ```
