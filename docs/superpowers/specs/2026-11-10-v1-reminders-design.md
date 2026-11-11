@@ -174,7 +174,14 @@ Chosen by deployment configuration (environment), never by a project:
 | `log` | Development only; still needs `LOG_SIGN_IN_CODES=true`, as today. |
 
 - Secrets stay in deployment configuration (A15's portable deployment-secret handling). They are never stored in the database, shown, logged or included in error details.
-- The connection receives only what it needs (Q06): `INSTALL.md` documents registering the app, granting the Office 365 Exchange Online `SMTP.SendAsApp` permission, registering its service principal in Exchange and granting it send rights on the one sender mailbox only. No organisation-wide mailbox access is assumed.
+- The connection receives only what it needs (Q06), within what Microsoft requires. `INSTALL.md` documents:
+  - registering the app and granting the Office 365 Exchange Online `SMTP.SendAsApp` application permission, which allows SMTP sending only, with no mail-reading permission;
+  - registering the app's service principal in Exchange;
+  - granting it **FullAccess on one dedicated sender mailbox**, which Microsoft requires for app-only SMTP;
+  - enabling SMTP AUTH for that mailbox alone.
+
+  The app has no access to any other mailbox, and no organisation-wide mailbox access is assumed.
+- Product Owner decision, 11 November 2026: FullAccess on the one dedicated sender mailbox is accepted. That mailbox holds nothing else and has an auto-reply saying it is not monitored, because Kainow never reads it.
 - The Administrator's settings page shows the active provider, the sender address and the last delivery outcome, and has **Send test email** (to the Administrator's own address, through the outbox).
 - Sign-in codes and other emails use the same provider.
 
