@@ -141,6 +141,10 @@ export interface Item {
   /** Which of the occurrences the reviewer approved, 0-based. null unless approved and repeated. */
   chosenOccurrence: number | null;
   reviewStatus: ReviewStatus;
+  /** The record authorising created, if any. */
+  record: { kind: 'task' | 'decision' | 'question' | 'risk'; id: string } | null;
+  /** Approved before records existed: it still needs authorising to become a record. */
+  approvedWithoutRecord: boolean;
   /** True when a reviewer has changed the wording. `original` is then what the model said. */
   edited?: boolean;
   original?: { text: string; owner: string | null; due: string | null };
@@ -168,6 +172,8 @@ export interface ProjectSummary {
   /** A member is On Hold (shown to role managers only). */
   onHold: boolean;
   archived: boolean;
+  /** Tasks assigned to you here that are not finished. */
+  myOpenTasks: number;
 }
 
 export interface AdminProjectRow {

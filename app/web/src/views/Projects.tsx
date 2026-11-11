@@ -15,6 +15,7 @@ function ProjectItem({ p }: { p: ProjectSummary }) {
         </span>
         {p.missingAccountability && <span className="warn inline">Missing a required role</span>}
         {p.onHold && <span className="warn inline">A member is On Hold — investigation needed</span>}
+        {p.myOpenTasks > 0 && <span className="meta inline">Your open tasks: {p.myOpenTasks}</span>}
       </a>
     </li>
   );

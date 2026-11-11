@@ -18,14 +18,16 @@ import {
   stageDuration,
   transitionsFor,
 } from '../projects.ts';
+import { HumanProposals } from './HumanProposals.tsx';
 import { Notes } from './Notes.tsx';
+import { Work } from './Work.tsx';
 import { type Act, ArchivePanel, DepartmentMove, GrantsSection, HandoverForm, HoldActions } from './ProjectAccessPanels.tsx';
 
-type Tab = 'overview' | 'people' | 'notes';
+type Tab = 'overview' | 'people' | 'notes' | 'work';
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
-export function ProjectPage({ projectId, tab }: { projectId: string; tab: Tab }) {
+export function ProjectPage({ projectId, tab, meId }: { projectId: string; tab: Tab; meId: string }) {
   const [project, setProject] = useState<Project | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -70,7 +72,20 @@ export function ProjectPage({ projectId, tab }: { projectId: string; tab: Tab })
   const roles = project.myRoles;
   // Members read the notes; so does an Audit or Oversight grant holder, read-only.
   const contentAllowed = roles.length > 0 || project.access !== null;
-  const tabs: Array<[Tab, string]> = [['overview', 'Overview'], ['people', 'People'], ...(contentAllowed ? ([['notes', 'Notes']] as Array<[Tab, string]>) : [])];
+  const tabs: Array<[Tab, string]> = [
+    ['overview', 'Overview'],
+    ['people', 'People'],
+    ...(contentAllowed ? ([['notes', 'Notes'], ['work', 'Work']] as Array<[Tab, string]>) : []),
+  ];
+  // The project's current people, for choosing assignees, requesters and responsible people.
+  const people = [
+    ...new Map(
+      project.memberships
+        .filter((m) => m.state === 'active' || m.state === 'scheduled')
+        .map((m) => [m.userId, { userId: m.userId, displayName: m.displayName, email: m.email }]),
+    ).values(),
+  ];
+  const open = ['draft', 'planned', 'active'].includes(project.status);
   const base = `#/projects/${project.id}`;
 
   return (
@@ -114,7 +129,19 @@ export function ProjectPage({ projectId, tab }: { projectId: string; tab: Tab })
       {tab === 'overview' && <Overview project={project} act={act} />}
       {tab === 'people' && <People project={project} act={act} />}
       {tab === 'notes' && contentAllowed && (
-        <Notes projectId={project.id} canAdd={roles.some((r) => r !== 'member') && ['draft', 'planned', 'active'].includes(project.status)} />
+        <>
+          <Notes projectId={project.id} canAdd={roles.some((r) => r !== 'member') && open} />
+          <HumanProposals
+            projectId={project.id}
+            canPropose={roles.length > 0 && open}
+            canReview={roles.some((r) => r === 'owner' || r === 'sponsor') && ['planned', 'active'].includes(project.status)}
+            people={people}
+            meId={meId}
+          />
+        </>
+      )}
+      {tab === 'work' && contentAllowed && (
+        <Work projectId={project.id} people={people} canSplit={roles.some((r) => r === 'pm' || r === 'deputy_pm') && project.status === 'active'} />
       )}
     </main>
   );

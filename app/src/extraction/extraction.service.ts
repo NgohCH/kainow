@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type Clock } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
@@ -7,6 +7,18 @@ import { PG_POOL } from '../db/database.module';
 import { locateQuote } from '../notes/text';
 import { type DueReading, type ReviewerDue, isCalendarDate, readDue } from './due';
 import { EXTRACTION_QUEUE, type ExtractionQueue } from './queue';
+
+export const AUTHORISED_MESSAGE = 'This proposal has been authorised; its record changes only through an amendment.';
+
+/** What authorising a proposal works from: the wording in force and its due reading. */
+export interface ApprovedItem {
+  id: string;
+  kind: 'action' | 'decision' | 'question' | 'risk';
+  text: string;
+  owner: string | null;
+  due: DueReading;
+  quote: string;
+}
 
 export const NEEDS_DATE_MESSAGE = 'This action needs a due date, a date range or the event it waits on before it can be approved.';
 
@@ -167,7 +179,12 @@ export class ExtractionService {
               i.quote, i.quote_start AS "quoteStart", i.quote_end AS "quoteEnd",
               i.quote_matches AS "quoteMatches", i.review_status AS "reviewStatus",
               i.chosen_occurrence AS "chosenOccurrence",
-              i.reviewed_by AS "reviewedBy", i.reviewed_at AS "reviewedAt"
+              i.reviewed_by AS "reviewedBy", i.reviewed_at AS "reviewedAt",
+              (SELECT json_build_object('kind', x.kind, 'id', x.id) FROM (
+                 SELECT 'task' AS kind, id FROM tasks WHERE origin_item_id = i.id AND depth = 0
+                 UNION ALL SELECT 'decision', id FROM decisions WHERE origin_item_id = i.id
+                 UNION ALL SELECT 'question', id FROM questions WHERE origin_item_id = i.id
+                 UNION ALL SELECT 'risk', id FROM risks WHERE origin_item_id = i.id) x LIMIT 1) AS record
          FROM extraction_items i
          ${LATEST_EDIT}
         WHERE i.run_id = $1 ORDER BY i.position`,
@@ -175,7 +192,7 @@ export class ExtractionService {
     );
     const shaped = items.rows.map(({ originalText, originalOwner, originalDue, reviewerEarliest, reviewerLatest, reviewerEvent, reviewerIgnoreEvent, ...item }) => {
       const dueRow = { due: item.due, dueEvent: item.dueEvent, reviewerEarliest, reviewerLatest, reviewerEvent, reviewerIgnoreEvent };
-      const withDue = { ...item, reviewerDue: reviewerDueOf(dueRow), dueReading: dueReadingOf(dueRow, meeting.meetingDate) };
+      const withDue = { ...item, reviewerDue: reviewerDueOf(dueRow), dueReading: dueReadingOf(dueRow, meeting.meetingDate), approvedWithoutRecord: item.reviewStatus === 'approved' && item.record === null };
       return item.edited ? { ...withDue, original: { text: originalText, owner: originalOwner, due: originalDue } } : withDue;
     });
     Object.assign(run.rows[0], meeting);
@@ -294,54 +311,24 @@ export class ExtractionService {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      const found = await client.query(
-        `SELECT i.id, i.source_version_id, i.quote_matches, i.review_status, i.kind, r.status AS run_status
-           FROM extraction_items i JOIN extraction_runs r ON r.id = i.run_id
-          WHERE i.id = $1 AND i.run_id = $2 FOR UPDATE OF i`,
-        [itemId, runId],
-      );
-      const item = found.rows[0];
-      if (!item) throw new NotFoundException();
-      if (item.run_status !== 'succeeded') throw new ConflictException('The extraction has not finished');
-      if (item.source_version_id !== input.sourceVersionId) {
-        throw new ConflictException('This proposal is for a different version of the notes than the one you reviewed');
-      }
-      let chosen: number | null = null;
       if (input.decision === 'approved') {
-        if (item.quote_matches === 0) {
-          throw new ConflictException('This proposal quotes text that is not in the notes, so it cannot be approved');
-        }
-        if (item.quote_matches > 1) {
-          if (input.occurrence === undefined) {
-            throw new ConflictException('The quote appears more than once in the notes. Choose which place is meant (occurrence: 0 for the first)');
-          }
-          const places = Math.min(item.quote_matches, MAX_OCCURRENCE_CHOICES);
-          if (!Number.isInteger(input.occurrence) || (input.occurrence as number) < 0 || (input.occurrence as number) >= places) {
-            throw new BadRequestException(`occurrence must be a whole number from 0 to ${places - 1}`);
-          }
-          chosen = input.occurrence as number;
-        } else if (input.occurrence !== undefined && input.occurrence !== 0) {
-          throw new BadRequestException('This quote appears once, so occurrence can only be 0 or left out');
-        }
-        if (item.kind === 'action') {
-          // Read after the lock, in its own statement, so an edit that committed while we waited is seen.
-          const due = await this.dueInputsOf(client, itemId);
-          const { meetingDate } = await this.meetingDateFor(client, runId);
-          if (dueReadingOf(due, meetingDate).state === 'needs_date') throw new ConflictException(NEEDS_DATE_MESSAGE);
-        }
+        await this.approveInTx(client, runId, itemId, input, actorUserId, at);
+      } else {
+        const item = await this.lockForReview(client, runId, itemId, input.sourceVersionId);
+        await this.refuseIfAuthorised(client, itemId);
+        await client.query(
+          `UPDATE extraction_items SET review_status = 'rejected', chosen_occurrence = NULL, reviewed_by = $2, reviewed_at = $3 WHERE id = $1`,
+          [itemId, actorUserId, at],
+        );
+        await writeAudit(client, {
+          at,
+          action: 'proposal.rejected',
+          actorUserId,
+          subjectType: 'extraction_item',
+          subjectId: itemId,
+          detail: { runId, sourceVersionId: item.source_version_id, previousStatus: item.review_status },
+        });
       }
-      await client.query(
-        `UPDATE extraction_items SET review_status = $2, chosen_occurrence = $3, reviewed_by = $4, reviewed_at = $5 WHERE id = $1`,
-        [itemId, input.decision, chosen, actorUserId, at],
-      );
-      await writeAudit(client, {
-        at,
-        action: input.decision === 'approved' ? 'proposal.approved' : 'proposal.rejected',
-        actorUserId,
-        subjectType: 'extraction_item',
-        subjectId: itemId,
-        detail: { runId, sourceVersionId: item.source_version_id, previousStatus: item.review_status, ...(chosen !== null ? { occurrence: chosen } : {}) },
-      });
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
@@ -351,6 +338,98 @@ export class ExtractionService {
     }
     const view = await this.getRun(runId);
     return { item: view.items.find((i: { id: string }) => i.id === itemId) };
+  }
+
+  /** Locks one item of a finished run for a review decision, checking it is the version the reviewer saw. */
+  private async lockForReview(client: PoolClient, runId: string, itemId: string, sourceVersionId: unknown) {
+    if (typeof sourceVersionId !== 'string' || sourceVersionId === '') {
+      throw new BadRequestException('sourceVersionId is required: the version the reviewer was looking at');
+    }
+    const found = await client.query(
+      `SELECT i.id, i.source_version_id, i.quote_matches, i.review_status, i.kind, r.status AS run_status
+         FROM extraction_items i JOIN extraction_runs r ON r.id = i.run_id
+        WHERE i.id = $1 AND i.run_id = $2 FOR UPDATE OF i`,
+      [itemId, runId],
+    );
+    const item = found.rows[0];
+    if (!item) throw new NotFoundException();
+    if (item.run_status !== 'succeeded') throw new ConflictException('The extraction has not finished');
+    if (item.source_version_id !== sourceVersionId) {
+      throw new ConflictException('This proposal is for a different version of the notes than the one you reviewed');
+    }
+    return item as { id: string; source_version_id: string; quote_matches: number; review_status: string; kind: string };
+  }
+
+  /** Once a proposal has an authorised record, its review decision and wording are settled; changes go through amendments. */
+  async refuseIfAuthorised(client: Queryable, itemId: string): Promise<void> {
+    const { rowCount } = await client.query(
+      `SELECT 1 FROM tasks WHERE origin_item_id = $1 UNION ALL SELECT 1 FROM decisions WHERE origin_item_id = $1
+       UNION ALL SELECT 1 FROM questions WHERE origin_item_id = $1 UNION ALL SELECT 1 FROM risks WHERE origin_item_id = $1`,
+      [itemId],
+    );
+    if (rowCount) throw new ConflictException(AUTHORISED_MESSAGE);
+  }
+
+  /**
+   * The approval half of authorising, inside the caller's transaction: the item is locked, its quote and
+   * chosen place and (for an action) its due are checked, and it is marked approved. Returns what was approved.
+   */
+  async approveInTx(
+    client: PoolClient,
+    runId: string,
+    itemId: string,
+    input: { sourceVersionId: unknown; occurrence?: unknown },
+    actorUserId: string,
+    at: Date,
+  ): Promise<ApprovedItem> {
+    const item = await this.lockForReview(client, runId, itemId, input.sourceVersionId);
+    await this.refuseIfAuthorised(client, itemId);
+    if (item.quote_matches === 0) {
+      throw new ConflictException('This proposal quotes text that is not in the notes, so it cannot be approved');
+    }
+    let chosen: number | null = null;
+    if (item.quote_matches > 1) {
+      if (input.occurrence === undefined) {
+        throw new ConflictException('The quote appears more than once in the notes. Choose which place is meant (occurrence: 0 for the first)');
+      }
+      const places = Math.min(item.quote_matches, MAX_OCCURRENCE_CHOICES);
+      if (!Number.isInteger(input.occurrence) || (input.occurrence as number) < 0 || (input.occurrence as number) >= places) {
+        throw new BadRequestException(`occurrence must be a whole number from 0 to ${places - 1}`);
+      }
+      chosen = input.occurrence as number;
+    } else if (input.occurrence !== undefined && input.occurrence !== 0) {
+      throw new BadRequestException('This quote appears once, so occurrence can only be 0 or left out');
+    }
+    // Read after the lock, in its own statement, so an edit that committed while we waited is seen.
+    const approved = await this.approvedItem(client, runId, itemId);
+    if (approved.kind === 'action' && approved.due.state === 'needs_date') throw new ConflictException(NEEDS_DATE_MESSAGE);
+    await client.query(
+      `UPDATE extraction_items SET review_status = 'approved', chosen_occurrence = $2, reviewed_by = $3, reviewed_at = $4 WHERE id = $1`,
+      [itemId, chosen, actorUserId, at],
+    );
+    await writeAudit(client, {
+      at,
+      action: 'proposal.approved',
+      actorUserId,
+      subjectType: 'extraction_item',
+      subjectId: itemId,
+      detail: { runId, sourceVersionId: item.source_version_id, previousStatus: item.review_status, ...(chosen !== null ? { occurrence: chosen } : {}) },
+    });
+    return approved;
+  }
+
+  /** The wording in force for one item (the latest reviewer edit, else the model's) and its due reading. */
+  async approvedItem(client: Queryable, runId: string, itemId: string): Promise<ApprovedItem> {
+    const row = (
+      await client.query(
+        `SELECT i.id, i.kind, COALESCE(e.text, i.text) AS text, CASE WHEN e.id IS NULL THEN i.owner ELSE e.owner END AS owner,
+                ${DUE_COLUMNS}, i.quote
+           FROM extraction_items i ${LATEST_EDIT} WHERE i.id = $1`,
+        [itemId],
+      )
+    ).rows[0];
+    const { meetingDate } = await this.meetingDateFor(client, runId);
+    return { id: row.id, kind: row.kind, text: row.text, owner: row.owner, due: dueReadingOf(row, meetingDate), quote: row.quote };
   }
 
   /**
@@ -384,6 +463,8 @@ export class ExtractionService {
         [itemId, runId],
       );
       if (!found.rows[0]) throw new NotFoundException();
+      // Checked after the item lock, so an authorise that committed while we waited is seen.
+      await this.refuseIfAuthorised(client, itemId);
       // The wording in force is read after the lock, in its own statement, so a concurrent edit is seen.
       const current = await client.query(
         `SELECT COALESCE(e.text, i.text) AS text, CASE WHEN e.id IS NULL THEN i.owner ELSE e.owner END AS owner, ${DUE_COLUMNS}
