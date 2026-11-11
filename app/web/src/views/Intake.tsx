@@ -9,10 +9,12 @@ interface Props {
   uploadUrl: string;
   submitLabel: string;
   onDone: (response: any) => void;
+  /** Further fields sent with the notes (a submission also says which audience it proposes). */
+  extra?: Record<string, string>;
 }
 
 /** Paste text or choose a .txt, .md, .docx or text-PDF file. */
-export function Intake({ withTitle, pasteUrl, uploadUrl, submitLabel, onDone }: Props) {
+export function Intake({ withTitle, pasteUrl, uploadUrl, submitLabel, onDone, extra }: Props) {
   const [mode, setMode] = useState<'paste' | 'upload'>('paste');
   const [title, setTitle] = useState('');
   const [text, setText] = useState('');
@@ -26,11 +28,12 @@ export function Intake({ withTitle, pasteUrl, uploadUrl, submitLabel, onDone }: 
     setError(null);
     try {
       if (mode === 'paste') {
-        onDone(await api.post(pasteUrl, withTitle ? { title, text } : { text }));
+        onDone(await api.post(pasteUrl, withTitle ? { title, text, ...extra } : { text, ...extra }));
       } else {
         if (!file) throw new ApiError('Choose a file first.', 0);
         const form = new FormData();
         if (withTitle && title.trim()) form.set('title', title);
+        for (const [k, v] of Object.entries(extra ?? {})) form.set(k, v);
         form.set('file', file);
         onDone(await api.post(uploadUrl, form));
       }

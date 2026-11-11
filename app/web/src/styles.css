@@ -316,3 +316,22 @@ mark { background: var(--marker-wash); color: inherit; font-weight: 700; padding
 .inline-check input { width: auto; }
 .versions-list { margin: 0.25rem 0 0.5rem; padding-left: 1.25rem; }
 .composer { margin: 1.5rem 0; }
+
+/* Meetings, minutes, audiences */
+.meeting-split { display: grid; grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr); gap: 2rem; align-items: start; }
+@media (max-width: 899px) { .meeting-split { grid-template-columns: 1fr; gap: 1rem; } }
+.minutes { margin: 1rem 0; min-width: 0; }
+.draft-box { padding: 0.75rem 1rem; margin: 0.5rem 0; background: var(--surface); }
+.draft-box:focus-visible { outline: 3px solid var(--teal); outline-offset: 2px; }
+.minutes-text { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--serif); margin: 0.5rem 0 0; max-height: 28rem; overflow: auto; }
+.diff { border: 1px solid var(--rule); border-radius: 4px; background: var(--surface); font-family: var(--serif); overflow: auto; max-height: 24rem; }
+.diff > div { white-space: pre-wrap; overflow-wrap: anywhere; padding: 0 0.5rem; }
+.diff-added { background: var(--teal-wash); }
+.diff-removed { background: var(--paper); text-decoration: line-through; color: var(--muted); }
+.diff-mark { display: inline-block; width: 1.25rem; font-weight: 700; }
+.present { border: 1px solid var(--rule); border-radius: 4px; margin: 0.75rem 0; min-width: 0; }
+.present-list { display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; }
+.present label.check, fieldset label.check { display: flex; align-items: center; gap: 0.4rem; font-weight: 400; }
+.present label.check input, fieldset label.check input { width: auto; }
+.audience-panel .badge { margin-left: 0.5rem; }
+.restricted-evidence { font-style: italic; color: var(--muted); }

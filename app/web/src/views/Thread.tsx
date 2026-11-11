@@ -1,10 +1,12 @@
 import { type FormEvent, useEffect, useReducer, useRef, useState } from 'react';
 import { ApiError, api, type Project } from '../api.ts';
 import {
+  accessChangedLabel,
   audienceTag,
   editMessage,
   getThread,
   initialThread,
+  isAccessLost,
   type MessageActionName,
   messageActions,
   messageLines,
@@ -13,13 +15,17 @@ import {
   type MessageView,
   moderate,
   type ModerationAction,
+  NOT_AVAILABLE,
   pollDelay,
   postMessage,
+  restrictedLabel,
   threadReducer,
   type ThreadView,
 } from '../discussion.ts';
 import { formatWhen } from '../format.ts';
 import { AnalysisStatus } from './AnalysisStatus.tsx';
+import { MeetingControls } from './Meeting.tsx';
+import { MinutesPanel, useMinutes } from './MinutesPanel.tsx';
 import { useFocusItem } from './useFocusItem.ts';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
@@ -27,13 +33,13 @@ const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something 
 /** One discussion thread or meeting: the messages, the composer and the analysis status. */
 export function Thread({ projectId, threadId, meId, messageNo }: { projectId: string; threadId: string; meId: string; messageNo: number | null }) {
   const [first, setFirst] = useState<ThreadView | null>(null);
-  const [roles, setRoles] = useState<string[]>([]);
+  const [project, setProject] = useState<Project | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    getThread(threadId).then(setFirst, (e) => setError(e instanceof ApiError && e.status === 404 ? 'This thread is not available to you.' : errText(e)));
+    getThread(threadId).then(setFirst, (e) => setError(e instanceof ApiError && e.status === 404 ? NOT_AVAILABLE : errText(e)));
     api.get<{ project: Project }>(`/projects/${projectId}`).then(
-      (r) => setRoles(r.project.myRoles),
+      (r) => setProject(r.project),
       () => undefined,
     );
   }, [threadId, projectId]);
@@ -46,13 +52,19 @@ export function Thread({ projectId, threadId, meId, messageNo }: { projectId: st
       </main>
     );
   }
-  return <ThreadBody key={threadId} first={first} projectId={projectId} meId={meId} messageNo={messageNo} canRestore={roles.some((r) => r === 'pm' || r === 'deputy_pm')} />;
+  return <ThreadBody key={threadId} first={first} projectId={projectId} meId={meId} messageNo={messageNo} project={project} />;
 }
 
-function ThreadBody({ first, projectId, meId, messageNo, canRestore }: { first: ThreadView; projectId: string; meId: string; messageNo: number | null; canRestore: boolean }) {
+function ThreadBody({ first, projectId, meId, messageNo, project }: { first: ThreadView; projectId: string; meId: string; messageNo: number | null; project: Project | null }) {
+  const roles: string[] = project?.myRoles ?? [];
+  const memberships = project?.memberships ?? [];
+  const canRestore = roles.some((r) => r === 'pm' || r === 'deputy_pm');
+  const open = project ? ['draft', 'planned', 'active'].includes(project.status) : false;
   const [s, dispatch] = useReducer(threadReducer, undefined, () => initialThread(first, meId));
   const [tick, setTick] = useState(0);
   const [pollError, setPollError] = useState<string | null>(null);
+  // Set when a poll finds the thread is no longer readable: the content is dropped and polling stops.
+  const [gone, setGone] = useState(false);
   const [postError, setPostError] = useState<string | null>(null);
   const [posting, setPosting] = useState(false);
   const [selected, setSelected] = useState<string[]>([]);
@@ -63,13 +75,18 @@ function ThreadBody({ first, projectId, meId, messageNo, canRestore }: { first: 
   useEffect(() => {
     let stopped = false;
     let timer: number | undefined;
+    // One chain only: a request in flight re-arms the timer when it completes, so coming back to the tab cannot start a second chain.
+    let inFlight = false;
     const schedule = () => {
       timer = window.setTimeout(run, pollDelay(!document.hidden));
     };
     const run = () => {
       window.clearTimeout(timer);
+      if (inFlight) return;
+      inFlight = true;
       getThread(t.id).then(
         (fresh) => {
+          inFlight = false;
           if (stopped) return;
           dispatch({ type: 'polled', thread: fresh });
           setTick((n) => n + 1);
@@ -77,7 +94,14 @@ function ThreadBody({ first, projectId, meId, messageNo, canRestore }: { first: 
           schedule();
         },
         (e) => {
+          inFlight = false;
           if (stopped) return;
+          if (isAccessLost(e)) {
+            // Access was lost or the audience narrowed: show nothing of the thread and stop asking.
+            stopped = true;
+            setGone(true);
+            return;
+          }
           setPollError(errText(e));
           schedule();
         },
@@ -122,19 +146,49 @@ function ThreadBody({ first, projectId, meId, messageNo, canRestore }: { first: 
     t.audience.mode === 'project'
       ? audienceTag('project')
       : `${audienceTag('restricted')}: ${t.audience.namedUsers.map((u) => u.displayName).join(', ') || 'no one named'}, plus the Project Manager, Deputies, Owner and Sponsors`;
+  const meeting = t.kind === 'meeting';
+  const { minutes, reload } = useMinutes(t.id, meeting && !gone, tick);
+  const changed = accessChangedLabel(t.audience.changedAt);
+  const restricted = restrictedLabel(t.audience.mode);
+
+  if (gone) {
+    return (
+      <main className="page narrow">
+        <p role="alert" className="error">{NOT_AVAILABLE}</p>
+        <a href={`#/projects/${projectId}/notes`}>Back to Notes &amp; discussion</a>
+      </main>
+    );
+  }
+
+  const reloadThread = () =>
+    getThread(t.id).then(
+      (fresh) => dispatch({ type: 'polled', thread: fresh }),
+      () => undefined,
+    );
 
   return (
-    <main className="page narrow thread">
+    <main className={meeting ? 'page thread' : 'page narrow thread'}>
       <p><a href={`#/projects/${projectId}/notes`}>Back to Notes &amp; discussion</a></p>
       <h1>{t.title}</h1>
       <p className="meta">
-        {t.kind === 'meeting' ? 'Meeting' : 'Discussion'}
+        {meeting ? 'Meeting' : 'Discussion'}
         {t.meetingDate ? ` · ${t.meetingDate}` : ''}
         {t.state === 'ended' ? ' · Ended' : ''}
         {' · '}
         {audienceLine}
+        {restricted && <span className="badge badge-pending">{restricted}</span>}
+        {changed && <span className="badge">{changed}</span>}
       </p>
-      {t.kind === 'meeting' && t.present.length > 0 && <p className="meta">Present: {t.present.map((p) => p.displayName).join(', ')}</p>}
+      {meeting && (
+        <MeetingControls
+          thread={t}
+          memberships={memberships}
+          canEnd={!!minutes?.canEdit}
+          canChangeAudience={open && roles.some((r) => r === 'pm' || r === 'owner' || r === 'sponsor')}
+          onThread={(fresh) => dispatch({ type: 'polled', thread: fresh })}
+          onAudienceChanged={() => void reloadThread()}
+        />
+      )}
       {t.state === 'ended' && <p className="meta">This meeting has ended, so no more messages can be posted.</p>}
       {!t.canPost && t.state !== 'ended' && <p className="meta">You can read this thread but not write in it.</p>}
       {pollError && <p role="status" className="warn">Could not refresh just now: {pollError}. Trying again.</p>}
@@ -142,6 +196,8 @@ function ThreadBody({ first, projectId, meId, messageNo, canRestore }: { first: 
 
       <AnalysisStatus threadId={t.id} refresh={tick} canRequest={t.kind === 'discussion' && t.canPost} selected={chosen} onRequested={() => undefined} />
 
+      <div className={meeting ? 'meeting-split' : undefined}>
+      <div>
       <section aria-label="Messages">
         {t.messages.length === 0 && <p className="empty">No messages yet.</p>}
         <ol className="messages">
@@ -184,6 +240,9 @@ function ThreadBody({ first, projectId, meId, messageNo, canRestore }: { first: 
           <button className="primary" disabled={posting || s.draft.trim() === ''}>{posting ? 'Posting' : 'Post'}</button>
         </form>
       )}
+      </div>
+      {meeting && <MinutesPanel threadId={t.id} title={t.title} minutes={minutes} reload={reload} audience={t.audience} memberships={memberships} />}
+      </div>
     </main>
   );
 }

@@ -1,11 +1,26 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ApiError, api, type Run, type VersionSummary } from '../api.ts';
+import { ApiError, api, type Project, type Run, type VersionSummary } from '../api.ts';
 import { go } from '../App.tsx';
+import { type AudienceView } from '../discussion.ts';
 import { formatWhen, plural } from '../format.ts';
+import { AudiencePanel } from './AudiencePanel.tsx';
 import { Intake } from './Intake.tsx';
+import { SubmissionReview } from './Submissions.tsx';
 
 interface Detail {
-  source: { id: string; title: string; createdAt: string; projectId: string };
+  source: {
+    id: string;
+    title: string;
+    createdAt: string;
+    projectId: string;
+    kind: string;
+    label: string | null;
+    publication: 'published' | 'submitted' | 'returned';
+    intendedMode: 'project' | 'restricted' | null;
+    returnedReason: string | null;
+    provenance: string | null;
+    audience: AudienceView;
+  };
   versions: VersionSummary[];
 }
 
@@ -24,6 +39,7 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
   const [error, setError] = useState<string | null>(null);
   const [starting, setStarting] = useState(false);
   const [adding, setAdding] = useState(false);
+  const [project, setProject] = useState<Project | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -33,6 +49,15 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
     }
   }, [sourceId]);
   useEffect(() => void load(), [load]);
+
+  const projectId = detail?.source.projectId;
+  useEffect(() => {
+    if (!projectId) return;
+    api.get<{ project: Project }>(`/projects/${projectId}`).then(
+      (r) => setProject(r.project),
+      () => undefined,
+    );
+  }, [projectId]);
 
   const current = detail ? (versionNo ?? detail.versions[detail.versions.length - 1]?.versionNo ?? null) : null;
   const version = detail?.versions.find((v) => v.versionNo === current);
@@ -73,17 +98,43 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
   if (error && !detail) return <main className="page narrow"><p role="alert" className="error">{error}</p><a href="#/">My Projects</a></main>;
   if (!detail || !version) return <p className="loading">Loading</p>;
 
+  const src = detail.source;
+  const roles: string[] = project?.myRoles ?? [];
+  const memberships = project?.memberships ?? [];
+  const isReviewer = roles.some((r) => r !== 'member');
+  const projectOpen = project ? ['draft', 'planned', 'active'].includes(project.status) : false;
+  const published = src.publication === 'published';
+
   return (
     <main className="page">
-      <p><a href={`#/projects/${detail.source.projectId}/notes`}>Back to the project's notes</a></p>
-      <h1>{detail.source.title}</h1>
+      <p><a href={`#/projects/${src.projectId}/notes`}>Back to the project's notes</a></p>
+      <h1>{src.title}</h1>
+      {src.label && <p className="meta">{src.label}</p>}
+      {src.provenance && <p className="meta">{src.provenance}</p>}
+      {src.publication === 'submitted' && <p className="warn" role="note">Submitted for review. Only the person who submitted it and the reviewers can see it; it is not analysed or searched until it is published.</p>}
+      {src.publication === 'returned' && (
+        <p className="warn" role="note">
+          Returned by a reviewer{src.returnedReason ? `: ${src.returnedReason}` : ''}. Add a new version to submit it again.
+        </p>
+      )}
+      {src.publication === 'submitted' && isReviewer && (
+        <SubmissionReview sourceId={sourceId} kind={src.kind} intendedMode={src.intendedMode} memberships={memberships} onDone={() => void load()} />
+      )}
+      {published && (
+        <AudiencePanel
+          audience={src.audience}
+          memberships={memberships}
+          canChange={projectOpen && roles.some((r) => r === 'pm' || r === 'owner' || r === 'sponsor')}
+          onChanged={() => void load()}
+        />
+      )}
       <nav aria-label="Versions" className="versions">
         {detail.versions.map((v) => (
           <a key={v.id} href={`#/notes/${sourceId}/v/${v.versionNo}`} aria-current={v.versionNo === current ? 'page' : undefined}>
             Version {v.versionNo}
           </a>
         ))}
-        <button className="quiet" onClick={() => setAdding((a) => !a)} aria-expanded={adding}>Add a new version</button>
+        {src.publication !== 'submitted' && <button className="quiet" onClick={() => setAdding((a) => !a)} aria-expanded={adding}>Add a new version</button>}
       </nav>
       {adding && (
         <section className="panel" aria-label="Add a new version">
@@ -103,11 +154,12 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
       <div className="split">
         <section aria-label="Notes text">
           <p className="meta">
-            Version {version.versionNo}, {version.origin === 'upload' ? `uploaded as ${version.filename}` : 'pasted'}, {version.charCount.toLocaleString()} characters, added {formatWhen(version.createdAt)}.{' '}
+            Version {version.versionNo}, {version.origin === 'upload' ? `uploaded as ${version.filename}` : version.origin === 'meeting' ? 'published from meeting minutes' : 'pasted'}, {version.charCount.toLocaleString()} characters, added {formatWhen(version.createdAt)}.{' '}
             {version.origin === 'upload' && <a href={api.originalUrl(sourceId, version.versionNo)}>Download the original file</a>}
           </p>
           <div className="source" tabIndex={0}>{text ?? 'Loading'}</div>
         </section>
+        {published && (
         <aside aria-label="Proposals">
           <h2>Proposals from this version</h2>
           <button className="primary" onClick={extract} disabled={starting || active}>
@@ -131,6 +183,7 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
             ))}
           </ul>
         </aside>
+        )}
       </div>
     </main>
   );

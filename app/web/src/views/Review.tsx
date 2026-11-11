@@ -6,6 +6,7 @@ import { ChangeRequestPanel, pendingAuthorisation, useRequests } from './ChangeR
 import { waitingLine, type RequestView } from '../changes.ts';
 import { KIND_LABEL, plural } from '../format.ts';
 import { REVIEW_STATUS_LABEL } from '../records.ts';
+import { canMarkByOffset, evidenceView } from '../discussion.ts';
 import { buildSegments, contextAround, markedSpan } from '../segments.ts';
 import { type EditFields, blocksApproval, dueLine, editFormFrom, formatDay } from '../due.ts';
 
@@ -102,9 +103,11 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
   }, [view, meetingInput, runId]);
 
   const items = view?.items ?? [];
+  // A discussion transcript is shown with hidden and deleted messages masked, so its quote offsets no longer fit the text: no passage is marked there.
+  const offsetsFit = canMarkByOffset(items);
   const segments = useMemo(
-    () => (text === null ? [] : buildSegments(text, items.map((i) => ({ id: i.id, ...markedSpan(i, pick[i.id]) })))),
-    [text, items, pick],
+    () => (text === null ? [] : buildSegments(text, offsetsFit ? items.map((i) => ({ id: i.id, ...markedSpan(i, pick[i.id]) })) : [])),
+    [text, items, pick, offsetsFit],
   );
   const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
   const current = selected ? byId.get(selected) : undefined;
@@ -391,6 +394,17 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                 </button>
               )}
               <blockquote>{item.quote}</blockquote>
+              {(() => {
+                const ev = evidenceView({ quote: item.quote, sourceFlag: item.sourceFlag, discussionEvidence: item.discussionEvidence }, view.projectId);
+                return (
+                  ev.kind === 'quote' && (
+                    <>
+                      {ev.flag && <p className="warn" role="note">{ev.flag}</p>}
+                      {ev.from && <p className="meta">{ev.href ? <a href={ev.href}>{ev.from}</a> : ev.from}</p>}
+                    </>
+                  )
+                );
+              })()}
               {item.quoteMatches === 0 && (
                 <p className="warn">This quote is not in the notes. The model may have made it up, so it cannot be approved.</p>
               )}
@@ -400,7 +414,7 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                     The quote appears {plural(item.quoteMatches, 'time')} in the notes. Choose the passage meant.
                   </legend>
                   {(item.occurrences ?? []).map((o, n) => {
-                    const ctx = contextAround(text, o.start, o.end);
+                    const ctx = offsetsFit ? contextAround(text, o.start, o.end) : { before: '', match: '', after: '' };
                     const checked = (item.chosenOccurrence ?? pick[item.id]) === n;
                     return (
                       <label key={n} className="occurrence">

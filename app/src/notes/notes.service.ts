@@ -308,7 +308,7 @@ export class NotesService {
       intendedMode: string | null;
       returnedReason: string | null;
       provenance: string | null;
-      audience: { mode: string; changedAt: string | null };
+      audience: { id: string; mode: string; namedUsers: Array<{ id: string; displayName: string }>; changedAt: string | null };
     };
     versions: VersionSummary[];
   }> {
@@ -327,8 +327,12 @@ export class NotesService {
     const aud = (
       await this.pool.query(`SELECT a.mode, (SELECT max(e.at) FROM audience_events e WHERE e.audience_id = a.id) AS "changedAt" FROM audiences a WHERE a.id = $1`, [audienceId])
     ).rows[0];
+    const named = await this.pool.query<{ id: string; displayName: string }>(
+      `SELECT u.id, u.display_name AS "displayName" FROM audience_members am JOIN users u ON u.id = am.user_id WHERE am.audience_id = $1 ORDER BY u.display_name, u.id`,
+      [audienceId],
+    );
     return {
-      source: { ...s, audience: { mode: aud.mode, changedAt: aud.changedAt ? (aud.changedAt as Date).toISOString() : null }, label: s.kind === 'minutes' ? MINUTES_LABEL : null, provenance: rows.length ? await this.provenance(rows[rows.length - 1].id) : null },
+      source: { ...s, audience: { id: audienceId, mode: aud.mode, namedUsers: named.rows, changedAt: aud.changedAt ? (aud.changedAt as Date).toISOString() : null }, label: s.kind === 'minutes' ? MINUTES_LABEL : null, provenance: rows.length ? await this.provenance(rows[rows.length - 1].id) : null },
       versions: rows,
     };
   }

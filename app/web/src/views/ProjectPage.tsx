@@ -143,7 +143,14 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
       {tab === 'people' && <People project={project} act={act} />}
       {tab === 'notes' && contentAllowed && (
         <>
-          <Discussion projectId={project.id} canAdd={roles.some((r) => r !== 'member') && open} canStart={roles.length > 0 && open} />
+          <Discussion
+            projectId={project.id}
+            canAdd={roles.some((r) => r !== 'member') && open}
+            canSubmit={roles.length > 0 && !roles.some((r) => r !== 'member') && open}
+            canStart={roles.length > 0 && open}
+            canRestrict={roles.some((r) => r !== 'member') && open}
+            memberships={project.memberships}
+          />
           <HumanProposals
             projectId={project.id}
             canPropose={roles.length > 0 && open}

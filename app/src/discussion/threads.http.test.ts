@@ -54,7 +54,8 @@ describe('threads and messages', { skip: SKIP_NO_DB }, () => {
     const thread = await start(ada);
     assert.equal(thread.kind, 'discussion');
     assert.equal(thread.title, 'Site access');
-    assert.deepEqual(thread.audience, { mode: 'project', namedUsers: [], changedAt: null });
+    assert.deepEqual({ ...thread.audience, id: undefined }, { id: undefined, mode: 'project', namedUsers: [], changedAt: null });
+    assert.match(thread.audience.id, /^[0-9a-f-]{36}$/, 'the audience id is given so a manager can change it');
     assert.equal(thread.meetingDate, null);
     assert.equal(thread.state, null);
     assert.equal(thread.canPost, true);

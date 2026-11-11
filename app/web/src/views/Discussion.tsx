@@ -1,16 +1,36 @@
 import { type FormEvent, useEffect, useState } from 'react';
-import { ApiError } from '../api.ts';
+import { ApiError, type Membership } from '../api.ts';
 import { go } from '../App.tsx';
-import { audienceTag, type DiscussionItem, itemHref, KIND_TAG, listDiscussion, pollDelay, startThread, threadPath } from '../discussion.ts';
+import { type DiscussionItem, itemHref, KIND_TAG, listDiscussion, pollDelay, restrictedLabel, startThread, threadPath } from '../discussion.ts';
 import { formatWhen, plural } from '../format.ts';
 import { Intake } from './Intake.tsx';
+import { StartMeetingForm } from './Meeting.tsx';
+import { SubmitNotes } from './Submissions.tsx';
 
 /** The Notes & discussion tab: threads, meetings, notes and published minutes of one project, newest activity first. */
-export function Discussion({ projectId, canAdd, canStart }: { projectId: string; canAdd: boolean; canStart: boolean }) {
+export function Discussion({
+  projectId,
+  canAdd,
+  canSubmit,
+  canStart,
+  canRestrict,
+  memberships,
+}: {
+  projectId: string;
+  /** Project Manager, Deputy, Owner or Sponsor: notes are imported straight away. */
+  canAdd: boolean;
+  /** A Member: notes are submitted for a reviewer to publish. */
+  canSubmit: boolean;
+  canStart: boolean;
+  /** May start a Restricted meeting. */
+  canRestrict: boolean;
+  memberships: Membership[];
+}) {
   const [items, setItems] = useState<DiscussionItem[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [adding, setAdding] = useState(false);
   const [starting, setStarting] = useState(false);
+  const [meeting, setMeeting] = useState(false);
   const [title, setTitle] = useState('');
   const [formError, setFormError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -60,13 +80,18 @@ export function Discussion({ projectId, canAdd, canStart }: { projectId: string;
         <h2 id="discussion-heading">Notes &amp; discussion</h2>
         <span className="actions">
           {canStart && (
-            <button className="primary" onClick={() => { setStarting((s) => !s); setAdding(false); }} aria-expanded={starting}>
+            <button className="primary" onClick={() => { setStarting((s) => !s); setAdding(false); setMeeting(false); }} aria-expanded={starting}>
               {starting ? 'Close' : 'New thread'}
             </button>
           )}
-          {canAdd && (
-            <button onClick={() => { setAdding((a) => !a); setStarting(false); }} aria-expanded={adding}>
-              {adding ? 'Close' : 'Add notes'}
+          {canStart && (
+            <button onClick={() => { setMeeting((m) => !m); setAdding(false); setStarting(false); }} aria-expanded={meeting}>
+              {meeting ? 'Close' : 'Start meeting'}
+            </button>
+          )}
+          {(canAdd || canSubmit) && (
+            <button onClick={() => { setAdding((a) => !a); setStarting(false); setMeeting(false); }} aria-expanded={adding}>
+              {adding ? 'Close' : canAdd ? 'Add notes' : 'Submit notes'}
             </button>
           )}
         </span>
@@ -84,7 +109,9 @@ export function Discussion({ projectId, canAdd, canStart }: { projectId: string;
           </form>
         </section>
       )}
-      {adding && (
+      {meeting && <StartMeetingForm projectId={projectId} memberships={memberships} canRestrict={canRestrict} />}
+      {adding && !canAdd && <SubmitNotes projectId={projectId} />}
+      {adding && canAdd && (
         <section className="panel" aria-label="Add notes">
           <Intake
             withTitle
@@ -97,7 +124,7 @@ export function Discussion({ projectId, canAdd, canStart }: { projectId: string;
       )}
       {error && <p role="alert" className="error">{error}</p>}
       {items === null && !error && <p className="loading">Loading</p>}
-      {items?.length === 0 && !adding && !starting && (
+      {items?.length === 0 && !adding && !starting && !meeting && (
         <p className="empty">
           Nothing here yet.{' '}
           {canStart ? 'Start a thread to talk something through, or add the notes from a meeting.' : 'Threads, meetings and notes appear here when someone adds them.'}
@@ -113,7 +140,7 @@ export function Discussion({ projectId, canAdd, canStart }: { projectId: string;
                   {KIND_TAG[i.kind]}
                   {i.label ? ` · ${i.label}` : ''}
                   {' · '}
-                  {audienceTag(i.audienceMode)}
+                  {restrictedLabel(i.audienceMode) ?? 'Project-wide'}
                   {i.kind === 'meeting' && i.meetingDate ? ` · ${i.meetingDate}` : ''}
                   {i.kind === 'meeting' && i.state === 'ended' ? ' · Ended' : ''}
                   {i.messageCount !== null ? ` · ${plural(i.messageCount, 'message')}` : ''}

@@ -42,7 +42,7 @@ function thread(messages: MessageView[], over: Partial<ThreadView> = {}): Thread
     projectId: 'p1',
     kind: 'discussion',
     title: 'Berth plan',
-    audience: { mode: 'project', namedUsers: [], changedAt: null },
+    audience: { id: 'a1', mode: 'project', namedUsers: [], changedAt: null },
     meetingDate: null,
     state: null,
     messages,
@@ -162,4 +162,127 @@ test('parseThreadHash reads the project, the thread and the message number', () 
   assert.deepEqual(parseThreadHash('#/projects/p1/threads/t1?m=12'), { projectId: 'p1', threadId: 't1', messageNo: 12 });
   assert.deepEqual(parseThreadHash('#/projects/p1/threads/t1'), { projectId: 'p1', threadId: 't1', messageNo: null });
   assert.equal(parseThreadHash('#/projects/p1/notes'), null);
+});
+
+// --- Task 16: meetings, minutes, publishing, audiences, evidence ---
+import {
+  accessChangedLabel,
+  AI_DRAFT_LABEL,
+  type AudienceView,
+  diffLines,
+  draftBanner,
+  draftMinutesWarning,
+  evidenceView,
+  isAccessLost,
+  meetingStartConfirmation,
+  presentCandidates,
+  publishConfirmation,
+  readersOf,
+  restrictedLabel,
+  sourceFlagText,
+} from './discussion.ts';
+import { ApiError, type Membership } from './api.ts';
+
+const member = (userId: string, displayName: string, role: Membership['role'], state: Membership['state'] = 'active'): Membership => ({
+  id: `m-${userId}-${role}`,
+  userId,
+  displayName,
+  email: `${userId}@example.org`,
+  role,
+  startsOn: '2026-01-01',
+  expiresOn: null,
+  state,
+});
+const team = [
+  member('u-pm', 'Pat Manager', 'pm'),
+  member('u-dep', 'Dee Deputy', 'deputy_pm'),
+  member('u-own', 'Olu Owner', 'owner'),
+  member('u-ada', 'Ada Member', 'member'),
+  member('u-ben', 'Ben Member', 'member'),
+  member('u-cy', 'Cy Member', 'member', 'revoked'),
+];
+
+test('diffLines marks added and removed lines', () => {
+  assert.deepEqual(diffLines('a\nb\nc', 'a\nc\nd'), [
+    { kind: 'same', text: 'a' },
+    { kind: 'removed', text: 'b' },
+    { kind: 'same', text: 'c' },
+    { kind: 'added', text: 'd' },
+  ]);
+  assert.deepEqual(diffLines('same', 'same'), [{ kind: 'same', text: 'same' }]);
+  assert.deepEqual(diffLines('', 'x'), [{ kind: 'added', text: 'x' }]);
+});
+
+test('minutes panel shows the AI draft label and dashed outline', () => {
+  const ai = draftBanner({ origin: 'ai', label: AI_DRAFT_LABEL, editedFromVersion: null });
+  assert.equal(ai.label, 'AI draft — not official minutes');
+  assert.match(ai.className, /\bai-proposed\b/);
+  const human = draftBanner({ origin: 'human', label: `${AI_DRAFT_LABEL} · Edited by Pat Manager`, editedFromVersion: 2 });
+  assert.equal(human.label, 'AI draft — not official minutes · Edited by Pat Manager');
+  assert.match(human.className, /\bai-proposed\b/);
+  assert.equal(human.fromLine, 'Edited from version 2');
+  assert.equal(ai.fromLine, null);
+});
+
+test('Draft minutes warns when a human version exists', () => {
+  assert.equal(draftMinutesWarning(true), 'A new AI draft is built from the messages and does not include edits made by people');
+  assert.equal(draftMinutesWarning(false), null);
+});
+
+test('publish confirmation shows the audience', () => {
+  const project: AudienceView = { id: 'a1', mode: 'project', namedUsers: [], changedAt: null };
+  assert.equal(publishConfirmation('Weekly review', 3, project, team), 'Publish version 3 of Weekly review to: everyone in the project (Project-wide).');
+  const restricted: AudienceView = { id: 'a2', mode: 'restricted', namedUsers: [{ id: 'u-ada', displayName: 'Ada Member' }], changedAt: null };
+  assert.equal(
+    publishConfirmation('Weekly review', 3, restricted, team),
+    'Publish version 3 of Weekly review to: Restricted — Ada Member, Dee Deputy, Olu Owner, Pat Manager.',
+  );
+});
+
+test('start Restricted meeting lists exactly who can read', () => {
+  assert.deepEqual(readersOf(team, 'restricted', []).map((p) => p.displayName), ['Dee Deputy', 'Olu Owner', 'Pat Manager']);
+  assert.deepEqual(readersOf(team, 'restricted', ['u-ben']).map((p) => p.displayName), ['Ben Member', 'Dee Deputy', 'Olu Owner', 'Pat Manager']);
+  // A revoked member is not a reader, and Project-wide lists every current participant once.
+  assert.deepEqual(readersOf(team, 'project', []).map((p) => p.displayName), ['Ada Member', 'Ben Member', 'Dee Deputy', 'Olu Owner', 'Pat Manager']);
+  assert.equal(
+    meetingStartConfirmation(team, 'restricted', ['u-ben']),
+    'Only these people will be able to read this meeting and its minutes: Ben Member, Dee Deputy, Olu Owner, Pat Manager.',
+  );
+  assert.equal(meetingStartConfirmation(team, 'project', []), 'Everyone in the project will be able to read this meeting and its minutes.');
+});
+
+test('Present list offers only people who can read the meeting', () => {
+  const restricted: AudienceView = { id: 'a2', mode: 'restricted', namedUsers: [{ id: 'u-ada', displayName: 'Ada Member' }], changedAt: null };
+  assert.deepEqual(presentCandidates(team, restricted).map((p) => p.id), ['u-ada', 'u-dep', 'u-own', 'u-pm']);
+});
+
+test('record evidence shows restricted text for outsiders', () => {
+  assert.deepEqual(evidenceView({ restricted: true }), { kind: 'restricted', text: 'Evidence in a restricted source' });
+  assert.deepEqual(evidenceView({ quote: 'We agreed to ship.', sourceFlag: null, discussionEvidence: null }), { kind: 'quote', quote: 'We agreed to ship.', flag: null, from: null, href: null });
+  const ev = { threadId: 't1', messageNo: 12, authorName: 'Ada Member', at: '2026-11-11T02:31:00.000Z' };
+  const found = evidenceView({ quote: 'Ship it', sourceFlag: 'hidden', discussionEvidence: ev }, 'p1');
+  assert.deepEqual(found, {
+    kind: 'quote',
+    quote: 'Ship it',
+    flag: 'Source message hidden — review',
+    from: 'Message #12 by Ada Member, 11 Nov 10:31',
+    href: '#/projects/p1/threads/t1?m=12',
+  });
+  assert.equal(sourceFlagText('deleted'), 'Source message deleted — review');
+});
+
+test('Source restricted and Access changed labels', () => {
+  assert.equal(restrictedLabel('restricted'), 'Source restricted');
+  assert.equal(restrictedLabel('project'), null);
+  const now = new Date('2026-11-20T00:00:00Z');
+  assert.equal(accessChangedLabel('2026-11-11T02:31:00.000Z', now), 'Access changed 11 Nov 2026');
+  assert.equal(accessChangedLabel('2026-10-01T02:31:00.000Z', now), null);
+  assert.equal(accessChangedLabel(null, now), null);
+});
+
+test('a poll answered 404 or 403 means access was lost', () => {
+  assert.equal(isAccessLost(new ApiError('x', 404)), true);
+  assert.equal(isAccessLost(new ApiError('x', 403)), true);
+  assert.equal(isAccessLost(new ApiError('x', 500)), false);
+  assert.equal(isAccessLost(new Error('x')), false);
 });

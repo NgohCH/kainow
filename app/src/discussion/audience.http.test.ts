@@ -95,6 +95,8 @@ describe('changing an audience and restricted evidence', { skip: SKIP_NO_DB }, (
     const note = (await ada.request('GET', `/notes/${source}`)).body.source.audience;
     assert.equal(note.mode, 'restricted');
     assert.equal(note.changedAt, view.changedAt);
+    assert.equal(note.id, audience, 'the note gives the audience id');
+    assert.deepEqual(note.namedUsers.map((p: any) => p.id), [ids.ada]);
   });
 
   test('Deputy cannot change (403)', async () => {

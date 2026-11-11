@@ -82,7 +82,7 @@ export interface VersionSummary {
   id: string;
   sourceId: string;
   versionNo: number;
-  origin: 'paste' | 'upload';
+  origin: 'paste' | 'upload' | 'meeting' | 'discussion';
   filename: string | null;
   mediaType: string | null;
   charCount: number;
@@ -157,6 +157,10 @@ export interface Item {
   record: { kind: 'task' | 'decision' | 'question' | 'risk'; id: string } | null;
   /** Approved before records existed: it still needs authorising to become a record. */
   approvedWithoutRecord: boolean;
+  /** Set when the quote lies in a discussion message that is now hidden or deleted. */
+  sourceFlag?: 'deleted' | 'hidden' | null;
+  /** Set when the quote lies in a discussion message: which message, by whom and when. */
+  discussionEvidence?: { threadId: string; messageNo: number; authorName: string; at: string } | null;
   /** True when a reviewer has changed the wording. `original` is then what the model said. */
   edited?: boolean;
   original?: { text: string; owner: string | null; due: string | null };
