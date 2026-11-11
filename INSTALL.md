@@ -186,14 +186,38 @@ Go live on a new, empty database so nothing from development or testing comes wi
 
 ## Recovery custodian
 
-Agree who the recovery custodian is and record how to reach them. Kainow's recovery procedure is still being written; check it is in place before go-live.
+**Two Administrators come first.** The everyday safeguard is a second Enterprise Administrator (step 3 of the Go-live checklist). If one Administrator loses access to their mailbox, the other disables that account. Recovery is only for when Kainow has **no Active Enterprise Administrator at all**.
+
+**Record the custodian in Kainow.** The recovery custodian is the person in your organisation who may run the recovery command on the server when every Administrator is locked out. An Administrator records their name and how to reach them on the **Organisation** page, under "Recovery custodian". Step 4 of the Go-live checklist can be marked done only once both are recorded.
+
+**Test it before go-live with a dry run.** The custodian runs the checks without changing anything:
+
+```
+docker compose run --rm api node dist/golive/recover-admin-cli.js admin@example.org "Admin Name" --reason "Pre-go-live test" --dry-run
+```
+
+Outside Docker: `npm run recover-admin -- admin@example.org "Admin Name" --reason "Pre-go-live test" --dry-run`. While an Administrator is active it answers "Would be refused now: an Administrator is active. All other checks passed." That is the expected result before go-live. A dry run sends nothing, changes nothing and writes nothing to the audit trail.
+
+**Real recovery, only when no Administrator is active.** The custodian names the person who will become an Administrator, on one of the organisation's email domains, and gives a reason:
+
+```
+docker compose run --rm api node dist/golive/recover-admin-cli.js admin@example.org "Admin Name" --reason "Why recovery is needed"
+```
+
+Outside Docker: `npm run recover-admin -- admin@example.org "Admin Name" --reason "Why recovery is needed"`.
+
+The command refuses, and changes nothing, when the reason is missing, when Kainow is not set up yet (use `golive-init` or `setup-invite` instead), when an Administrator is still active, or when the email is not on an eligible domain. Otherwise it emails a one-time link that is valid for 7 days. If the email cannot be sent, the link is still recorded; fix the email settings and run the same command again, which replaces the earlier link.
+
+**What recovery does and does not restore.** When the person signs in with the link, their account becomes an Active Enterprise Administrator. If they already had an account (for example, a disabled one), the same account is used, so their identity and history are kept. Their project roles, holds and Audit or Oversight access are **not** restored automatically, and recovery does not change them.
+
+**Every use is recorded.** Each recovery link is in the audit trail with its reason and recipient, and so is its acceptance at sign-in. Every change to the custodian is recorded too.
 
 ## What this does and does not protect
 
 - Only this computer can reach Kainow (the port is bound to 127.0.0.1). Do not publish it to a network without putting HTTPS in front.
 - The database has no published port and is reachable only by the other containers.
 - The server and worker run as a non-root user, on a read-only filesystem, with no extra Linux capabilities.
-- There is one Enterprise Administrator and no recovery person yet. If that person is locked out, access can be restored only from the command line (step 3 for a new administrator). Before real use, add a second administrator and agree who holds recovery.
+- Before real use, appoint a second Enterprise Administrator and record the recovery custodian (see "Recovery custodian"). If every Administrator is locked out, the custodian restores access from the command line with `recover-admin`; this does not restore project roles.
 - Updates are manual (`git pull`, rebuild). An in-app updater is deferred to January.
 
 ## Microsoft 365 email
