@@ -112,6 +112,17 @@ describe('extraction over HTTP', { skip: SKIP_NO_DB }, () => {
       assert.equal((await api('GET', `/notes/${id}/versions/1/extractions`)).body.runs.length, 1);
     });
 
+    test('a run shows who asked, or that it started automatically', async () => {
+      const id = await note();
+      const r = await api('POST', `/notes/${id}/versions/1/extractions`);
+      assert.ok(r.body.run.requestedByLabel.length > 0 && !r.body.run.requestedByLabel.startsWith('Automatic'));
+      await pool.query('UPDATE extraction_runs SET requested_by = NULL, trigger = $2 WHERE id = $1', [r.body.run.id, 'minutes_published']);
+      assert.equal((await api('GET', `/extractions/${r.body.run.id}`)).body.run.requestedByLabel, 'Automatic: minutes published');
+      await pool.query("UPDATE extraction_runs SET trigger = 'discussion' WHERE id = $1", [r.body.run.id]);
+      const listed = (await api('GET', `/notes/${id}/versions/1/extractions`)).body.runs;
+      assert.equal(listed[0].requestedByLabel, 'Automatic: discussion analysis');
+    });
+
     test('a second request for the same version while one is waiting or running is refused', async () => {
       const id = await note();
       assert.equal((await api('POST', `/notes/${id}/versions/1/extractions`)).status, 202);

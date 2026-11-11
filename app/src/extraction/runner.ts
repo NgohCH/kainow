@@ -4,13 +4,14 @@ import type { Clock } from '../auth/tokens';
 import { type MembershipRow, effectiveRoles, todayUtc8 } from '../projects/membership';
 import { type ProjectStatus, decide } from '../projects/matrix';
 import { uuidv7 } from '../common/uuid7';
-import { estimateMaxCostMicroMyr } from '../spend/cost';
 import type { SpendService } from '../spend/spend.service';
-import { readSettings } from '../spend/spend.settings';
 import { locateQuote } from '../notes/text';
 import { findCredentials } from './credentials';
-import { ModelBadResponse, ModelCallError, type ModelClient, type ModelAnswer } from './model';
+import { guardedAiCall, markStaleReservations } from '../ai/guarded-call';
+import type { ModelClient, ModelAnswer } from './model';
 import { EXTRACTION_SYSTEM_PROMPT, MAX_OUTPUT_TOKENS, REQUEST_TIMEOUT_MS } from './prompt';
+
+const OPEN_STATES: ProjectStatus[] = ['draft', 'planned', 'active'];
 
 export type RunOutcome = 'succeeded' | 'failed' | 'blocked' | 'retry' | 'skipped';
 
@@ -27,7 +28,7 @@ interface RunRow {
   id: string;
   status: string;
   source_version_id: string;
-  requested_by: string;
+  requested_by: string | null;
   user_status: string;
   user_role: string;
   text: string;
@@ -50,13 +51,16 @@ export class ExtractionRunner {
     );
     const project = p.rows[0];
     if (!project?.project_id || !project.status) return false;
+    // An automatic run has no requester to recheck: it runs while the project is open.
+    if (run.requested_by === null) return OPEN_STATES.includes(project.status);
+    const requester = run.requested_by;
     const m = await this.d.pool.query<MembershipRow>(
       `SELECT user_id AS "userId", role, to_char(starts_on, 'YYYY-MM-DD') AS "startsOn", to_char(expires_on, 'YYYY-MM-DD') AS "expiresOn",
               revoked_at AS "revokedAt"
          FROM memberships WHERE project_id = $1 AND user_id = $2`,
-      [project.project_id, run.requested_by],
+      [project.project_id, requester],
     );
-    const roles = effectiveRoles(m.rows, run.requested_by, todayUtc8(this.d.clock()));
+    const roles = effectiveRoles(m.rows, requester, todayUtc8(this.d.clock()));
     return decide({ action: 'extraction.run', roles, status: project.status }).allowed;
   }
 
@@ -67,7 +71,7 @@ export class ExtractionRunner {
               v.text_content AS text
          FROM extraction_runs r
          JOIN source_versions v ON v.id = r.source_version_id
-         JOIN users u ON u.id = r.requested_by
+         LEFT JOIN users u ON u.id = r.requested_by
         WHERE r.id = $1`,
       [runId],
     );
@@ -81,17 +85,11 @@ export class ExtractionRunner {
       [runId, attemptNo, this.d.clock()],
     );
 
-    // A worker that stopped mid-request leaves its reservation open. The outcome is unknown, so it stays counted.
-    const stale = await pool.query<{ id: string }>(
-      `SELECT id FROM ai_spend_entries WHERE request_id = $1 AND attempt_no < $2 AND status = 'reserved'`,
-      [runId, attemptNo],
-    );
-    for (const e of stale.rows) {
-      await spend.markUncertain(e.id, 'the worker stopped before the outcome was known');
-    }
+    await markStaleReservations(pool, spend, runId, attemptNo);
 
     // The person may have been disabled, or lost the right in the note's project, since they asked (A11).
-    if (run.user_status !== 'active' || !(await this.mayStillRun(run))) {
+    // Automatic runs (no requester) recheck the project state only.
+    if ((run.requested_by !== null && run.user_status !== 'active') || !(await this.mayStillRun(run))) {
       return this.finish(run, 'blocked', 'requester_not_allowed', 'The person who asked is no longer allowed to run extractions.');
     }
 
@@ -106,95 +104,43 @@ export class ExtractionRunner {
       );
     }
 
-    if (!this.d.model) {
-      return this.finish(run, 'failed', 'model_not_configured', 'No AI key is configured on the worker. Nothing was sent or charged.');
-    }
 
-    const settings = await readSettings(pool);
-    if (!settings) {
-      return this.finish(run, 'blocked', 'spend_not_configured', 'The AI spend settings have not been approved yet, so no AI request is allowed.');
-    }
-
-    const estimate = estimateMaxCostMicroMyr(
-      Buffer.byteLength(EXTRACTION_SYSTEM_PROMPT, 'utf8') + Buffer.byteLength(run.text, 'utf8'),
-      MAX_OUTPUT_TOKENS,
-      settings.prices,
-    );
-    const reserved = await spend.reserve({
-      requestId: runId,
-      attemptNo,
-      estimateMicroMyr: estimate,
-      purpose: 'extraction',
-      actorUserId: run.requested_by,
-    });
-    if (reserved.status === 'blocked') {
-      const personal = reserved.scope === 'user_monthly';
-      const why: Record<string, string> = {
-        no_allowance: personal ? 'This person has no personal AI allowance (the personal limit is blank or zero).' : 'There is no AI allowance (the limit is blank or zero).',
-        cap_would_be_exceeded: personal
-          ? 'This request could cost more than the personal monthly AI allowance that is left.'
-          : 'This request could cost more than the AI allowance that is left.',
-        not_configured: 'The AI spend settings have not been approved yet.',
-      };
-      return this.finish(run, 'blocked', `spend_${personal ? 'user_' : ''}${reserved.reason}`, why[reserved.reason] ?? 'Blocked by the AI spend cap.');
-    }
-    const entryId = reserved.entryId;
-
-    let sent = false;
-    try {
-      sent = true; // from here on the provider may have done the work and charged for it
-      const result = await this.d.model.extract({
-        modelId: settings.modelId,
-        system: EXTRACTION_SYSTEM_PROMPT,
-        user: run.text,
+    const model = this.d.model;
+    const outcome = await guardedAiCall(
+      { pool, spend, clock: this.d.clock, log: this.d.log, modelConfigured: model !== null },
+      {
+        requestId: runId,
+        attemptNo,
+        isLastAttempt,
+        purpose: 'extraction',
+        actorUserId: run.requested_by,
+        promptBytes: Buffer.byteLength(EXTRACTION_SYSTEM_PROMPT, 'utf8') + Buffer.byteLength(run.text, 'utf8'),
         maxOutputTokens: MAX_OUTPUT_TOKENS,
-        timeoutMs: REQUEST_TIMEOUT_MS,
-      });
-      // The cost is recorded first, so it is counted even if saving the proposals fails.
-      await spend.settle(entryId, result.usage);
-      return await this.saveItems(run, settings.modelId, result);
+        call: (modelId) =>
+          model!.extract({
+            modelId,
+            system: EXTRACTION_SYSTEM_PROMPT,
+            user: run.text,
+            maxOutputTokens: MAX_OUTPUT_TOKENS,
+            timeoutMs: REQUEST_TIMEOUT_MS,
+          }),
+      },
+    );
+    if (outcome.kind === 'retry') return this.requeue(run);
+    if (outcome.kind !== 'ok') return this.finish(run, outcome.kind, outcome.code, outcome.detail);
+    try {
+      return await this.saveItems(run, outcome.modelId, outcome.value);
     } catch (err) {
-      return this.failed(run, entryId, sent, err, isLastAttempt);
+      // The cost is already settled; saving failed, so the run is retried or ends as an internal error.
+      this.d.log?.(`extraction ${run.id}: unexpected error: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
+      if (!isLastAttempt) return this.requeue(run);
+      return this.finish(run, 'failed', 'internal_error', 'An unexpected error stopped the extraction.');
     }
   }
 
-  private async failed(run: RunRow, entryId: string, sent: boolean, err: unknown, isLast: boolean): Promise<RunOutcome> {
-    const { spend } = this.d;
-    let code = 'internal_error';
-    let detail = 'An unexpected error stopped the extraction.';
-    let retryable = true;
-
-    try {
-      if (err instanceof ModelBadResponse) {
-        await spend.settle(entryId, err.usage); // the provider did the work, so it is charged
-        code = 'bad_response';
-        detail = err.message;
-      } else if (err instanceof ModelCallError) {
-        await spend.markUncertain(entryId, err.message);
-        if (err.outcome === 'rejected') {
-          // An error answer from the provider before any work is the evidence that nothing was charged.
-          await spend.reconcileNotCharged(entryId, `HTTP ${err.status ?? 'error'} answer from the provider; no usage was reported`);
-        }
-        code = err.outcome === 'rejected' ? 'model_rejected' : 'model_unavailable';
-        detail = err.message;
-        retryable = err.retryable;
-      } else {
-        this.d.log?.(`extraction ${run.id}: unexpected error: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
-        if (sent) await spend.markUncertain(entryId, 'an unexpected error happened after the request was sent');
-        else await spend.releaseUnsent(entryId);
-      }
-    } catch (accountingError) {
-      // Never hide an accounting problem. The entry stays counted at its estimate until someone reconciles it.
-      this.d.log?.(`extraction ${run.id}: could not record the spend outcome: ${String(accountingError)}`);
-      code = 'internal_error';
-      detail = 'The AI spend could not be recorded; the estimate stays counted.';
-    }
-
-    if (retryable && !isLast) {
-      await this.d.pool.query(`UPDATE extraction_runs SET status = 'queued' WHERE id = $1`, [run.id]);
-      return 'retry';
-    }
-    return this.finish(run, 'failed', code, detail);
+  private async requeue(run: RunRow): Promise<RunOutcome> {
+    await this.d.pool.query(`UPDATE extraction_runs SET status = 'queued' WHERE id = $1`, [run.id]);
+    return 'retry';
   }
 
   private async saveItems(run: RunRow, modelId: string, answer: ModelAnswer): Promise<RunOutcome> {

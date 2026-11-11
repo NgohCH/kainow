@@ -108,6 +108,11 @@ const RUN_COLUMNS = `id, source_version_id AS "sourceVersionId", status, failure
   attempts, item_count AS "itemCount", unlocated_count AS "unlocatedCount", model_id AS "modelId",
   created_at AS "createdAt", started_at AS "startedAt", finished_at AS "finishedAt"`;
 
+/** Who asked for a run, for display: the person's name, or why the system started it. Run table aliased r. */
+const REQUESTER_LABEL = `CASE WHEN r.requested_by IS NOT NULL THEN (SELECT display_name FROM users WHERE id = r.requested_by)
+  WHEN r.trigger = 'minutes_published' THEN 'Automatic: minutes published'
+  ELSE 'Automatic: discussion analysis' END AS "requestedByLabel"`;
+
 @Injectable()
 export class ExtractionService {
   constructor(
@@ -168,7 +173,7 @@ export class ExtractionService {
   }
 
   async getRun(runId: string) {
-    const run = await this.pool.query(`SELECT ${RUN_COLUMNS} FROM extraction_runs WHERE id = $1`, [runId]);
+    const run = await this.pool.query(`SELECT ${RUN_COLUMNS}, ${REQUESTER_LABEL} FROM extraction_runs r WHERE r.id = $1`, [runId]);
     if (!run.rows[0]) throw new NotFoundException();
     const meeting = await this.meetingDateFor(this.pool, runId);
     const items = await this.pool.query(
@@ -280,7 +285,7 @@ export class ExtractionService {
 
   async listForVersion(sourceId: string, versionNo: number) {
     const { rows } = await this.pool.query(
-      `SELECT ${RUN_COLUMNS.split(',').map((c) => 'r.' + c.trim()).join(', ')}
+      `SELECT ${RUN_COLUMNS.split(',').map((c) => 'r.' + c.trim()).join(', ')}, ${REQUESTER_LABEL}
          FROM extraction_runs r
          JOIN source_versions v ON v.id = r.source_version_id
          JOIN sources s ON s.id = v.source_id
