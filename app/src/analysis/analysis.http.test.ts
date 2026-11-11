@@ -86,6 +86,13 @@ describe('analysis status and explicit requests', { skip: SKIP_NO_DB }, () => {
     assert.equal((await ada.request('POST', `/threads/${thread}/analyse`, {})).status, 202);
     const r = await ben.request('GET', `/threads/${thread}/analysis`);
     assert.deepEqual([r.body.line, r.body.lastFailure], ['Queued', null]);
+    assert.equal(r.body.lastRunId, null, 'no run has succeeded yet');
+    const ok = uuidv7();
+    await t.pool.query(
+      `INSERT INTO analysis_runs (id, thread_id, kind, trigger, requested_by, status, created_at, finished_at) VALUES ($1, $2, 'proposals', 'button', $3, 'succeeded', $4, $4)`,
+      [ok, thread, ids.ada, t.clock.now()],
+    );
+    assert.equal((await ben.request('GET', `/threads/${thread}/analysis`)).body.lastRunId, ok);
   });
 
   test('Analyse now starts one run for the new messages and refuses a second', async () => {

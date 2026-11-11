@@ -87,7 +87,7 @@ export function AnalysisStatus({
       )}
       {canRequest && selected.length > 50 && <p className="error" role="alert">Choose at most 50 messages.</p>}
       {status?.lastRunId && (
-        <FeedbackButton projectId={projectId} targetKind="analysis_run" targetId={status.lastRunId} label="The analysis missed an item or got one wrong" defaultCategory="missed_item" />
+        <FeedbackButton projectId={projectId} targetKind="analysis_run" targetId={status.lastRunId} label="Report a problem with this analysis" />
       )}
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}

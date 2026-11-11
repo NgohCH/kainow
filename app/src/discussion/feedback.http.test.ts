@@ -224,10 +224,15 @@ describe('feedback on AI output', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual([by('Proposal issue.').model, by('Proposal issue.').runRef], ['model-extract', extractionRunId]);
     assert.deepEqual([by('Run issue.').model, by('Run issue.').runRef !== null], [null, true], 'unknown model is null, not guessed');
     // Both Administrators were told, with a title only; nobody else was.
-    const notes = (await t.pool.query(`SELECT user_id, summary, kind FROM notifications WHERE kind = 'feedback_escalated' ORDER BY user_id`)).rows;
+    const notes = (await t.pool.query(`SELECT user_id, summary, kind, link FROM notifications WHERE kind = 'feedback_escalated' ORDER BY user_id`)).rows;
     assert.equal(notes.length, 6);
     assert.deepEqual([...new Set(notes.map((n) => n.user_id))].sort(), [ids.admin, ids.admin2].sort());
     assert.ok(notes.every((n) => n.summary === 'AI feedback escalated from Alpha Project'));
+    assert.ok(notes.every((n) => n.link === '#/escalated-feedback'));
+    // An Administrator with no role in the project still sees the notice and its link.
+    const shown = (await admin.request('GET', '/notifications')).body.items.filter((i: any) => i.kind === 'feedback_escalated');
+    assert.equal(shown.length, 3);
+    assert.ok(shown.every((i: any) => !i.noAccess && i.summary === 'AI feedback escalated from Alpha Project' && i.link === '#/escalated-feedback'));
     // No event or audit row holds the reporter's note.
     const kept = JSON.stringify([(await t.pool.query(`SELECT * FROM feedback_events`)).rows, (await t.pool.query(`SELECT detail FROM audit_events WHERE action LIKE 'feedback.%'`)).rows]);
     assert.ok(!kept.includes(CORRECTION) && !kept.includes('Nobody owns'));

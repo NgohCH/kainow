@@ -56,6 +56,10 @@ test('settings show effective value and inheritance and refuse 4 and 31 before s
   });
 });
 
+test('the quiet period refusal is the exact server text for 4 and 31', () => {
+  for (const bad of ['4', '31']) assert.equal(quietError(bad), 'The quiet period must be a whole number of minutes from 5 to 30.');
+});
+
 test('project settings read-only with the delegation message', () => {
   assert.equal(projectReadOnlyMessage(proj({ canEdit: false, projectsMayChange: false })), NOT_DELEGATED);
   assert.equal(projectReadOnlyMessage(proj({ canEdit: false, projectsMayChange: true })), NOT_EDITOR);

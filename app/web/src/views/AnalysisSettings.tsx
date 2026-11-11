@@ -94,8 +94,9 @@ export function OrganisationAnalysisSettings() {
         </label>
         <label>
           Quiet period in minutes
-          <input inputMode="numeric" value={draft.quietText} aria-invalid={quiet ? true : undefined} aria-describedby="quiet-hint" onChange={(e) => setDraft({ ...draft, quietText: e.target.value })} />
-          <span id="quiet-hint" className={quiet ? 'error' : 'hint'}>A whole number of minutes from 5 to 30. Analysis starts after this long without new messages.</span>
+          <input inputMode="numeric" value={draft.quietText} aria-invalid={quiet ? true : undefined} aria-describedby={quiet ? 'quiet-error quiet-hint' : 'quiet-hint'} onChange={(e) => setDraft({ ...draft, quietText: e.target.value })} />
+          <span id="quiet-hint" className="hint">A whole number of minutes from 5 to 30. Analysis starts after this long without new messages.</span>
+          {quiet && <span id="quiet-error" role="alert" className="error">{quiet}</span>}
         </label>
         <p className="meta">Fixed in this version: at most 2 automatic analyses per thread in any rolling 20 minutes.</p>
       </fieldset>
@@ -188,8 +189,9 @@ export function ProjectAnalysisSettings({ projectId }: { projectId: string }) {
             <div className="setting">
               <label>
                 Quiet period in minutes
-                <input inputMode="numeric" value={draft.quietText} disabled={draft.quietBack} aria-invalid={quiet ? true : undefined} aria-describedby="project-quiet-hint" onChange={(e) => setDraft({ ...draft, quietText: e.target.value })} />
-                <span id="project-quiet-hint" className={quiet ? 'error' : 'hint'}>A whole number of minutes from 5 to 30.</span>
+                <input inputMode="numeric" value={draft.quietText} disabled={draft.quietBack} aria-invalid={quiet ? true : undefined} aria-describedby={quiet ? 'project-quiet-error project-quiet-hint' : 'project-quiet-hint'} onChange={(e) => setDraft({ ...draft, quietText: e.target.value })} />
+                <span id="project-quiet-hint" className="hint">A whole number of minutes from 5 to 30.</span>
+                {quiet && <span id="project-quiet-error" role="alert" className="error">{quiet}</span>}
               </label>
               <span className="hint">{from.quietMinutes}</span>
               {view.source.quietMinutes === 'project' && (

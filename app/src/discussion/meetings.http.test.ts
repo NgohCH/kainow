@@ -165,6 +165,7 @@ describe('typed meetings and draft minutes', { skip: SKIP_NO_DB }, () => {
     assert.equal(view.canPublish, false);
     assert.deepEqual(view.versions.map((v: any) => [v.versionNo, v.origin, v.trigger]), [[3, 'human', null], [2, 'ai', 'quiet_period'], [1, 'human', null]]);
     assert.equal(view.versions[2].author.id, ids.pm);
+    assert.match(view.current.id, /^[0-9a-f-]{36}$/, 'the draft id is returned');
     const pmView = (await pm.request('GET', `/threads/${meeting}/minutes`)).body;
     assert.equal(pmView.canEdit, true);
     assert.equal(pmView.canPublish, true);
