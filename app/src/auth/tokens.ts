@@ -7,9 +7,12 @@ export type Clock = () => Date;
 /** Delivers a one-time sign-in code. The code is plain text here and must never be logged by callers. */
 export interface CodeSender {
   send(email: string, code: string, validForMinutes: number): Promise<void>;
-  /** The one-time link that makes the first Enterprise Administrator. */
-  sendSetupInvitation(email: string, link: string, expiresAt: Date): Promise<void>;
+  /** The one-time link that makes the first Enterprise Administrator, or (kind 'recovery') restores Administrator access. */
+  sendSetupInvitation(email: string, link: string, expiresAt: Date, kind?: SetupKind): Promise<void>;
 }
+
+/** A setup link makes the first Enterprise Administrator; a recovery link (recover-admin) restores Administrator access. */
+export type SetupKind = 'setup' | 'recovery';
 
 export interface AuthUser {
   id: string;

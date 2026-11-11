@@ -135,12 +135,91 @@ This holds everything: notes, original files, proposals, decisions, the audit tr
 
 `docker compose down` removes the containers and keeps your data. `docker compose down -v` also **deletes the database volume, and with it all your notes, decisions and the audit trail. It cannot be undone.**
 
+## Going live
+
+Go live on a new, empty database so nothing from development or testing comes with you. Under the provided Compose setup the database address is fixed to the `db` service in `compose.yaml`, so the new database comes from a new Compose project with its own database volume.
+
+1. **Stop the old installation**, in this folder, before changing `.env`:
+
+   ```
+   docker compose down
+   ```
+
+   Do not add `-v`. The old database volume is kept until you delete it by hand (`docker volume ls` lists it).
+2. **Name a new Compose project.** Add this line to `.env`:
+
+   ```
+   COMPOSE_PROJECT_NAME=kainow-live
+   ```
+
+   Compose then uses a new, empty database volume, `kainow-live_kainow-db`.
+3. **Build and start the new project:**
+
+   ```
+   docker compose up -d --build
+   ```
+
+4. **Prepare the database and invite the first Enterprise Administrator.** This applies the migrations, starts notices from now and emails a one-time setup link. It refuses any database that already holds users or projects, or tables of another application, and it never deletes anything:
+
+   ```
+   docker compose run --rm api node dist/golive/golive-init-cli.js you@example.org "Your Name"
+   ```
+
+   Outside Docker the same command is `npm run golive-init -- you@example.org "Your Name"`.
+
+   If it says the database is ready but the setup email could not be sent, fix the email settings and send a new link with:
+
+   ```
+   docker compose run --rm api node dist/users/setup-invite-cli.js you@example.org "Your Name"
+   ```
+
+   (Outside Docker: `npm run setup-invite -- you@example.org "Your Name"`.) The setup link expires after 7 days; if it expires before it is used, send a new one the same way.
+5. **Save the approved AI spend settings again**, on the new database, as in step 4 of "Install". Until you do, every AI request is refused:
+
+   ```
+   docker compose run --rm api node dist/spend/apply-mvp-settings-cli.js
+   ```
+
+6. From now on every `docker compose` command in this folder, the backup commands included, acts on the new `kainow-live` project, because `.env` names it. Removing the line from `.env` would point them back at the old installation.
+7. Development and test databases and old backup dump files are not carried over. Delete them yourself, by hand, outside Kainow.
+8. The first Administrator opens the emailed link and follows the **Go-live checklist**.
+
+## Recovery custodian
+
+**Two Administrators come first.** The everyday safeguard is a second Enterprise Administrator (step 3 of the Go-live checklist). If one Administrator loses access to their mailbox, the other disables that account on the **People** page. Always try a second Administrator first. Recovery is only for when **no Administrator can sign in**.
+
+**Record the custodian in Kainow.** The recovery custodian is the person in your organisation who may run the recovery command on the server when every Administrator is locked out. An Administrator records their name and how to reach them on the **Organisation** page, under "Recovery custodian". Step 4 of the Go-live checklist can be marked done only once both are recorded.
+
+**Test it before go-live with a dry run.** The custodian runs the checks without changing anything:
+
+```
+docker compose run --rm api node dist/golive/recover-admin-cli.js admin@example.org "Admin Name" --reason "Pre-go-live test" --dry-run
+```
+
+Outside Docker: `npm run recover-admin -- admin@example.org "Admin Name" --reason "Pre-go-live test" --dry-run`. While Administrators are active it lists them ("Dry run: these Administrators would be disabled first: ..."), then answers "Would be refused now: an Administrator is active. All other checks passed." and says what `--disable-active-administrators` would do. That is the expected result before go-live. A dry run sends nothing, changes nothing and writes nothing to the audit trail.
+
+**Real recovery, when no Administrator can sign in.** The custodian names the person who will become an Administrator, on one of the organisation's email domains, and gives a reason. Run the dry run first and check the Administrators it lists. If Administrators are still Active in Kainow but none of them can sign in, add `--disable-active-administrators`:
+
+```
+docker compose run --rm api node dist/golive/recover-admin-cli.js admin@example.org "Admin Name" --reason "Why recovery is needed" --disable-active-administrators
+```
+
+Outside Docker: `npm run recover-admin -- admin@example.org "Admin Name" --reason "Why recovery is needed" --disable-active-administrators`. The name is required when the address has no account in Kainow yet; for an existing account it may be left out, and the account's name is kept.
+
+The command refuses, and changes nothing, when the reason is missing, when Kainow is not set up yet (use `golive-init` or `setup-invite` instead), when an Administrator is still active and `--disable-active-administrators` is not given, when the email is not on an eligible domain, when the link would go to one of the Administrators being disabled, or when a new person has no name. Otherwise, in one step, it disables every still-Active Administrator, lists them, and emails a one-time recovery link that is valid for 7 days. If the email cannot be sent, the link is still recorded; fix the email settings and run the same command again, which replaces the earlier link. (`setup-invite` is only for before the organisation is set up; afterwards it refuses and points here.)
+
+**What happens to the disabled Administrators.** Each is disabled the same way as on the People page: their sessions end, their unused sign-in codes stop working, their current project memberships are placed **On Hold**, and each affected project's Project Manager (or its Owner and Sponsors) is alerted by email. Each disabled Administrator is also emailed that their access was disabled, when, and the reason given; the email never carries the recovery link. Once the new Administrator is in, they can re-enable any of them on the **People** page; held memberships stay On Hold until the project resolves them.
+
+**What recovery does and does not restore.** If the person already has an account, the same account is used, so their identity and history are kept. Nothing about the account changes until they sign in with the link, except that a disabled account is allowed to sign in. When they sign in, the account becomes an Active Enterprise Administrator. Their project roles, holds and Audit or Oversight access are **not** restored automatically, and recovery does not change them. If the link is replaced by a new run for another address, or has expired by the next run, the account it was for is put back as it was (an account the link created is disabled). If an Administrator is active again by the time the person signs in, the link can no longer be used.
+
+**Every use is recorded.** Each recovery link is in the audit trail with its reason, its recipient, what their account was before and which Administrators were disabled; each disabled Administrator has their own entry; and so is the acceptance at sign-in. Every change to the custodian is recorded too.
+
 ## What this does and does not protect
 
 - Only this computer can reach Kainow (the port is bound to 127.0.0.1). Do not publish it to a network without putting HTTPS in front.
 - The database has no published port and is reachable only by the other containers.
 - The server and worker run as a non-root user, on a read-only filesystem, with no extra Linux capabilities.
-- There is one Enterprise Administrator and no recovery person yet. If that person is locked out, access can be restored only from the command line (step 3 for a new administrator). Before real use, add a second administrator and agree who holds recovery.
+- Before real use, appoint a second Enterprise Administrator and record the recovery custodian (see "Recovery custodian"). If every Administrator is locked out, the custodian restores access from the command line with `recover-admin`; this does not restore project roles.
 - Updates are manual (`git pull`, rebuild). An in-app updater is deferred to January.
 
 ## Microsoft 365 email
@@ -170,6 +249,8 @@ Kainow can send all its email, sign-in codes and reminders, as one mailbox in yo
    ```
 
    Then `docker compose up -d`. If one is missing, Kainow refuses to start and names the missing variable (never its value). Remove `LOG_SIGN_IN_CODES` so codes are emailed, not logged.
+
+**Auto-reply.** Set an automatic reply on the sender mailbox saying that it is not monitored, so people who answer a Kainow email know no one will read it.
 
 If Microsoft rejects the sender's credentials, Kainow does not retry that email and shows the reason in the delivery history; check the secret has not expired and that steps 2 and 3 are done. The client secret is never written to the database, the logs or any screen.
 

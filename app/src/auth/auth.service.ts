@@ -1,11 +1,11 @@
 import { createHash, createHmac, randomBytes, randomInt, timingSafeEqual } from 'node:crypto';
-import { Inject, Injectable } from '@nestjs/common';
+import { ConflictException, Inject, Injectable } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { uuidv7 } from '../common/uuid7';
 import { APP_CONFIG, type AppConfig } from '../config';
 import { PG_POOL } from '../db/database.module';
-import { acceptSetupOnSignIn, setupLapsed } from '../organisation/setup-accept';
+import { RECOVERY_NO_LONGER_USABLE, acceptSetupOnSignIn, setupLapsed } from '../organisation/setup-accept';
 import { CODE_SENDER, CLOCK, type AuthContext, type AuthUser, type Clock, type CodeSender } from './tokens';
 
 interface UserRow {
@@ -117,8 +117,10 @@ export class AuthService {
       return null;
     }
     const { maxCodeAttempts, lockoutMinutes, sessionHours } = this.config.auth;
+    // Set when the code was right but the person's recovery link can no longer be used; said after the link is ended.
+    let recoveryRefused = false;
 
-    return this.tx(async (c) => {
+    const result = await this.tx(async (c) => {
       // Lock the account row so concurrent guesses are counted one at a time.
       const user = await this.findUser(c, email, true);
       if (!user || !SIGN_IN_STATUSES.includes(user.status)) {
@@ -164,10 +166,16 @@ export class AuthService {
         return null;
       }
 
+      // An open setup or recovery link is accepted now; a recovery link is refused once an Administrator is active.
+      const accepted = await acceptSetupOnSignIn(c, user.id, now);
+      if (accepted === 'refused') {
+        recoveryRefused = true;
+        return null;
+      }
+      if (accepted === 'accepted') user.role = 'enterprise_administrator';
       await c.query('UPDATE login_codes SET consumed_at = $2 WHERE id = $1', [current.id, now]);
       // The first successful sign-in of an invitee's account makes it Active.
       await c.query(`UPDATE users SET failed_code_attempts = 0, status = 'active', updated_at = $2 WHERE id = $1`, [user.id, now]);
-      await acceptSetupOnSignIn(c, user.id, now);
       const token = randomBytes(32).toString('base64url');
       const expiresAt = new Date(now.getTime() + sessionHours * 3_600_000);
       const sessionId = uuidv7(now.getTime());
@@ -181,6 +189,8 @@ export class AuthService {
       await writeAudit(c, { at: now, action: 'auth.signed_in', actorUserId: user.id, subjectType: 'session', subjectId: sessionId });
       return { token, expiresAt, user: toAuthUser(user) };
     });
+    if (recoveryRefused) throw new ConflictException(RECOVERY_NO_LONGER_USABLE);
+    return result;
   }
 
   /** Finds the signed-in person for a session token, or null if it is unknown, expired, revoked or the account is disabled. */

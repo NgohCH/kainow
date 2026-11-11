@@ -4,7 +4,29 @@ import { DEFAULT_NAME, chooseLogo, defaultLogo } from '../organisation/branding'
 import { composeEmail } from '../organisation/email';
 import { createTransport, storeAttachments, type MailTransport } from '../email/transport';
 import type { Letterhead } from '../organisation/organisation.service';
-import type { CodeSender } from './tokens';
+import type { CodeSender, SetupKind } from './tokens';
+
+const utc = (d: Date): string => d.toISOString().slice(0, 16).replace('T', ' ');
+
+/** The wording of the one-time link email, by kind. */
+export function setupInvitationEmail(link: string, expiresAt: Date, kind: SetupKind = 'setup'): { subject: string; body: string } {
+  if (kind === 'recovery') {
+    return {
+      subject: 'Restore your Kainow Administrator access',
+      body:
+        'Kainow Administrator access is being restored for you. Open this link and sign in with the code Kainow emails you; ' +
+        `you will then be an Enterprise Administrator:\n${link}\n\n` +
+        `The link works once and expires on ${utc(expiresAt)} UTC. If you did not expect this, contact your organisation's recovery custodian.`,
+    };
+  }
+  return {
+    subject: 'Set up Kainow',
+    body:
+      `You have been asked to set up Kainow as its first Enterprise Administrator.\n\n` +
+      `Open this link and sign in with the code Kainow emails you; you will then set up your organisation:\n${link}\n\n` +
+      `The link works once and expires on ${utc(expiresAt)} UTC.`,
+  };
+}
 
 /** Local development only: writes the code to the server log. Refused unless LOG_SIGN_IN_CODES=true. */
 export class LogCodeSender implements CodeSender {
@@ -12,8 +34,8 @@ export class LogCodeSender implements CodeSender {
     console.log(`[sign-in code, development only] ${email}: ${code} (valid ${validForMinutes} minutes)`);
   }
 
-  async sendSetupInvitation(email: string, link: string, expiresAt: Date): Promise<void> {
-    console.log(`[setup invitation, development only] ${email}: until ${expiresAt.toISOString()}: ${link}`);
+  async sendSetupInvitation(email: string, link: string, expiresAt: Date, kind: SetupKind = 'setup'): Promise<void> {
+    console.log(`[${kind} invitation, development only] ${email}: until ${expiresAt.toISOString()}: ${link}`);
   }
 }
 
@@ -53,14 +75,9 @@ export class EmailCodeSender implements CodeSender {
     );
   }
 
-  async sendSetupInvitation(email: string, link: string, expiresAt: Date): Promise<void> {
-    await this.deliver(
-      email,
-      'Set up Kainow',
-      `You have been asked to set up Kainow as its first Enterprise Administrator.\n\n` +
-        `Open this link and sign in with the code Kainow emails you; you will then set up your organisation:\n${link}\n\n` +
-        `The link works once and expires on ${expiresAt.toISOString().slice(0, 16).replace('T', ' ')} UTC.`,
-    );
+  async sendSetupInvitation(email: string, link: string, expiresAt: Date, kind: SetupKind = 'setup'): Promise<void> {
+    const m = setupInvitationEmail(link, expiresAt, kind);
+    await this.deliver(email, m.subject, m.body);
   }
 }
 

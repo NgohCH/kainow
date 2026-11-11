@@ -6,11 +6,8 @@ import { PG_POOL } from '../db/database.module';
 import { normaliseEmail } from '../auth/auth.service';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { APP_CONFIG, type AppConfig } from '../config';
-import { holdAlertEmail } from '../email/messages';
 import { EMAIL_NUDGE, type EmailNudge } from '../email/nudge';
-import { writeOutbox } from '../email/outbox';
-import { alertRecipients, holdMembershipsOf } from '../projects/holds';
-import { todayUtc8 } from '../projects/membership';
+import { disableAccount, lockProjectsOf } from './disable';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -79,12 +76,7 @@ export class UsersService {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      // Every project change locks its project row first; disabling locks the same rows, in id order and before
-      // the account, so it never slips past a restore, appointment or acceptance in progress (or they past it).
-      await client.query(
-        `SELECT id FROM projects WHERE id IN (SELECT project_id FROM memberships WHERE user_id = $1) ORDER BY id FOR UPDATE`,
-        [id],
-      );
+      await lockProjectsOf(client, [id]);
       const admins = await client.query<{ id: string }>(
         `SELECT id FROM users WHERE role = 'enterprise_administrator' AND status = 'active' ORDER BY id FOR UPDATE`,
       );
@@ -99,33 +91,7 @@ export class UsersService {
       if (target.rows[0].role === 'enterprise_administrator' && admins.rows.length <= 1) {
         throw new ConflictException('The last active administrator cannot be disabled');
       }
-      await client.query(`UPDATE users SET status = 'disabled', updated_at = $2 WHERE id = $1`, [id, now]);
-      await client.query('UPDATE sessions SET revoked_at = $2 WHERE user_id = $1 AND revoked_at IS NULL', [id, now]);
-      await client.query('UPDATE login_codes SET consumed_at = $2 WHERE user_id = $1 AND consumed_at IS NULL', [id, now]);
-      // Current project memberships go On Hold for investigation (V1.0 account lifecycle §4).
-      const today = todayUtc8(now);
-      const held = await holdMembershipsOf(client, id, actorUserId, now, today);
-      // The alerts are queued in this transaction, so they exist exactly when the holds do.
-      const appUrl = this.config?.appUrl ?? 'http://localhost:3000';
-      for (const h of held) {
-        const m = holdAlertEmail(h.projectName, `${appUrl}/#/projects/${h.projectId}/people`);
-        for (const to of await alertRecipients(client, h.projectId, id, today)) {
-          await writeOutbox(client, {
-            toUserId: to.userId,
-            toAddress: to.email,
-            subject: m.subject,
-            body: m.body,
-            kind: 'hold_alert',
-            projectId: h.projectId,
-            initiatedBy: actorUserId ? 'person' : 'system',
-            initiatedByUser: actorUserId ?? undefined,
-            relevance: { kind: 'none', scope: 'project' },
-            now,
-          });
-          alerted += 1;
-        }
-      }
-      await writeAudit(client, { at: now, action: 'user.disabled', actorUserId, subjectType: 'user', subjectId: id, detail: { heldProjects: held.length } });
+      alerted = await disableAccount(client, id, actorUserId, now, this.config?.appUrl ?? 'http://localhost:3000');
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);

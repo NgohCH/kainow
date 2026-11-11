@@ -12,6 +12,7 @@ import { OrganisationScreen } from './views/OrganisationProfile.tsx';
 import { Setup } from './views/Setup.tsx';
 import { People } from './views/People.tsx';
 import { ProjectPage } from './views/ProjectPage.tsx';
+import { GoLive } from './views/GoLive.tsx';
 import { Deliveries } from './views/Deliveries.tsx';
 import { Notifications } from './views/Notifications.tsx';
 import { NotificationsSettings } from './views/NotificationSettings.tsx';
@@ -241,7 +242,7 @@ export function App() {
   const run = /^#\/runs\/([0-9a-f-]{36})$/i.exec(hash);
   const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work|settings|closing|deadline-review)(?:\/([0-9a-f-]{36}))?)?$/i.exec(hash);
   const searching = isSearchHash(hash);
-  const adminPage = /^#\/(people|spending|departments|domains|organisation|approvals|notifications-settings|deliveries)$/.exec(hash)?.[1];
+  const adminPage = /^#\/(people|spending|departments|domains|organisation|approvals|notifications-settings|deliveries|go-live)$/.exec(hash)?.[1];
 
   let page;
   if (invitation) page = <Invitation token={invitation[1]} user={user} onSignedIn={setUser} />;
@@ -253,6 +254,7 @@ export function App() {
   else if (isAdmin && adminPage === 'approvals') page = <ApprovalSettings />;
   else if (isAdmin && adminPage === 'notifications-settings') page = <NotificationsSettings />;
   else if (isAdmin && adminPage === 'deliveries') page = <Deliveries />;
+  else if (isAdmin && adminPage === 'go-live') page = <GoLive />;
   else if (hash === '#/notifications') page = <Notifications />;
   else if (searching) page = <Search hash={hash} />;
   else if (run) page = <Review runId={run[1]} meId={user.id} />;
@@ -276,6 +278,8 @@ export function App() {
               <a href="#/approvals" aria-current={adminPage === 'approvals' ? 'page' : undefined}>Approvals</a>
               <a href="#/notifications-settings" aria-current={adminPage === 'notifications-settings' ? 'page' : undefined}>Notifications and email</a>
               <a href="#/deliveries" aria-current={adminPage === 'deliveries' ? 'page' : undefined}>Email delivery</a>
+              {/* Always there for Administrators: after closing, the page is the read-only record. */}
+              <a href="#/go-live" aria-current={adminPage === 'go-live' ? 'page' : undefined}>Go-live</a>
               <a href="#/domains" aria-current={adminPage === 'domains' ? 'page' : undefined}>Domains</a>
               <a href="#/spending" aria-current={adminPage === 'spending' ? 'page' : undefined}>AI spending</a>
             </>

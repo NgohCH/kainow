@@ -51,6 +51,18 @@ export class OrganisationProfileController {
     return this.organisation.finish(actor(req));
   }
 
+  @Get('recovery-custodian')
+  @RequireAction('organisation.manage')
+  async recoveryCustodian() {
+    return this.organisation.recoveryCustodian();
+  }
+
+  @Put('recovery-custodian')
+  @RequireAction('organisation.manage')
+  async setRecoveryCustodian(@Body() body: unknown, @Req() req: HttpRequest) {
+    return this.organisation.setRecoveryCustodian(body, actor(req));
+  }
+
   /** The body is the PNG or JPEG file itself. */
   @Put('logos/:shape')
   @RequireAction('organisation.manage')

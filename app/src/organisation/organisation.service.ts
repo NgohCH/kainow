@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type Clock } from '../auth/tokens';
@@ -30,6 +30,23 @@ export function logoShape(v: string): LogoShape {
 }
 
 const version = (uploadedAt: Date | string): string => String(new Date(uploadedAt).getTime());
+
+export type RecoveryCustodian = { name: string | null; contact: string | null };
+export const CUSTODIAN_BLANK = "Give the custodian's name and how to reach them.";
+export const CUSTODIAN_LONG = 'The name and the contact can each be at most 200 characters.';
+
+/** The custodian's name and contact as stored: both required, trimmed, each at most 200 characters. */
+export function cleanCustodian(body: unknown): { name: string; contact: string } {
+  const read = (k: string): string => {
+    const v = body && typeof body === 'object' ? (body as Record<string, unknown>)[k] : undefined;
+    return typeof v === 'string' ? v.trim() : '';
+  };
+  const name = read('name');
+  const contact = read('contact');
+  if (name === '' || contact === '') throw new BadRequestException(CUSTODIAN_BLANK);
+  if (name.length > 200 || contact.length > 200) throw new BadRequestException(CUSTODIAN_LONG);
+  return { name, contact };
+}
 
 /** The organisation this installation serves: its name, its setup, its logos and the branding they make. */
 @Injectable()
@@ -81,6 +98,30 @@ export class OrganisationProfileService {
       }
     });
     return { name };
+  }
+
+  /** The recovery custodian (O07): who can restore Administrator access if every Administrator is locked out. */
+  async recoveryCustodian(): Promise<RecoveryCustodian> {
+    const row = (await this.pool.query(`SELECT recovery_custodian_name, recovery_custodian_contact FROM organisation WHERE id = 1`)).rows[0];
+    return { name: row?.recovery_custodian_name ?? null, contact: row?.recovery_custodian_contact ?? null };
+  }
+
+  /** Records the recovery custodian; every change is in the audit trail with the old and new values. */
+  async setRecoveryCustodian(body: unknown, actorUserId: string): Promise<RecoveryCustodian> {
+    const next = cleanCustodian(body);
+    const at = this.now();
+    await this.tx(async (c) => {
+      const row = (await c.query(`SELECT recovery_custodian_name, recovery_custodian_contact FROM organisation WHERE id = 1 FOR UPDATE`)).rows[0];
+      if (!row) throw new ConflictException('Set up the organisation first.');
+      const from = { name: row.recovery_custodian_name as string | null, contact: row.recovery_custodian_contact as string | null };
+      if (from.name === next.name && from.contact === next.contact) return;
+      await c.query(
+        `UPDATE organisation SET recovery_custodian_name = $1, recovery_custodian_contact = $2, updated_by = $3, updated_at = $4 WHERE id = 1`,
+        [next.name, next.contact, actorUserId, at],
+      );
+      await writeAudit(c, { at, action: 'organisation.recovery_custodian_changed', actorUserId, subjectType: 'organisation', detail: { from, to: next } });
+    });
+    return next;
   }
 
   /** Registers the organisation once it has a name, an email domain and an active department. Repeating it changes nothing. */

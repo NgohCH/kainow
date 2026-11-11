@@ -1,4 +1,4 @@
-import type { CodeSender } from '../auth/tokens';
+import type { CodeSender, SetupKind } from '../auth/tokens';
 
 /** Environment for tests. Codes are logged, cookies are not Secure, the secret is a throwaway. */
 export function testEnv(databaseUrl: string): NodeJS.ProcessEnv {
@@ -23,10 +23,10 @@ export class CaptureSender implements CodeSender {
     this.sent.push({ email, code, validForMinutes });
   }
 
-  readonly setupInvitations: { email: string; link: string; expiresAt: Date }[] = [];
+  readonly setupInvitations: { email: string; link: string; expiresAt: Date; kind: SetupKind }[] = [];
 
-  async sendSetupInvitation(email: string, link: string, expiresAt: Date): Promise<void> {
-    this.setupInvitations.push({ email, link, expiresAt });
+  async sendSetupInvitation(email: string, link: string, expiresAt: Date, kind: SetupKind = 'setup'): Promise<void> {
+    this.setupInvitations.push({ email, link, expiresAt, kind });
   }
 
   lastCode(email: string): string {

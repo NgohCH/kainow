@@ -19,6 +19,8 @@ export interface Effective {
   sources: Record<SettingKey, Source>;
   delegation: { calendar: boolean; timings: boolean; digest: boolean };
   digest: DigestSchedule | null;
+  /** Triggers due before this time are neither fired nor recorded; null on a database not made by golive-init. */
+  noticesFrom: Date | null;
 }
 
 export interface OrgRow {
@@ -30,6 +32,8 @@ export interface OrgRow {
   projectsMayChangeCalendar: boolean;
   projectsMayChangeTimings: boolean;
   projectsMayChangeDigest: boolean;
+  /** Set only by golive-init; read-only everywhere else. */
+  noticesFrom: Date | null;
 }
 
 export interface ProjectRow {
@@ -100,7 +104,7 @@ function flagOf(v: unknown): boolean {
   return v;
 }
 
-const ORG_PARSERS: Record<keyof OrgRow, (v: unknown) => unknown> = {
+const ORG_PARSERS: Record<Exclude<keyof OrgRow, 'noticesFrom'>, (v: unknown) => unknown> = {
   dayCounting: countingOf, weekdays: weekdaysOf, leadDays: leadDaysOf, escalationDays: escalationOf, sweepMinutes: sweepOf,
   projectsMayChangeCalendar: flagOf, projectsMayChangeTimings: flagOf, projectsMayChangeDigest: flagOf,
 };
@@ -155,7 +159,8 @@ export async function loadOrgRow(db: Db, lock = false): Promise<OrgRow> {
   const { rows } = await db.query(
     `SELECT day_counting AS "dayCounting", weekdays, lead_days AS "leadDays", escalation_days AS "escalationDays", sweep_minutes AS "sweepMinutes",
             projects_may_change_calendar AS "projectsMayChangeCalendar", projects_may_change_timings AS "projectsMayChangeTimings",
-            projects_may_change_digest AS "projectsMayChangeDigest"
+            projects_may_change_digest AS "projectsMayChangeDigest",
+            notices_from AS "noticesFrom"
        FROM notification_settings WHERE id = 1 ${lock ? 'FOR UPDATE' : ''}`,
   );
   const r = rows[0];
@@ -214,6 +219,7 @@ export function resolveEffective(org: OrgRow, proj: ProjectRow, holidays: Readon
     sources: { dayCounting: sDay, weekdays: sWeek, leadDays: sLead, escalationDays: sEsc },
     delegation,
     digest,
+    noticesFrom: org.noticesFrom,
   };
 }
 

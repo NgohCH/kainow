@@ -1,6 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import { type LogoShape, type OrganisationProfile as Profile, SHAPE_HELP, logoUploadError, previewPlaces } from '../branding.ts';
+import { CUSTODIAN_HELP, type RecoveryCustodian as Custodian, custodianError } from '../custodian.ts';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 
@@ -123,6 +124,74 @@ export function LogoUploads({ profile, onChanged }: { profile: Profile; onChange
   );
 }
 
+/** The recovery custodian (O07): shown, and recorded or changed, by an Administrator. */
+export function RecoveryCustodian() {
+  const [current, setCurrent] = useState<Custodian | null>(null);
+  const [name, setName] = useState('');
+  const [contact, setContact] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [saved, setSaved] = useState(false);
+  const [busy, setBusy] = useState(false);
+
+  useEffect(() => {
+    api.get<Custodian>('/organisation/recovery-custodian').then(
+      (c) => {
+        setCurrent(c);
+        setName(c.name ?? '');
+        setContact(c.contact ?? '');
+      },
+      (e) => setError(errText(e)),
+    );
+  }, []);
+
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    setSaved(false);
+    const early = custodianError(name, contact);
+    if (early) return setError(early);
+    setError(null);
+    setBusy(true);
+    try {
+      const next = await api.put<Custodian>('/organisation/recovery-custodian', { name, contact });
+      setCurrent(next);
+      setName(next.name ?? '');
+      setContact(next.contact ?? '');
+      setSaved(true);
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <section className="panel" aria-labelledby="custodian-heading">
+      <h2 id="custodian-heading">Recovery custodian</h2>
+      <p className="meta">{CUSTODIAN_HELP}</p>
+      {current && (
+        <p>
+          {current.name && current.contact ? (
+            <>Recorded: <strong>{current.name}</strong>, {current.contact}</>
+          ) : (
+            'No recovery custodian recorded yet.'
+          )}
+        </p>
+      )}
+      <form className="stack" onSubmit={save}>
+        <label>
+          Name <input required maxLength={200} value={name} onChange={(e) => setName(e.target.value)} />
+        </label>
+        <label>
+          How to reach them <input required maxLength={200} value={contact} onChange={(e) => setContact(e.target.value)} />
+        </label>
+        <button className="primary" disabled={busy || !current}>Save custodian</button>
+      </form>
+      {saved && <p role="status" className="meta">Recovery custodian saved.</p>}
+      {error && <p role="alert" className="error">{error}</p>}
+    </section>
+  );
+}
+
 /** Administrator screen after setup: rename the organisation and change its logos. */
 export function OrganisationScreen({ onBrandingChanged }: { onBrandingChanged: () => void }) {
   const { profile, error, reload } = useOrganisationProfile();
@@ -139,6 +208,7 @@ export function OrganisationScreen({ onBrandingChanged }: { onBrandingChanged: (
         <>
           <OrganisationName current={profile.name} onSaved={changed} />
           <LogoUploads profile={profile} onChanged={changed} />
+          <RecoveryCustodian />
         </>
       )}
     </main>
