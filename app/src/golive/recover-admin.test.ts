@@ -170,7 +170,8 @@ describe('recover-admin', { skip: SKIP_NO_DB }, () => {
     const outbox = await t.outbox();
     const alerts = outbox.filter((r) => r.kind === 'hold_alert');
     assert.deepEqual(alerts.map((r) => [r.to_address, r.project_id]), [['sponsor@example.org', projectId]]);
-    const notices = outbox.filter((r) => r.kind === 'recovery_notice');
+    // Written at the same instant with random ids, so compared in address order.
+    const notices = outbox.filter((r) => r.kind === 'recovery_notice').sort((x, y) => x.to_address.localeCompare(y.to_address));
     assert.deepEqual(notices.map((r) => [r.to_address, r.subject]), [
       ['ana.admin@example.org', 'Your Kainow Administrator access was disabled'],
       ['ben.admin@example.org', 'Your Kainow Administrator access was disabled'],
@@ -189,7 +190,8 @@ describe('recover-admin', { skip: SKIP_NO_DB }, () => {
     }
     const notRow = (await t.pool.query(`SELECT to_user_id, relevance FROM email_outbox WHERE kind = 'recovery_notice'`)).rows;
     assert.deepEqual(notRow, [{ to_user_id: null, relevance: null }, { to_user_id: null, relevance: null }], 'no eligibility scope');
-    const disabledAudits = await auditRows('user.disabled');
+    const order = [anaId, benId];
+    const disabledAudits = (await auditRows('user.disabled')).sort((x, y) => order.indexOf(x.subject_id) - order.indexOf(y.subject_id));
     assert.deepEqual(disabledAudits, [
       { actor_user_id: null, subject_id: anaId, detail: { heldProjects: 1, by: 'recovery', reason } },
       { actor_user_id: null, subject_id: benId, detail: { heldProjects: 0, by: 'recovery', reason } },
