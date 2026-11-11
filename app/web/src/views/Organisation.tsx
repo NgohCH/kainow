@@ -110,10 +110,10 @@ export function Domains() {
   return (
     <main className="page narrow">
       <h1>Eligible email domains</h1>
-      <p className="meta">People can be invited only at these domains, for example help.edu.my. A domain alone admits nobody: each person still needs an invitation.</p>
+      <p className="meta">People can be invited only at these domains, for example example.com. A domain alone admits nobody: each person still needs an invitation.</p>
       <form className="row" onSubmit={add}>
         <label>
-          Domain <input required value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="help.edu.my" />
+          Domain <input required value={domain} onChange={(e) => setDomain(e.target.value)} placeholder="example.com" />
         </label>
         <button className="primary">Add</button>
       </form>

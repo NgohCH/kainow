@@ -10,7 +10,7 @@ Scope: December 2026 MVP, a working vertical slice. It is not the full V1.0 rele
 | 1 | MVP scope | Accepted as proposed: sign-in, meeting notes (paste/upload), AI extraction with source links, review screen, monthly AI spend cap, local Compose install. Deferred to January: SharePoint/OneDrive, email, reminders, updater, full restore drill, full accessibility audit, newcomer test, 200-user load test, Safari/Firefox. |
 | 2 | OpenAI model | **Changed 7 November 2026:** `gpt-6.1-sol` is the model. `gpt-6-luna` is dropped and there is no alternate for now. See "Updates of 7 November 2026" below. |
 | 3 | AI spend cap | Applies to the finished product's runtime AI use only, not to development. Amount: MYR 20 per month. Reset boundary: calendar month, UTC+8 (assumed; confirm if different). |
-| 4 | Sign-in | Passwordless. Named users: ngoh.ch@help.edu.my (Product Owner) and ngohch@gmail.com (second Enterprise Administrator, added 7 November 2026). More users to be supplied. |
+| 4 | Sign-in | Passwordless. Named users: the Product Owner's work address and ngohch@gmail.com (second Enterprise Administrator, added 7 November 2026). More users to be supplied. |
 | 5 | Roles | Enterprise Administrator for the MVP. Project Manager and delegates as described in the handover (to be mapped to the register's role matrix under R03). |
 | 6 | Data retention | As per the handover documents (R07): no purge feature, logical deletion only, history kept. |
 | 7 | Languages | English and Bahasa Melayu, including mixed-language notes. |

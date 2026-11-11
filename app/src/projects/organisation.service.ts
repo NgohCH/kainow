@@ -80,7 +80,7 @@ export class OrganisationService {
 
   async addDomain(domainIn: unknown, actorUserId: string) {
     const domain = typeof domainIn === 'string' ? domainIn.trim().toLowerCase() : '';
-    if (!DOMAIN.test(domain)) throw new BadRequestException('Enter a domain such as help.edu.my.');
+    if (!DOMAIN.test(domain)) throw new BadRequestException('Enter a domain such as example.com.');
     const id = uuidv7();
     const at = this.now();
     try {

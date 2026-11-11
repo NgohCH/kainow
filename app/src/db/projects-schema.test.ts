@@ -86,7 +86,7 @@ describe('projects and roles schema', { skip: SKIP_NO_DB }, () => {
   });
 
   test('an eligible domain is unique while not removed', async () => {
-    const add = () => sqlState(pool, `INSERT INTO eligible_domains (id, domain, added_by, added_at) VALUES ($1, 'help.edu.my', $2, now())`, [uuidv7(), userId]);
+    const add = () => sqlState(pool, `INSERT INTO eligible_domains (id, domain, added_by, added_at) VALUES ($1, 'example.com', $2, now())`, [uuidv7(), userId]);
     assert.equal(await add(), 'ok');
     assert.equal(await add(), '23505');
     await pool.query(`UPDATE eligible_domains SET removed_by = $1, removed_at = now()`, [userId]);
