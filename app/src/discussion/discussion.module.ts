@@ -2,6 +2,7 @@ import { type DynamicModule, Module } from '@nestjs/common';
 import { NotesModule } from '../notes/notes.module';
 import { ProjectsModule } from '../projects/projects.module';
 import { AUTOMATIC_ANALYSIS, type AutomaticAnalysis, ALWAYS_AUTOMATIC } from './automatic-analysis';
+import { AudienceController } from './audience.controller';
 import { AudienceModule } from './audience.module';
 import { MEETING_END_HOOK, type MeetingEndHook, NO_MEETING_END_HOOK, MeetingsService } from './meetings.service';
 import { MeetingsController } from './meetings.controller';
@@ -20,7 +21,7 @@ export class DiscussionModule {
     return {
       module: DiscussionModule,
       imports: [ProjectsModule, AudienceModule, NotesModule],
-      controllers: [ThreadsController, MeetingsController, PublishingController],
+      controllers: [AudienceController, ThreadsController, MeetingsController, PublishingController],
       providers: [
         ThreadsService,
         MeetingsService,

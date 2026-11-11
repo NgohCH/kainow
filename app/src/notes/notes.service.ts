@@ -308,12 +308,13 @@ export class NotesService {
       intendedMode: string | null;
       returnedReason: string | null;
       provenance: string | null;
+      audience: { mode: string; changedAt: string | null };
     };
     versions: VersionSummary[];
   }> {
     const src = await this.pool.query(
       `SELECT id, title, created_at AS "createdAt", project_id AS "projectId", kind, publication, intended_mode AS "intendedMode",
-              returned_reason AS "returnedReason"
+              returned_reason AS "returnedReason", audience_id AS "audienceId"
          FROM sources WHERE id = $1 AND status = 'active'`,
       [sourceId],
     );
@@ -322,9 +323,12 @@ export class NotesService {
       `SELECT ${VERSION_COLUMNS} FROM source_versions WHERE source_id = $1 ORDER BY version_no`,
       [sourceId],
     );
-    const s = src.rows[0];
+    const { audienceId, ...s } = src.rows[0];
+    const aud = (
+      await this.pool.query(`SELECT a.mode, (SELECT max(e.at) FROM audience_events e WHERE e.audience_id = a.id) AS "changedAt" FROM audiences a WHERE a.id = $1`, [audienceId])
+    ).rows[0];
     return {
-      source: { ...s, label: s.kind === 'minutes' ? MINUTES_LABEL : null, provenance: rows.length ? await this.provenance(rows[rows.length - 1].id) : null },
+      source: { ...s, audience: { mode: aud.mode, changedAt: aud.changedAt ? (aud.changedAt as Date).toISOString() : null }, label: s.kind === 'minutes' ? MINUTES_LABEL : null, provenance: rows.length ? await this.provenance(rows[rows.length - 1].id) : null },
       versions: rows,
     };
   }

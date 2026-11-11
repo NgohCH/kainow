@@ -38,7 +38,7 @@ export interface ThreadView {
   projectId: string;
   kind: 'discussion' | 'meeting';
   title: string;
-  audience: { mode: AudienceMode; namedUsers: Person[] };
+  audience: { mode: AudienceMode; namedUsers: Person[]; changedAt: string | null };
   meetingDate: string | null;
   state: 'open' | 'ended' | null;
   messages: MessageView[];
@@ -271,7 +271,7 @@ export class ThreadsService {
       projectId: t.projectId,
       kind: t.kind,
       title: t.title,
-      audience: { mode: audience.mode, namedUsers: await this.people(this.pool, audience.namedUserIds) },
+      audience: { mode: audience.mode, namedUsers: await this.people(this.pool, audience.namedUserIds), changedAt: await this.audiences.changedAt(audience.id, this.pool) },
       meetingDate: t.meetingDate,
       state: t.state,
       messages: await this.messageViews(this.pool, user.id, 'm.thread_id = $1 AND m.message_no > $2', [t.id, afterNo]),

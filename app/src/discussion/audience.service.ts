@@ -59,6 +59,12 @@ export class AudienceService {
     return this.row(db, 'JOIN discussion_threads t ON t.audience_id = a.id WHERE t.id = $1', threadId);
   }
 
+  /** When the audience was last changed (the latest audience_events row), or null if it never was. */
+  async changedAt(audienceId: string, db: Db = this.pool): Promise<string | null> {
+    const { rows } = await db.query(`SELECT max(at) AS at FROM audience_events WHERE audience_id = $1`, [audienceId]);
+    return rows[0]?.at ? (rows[0].at as Date).toISOString() : null;
+  }
+
   /** Outside the audience the item does not exist (404), like other hidden content. */
   assertReadable(ctx: ProjectContext, a: AudienceRow): void {
     if (!inAudience(ctx, a)) throw new NotFoundException();
@@ -114,6 +120,18 @@ export class AudienceService {
     return id;
   }
 
+  /**
+   * The audience a request is about, for someone who may see it: its project's context, with 404 for anyone outside
+   * the project or the audience (before any 403, so a restricted audience's existence is not revealed).
+   */
+  async visibleTo(user: AuthUser, audienceId: string): Promise<{ ctx: ProjectContext; audience: AudienceRow }> {
+    const audience = await this.load(audienceId);
+    if (!audience.projectId) throw new NotFoundException();
+    const ctx = await this.access.context(user, audience.projectId);
+    this.assertReadable(ctx, audience);
+    return { ctx, audience };
+  }
+
   /** Who would gain and who would lose access if `a` became `change`, among the project's current readers. */
   async preview(ctx: ProjectContext, a: AudienceRow, change: AudienceChange): Promise<{ gain: Person[]; lose: Person[] }> {
     const ids = new Set<string>();
@@ -142,8 +160,15 @@ export class AudienceService {
     return { gain, lose };
   }
 
+  async people(ids: string[], db: Db = this.pool): Promise<Person[]> {
+    if (ids.length === 0) return [];
+    const { rows } = await db.query(`SELECT id, display_name AS "displayName" FROM users WHERE id = ANY($1::uuid[]) ORDER BY display_name, id`, [ids]);
+    return rows as Person[];
+  }
+
   /** PM, Owner or Sponsor (not a Deputy) in a Draft, Planned or Active project, with a reason; recorded in audience_events. */
   async change(user: AuthUser, audienceId: string, change: AudienceChange, reason: unknown): Promise<AudienceRow> {
+    await this.visibleTo(user, audienceId);
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
