@@ -4,7 +4,8 @@ import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
-import { type ProjectContext, ProjectAccess } from '../projects/access.service';
+import { activeManagerSql, audienceVisibleSql } from '../discussion/audience';
+import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { GRANT_READ_ONLY, type ProjectStatus } from '../projects/matrix';
 import { membershipState } from '../projects/membership';
 import type { Created } from '../records/records.service';
@@ -448,8 +449,19 @@ export class ChangesService {
     if (status !== undefined && !STATUSES.includes(status as RequestRow['status'])) throw new BadRequestException('Choose a status: pending, authorised, rejected, withdrawn or superseded.');
     const ctx = await this.access.authorize(user, 'project.view', projectId);
     const { rows } = await this.pool.query(
-      `SELECT ${REQUEST_COLUMNS} FROM change_requests WHERE project_id = $1 AND ($2::text IS NULL OR status = $2) ORDER BY submitted_at DESC, id DESC`,
-      [projectId, status ?? null],
+      `SELECT ${REQUEST_COLUMNS} FROM change_requests
+        WHERE project_id = $1 AND ($2::text IS NULL OR status = $2)
+          -- A proposal from a note the viewer cannot see is not listed (the same rule as AudienceService.canSeeSource).
+          AND (target_kind <> 'extraction_item' OR (${canReadContent(ctx) ? 'true' : 'false'} AND EXISTS (
+                 SELECT 1 FROM extraction_items xi
+                   JOIN source_versions xv ON xv.id = xi.source_version_id
+                   JOIN sources xs ON xs.id = xv.source_id
+                   LEFT JOIN audiences xa ON xa.id = xs.audience_id
+                  WHERE xi.id = change_requests.target_id
+                    AND CASE WHEN xs.publication = 'published' THEN COALESCE(${audienceVisibleSql('xa', '$3', '$4')}, false)
+                             ELSE xs.submitted_by = $3::uuid OR ${activeManagerSql('xs.project_id', '$3', '$4')} END)))
+        ORDER BY submitted_at DESC, id DESC`,
+      [projectId, status ?? null, user.id, ctx.today],
     );
     return this.views(this.pool, ctx, user, rows as RequestRow[]);
   }

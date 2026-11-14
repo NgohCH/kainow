@@ -181,8 +181,8 @@ describe('moderation, deletion and restoration', { skip: SKIP_NO_DB }, () => {
     const quotes: Array<[string, number]> = [['We should ship on Friday.', 7], ['Budget is approved.', bodyStart2]];
     for (const [i, [q, s]] of quotes.entries()) {
       await t.pool.query(
-        `INSERT INTO extraction_items (id, run_id, source_version_id, position, kind, text, quote, quote_start, quote_end, quote_matches, created_at)
-         VALUES ($1, $2, $3, $4, 'decision', $5, $5, $6, $7, 1, now())`,
+        `INSERT INTO extraction_items (id, run_id, source_version_id, position, kind, text, due, quote, quote_start, quote_end, quote_matches, created_at)
+         VALUES ($1, $2, $3, $4, 'action', 'Confirm the figure', 'by 20 November 2026', $5, $6, $7, 1, now())`,
         [i === 1 ? itemId : uuidv7(), runId, versionId, i, q, s, s + q.length],
       );
     }
@@ -191,8 +191,20 @@ describe('moderation, deletion and restoration', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual((await items()).map((i) => i.sourceFlag), [null, null]);
     assert.equal(await text(), transcript);
 
+    const auth = await pm.request('POST', `/extractions/${runId}/items/${itemId}/authorise`, { sourceVersionId: versionId, assigneeId: ids.ada, dueOn: '2026-11-20' });
+    assert.equal(auth.status, 201, JSON.stringify(auth.body));
+    const taskSource = async () => (await pm.request('GET', `/projects/${project}/records`)).body.tasks[0].source;
+    assert.equal((await taskSource()).quote, 'Budget is approved.');
+
     await act(ben, 'delete', benMsg, 'Wrong figure');
     assert.deepEqual((await items()).map((i) => i.sourceFlag), [null, 'deleted']);
+    // The quote of a deleted message reaches no one (R30): the text is gone, the marker stays.
+    const masked = await items();
+    assert.deepEqual([masked[1].quote, masked[1].quoteMasked, masked[0].quote, masked[0].quoteMasked], [null, 'deleted', 'We should ship on Friday.', undefined]);
+    assert.ok(!JSON.stringify(masked).includes('Budget is approved.'));
+    const ts = await taskSource();
+    assert.deepEqual([ts.quote, ts.quoteMasked, ts.sourceFlag], [null, 'deleted', 'deleted']);
+    assert.ok(!JSON.stringify(ts).includes('Budget is approved.'));
     assert.equal(await text(), '#1 Ada\nWe should ship on Friday.\n[Message deleted]\n');
     assert.equal((await t.pool.query(`SELECT text_content FROM source_versions WHERE id = $1`, [versionId])).rows[0].text_content, transcript, 'stored text is untouched');
 
@@ -200,6 +212,7 @@ describe('moderation, deletion and restoration', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual((await items()).map((i) => i.sourceFlag), [null, null]);
     await act(pm, 'hide', adaMsg, 'Premature');
     assert.deepEqual((await items()).map((i) => i.sourceFlag), ['hidden', null]);
+    assert.deepEqual([(await items())[0].quote, (await items())[0].quoteMasked], [null, 'hidden']);
     assert.equal(await text(), '[Message hidden]\n#2 Ben\nBudget is approved.\n');
   });
 });

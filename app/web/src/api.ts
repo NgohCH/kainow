@@ -144,7 +144,9 @@ export interface Item {
   alternatives: string[];
   dueReading: DueReading;
   reviewerDue: ReviewerDue | null;
-  quote: string;
+  /** Null when the quote's message is now hidden or deleted (see quoteMasked). */
+  quote: string | null;
+  quoteMasked?: 'deleted' | 'hidden' | null;
   quoteStart: number | null;
   quoteEnd: number | null;
   quoteMatches: number;

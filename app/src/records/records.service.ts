@@ -16,6 +16,7 @@ import { isCalendarDate, readDue } from '../extraction/due';
 import { ExtractionService } from '../extraction/extraction.service';
 import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { audienceVisibleSql } from '../discussion/audience';
+import { AudienceService } from '../discussion/audience.service';
 import { InvitationsService } from '../projects/invitations.service';
 import { GRANT_READ_ONLY } from '../projects/matrix';
 import { checkNewAppointment } from '../projects/memberships.service';
@@ -68,6 +69,7 @@ export class RecordsService {
     private readonly extraction: ExtractionService,
     private readonly invitations: InvitationsService,
     private readonly changes: ChangesService,
+    private readonly audiences: AudienceService,
   ) {
     changes.register(authoriseProposalHandler({ records: this, extraction }));
     for (const h of taskHandlers({ records: this })) changes.register(h);
@@ -109,8 +111,12 @@ export class RecordsService {
   async authoriseItem(user: AuthUser, runId: string, itemId: string, body: Record<string, unknown>): Promise<Authorised> {
     if (!UUID.test(itemId)) throw new NotFoundException();
     const projectId = await this.access.projectOfRun(runId);
-    const item = (await this.pool.query(`SELECT run_id FROM extraction_items WHERE id = $1`, [itemId])).rows[0];
+    const item = (await this.pool.query(`SELECT run_id, source_version_id AS "versionId" FROM extraction_items WHERE id = $1`, [itemId])).rows[0];
     if (!item || item.run_id !== runId) throw new NotFoundException();
+    // Someone outside the note's audience finds nothing, before any other answer.
+    const sourceId = (await this.pool.query(`SELECT source_id FROM source_versions WHERE id = $1`, [item.versionId])).rows[0]?.source_id;
+    if (!sourceId) throw new NotFoundException();
+    await this.audiences.assertSourceReadable(user, sourceId);
     return this.authoriseThrough(user, projectId, 'extraction_item', itemId, body);
   }
 
@@ -608,7 +614,7 @@ export class RecordsService {
         deadlineReviewRequired: t.deadlineReviewRequired,
       }),
       // Outside a restricted source's audience the quote is withheld, and so is what it would reveal (spec 6.3).
-      source: t.quote ? (t.evidenceVisible && canReadContent(ctx) ? { quote: t.quote as string, sourceFlag: flags.get(t.itemId) ?? null, discussionEvidence: evidence.get(t.itemId) ?? null } : { restricted: true as const }) : null,
+      source: t.quote ? (t.evidenceVisible && canReadContent(ctx) ? { quote: flags.get(t.itemId) ? null : (t.quote as string), quoteMasked: flags.get(t.itemId) ?? null, sourceFlag: flags.get(t.itemId) ?? null, discussionEvidence: evidence.get(t.itemId) ?? null } : { restricted: true as const }) : null,
       changeWaiting: t.changeWaiting as boolean,
       parentCancelled: t.parentStatus === 'cancelled' && t.status !== 'cancelled' && t.status !== 'completed',
       follows: (t.follows ?? null) as { id: string; title: string } | null,

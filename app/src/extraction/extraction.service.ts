@@ -251,7 +251,10 @@ export class ExtractionService {
         WHERE r.id = $1`,
       [runId],
     );
-    return { run: run.rows[0], source: src.rows[0], items: await this.withOccurrences(run.rows[0].sourceVersionId, flagged) };
+    const placed = await this.withOccurrences(run.rows[0].sourceVersionId, flagged);
+    // A quote whose message is now hidden or deleted reaches no one (the places above carry labels, not text).
+    const items2 = placed.map((i) => (i.sourceFlag ? { ...i, quote: null as string | null, quoteMasked: i.sourceFlag } : i));
+    return { run: run.rows[0], source: src.rows[0], items: items2 };
   }
 
   /** The due inputs of one item as they stand now (wording, model's event, latest reviewer due). */

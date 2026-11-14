@@ -258,6 +258,11 @@ test('Present list offers only people who can read the meeting', () => {
   assert.deepEqual(presentCandidates(team, restricted).map((p) => p.id), ['u-ada', 'u-dep', 'u-own', 'u-pm']);
 });
 
+test('a masked quote shows the marker and the flag, never text', () => {
+  assert.deepEqual(evidenceView({ quote: null, quoteMasked: 'deleted', sourceFlag: 'deleted' }), { kind: 'quote', quote: '[Message deleted]', flag: 'Source message deleted — review', from: null, href: null });
+  assert.equal((evidenceView({ quote: null, quoteMasked: 'hidden', sourceFlag: 'hidden' }) as { quote: string }).quote, '[Message hidden]');
+});
+
 test('record evidence shows restricted text for outsiders', () => {
   assert.deepEqual(evidenceView({ restricted: true }), { kind: 'restricted', text: 'Evidence in a restricted source' });
   assert.deepEqual(evidenceView({ quote: 'We agreed to ship.', sourceFlag: null, discussionEvidence: null }), { kind: 'quote', quote: 'We agreed to ship.', flag: null, from: null, href: null });

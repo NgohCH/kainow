@@ -403,7 +403,7 @@ export interface DiscussionEvidence {
 /** The supporting quote of a record or proposal as the server sends it: the text, or a marker that it is in a restricted source. */
 export type EvidenceSource =
   | { restricted: true }
-  | { quote: string; sourceFlag?: SourceFlag | null; discussionEvidence?: DiscussionEvidence | null };
+  | { quote: string | null; quoteMasked?: SourceFlag | null; sourceFlag?: SourceFlag | null; discussionEvidence?: DiscussionEvidence | null };
 
 export type EvidenceShown =
   | { kind: 'restricted'; text: string }
@@ -414,7 +414,8 @@ export function evidenceView(source: EvidenceSource, projectId?: string): Eviden
   const ev = source.discussionEvidence ?? null;
   return {
     kind: 'quote',
-    quote: source.quote,
+    // A quote whose message is now hidden or deleted is never sent; the marker stands in for it.
+    quote: source.quote ?? (source.quoteMasked === 'hidden' ? '[Message hidden]' : '[Message deleted]'),
     flag: source.sourceFlag ? sourceFlagText(source.sourceFlag) : null,
     from: ev ? `Message #${ev.messageNo} by ${ev.authorName}, ${formatDayTime(ev.at)}` : null,
     href: ev && projectId ? `${threadPath(projectId, ev.threadId)}?m=${ev.messageNo}` : null,

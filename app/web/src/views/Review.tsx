@@ -394,12 +394,12 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                   Edit wording
                 </button>
               )}
-              <blockquote>{item.quote}</blockquote>
               {(() => {
-                const ev = evidenceView({ quote: item.quote, sourceFlag: item.sourceFlag, discussionEvidence: item.discussionEvidence }, view.projectId);
+                const ev = evidenceView({ quote: item.quote, quoteMasked: item.quoteMasked, sourceFlag: item.sourceFlag, discussionEvidence: item.discussionEvidence }, view.projectId);
                 return (
                   ev.kind === 'quote' && (
                     <>
+                      <blockquote>{ev.quote}</blockquote>
                       {ev.flag && <p className="warn" role="note">{ev.flag}</p>}
                       {ev.from && <p className="meta">{ev.href ? <a href={ev.href}>{ev.from}</a> : ev.from}</p>}
                     </>

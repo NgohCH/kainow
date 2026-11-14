@@ -166,6 +166,25 @@ describe('changing an audience and restricted evidence', { skip: SKIP_NO_DB }, (
     assert.ok('sourceFlag' in inside.source);
   });
 
+  test('Pending authorisation of a proposal from a restricted note is not listed to outsiders, and authorising it is 404', async () => {
+    const meeting = await startMeeting(pm, { kind: 'meeting', title: 'Closed', audience: { mode: 'restricted', namedUserIds: [ids.ada] } });
+    const source = await publishMinutes(meeting);
+    const { run, item } = await seedItem(source, 'Friday shipping was agreed');
+    const requestId = uuidv7();
+    await t.pool.query(
+      `INSERT INTO change_requests (id, project_id, kind, target_kind, target_id, required_approvals, status, submitted_by, submitted_at)
+       VALUES ($1, $2, 'authorise_proposal', 'extraction_item', $3, 2, 'pending', $4, now())`,
+      [requestId, project, item, ids.ada],
+    );
+    await t.pool.query(`INSERT INTO change_request_versions (request_id, version, terms, reason, author_id, at) VALUES ($1, 1, '{}', NULL, $2, now())`, [requestId, ids.ada]);
+    const has = async (c: Client) => JSON.stringify((await c.request('GET', `/projects/${project}/changes`)).body).includes(requestId);
+    assert.equal(await has(ada), true, 'a named person sees it');
+    assert.equal(await has(pm), true, 'a manager sees it');
+    assert.equal(await has(ben), false, 'a Member outside the audience does not');
+    const sourceVersionId = await versionOf(source);
+    assert.equal((await ben.request('POST', `/extractions/${run}/items/${item}/authorise`, { sourceVersionId, assigneeId: ids.ada, dueOn: '2026-11-20' })).status, 404);
+  });
+
   test("Owner not in a custom audience still reviews a pending item's excerpt", async () => {
     const ownerClient = await t.signIn('owner@example.org');
     const meeting = await startMeeting(pm, { kind: 'meeting', title: 'Closed', audience: { mode: 'restricted', namedUserIds: [ids.ada] } });
