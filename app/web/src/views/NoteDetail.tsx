@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import { ApiError, api, type Project, type Run, type VersionSummary } from '../api.ts';
 import { go } from '../App.tsx';
-import { type AudienceView } from '../discussion.ts';
+import { type AudienceView, returnedNotice, versionOriginText } from '../discussion.ts';
 import { formatWhen, plural } from '../format.ts';
 import { AudiencePanel } from './AudiencePanel.tsx';
 import { Intake } from './Intake.tsx';
@@ -21,6 +21,7 @@ interface Detail {
     provenance: string | null;
     audience: AudienceView;
   };
+  mayAddVersion?: boolean;
   versions: VersionSummary[];
 }
 
@@ -111,16 +112,14 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
       <h1>{src.title}</h1>
       {src.label && <p className="meta">{src.label}</p>}
       {src.provenance && <p className="meta">{src.provenance}</p>}
-      {src.publication === 'submitted' && <p className="warn" role="note">Submitted for review. Only the person who submitted it and the reviewers can see it; it is not analysed or searched until it is published.</p>}
+      {src.publication === 'submitted' && <p className="warn" role="note">Submitted for review. Only the person who submitted it and the reviewers can see it; it is not analysed, and not searched by other participants, until it is published.</p>}
       {src.publication === 'returned' && (
-        <p className="warn" role="note">
-          Returned by a reviewer{src.returnedReason ? `: ${src.returnedReason}` : ''}. Add a new version to submit it again.
-        </p>
+        <p className="warn" role="note">{returnedNotice(src.returnedReason)}</p>
       )}
       {src.publication === 'submitted' && isReviewer && (
         <SubmissionReview sourceId={sourceId} kind={src.kind} intendedMode={src.intendedMode} memberships={memberships} onDone={() => void load()} />
       )}
-      {published && (
+      {published && src.kind !== 'discussion' && (
         <AudiencePanel
           audience={src.audience}
           memberships={memberships}
@@ -134,9 +133,9 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
             Version {v.versionNo}
           </a>
         ))}
-        {src.publication !== 'submitted' && <button className="quiet" onClick={() => setAdding((a) => !a)} aria-expanded={adding}>Add a new version</button>}
+        {detail.mayAddVersion && <button className="quiet" onClick={() => setAdding((a) => !a)} aria-expanded={adding}>Add a new version</button>}
       </nav>
-      {adding && (
+      {adding && detail.mayAddVersion && (
         <section className="panel" aria-label="Add a new version">
           <p className="hint">A new version keeps the old one. Proposals always point at the exact version they were made from.</p>
           <Intake
@@ -154,12 +153,12 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
       <div className="split">
         <section aria-label="Notes text">
           <p className="meta">
-            Version {version.versionNo}, {version.origin === 'upload' ? `uploaded as ${version.filename}` : version.origin === 'meeting' ? 'published from meeting minutes' : 'pasted'}, {version.charCount.toLocaleString()} characters, added {formatWhen(version.createdAt)}.{' '}
+            Version {version.versionNo}, {versionOriginText(version)}, {version.charCount.toLocaleString()} characters, added {formatWhen(version.createdAt)}.{' '}
             {version.origin === 'upload' && <a href={api.originalUrl(sourceId, version.versionNo)}>Download the original file</a>}
           </p>
           <div className="source" tabIndex={0}>{text ?? 'Loading'}</div>
         </section>
-        {published && (
+        {published && src.kind !== 'discussion' && (
         <aside aria-label="Proposals">
           <h2>Proposals from this version</h2>
           <button className="primary" onClick={extract} disabled={starting || active}>
@@ -171,7 +170,7 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
             {runs.map((r) => (
               <li key={r.id}>
                 <span className={`status status-${r.status}`}>{STATUS_TEXT[r.status]}</span>
-                <span className="meta">{formatWhen(r.createdAt)}</span>
+                <span className="meta">{formatWhen(r.createdAt)}{r.requestedByLabel ? ` · ${r.requestedByLabel}` : ''}</span>
                 {r.status === 'succeeded' && (
                   <>
                     <span>{plural(r.itemCount ?? 0, 'proposal')}{r.unlocatedCount ? `, ${r.unlocatedCount} not found in the notes` : ''}</span>

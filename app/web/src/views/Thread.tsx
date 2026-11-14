@@ -8,6 +8,7 @@ import {
   initialThread,
   isAccessLost,
   type MessageActionName,
+  formatMeetingDate,
   messageActions,
   messageLines,
   type MessageVersion,
@@ -172,7 +173,7 @@ function ThreadBody({ first, projectId, meId, messageNo, project }: { first: Thr
       <h1>{t.title}</h1>
       <p className="meta">
         {meeting ? 'Meeting' : 'Discussion'}
-        {t.meetingDate ? ` · ${t.meetingDate}` : ''}
+        {t.meetingDate ? ` · ${formatMeetingDate(t.meetingDate)}` : ''}
         {t.state === 'ended' ? ' · Ended' : ''}
         {' · '}
         {audienceLine}
@@ -289,6 +290,9 @@ function MessageItem({
   const [busy, setBusy] = useState(false);
   const [versions, setVersions] = useState<MessageVersion[] | null>(null);
   const editing = s.editing?.id === m.id ? s.editing : null;
+  const item = useRef<HTMLLIElement>(null);
+  // After an edit is saved or a moderation action finishes, the form is gone: focus goes back to the message, not the page top.
+  const refocus = () => requestAnimationFrame(() => item.current?.focus());
 
   async function runModeration(e: FormEvent) {
     e.preventDefault();
@@ -299,6 +303,7 @@ function MessageItem({
       dispatch({ type: 'merged', message: await moderate(m.id, reasonFor, reason) });
       setReasonFor(null);
       setReason('');
+      refocus();
     } catch (err) {
       setError(errText(err));
     } finally {
@@ -314,6 +319,7 @@ function MessageItem({
     try {
       dispatch({ type: 'merged', message: await editMessage(m.id, editing.text, editing.basedOn) });
       dispatch({ type: 'cancelEdit' });
+      refocus();
     } catch (err) {
       if (err instanceof ApiError && err.status === 409) {
         // Someone else changed it: show their copy and keep this person's text, now based on the newer version.
@@ -347,7 +353,7 @@ function MessageItem({
   }
 
   return (
-    <li id={`item-${m.no}`} tabIndex={-1} className={`message message-${m.state}`}>
+    <li ref={item} id={`item-${m.no}`} tabIndex={-1} className={`message message-${m.state}`}>
       <p className="meta byline">
         {selectable && (
           <label className="check inline-check">

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
+  clearBody,
   explanationSentence,
   historyLine,
   inheritanceLines,
@@ -65,4 +66,10 @@ test('project settings read-only with the delegation message', () => {
   assert.equal(projectReadOnlyMessage(proj({ canEdit: false, projectsMayChange: true })), NOT_EDITOR);
   assert.equal(projectReadOnlyMessage(proj()), null);
   assert.equal(NOT_DELEGATED, 'The Administrator has not allowed projects to change automatic analysis.');
+});
+
+test('the Administrator can clear only the values a project sets itself, with a reason', () => {
+  assert.equal(clearBody(proj(), 'x'), null);
+  assert.deepEqual(clearBody(proj({ own: { automatic: false, quietMinutes: null } }), ' Back to default '), { automatic: null, reason: 'Back to default' });
+  assert.deepEqual(clearBody(proj({ own: { automatic: true, quietMinutes: 15 } }), 'r'), { automatic: null, quietMinutes: null, reason: 'r' });
 });

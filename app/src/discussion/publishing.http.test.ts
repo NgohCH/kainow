@@ -261,6 +261,21 @@ describe('publishing minutes, member submissions and note audiences', { skip: SK
     assert.equal((await t.pool.query(`SELECT publication FROM sources WHERE id = $1`, [second])).rows[0].publication, 'submitted');
   });
 
+  test('only people the server allows are offered a new version', async () => {
+    const id = (await submitNote(ada)).body.id as string;
+    assert.equal((await ada.request('GET', `/notes/${id}`)).body.mayAddVersion, false, 'submitted: waits for a reviewer');
+    assert.equal((await pm.request('POST', `/notes/${id}/return`, { reason: 'Add the attendees.' })).status, 200);
+    assert.equal((await ada.request('GET', `/notes/${id}`)).body.mayAddVersion, true, 'the submitter revises a returned submission');
+    assert.equal((await pm.request('GET', `/notes/${id}`)).body.mayAddVersion, false, 'a reviewer cannot revise it');
+    assert.equal((await ada.request('POST', `/notes/${id}/versions`, { text: 'Revised.' })).status, 201);
+    assert.equal((await pm.request('POST', `/notes/${id}/publish`, { audience: { mode: 'project' } })).status, 200);
+    assert.equal((await pm.request('GET', `/notes/${id}`)).body.mayAddVersion, true);
+    assert.equal((await ada.request('GET', `/notes/${id}`)).body.mayAddVersion, false, 'a Member cannot add to published notes');
+    await saveMinutes(pm, meeting, 'Meeting minutes.');
+    const minutes = await publish(pm);
+    assert.equal((await pm.request('GET', `/notes/${minutes.body.sourceId}`)).body.mayAddVersion, false, 'minutes get versions from the meeting');
+  });
+
   test('return needs a reason and notifies the submitter', async () => {
     const id = (await submitNote(ada)).body.id as string;
     assert.equal((await pm.request('POST', `/notes/${id}/return`, {})).status, 400);

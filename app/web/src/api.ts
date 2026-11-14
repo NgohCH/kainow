@@ -102,6 +102,8 @@ export interface Run {
   unlocatedCount: number | null;
   createdAt: string;
   finishedAt: string | null;
+  /** Who asked for this run, or why it started automatically. */
+  requestedByLabel?: string;
   /** The meeting date in force: the reviewer's for this version, else the one in the notes. */
   meetingDate: string | null;
   meetingDateSource: 'notes' | 'reviewer' | 'none';

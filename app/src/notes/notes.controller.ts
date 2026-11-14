@@ -115,8 +115,13 @@ export class NotesController {
   @Get('notes/:id')
   @AnySignedInUser()
   async get(@Param('id') sourceId: string, @Req() req: HttpRequest) {
-    await this.forSource(req, sourceId, 'note.view');
-    return this.notes.get(sourceId);
+    const { row, ctx } = await this.audiences.assertSourceReadable(who(req), id(sourceId));
+    await this.access.authorize(who(req), 'note.view', row.projectId);
+    // Whether the viewer is offered "Add a new version": the same rule forVersionAdd and the service apply.
+    const open = ['draft', 'planned', 'active'].includes(ctx.project.status);
+    const manager = ctx.roles.some((r) => ['pm', 'deputy_pm', 'owner', 'sponsor'].includes(r));
+    const mayAddVersion = row.kind === 'notes' && open && ((row.publication === 'published' && manager) || (row.publication === 'returned' && row.submittedBy === who(req).id && ctx.roles.length > 0));
+    return { ...(await this.notes.get(sourceId)), mayAddVersion };
   }
 
   @Get('notes/:id/versions/:n')

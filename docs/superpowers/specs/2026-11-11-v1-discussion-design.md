@@ -276,6 +276,8 @@ All tables carry project scope (directly or through their thread or source). Not
 - **Measured aims** on seeded realistic data (about 2,000 threads and 100,000 messages across 50 projects): the analysis tick under 1 second; posting a message under 300 ms at the 95th percentile; opening a 500-message meeting under 1 second. The measured numbers are reported as found; a miss goes to the Product Owner.
 - **Real-model check** (needs the Product Owner's key on the worker): draft minutes and discussion analysis on at least six realistic typed meetings and threads, English and mixed English–Malay, short and long. Report quote accuracy, invented owners or dates (must be none), repeated items, and draft usefulness as judged by the Product Owner. Not an acceptance claim.
 
+**Measured results (12 November 2026).** Seed: 2,000 threads, 100,688 messages, 50 projects; Windows, PostgreSQL 16 in Docker Desktop. Analysis tick: **missed** in a backlog burst (253 threads due in one minute: median 2,569 ms; an idle tick 69 ms; the facts query about 65 ms; about 9.7 ms per start, excluding the real pg-boss send; under 1 second up to roughly 95 due threads, extrapolated). Posting a message: **met** (p50 21.8 ms, p95 39.5 ms, 200 posts). Opening a 500-message meeting: **met** (median 35 ms). The miss has been reported to the Product Owner. The real-model check is pending the Product Owner's key.
+
 ## 13. Documents updated in this branch
 
 - Consolidated Specification §14: D73, D74, D75. §2 "Outside V1.0" and the native minute-taking sentence revised by D74.

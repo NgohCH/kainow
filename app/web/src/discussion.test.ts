@@ -175,7 +175,11 @@ import {
   draftBanner,
   draftMinutesWarning,
   evidenceView,
+  formatMeetingDate,
   isAccessLost,
+  listTag,
+  returnedNotice,
+  versionOriginText,
   meetingStartConfirmation,
   presentCandidates,
   publishConfirmation,
@@ -305,4 +309,32 @@ test('a poll answered 404 or 403 means access was lost', () => {
   assert.equal(isAccessLost(new ApiError('x', 403)), true);
   assert.equal(isAccessLost(new ApiError('x', 500)), false);
   assert.equal(isAccessLost(new Error('x')), false);
+});
+
+test('meeting dates read d MMM yyyy', () => {
+  assert.equal(formatMeetingDate('2026-11-11'), '11 Nov 2026');
+  assert.equal(formatMeetingDate('2026-09-03'), '3 Sep 2026');
+});
+
+test('a returned notice never doubles the full stop', () => {
+  assert.equal(returnedNotice('Add the attendees'), 'Returned by a reviewer: Add the attendees. Add a new version to submit it again.');
+  assert.equal(returnedNotice('Add the attendees.'), 'Returned by a reviewer: Add the attendees. Add a new version to submit it again.');
+  assert.equal(returnedNotice('Why?'), 'Returned by a reviewer: Why? Add a new version to submit it again.');
+  assert.equal(returnedNotice(null), 'Returned by a reviewer. Add a new version to submit it again.');
+});
+
+test('a list row names published minutes once and a discussion transcript is not "pasted"', () => {
+  assert.equal(listTag('minutes', 'Minutes — from meeting'), 'Minutes — from meeting');
+  assert.equal(listTag('notes', null), 'Notes');
+  assert.equal(versionOriginText({ origin: 'discussion' }), 'discussion transcript');
+  assert.equal(versionOriginText({ origin: 'paste' }), 'pasted');
+  assert.equal(versionOriginText({ origin: 'upload', filename: 'a.docx' }), 'uploaded as a.docx');
+  assert.equal(versionOriginText({ origin: 'meeting' }), 'published from meeting minutes');
+});
+
+test('a named person whose membership is not Active is not listed as a reader', () => {
+  const lapsed = member('u-old', 'Olly Lapsed', 'member', 'expired' as Membership['state']);
+  const all = [...team, lapsed];
+  const names = readersOf(all, 'restricted', ['u-old', 'u-ada'], [{ id: 'u-old', displayName: 'Olly Lapsed' }, { id: 'u-grant', displayName: 'Gail Grant' }]);
+  assert.ok(!names.some((p) => p.id === 'u-old'));
 });

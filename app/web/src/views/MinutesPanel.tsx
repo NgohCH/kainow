@@ -233,7 +233,7 @@ export function MinutesPanel({
                   Version {v.versionNo}
                 </button>{' '}
                 <span className="meta">
-                  {v.origin === 'ai' ? AI_DRAFT_LABEL : `Edited by ${v.author?.displayName ?? 'a person'}`}, {formatWhen(v.createdAt)}
+                  {v.origin === 'ai' ? AI_DRAFT_LABEL : `Edited by ${v.author?.displayName ?? 'a person'}`}{v.origin === 'ai' && v.label ? ` (${v.label})` : ''}, {formatWhen(v.createdAt)}
                 </span>
               </li>
             ))}

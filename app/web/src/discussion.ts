@@ -229,6 +229,8 @@ export interface MinutesVersionSummary {
   origin: 'ai' | 'human';
   author: Person | null;
   trigger: string | null;
+  /** Who asked, or why it started automatically (the server's one wording). */
+  label?: string | null;
   createdAt: string;
   coversThroughNo: number;
 }
@@ -344,7 +346,9 @@ export function readersOf(memberships: Membership[], mode: 'project' | 'restrict
     if (m.state !== 'active') continue;
     if (mode === 'project' || RESTRICTED_ROLE.has(m.role) || namedIds.includes(m.userId)) out.set(m.userId, { id: m.userId, displayName: m.displayName });
   }
-  if (mode === 'restricted') for (const p of named) if (namedIds.includes(p.id) && !out.has(p.id)) out.set(p.id, p);
+  // A named person who has a membership that is not Active today does not read (an expired or held membership); one with no
+  // membership at all is a grant holder, whom only the server's preview can confirm, so the audience's own list is trusted for them.
+  if (mode === 'restricted') for (const p of named) if (namedIds.includes(p.id) && !out.has(p.id) && !memberships.some((m) => m.userId === p.id)) out.set(p.id, p);
   return [...out.values()].sort(byName);
 }
 
@@ -371,6 +375,29 @@ export function publishConfirmation(title: string, versionNo: number, audience: 
           .map((p) => p.displayName)
           .join(', ')}`;
   return `Publish version ${versionNo} of ${title} to: ${who}.`;
+}
+
+/** The label of a list row: the server's own label (published minutes) or else the kind, never both. */
+export const listTag = (kind: DiscussionItem['kind'], label: string | null | undefined): string => label || KIND_TAG[kind];
+
+/** A meeting's date (YYYY-MM-DD) as d MMM yyyy. */
+export const formatMeetingDate = (date: string): string => formatDay(`${date}T00:00:00+08:00`);
+
+/** The notice on a returned submission; the reason's own closing punctuation is kept, never doubled. */
+export function returnedNotice(reason: string | null): string {
+  const r = reason?.trim() ?? '';
+  const lead = r === '' ? 'Returned by a reviewer.' : /[.!?]$/.test(r) ? `Returned by a reviewer: ${r}` : `Returned by a reviewer: ${r}.`;
+  return `${lead} Add a new version to submit it again.`;
+}
+
+/** How a note version came to be, in words. */
+export function versionOriginText(v: { origin: 'paste' | 'upload' | 'meeting' | 'discussion'; filename?: string | null }): string {
+  switch (v.origin) {
+    case 'upload': return `uploaded as ${v.filename ?? 'a file'}`;
+    case 'meeting': return 'published from meeting minutes';
+    case 'discussion': return 'discussion transcript';
+    default: return 'pasted';
+  }
 }
 
 export const restrictedLabel = (mode: 'project' | 'restricted'): string | null => (mode === 'restricted' ? 'Source restricted' : null);

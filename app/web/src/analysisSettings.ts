@@ -18,6 +18,8 @@ export interface ProjectAnalysisView {
   source: { automatic: 'organisation' | 'project'; quietMinutes: 'organisation' | 'project' };
   own: { automatic: boolean | null; quietMinutes: number | null };
   canEdit: boolean;
+  /** The Administrator may return this project's own values to the organisation's, whatever the delegation. */
+  canClear?: boolean;
   history: SettingsHistoryRow[];
 }
 
@@ -47,6 +49,14 @@ export const inheritanceLines = (v: ProjectAnalysisView): { automatic: string; q
   automatic: SOURCE_TEXT[v.source.automatic],
   quietMinutes: SOURCE_TEXT[v.source.quietMinutes],
 });
+
+/** The Administrator's clear-only request: every value the project sets itself goes back to the organisation's; null when there is none. */
+export function clearBody(v: Pick<ProjectAnalysisView, 'own'>, reason: string): Record<string, unknown> | null {
+  const body: Record<string, unknown> = {};
+  if (v.own.automatic !== null) body.automatic = null;
+  if (v.own.quietMinutes !== null) body.quietMinutes = null;
+  return Object.keys(body).length === 0 ? null : { ...body, reason: reason.trim() };
+}
 
 /** Why a project's values cannot be changed by this viewer, or null when they can. */
 export function projectReadOnlyMessage(v: Pick<ProjectAnalysisView, 'canEdit' | 'projectsMayChange'>): string | null {

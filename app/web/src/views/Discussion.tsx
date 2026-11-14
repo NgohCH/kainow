@@ -1,7 +1,7 @@
 import { type FormEvent, useEffect, useState } from 'react';
 import { ApiError, type Membership } from '../api.ts';
 import { go } from '../App.tsx';
-import { type DiscussionItem, itemHref, KIND_TAG, listDiscussion, pollDelay, restrictedLabel, startThread, threadPath } from '../discussion.ts';
+import { type DiscussionItem, itemHref, formatMeetingDate, listDiscussion, listTag, pollDelay, restrictedLabel, startThread, threadPath } from '../discussion.ts';
 import { formatWhen, plural } from '../format.ts';
 import { Intake } from './Intake.tsx';
 import { StartMeetingForm } from './Meeting.tsx';
@@ -137,11 +137,10 @@ export function Discussion({
               <a href={itemHref(projectId, i)}>
                 <strong>{i.title}</strong>
                 <span className="meta">
-                  {KIND_TAG[i.kind]}
-                  {i.label ? ` · ${i.label}` : ''}
+                  {listTag(i.kind, i.label)}
                   {' · '}
                   {restrictedLabel(i.audienceMode) ?? 'Project-wide'}
-                  {i.kind === 'meeting' && i.meetingDate ? ` · ${i.meetingDate}` : ''}
+                  {i.kind === 'meeting' && i.meetingDate ? ` · ${formatMeetingDate(i.meetingDate)}` : ''}
                   {i.kind === 'meeting' && i.state === 'ended' ? ' · Ended' : ''}
                   {i.messageCount !== null ? ` · ${plural(i.messageCount, 'message')}` : ''}
                   {' · '}

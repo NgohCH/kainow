@@ -9,6 +9,7 @@ import {
   organisationChange,
   orgDraftFrom,
   type OrgAnalysisView,
+  clearBody,
   type ProjectAnalysisView,
   projectChange,
   projectDraftFrom,
@@ -170,6 +171,31 @@ export function ProjectAnalysisSettings({ projectId }: { projectId: string }) {
             <div><dt>Quiet period</dt><dd>{view.quietMinutes} minutes<span className="meta"> · {from.quietMinutes}</span></dd></div>
           </dl>
           <p className="meta">{why}</p>
+          {view.canClear && clearBody(view, reason) && (
+            <form
+              className="panel stack"
+              onSubmit={async (e) => {
+                e.preventDefault();
+                setError(null);
+                saved.setNotice(null);
+                const clear = clearBody(view, reason);
+                if (!clear || reason.trim() === '') return setError('Give a reason for the change.');
+                try {
+                  show(await putProjectAnalysis(projectId, clear));
+                  setReason('');
+                  saved.setNotice('Saved. This project now uses the organisation’s values.');
+                } catch (err) {
+                  setError(errText(err));
+                }
+              }}
+            >
+              <label>
+                Reason for the change
+                <textarea required rows={2} maxLength={500} value={reason} onChange={(e) => setReason(e.target.value)} />
+              </label>
+              <button className="primary">Use the organisation&apos;s value</button>
+            </form>
+          )}
         </>
       ) : (
         <form className="stack" onSubmit={save}>
