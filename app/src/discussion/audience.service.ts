@@ -178,6 +178,12 @@ export class AudienceService {
       const locked = await this.row(client, 'WHERE a.id = $1', audienceId, true);
       const text = typeof reason === 'string' ? reason.trim() : '';
       if (text === '' || text.length > 500) throw new BadRequestException(REASON_REQUIRED);
+      const talk = await client.query(
+        `SELECT 1 FROM discussion_threads WHERE audience_id = $1 AND kind = 'discussion'
+         UNION ALL SELECT 1 FROM sources WHERE audience_id = $1 AND kind = 'discussion' LIMIT 1`,
+        [audienceId],
+      );
+      if (talk.rowCount) throw new BadRequestException('The audience of a discussion cannot be changed. Only a meeting and its minutes can have theirs changed.');
       this.assertNamable(ctx, change);
       const at = this.now();
       await client.query(`UPDATE audiences SET mode = $2 WHERE id = $1`, [audienceId, change.mode]);

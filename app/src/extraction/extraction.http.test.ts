@@ -121,7 +121,7 @@ describe('extraction over HTTP', { skip: SKIP_NO_DB }, () => {
       assert.equal((await api('GET', `/extractions/${r.body.run.id}`)).body.run.requestedByLabel, 'Automatic: minutes published');
       await pool.query("UPDATE extraction_runs SET trigger = 'discussion' WHERE id = $1", [r.body.run.id]);
       const listed = (await api('GET', `/notes/${id}/versions/1/extractions`)).body.runs;
-      assert.equal(listed[0].requestedByLabel, 'Automatic: discussion analysis');
+      assert.equal(listed[0].requestedByLabel, 'Automatic: quiet period');
     });
 
     test('a second request for the same version while one is waiting or running is refused', async () => {

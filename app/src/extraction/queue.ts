@@ -8,8 +8,17 @@ export const EXTRACTION_QUEUE = Symbol('EXTRACTION_QUEUE');
 
 /** How the API hands a run to the worker. Tests replace it; the real one is a durable pg-boss job. */
 export interface ExtractionQueue {
-  enqueue(runId: string): Promise<void>;
+  /** `explicit`: a person asked for it just now; it goes ahead of automatic work (R32). */
+  enqueue(runId: string, opts?: EnqueueOptions): Promise<void>;
 }
+
+export interface EnqueueOptions {
+  explicit?: boolean;
+}
+
+/** pg-boss runs a higher priority first: what a person is waiting for goes before automatic runs. */
+export const EXPLICIT_PRIORITY = 10;
+export const priorityOf = (opts?: EnqueueOptions): number => (opts?.explicit ? EXPLICIT_PRIORITY : 0);
 
 export interface ExtractionJob {
   runId: string;
@@ -46,9 +55,9 @@ export class PgBossExtractionQueue implements ExtractionQueue, OnApplicationShut
     return this.starting;
   }
 
-  async enqueue(runId: string): Promise<void> {
+  async enqueue(runId: string, opts?: EnqueueOptions): Promise<void> {
     const boss = await this.start();
-    const id = await boss.send(QUEUES.ai, { runId } satisfies ExtractionJob, { ...JOB_OPTIONS, singletonKey: runId });
+    const id = await boss.send(QUEUES.ai, { runId } satisfies ExtractionJob, { ...JOB_OPTIONS, singletonKey: runId, priority: priorityOf(opts) });
     if (!id) throw new Error('The job queue did not accept the job');
   }
 

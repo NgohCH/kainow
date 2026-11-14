@@ -1,3 +1,4 @@
+import { triggerLabelSql } from '../analysis/labels';
 import { itemDiscussionEvidence, itemSourceFlags, occurrenceLabels } from '../discussion/masking';
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
@@ -110,9 +111,10 @@ const RUN_COLUMNS = `id, source_version_id AS "sourceVersionId", status, failure
   created_at AS "createdAt", started_at AS "startedAt", finished_at AS "finishedAt"`;
 
 /** Who asked for a run, for display: the person's name, or why the system started it. Run table aliased r. */
-const REQUESTER_LABEL = `CASE WHEN r.requested_by IS NOT NULL THEN (SELECT display_name FROM users WHERE id = r.requested_by)
-  WHEN r.trigger = 'minutes_published' THEN 'Automatic: minutes published'
-  ELSE 'Automatic: discussion analysis' END AS "requestedByLabel"`;
+const REQUESTER_LABEL = `${triggerLabelSql(
+  `COALESCE((SELECT ar.trigger FROM analysis_runs ar WHERE ar.extraction_run_id = r.id LIMIT 1), r.trigger)`,
+  `(SELECT display_name FROM users WHERE id = r.requested_by)`,
+)} AS "requestedByLabel"`;
 
 @Injectable()
 export class ExtractionService {
@@ -163,7 +165,7 @@ export class ExtractionService {
     }
 
     try {
-      await this.queue.enqueue(runId);
+      await this.queue.enqueue(runId, { explicit: true });
     } catch {
       await this.pool.query(
         `UPDATE extraction_runs SET status = 'failed', failure_code = 'queue_unavailable',

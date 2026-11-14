@@ -186,6 +186,7 @@ ALTER TABLE sources ALTER COLUMN created_by DROP NOT NULL;
 ALTER TABLE sources ADD CONSTRAINT sources_creator_required CHECK (created_by IS NOT NULL OR kind = 'discussion');
 
 ALTER TABLE source_versions ADD COLUMN minutes_draft_id uuid REFERENCES minutes_drafts (id);
+CREATE INDEX source_versions_minutes_draft_idx ON source_versions (minutes_draft_id) WHERE minutes_draft_id IS NOT NULL;
 ALTER TABLE source_versions DROP CONSTRAINT source_versions_origin_check;
 ALTER TABLE source_versions ADD CONSTRAINT source_versions_origin_check
   CHECK (origin IN ('paste', 'upload', 'meeting', 'discussion'));
@@ -228,12 +229,15 @@ CREATE TABLE analysis_runs (
   created_at           timestamptz NOT NULL,
   started_at           timestamptz,
   finished_at          timestamptz,
-  CONSTRAINT analysis_runs_failure_has_code CHECK (status NOT IN ('failed', 'blocked') OR failure_code IS NOT NULL)
+  CONSTRAINT analysis_runs_failure_has_code CHECK (status NOT IN ('failed', 'blocked') OR failure_code IS NOT NULL),
+  CONSTRAINT analysis_runs_requester CHECK (requested_by IS NOT NULL OR trigger IN ('quiet_period', 'meeting_end'))
 );
 -- At most one queued or running run per thread, so a double click or a tick race cannot pay twice.
 CREATE UNIQUE INDEX analysis_runs_one_active_per_thread
   ON analysis_runs (thread_id) WHERE status IN ('queued', 'running');
 CREATE INDEX analysis_runs_thread_idx ON analysis_runs (thread_id, created_at);
+CREATE INDEX analysis_runs_source_version_idx ON analysis_runs (source_version_id) WHERE source_version_id IS NOT NULL;
+CREATE INDEX analysis_runs_extraction_run_idx ON analysis_runs (extraction_run_id) WHERE extraction_run_id IS NOT NULL;
 
 ALTER TABLE minutes_drafts ADD CONSTRAINT minutes_drafts_analysis_run_fk
   FOREIGN KEY (analysis_run_id) REFERENCES analysis_runs (id);
@@ -273,6 +277,8 @@ CREATE TABLE discussion_events (
   at          timestamptz NOT NULL
 );
 CREATE INDEX discussion_events_thread_idx ON discussion_events (thread_id, at);
+CREATE INDEX discussion_events_message_idx ON discussion_events (message_id) WHERE message_id IS NOT NULL;
+CREATE INDEX discussion_events_draft_idx ON discussion_events (draft_id) WHERE draft_id IS NOT NULL;
 CREATE TRIGGER discussion_events_append_only BEFORE UPDATE OR DELETE ON discussion_events
   FOR EACH ROW EXECUTE FUNCTION kainow_append_only();
 

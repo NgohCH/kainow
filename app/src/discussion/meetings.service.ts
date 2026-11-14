@@ -1,3 +1,4 @@
+import { triggerLabel } from '../analysis/labels';
 import { BadRequestException, ConflictException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Pool, type PoolClient } from 'pg';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -55,11 +56,13 @@ export interface MinutesView {
 const meta = (text: string) => ({ length: text.length, sha256: sha256Hex(text) });
 
 const DRAFT_SELECT = `SELECT d.id, d.version_no AS "versionNo", d.origin, d.body, d.covers_through_no AS "coversThroughNo", d.created_at AS "createdAt",
-       d.created_by AS "authorId", u.display_name AS "authorName", f.version_no AS "editedFromVersion", r.trigger AS "trigger"
+       d.created_by AS "authorId", u.display_name AS "authorName", f.version_no AS "editedFromVersion", r.trigger AS "trigger",
+       ru.display_name AS "requesterName"
   FROM minutes_drafts d
   LEFT JOIN users u ON u.id = d.created_by
   LEFT JOIN minutes_drafts f ON f.id = d.edited_from_id
-  LEFT JOIN analysis_runs r ON r.id = d.analysis_run_id`;
+  LEFT JOIN analysis_runs r ON r.id = d.analysis_run_id
+  LEFT JOIN users ru ON ru.id = r.requested_by`;
 
 function draftView(r: Record<string, any>): DraftView {
   const author = r.authorId ? { id: r.authorId as string, displayName: r.authorName as string } : null;
@@ -211,7 +214,7 @@ export class MeetingsService {
       current: rows[0] ? draftView(rows[0]) : null,
       versions: rows.map((r) => {
         const v = draftView(r);
-        return { versionNo: v.versionNo, origin: v.origin, author: v.author, trigger: r.trigger ?? null, createdAt: v.createdAt, coversThroughNo: v.coversThroughNo };
+        return { versionNo: v.versionNo, origin: v.origin, author: v.author, trigger: r.trigger ?? null, label: r.origin === 'ai' ? triggerLabel(r.trigger ?? null, r.requesterName ?? null) : (v.author?.displayName ?? null), createdAt: v.createdAt, coversThroughNo: v.coversThroughNo };
       }),
       hasHumanVersion: rows.some((r) => r.origin === 'human'),
       canEdit: publish || (starter && this.threads.allowed(ctx, 'discussion.post')),

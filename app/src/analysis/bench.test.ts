@@ -3,19 +3,18 @@ import { describe, test } from 'node:test';
 import { assertBenchDatabase, runBench } from './bench-cli';
 
 describe('bench seeding guard', () => {
-  test('accepts only databases whose name ends in _test or _bench', () => {
+  test('accepts only databases whose name ends in _bench', () => {
     assert.equal(assertBenchDatabase('postgres://postgres:x@127.0.0.1:55432/kainow_bench'), 'kainow_bench');
-    assert.equal(assertBenchDatabase('postgres://postgres:x@127.0.0.1:55432/kainow_test'), 'kainow_test');
-    for (const name of ['kainow', 'kainow_prod', 'kainow_test_old', 'kainow_benchmark', 'postgres', 'test', '']) {
-      assert.throws(() => assertBenchDatabase(`postgres://postgres:x@127.0.0.1:55432/${name}`), /_test or _bench/, name);
+    for (const name of ['kainow', 'kainow_test', 'kainow_prod', 'kainow_test_old', 'kainow_benchmark', 'postgres', 'test', '']) {
+      assert.throws(() => assertBenchDatabase(`postgres://postgres:x@127.0.0.1:55432/${name}`), /must end in _bench/, name);
     }
-    assert.throws(() => assertBenchDatabase('not a url'), /_test or _bench|DATABASE_URL/);
+    assert.throws(() => assertBenchDatabase('not a url'), /must end in _bench|DATABASE_URL/);
   });
 
   test('the refusal never prints the password and happens before any connection is made', async () => {
     await assert.rejects(
       runBench('postgres://postgres:s3cret-pass@127.0.0.1:1/kainow'),
-      (err: Error) => /_test or _bench/.test(err.message) && !err.message.includes('s3cret-pass'),
+      (err: Error) => /must end in _bench/.test(err.message) && !err.message.includes('s3cret-pass'),
     );
   });
 });

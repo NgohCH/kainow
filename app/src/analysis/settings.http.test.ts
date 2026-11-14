@@ -97,6 +97,23 @@ describe('automatic analysis settings', { skip: SKIP_NO_DB }, () => {
     assert.equal((await pm.request('PUT', url(), { quietMinutes: 20, reason: '' })).status, 400);
   });
 
+  test('the Administrator can clear a project value whatever the delegation, with a reason; nothing else', async () => {
+    await setOrg({ projectsMayChange: true });
+    assert.equal((await setProj({ quietMinutes: 15, automatic: false })).status, 200);
+    await setOrg({ projectsMayChange: false });
+    assert.equal((await admin.request('GET', url())).body.canClear, true);
+    assert.equal((await admin.request('PUT', url(), { quietMinutes: 20, reason: 'Set it' })).status, 403, 'the Administrator cannot set a value');
+    assert.equal((await admin.request('PUT', url(), { quietMinutes: null, automatic: 7, reason: 'x' })).status, 403);
+    assert.equal((await admin.request('PUT', url(), { quietMinutes: null })).status, 400, 'a reason is required');
+    const r = await admin.request('PUT', url(), { quietMinutes: null, reason: 'Back to the organisation value' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.own.quietMinutes, null);
+    assert.equal(r.body.own.automatic, false, 'only the named value was cleared');
+    const last = (await t.pool.query(`SELECT field, from_value, to_value, reason FROM analysis_settings_changes WHERE project_id = $1 AND reason = 'Back to the organisation value'`, [projectId])).rows[0];
+    assert.deepEqual(last, { field: 'quiet_minutes', from_value: '15', to_value: null, reason: 'Back to the organisation value' });
+    assert.equal((await pm.request('PUT', url(), { automatic: null, reason: 'x' })).status, 403, 'a PM still needs the delegation');
+  });
+
   test('4 and 31 and 7.5 are refused', async () => {
     await setOrg({ projectsMayChange: true });
     for (const bad of [4, 31, 7.5, '10', null]) {

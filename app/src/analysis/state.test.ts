@@ -13,7 +13,7 @@ const settings = (o: Partial<EffectiveAnalysisSettings> = {}): EffectiveAnalysis
 const ready: Readiness = { spendApproved: true, allowanceLeft: true };
 const facts = (o: Partial<ThreadFacts> = {}): ThreadFacts => ({
   kind: 'discussion', projectStatus: 'active', meetingState: null, newestVisibleAt: ago(6), unanalysedCount: 3, activeRun: null,
-  recentAutoStarts: [], hasHumanDraft: false, lastAnalysedAt: ago(60), lastFailure: null, lastAutoFailedAt: null, ...o,
+  recentAutoStarts: [], hasHumanDraft: false, lastAnalysedAt: ago(60), lastFailure: null, lastAutoFailedAt: null, finalDraftRequested: false, ...o,
 });
 const run = (f: Partial<ThreadFacts> = {}, s = settings(), r = ready) => analysisState(facts(f), s, r, NOW);
 
@@ -31,8 +31,16 @@ describe('analysisState', () => {
     const r = run({ unanalysedCount: 0 });
     assert.deepEqual(r, { status: { state: 'up_to_date', lastAnalysedAt: ago(60) }, due: false });
   });
-  test('an ended meeting is up to date even with unanalysed messages', () => {
-    assert.equal(run({ kind: 'meeting', meetingState: 'ended' }).status.state, 'up_to_date');
+  test('an ended meeting with unanalysed messages is never up to date', () => {
+    const ended = { kind: 'meeting' as const, meetingState: 'ended' as const };
+    const first = run(ended);
+    assert.deepEqual([first.due, first.trigger], [true, 'meeting_end'], 'its final draft is due once');
+    assert.equal(run({ ...ended, unanalysedCount: 0 }).status.state, 'up_to_date');
+    assert.equal(run({ ...ended, finalDraftRequested: true }).status.state, 'paused');
+    assert.equal(run({ ...ended, finalDraftRequested: true }).due, false);
+    assert.equal(run({ ...ended, hasHumanDraft: true }).status.state, 'paused');
+    assert.equal(run(ended, settings({ automatic: false })).status.state, 'paused');
+    assert.equal(run(ended, settings(), { spendApproved: true, allowanceLeft: false }).status.state, 'blocked');
   });
   test('automatic analysis off is paused', () => {
     const r = run({}, settings({ automatic: false }));
@@ -86,7 +94,7 @@ describe('analysisState', () => {
     assert.deepEqual(r, { status: { state: 'blocked', reason: 'There is no AI allowance left.' }, due: false });
   });
   test('otherwise it is due', () => {
-    assert.deepEqual(run(), { status: { state: 'waiting', at: NOW, reason: 'quiet' }, due: true });
+    assert.deepEqual(run(), { status: { state: 'waiting', at: NOW, reason: 'quiet' }, due: true, trigger: 'quiet_period' });
     assert.equal(run({ kind: 'meeting', meetingState: 'open' }).due, true);
   });
 });

@@ -1,7 +1,7 @@
 import { Inject, Injectable, type OnApplicationShutdown } from '@nestjs/common';
 import type { PgBoss } from 'pg-boss';
 import { APP_CONFIG, type AppConfig } from '../config';
-import { JOB_OPTIONS } from '../extraction/queue';
+import { type EnqueueOptions, JOB_OPTIONS, priorityOf } from '../extraction/queue';
 import { QUEUES, startQueues } from '../worker/queues';
 
 export interface AnalysisJob {
@@ -12,7 +12,7 @@ export const ANALYSIS_QUEUE = Symbol('ANALYSIS_QUEUE');
 
 /** How the API and the tick hand an analysis run to the worker. Tests replace it. */
 export interface AnalysisQueue {
-  enqueue(analysisRunId: string): Promise<void>;
+  enqueue(analysisRunId: string, opts?: EnqueueOptions): Promise<void>;
 }
 
 /**
@@ -37,9 +37,9 @@ export class PgBossAnalysisQueue implements AnalysisQueue, OnApplicationShutdown
     return this.starting;
   }
 
-  async enqueue(analysisRunId: string): Promise<void> {
+  async enqueue(analysisRunId: string, opts?: EnqueueOptions): Promise<void> {
     const boss = await this.start();
-    const id = await boss.send(QUEUES.ai, { analysisRunId } satisfies AnalysisJob, { ...JOB_OPTIONS, singletonKey: analysisRunId });
+    const id = await boss.send(QUEUES.ai, { analysisRunId } satisfies AnalysisJob, { ...JOB_OPTIONS, singletonKey: analysisRunId, priority: priorityOf(opts) });
     if (!id) throw new Error('The job queue did not accept the job');
   }
 
@@ -51,8 +51,8 @@ export class PgBossAnalysisQueue implements AnalysisQueue, OnApplicationShutdown
 /** For the worker, which builds plain classes: the tick enqueues through its own long-lived boss. */
 export function bossAnalysisQueue(boss: Pick<PgBoss, 'send'>): AnalysisQueue {
   return {
-    async enqueue(analysisRunId: string) {
-      const id = await boss.send(QUEUES.ai, { analysisRunId } satisfies AnalysisJob, { ...JOB_OPTIONS, singletonKey: analysisRunId });
+    async enqueue(analysisRunId: string, opts?: EnqueueOptions) {
+      const id = await boss.send(QUEUES.ai, { analysisRunId } satisfies AnalysisJob, { ...JOB_OPTIONS, singletonKey: analysisRunId, priority: priorityOf(opts) });
       if (!id) throw new Error('The job queue did not accept the job');
     },
   };

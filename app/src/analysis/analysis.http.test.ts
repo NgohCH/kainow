@@ -10,6 +10,7 @@ import { hhmm } from './state';
 describe('analysis status and explicit requests', { skip: SKIP_NO_DB }, () => {
   let t: TestApp;
   let jobs: string[];
+  let explicit: boolean[];
   let ids: Record<string, string>;
   let project: string;
   let pm: Client;
@@ -33,8 +34,9 @@ describe('analysis status and explicit requests', { skip: SKIP_NO_DB }, () => {
 
   beforeEach(async () => {
     jobs = [];
+    explicit = [];
     // Giving an analysis queue also makes ending a meeting use the real hook, which requests the final draft.
-    t = await startTestApp(undefined, { analysisQueue: { enqueue: async (id) => void jobs.push(id) } });
+    t = await startTestApp(undefined, { analysisQueue: { enqueue: async (id, opts) => void (jobs.push(id), explicit.push(opts?.explicit === true)) } });
     ids = {};
     for (const k of ['pm', 'ada', 'ben', 'outsider']) ids[k] = await seedUser(t.pool, `${k}@example.org`);
     project = await seedProject(t.pool, {
@@ -93,6 +95,7 @@ describe('analysis status and explicit requests', { skip: SKIP_NO_DB }, () => {
       [ok, thread, ids.ada, t.clock.now()],
     );
     assert.equal((await ben.request('GET', `/threads/${thread}/analysis`)).body.lastRunId, ok);
+    assert.equal(typeof (await ben.request('GET', `/threads/${thread}/analysis`)).body.lastRunLabel, 'string');
   });
 
   test('Analyse now starts one run for the new messages and refuses a second', async () => {
@@ -103,6 +106,7 @@ describe('analysis status and explicit requests', { skip: SKIP_NO_DB }, () => {
     assert.equal(r.status, 202, JSON.stringify(r.body));
     assert.deepEqual([r.body.kind, r.body.trigger, r.body.status, r.body.requestedBy, r.body.coversFromNo, r.body.coversThroughNo], ['proposals', 'button', 'queued', ids.ada, 1, 2]);
     assert.deepEqual(jobs, [r.body.id]);
+    assert.deepEqual(explicit, [true], 'a person asked: it goes ahead of automatic runs');
     const again = await ben.request('POST', `/threads/${thread}/analyse`, {});
     assert.deepEqual([again.status, again.body.message], [409, ALREADY_ACTIVE]);
     assert.equal(jobs.length, 1);
@@ -194,6 +198,16 @@ describe('analysis status and explicit requests', { skip: SKIP_NO_DB }, () => {
     assert.equal((await outsider.request('POST', `/threads/${meeting}/minutes/draft`)).status, 404);
   });
 
+  test('Analyse now while a run is active answers "already active", even with nothing new', async () => {
+    const thread = await start(ada, { kind: 'discussion', title: 'Release plan' });
+    await post(ada, thread);
+    assert.equal((await ada.request('POST', `/threads/${thread}/analyse`, {})).status, 202);
+    await finish(1);
+    await t.pool.query(`INSERT INTO analysis_runs (id, thread_id, kind, trigger, requested_by, status, created_at) VALUES ($1, $2, 'proposals', 'button', $3, 'queued', now())`, [uuidv7(), thread, ids.ada]);
+    const r = await ben.request('POST', `/threads/${thread}/analyse`, {});
+    assert.deepEqual([r.status, r.body.message], [409, ALREADY_ACTIVE]);
+  });
+
   test('ending a meeting queues one meeting_end run', async () => {
     const meeting = await start(ada, { kind: 'meeting', title: 'Weekly check-in' });
     await post(ada, meeting, 'Agreed to ship.');
@@ -202,6 +216,7 @@ describe('analysis status and explicit requests', { skip: SKIP_NO_DB }, () => {
     assert.equal(all.length, 1);
     assert.deepEqual([all[0].kind, all[0].trigger, all[0].requested_by, all[0].status, all[0].thread_id], ['minutes', 'meeting_end', null, 'queued', meeting]);
     assert.deepEqual(jobs, [all[0].id]);
+    assert.deepEqual(explicit, [false], 'automatic');
     assert.equal((await ada.request('POST', `/threads/${meeting}/end`)).status, 409, 'ending twice is refused and queues nothing more');
     assert.equal((await runs()).length, 1);
   });

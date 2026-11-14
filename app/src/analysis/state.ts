@@ -17,6 +17,8 @@ export interface ThreadFacts {
   lastFailure: string | null;
   /** When the thread's newest automatic (quiet_period) run was created, if that run ended failed or blocked (ruling R22). */
   lastAutoFailedAt: Date | null;
+  /** An ended meeting: a meeting_end run was created since it ended (whatever became of it). */
+  finalDraftRequested: boolean;
 }
 
 /** Whether an automatic run could be paid for. A missing AI key is not a status reason: it shows as a run failure (ruling R5). */
@@ -39,14 +41,22 @@ const MINUTE = 60_000;
 const OPEN_STATES: ProjectStatus[] = ['draft', 'planned', 'active'];
 
 /** Spec 7.2 and 7.3: one place decides both the status shown and whether the tick starts a run. */
-export function analysisState(t: ThreadFacts, s: EffectiveAnalysisSettings, r: Readiness, now: Date): { status: AnalysisStatus; due: boolean } {
+export function analysisState(t: ThreadFacts, s: EffectiveAnalysisSettings, r: Readiness, now: Date): { status: AnalysisStatus; due: boolean; trigger?: 'quiet_period' | 'meeting_end' } {
   const show = (status: AnalysisStatus) => ({ status, due: false });
   if (t.activeRun) return show({ state: t.activeRun });
   if (!OPEN_STATES.includes(t.projectStatus)) {
     return show({ state: 'paused', reason: `The project is ${t.projectStatus === 'deferred' ? 'Deferred' : 'Closed'}.` });
   }
   if (t.unanalysedCount === 0) return show({ state: 'up_to_date', lastAnalysedAt: t.lastAnalysedAt });
-  if (t.kind === 'meeting' && t.meetingState === 'ended') return show({ state: 'up_to_date', lastAnalysedAt: t.lastAnalysedAt });
+  if (t.kind === 'meeting' && t.meetingState === 'ended') {
+    // An ended meeting with messages not yet in a draft is never "up to date": its final draft is due once (trigger meeting_end).
+    if (t.hasHumanDraft) return show({ state: 'paused', reason: 'Automatic minutes paused: edited by a person.' });
+    if (!s.automatic) return show({ state: 'paused', reason: 'Automatic analysis is off for this project.' });
+    if (t.finalDraftRequested) return show({ state: 'paused', reason: 'The final draft was requested after the meeting ended; use Draft minutes for anything newer.' });
+    if (!r.spendApproved) return show({ state: 'blocked', reason: 'The AI spend settings have not been approved yet.' });
+    if (!r.allowanceLeft) return show({ state: 'blocked', reason: 'There is no AI allowance left.' });
+    return { status: { state: 'waiting', at: now, reason: 'quiet' }, due: true, trigger: 'meeting_end' };
+  }
   if (!s.automatic) return show({ state: 'paused', reason: 'Automatic analysis is off for this project.' });
   if (t.kind === 'meeting' && t.hasHumanDraft) return show({ state: 'paused', reason: 'Automatic minutes paused: edited by a person.' });
   const newest = t.newestVisibleAt ?? now;
@@ -64,7 +74,7 @@ export function analysisState(t: ThreadFacts, s: EffectiveAnalysisSettings, r: R
   }
   if (!r.spendApproved) return show({ state: 'blocked', reason: 'The AI spend settings have not been approved yet.' });
   if (!r.allowanceLeft) return show({ state: 'blocked', reason: 'There is no AI allowance left.' });
-  return { status: { state: 'waiting', at: now, reason: 'quiet' }, due: true };
+  return { status: { state: 'waiting', at: now, reason: 'quiet' }, due: true, trigger: 'quiet_period' };
 }
 
 /** The sentence shown beneath every status (spec 7.3, O04). */

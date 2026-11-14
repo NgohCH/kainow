@@ -17,7 +17,7 @@ import { AnalysisTick } from './tick';
  *   DATABASE_URL=postgres://.../kainow_bench npm run migrate && DATABASE_URL=... npm run bench-analysis
  *
  * The tool writes thousands of rows and deletes analysis runs, so it refuses any database whose name does not end in
- * `_test` or `_bench`. Everything is seeded with set-based SQL (generate_series) and deterministic ids (md5 of a label).
+ * `_bench`. Everything is seeded with set-based SQL (generate_series) and deterministic ids (md5 of a label).
  */
 
 const THREADS = 2000;
@@ -32,8 +32,8 @@ export function assertBenchDatabase(databaseUrl: string): string {
   } catch {
     // fall through to the refusal; the URL (and its password) is never echoed
   }
-  if (!/_(test|bench)$/.test(name)) {
-    throw new Error('Refusing to run: the bench writes and deletes data, so the database name must end in _test or _bench.');
+  if (!/_bench$/.test(name)) {
+    throw new Error('Refusing to run: the bench writes and deletes data, so the database name must end in _bench.');
   }
   return name;
 }
@@ -263,7 +263,9 @@ async function measureTick(pool: Pool, now: Date): Promise<BenchResult['tick']> 
   const candidates = (await loadThreadFacts(pool, now)).length;
   // Runs queued by a tick are deleted again after every iteration, so each one starts from the same state and does the same work.
   // The seed holds no queued or running runs, so every queued row belongs to the iteration that just ran.
-  const reset = () => pool.query(`DELETE FROM analysis_runs WHERE status = 'queued'`);
+  // Only the seeded threads' runs are touched (their ids are md5('bench-thread-' || t)).
+  const reset = () =>
+    pool.query(`DELETE FROM analysis_runs WHERE status = 'queued' AND thread_id IN (SELECT md5('bench-thread-' || g)::uuid FROM generate_series(0, $1::int) g)`, [THREADS]);
   await tick.run(); // warm-up (plans, caches), not counted
   await reset();
   const allMs: number[] = [];
@@ -395,7 +397,7 @@ export async function runBench(databaseUrl: string, log: (m: string) => void = c
 if (require.main === module) {
   const url = process.env.DATABASE_URL;
   if (!url) {
-    console.error('Set DATABASE_URL to a migrated database whose name ends in _bench or _test.');
+    console.error('Set DATABASE_URL to a migrated database whose name ends in _bench.');
     process.exit(1);
   }
   runBench(url).then(

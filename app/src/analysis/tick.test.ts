@@ -84,6 +84,45 @@ describe('analysis tick', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual([run.thread_id, run.kind, run.trigger], [meeting, 'minutes', 'quiet_period']);
   });
 
+  test('an ended meeting with no final draft gets one meeting_end run, once', async () => {
+    const meeting = await start(ada, 'meeting', 'Weekly check-in');
+    await post(ada, meeting);
+    t.clock.advanceMinutes(1);
+    await t.pool.query(`UPDATE discussion_threads SET state = 'ended', ended_by = $2, ended_at = $3 WHERE id = $1`, [meeting, ids.ada, t.clock.now()]);
+    t.clock.advanceMinutes(1);
+    assert.deepEqual(await tick.run(), { started: 1 });
+    const [run, ...rest] = await runs();
+    assert.deepEqual([rest.length, run.kind, run.trigger, run.requested_by], [0, 'minutes', 'meeting_end', null]);
+    await t.pool.query(`UPDATE analysis_runs SET status = 'failed', failure_code = 'x', finished_at = now()`);
+    t.clock.advanceMinutes(10);
+    assert.deepEqual(await tick.run(), { started: 0 }, 'not asked for again');
+  });
+
+  test('a run stuck for 45 minutes is failed as stalled, with its extraction run, and the thread is free again', async () => {
+    const thread = await start(ada, 'discussion');
+    await post(ada, thread);
+    t.clock.advanceMinutes(5);
+    assert.equal((await tick.run()).started, 1);
+    const [stuck] = await runs();
+    const source = uuidv7();
+    const version = uuidv7();
+    const extraction = uuidv7();
+    await t.pool.query(`INSERT INTO sources (id, title, created_by, created_at, project_id, kind, thread_id, audience_id)
+       VALUES ($1, 'T', NULL, now(), $2, 'discussion', $3, (SELECT audience_id FROM discussion_threads WHERE id = $3))`, [source, project, thread]);
+    await t.pool.query(`INSERT INTO source_versions (id, source_id, version_no, origin, text_content, text_sha256, char_count, created_by, created_at) VALUES ($1, $2, 1, 'discussion', 'x', 'x', 1, NULL, now())`, [version, source]);
+    await t.pool.query(`INSERT INTO extraction_runs (id, source_version_id, requested_by, trigger, status, created_at) VALUES ($1, $2, NULL, 'discussion', 'running', now())`, [extraction, version]);
+    await t.pool.query(`UPDATE analysis_runs SET status = 'running', extraction_run_id = $2 WHERE id = $1`, [stuck.id, extraction]);
+    t.clock.advanceMinutes(44);
+    await tick.run();
+    assert.equal((await runs())[0].status, 'running', 'not yet stalled at 49 minutes after creation');
+    t.clock.advanceMinutes(2);
+    await tick.run();
+    const [after] = await runs();
+    assert.deepEqual([after.status, after.failure_code, after.failure_detail], ['failed', 'stalled', 'This analysis stopped without finishing; ask again.']);
+    const ex = (await t.pool.query(`SELECT status, failure_code FROM extraction_runs WHERE id = $1`, [extraction])).rows[0];
+    assert.deepEqual([ex.status, ex.failure_code], ['failed', 'stalled']);
+  });
+
   test('second tick does not double-start', async () => {
     const thread = await start(ada, 'discussion');
     await post(ada, thread);

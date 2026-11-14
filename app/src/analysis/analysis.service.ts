@@ -1,3 +1,4 @@
+import { triggerLabel } from './labels';
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -40,6 +41,7 @@ export interface StatusView {
   lastFailure: string | null;
   /** The newest analysis run that finished well, the target of "missed an item" feedback; null before any. */
   lastRunId: string | null;
+  lastRunLabel: string | null;
 }
 
 type Plan = Omit<NewRun, 'threadId' | 'requestedBy' | 'at'>;
@@ -63,8 +65,9 @@ export class AnalysisService implements MeetingEndHook {
     const [loaded] = await loadThreadFacts(this.pool, now, t.id);
     const settings = await effectiveAnalysisSettings(this.pool, t.projectId);
     const { status } = analysisState(loaded.facts, settings, await readiness(this.spend), now);
-    const last = await this.pool.query(`SELECT id FROM analysis_runs WHERE thread_id = $1 AND status = 'succeeded' ORDER BY created_at DESC, id DESC LIMIT 1`, [t.id]);
-    return { status, line: statusLine(status), explanation: explanation(settings), lastFailure: loaded.facts.lastFailure, lastRunId: (last.rows[0]?.id as string | undefined) ?? null };
+    const last = await this.pool.query(`SELECT r.id, r.trigger, u.display_name AS name FROM analysis_runs r LEFT JOIN users u ON u.id = r.requested_by
+        WHERE r.thread_id = $1 AND r.status = 'succeeded' ORDER BY r.created_at DESC, r.id DESC LIMIT 1`, [t.id]);
+    return { status, line: statusLine(status), explanation: explanation(settings), lastFailure: loaded.facts.lastFailure, lastRunId: (last.rows[0]?.id as string | undefined) ?? null, lastRunLabel: last.rows[0] ? triggerLabel(last.rows[0].trigger, last.rows[0].name) : null };
   }
 
   /** Analyse the whole thread: its unanalysed messages, or (once confirmed) everything again. */
@@ -158,9 +161,10 @@ export class AnalysisService implements MeetingEndHook {
       const t = await this.threads.threadRow(db, threadId, true);
       await this.threads.readable(db, user, t);
       await this.access.authorize(user, action(t), t.projectId, db);
-      const run = await plan(db, t);
+      // The active-run answer comes before planning, so a second click never reads "nothing new" instead.
       const active = await db.query(`SELECT 1 FROM analysis_runs WHERE thread_id = $1 AND status IN ('queued', 'running')`, [t.id]);
       if (active.rowCount) throw new ConflictException(ALREADY_ACTIVE);
+      const run = await plan(db, t);
       try {
         return await insertRun(db, { ...run, threadId: t.id, requestedBy: user.id, at });
       } catch (err) {
@@ -168,7 +172,7 @@ export class AnalysisService implements MeetingEndHook {
         throw err;
       }
     });
-    if (!(await enqueueOrFail(this.pool, this.queue, id, at))) throw new ServiceUnavailableException(NOT_QUEUED);
+    if (!(await enqueueOrFail(this.pool, this.queue, id, at, true))) throw new ServiceUnavailableException(NOT_QUEUED);
     return this.view(id);
   }
 

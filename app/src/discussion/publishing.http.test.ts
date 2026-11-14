@@ -227,6 +227,18 @@ describe('publishing minutes, member submissions and note audiences', { skip: SK
     assert.equal((await ada.request('POST', `/threads/${meeting}/minutes/1/submit`)).status, 409);
   });
 
+  test('publishing the very draft a member submitted publishes that submission without a new version', async () => {
+    await saveMinutes(ada, meeting, 'Minutes by Ada.');
+    const s = await ada.request('POST', `/threads/${meeting}/minutes/1/submit`);
+    assert.equal(s.status, 201, JSON.stringify(s.body));
+    const pub = await pm.request('POST', `/threads/${meeting}/minutes/1/publish`);
+    assert.equal(pub.status, 200, JSON.stringify(pub.body));
+    assert.deepEqual([pub.body.sourceId, pub.body.versionNo], [s.body.id, 1]);
+    assert.equal((await t.pool.query(`SELECT count(*)::int AS n FROM source_versions WHERE source_id = $1`, [s.body.id])).rows[0].n, 1);
+    assert.equal((await t.pool.query(`SELECT publication FROM sources WHERE id = $1`, [s.body.id])).rows[0].publication, 'published');
+    assert.equal((await ben.request('GET', `/notes/${s.body.id}`)).status, 200);
+  });
+
   test('reviewer publishes with the chosen audience', async () => {
     const made = await submitNote(ada, { intendedMode: 'project' });
     const id = made.body.id as string;

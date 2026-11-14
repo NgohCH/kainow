@@ -32,12 +32,13 @@ export async function loadThreadFacts(db: Db, now: Date, threadId?: string): Pro
                          AND r.created_at > $2::timestamptz - make_interval(mins => $3)), '{}') AS "recentAutoStarts",
             (SELECT CASE WHEN r.status IN ('failed', 'blocked') THEN r.created_at END
                FROM analysis_runs r WHERE r.thread_id = b.id AND r.trigger = 'quiet_period' ORDER BY r.created_at DESC, r.id DESC LIMIT 1) AS "lastAutoFailedAt",
+            EXISTS (SELECT 1 FROM analysis_runs r WHERE r.thread_id = b.id AND r.trigger = 'meeting_end' AND b.ended_at IS NOT NULL AND r.created_at >= b.ended_at) AS "finalDraftRequested",
             EXISTS (SELECT 1 FROM minutes_drafts d WHERE d.thread_id = b.id AND d.origin = 'human') AS "hasHumanDraft",
             (SELECT max(r.finished_at) FROM analysis_runs r WHERE r.thread_id = b.id AND r.status = 'succeeded' AND r.trigger <> 'selection') AS "lastAnalysedAt",
             (SELECT CASE WHEN r.status IN ('failed', 'blocked') THEN COALESCE(r.failure_detail, r.failure_code) END
                FROM analysis_runs r WHERE r.thread_id = b.id ORDER BY r.created_at DESC, r.id DESC LIMIT 1) AS "lastFailure"
        FROM (
-         SELECT t.id, t.project_id, t.kind, t.state, t.next_message_no, p.status AS project_status,
+         SELECT t.id, t.project_id, t.kind, t.state, t.ended_at, t.next_message_no, p.status AS project_status,
                 CASE WHEN t.kind = 'discussion'
                      THEN COALESCE((SELECT max(r.covers_through_no) FROM analysis_runs r
                                      WHERE r.thread_id = t.id AND r.kind = 'proposals' AND r.status = 'succeeded' AND r.trigger <> 'selection'), 0)
@@ -70,6 +71,7 @@ export async function loadThreadFacts(db: Db, now: Date, threadId?: string): Pro
       lastAnalysedAt: r.lastAnalysedAt,
       lastFailure: r.lastFailure,
       lastAutoFailedAt: r.lastAutoFailedAt,
+      finalDraftRequested: r.finalDraftRequested,
     },
   }));
 }

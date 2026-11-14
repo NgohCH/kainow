@@ -91,7 +91,7 @@ export class PublishingService {
       await this.access.authorize(user, 'minutes.publish', t.projectId, db);
       const draft = await this.draftOf(db, t.id, versionNo);
       const at = this.now();
-      const existing = (await db.query(`SELECT id FROM sources WHERE thread_id = $1 AND kind = 'minutes' FOR UPDATE`, [t.id])).rows[0] as { id: string } | undefined;
+      const existing = (await db.query(`SELECT id, publication FROM sources WHERE thread_id = $1 AND kind = 'minutes' FOR UPDATE`, [t.id])).rows[0] as { id: string; publication: string } | undefined;
       let sourceId: string;
       if (existing) {
         sourceId = existing.id;
@@ -105,7 +105,18 @@ export class PublishingService {
           [sourceId, t.title, user.id, at, t.projectId, t.audienceId, t.id],
         );
       }
-      const version = await this.notes.addVersionText(db, sourceId, draft.body, user.id, at, { minutesDraftId: draft.id });
+      // A submission already holding exactly this text is simply published: no new version (and no 409).
+      const same = existing && existing.publication !== 'published'
+        ? (await db.query(
+            `SELECT id, version_no AS "versionNo", char_count AS "charCount", text_sha256 AS "textSha256" FROM source_versions
+              WHERE source_id = $1 ORDER BY version_no DESC LIMIT 1`,
+            [sourceId],
+          )).rows[0]
+        : undefined;
+      const version =
+        same && same.textSha256 === sha256Hex(draft.body)
+          ? (same as { id: string; versionNo: number; charCount: number; textSha256: string })
+          : await this.notes.addVersionText(db, sourceId, draft.body, user.id, at, { minutesDraftId: draft.id });
       await db.query(
         `INSERT INTO discussion_events (id, thread_id, draft_id, actor_id, action, detail, at) VALUES ($1, $2, $3, $4, 'minutes_published', $5, $6)`,
         [uuidv7(at.getTime()), t.id, draft.id, user.id, JSON.stringify({ sourceId, versionNo: version.versionNo, draftVersion: draft.versionNo, meetingOpen: t.state === 'open' }), at],

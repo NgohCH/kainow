@@ -166,13 +166,16 @@ export class AnalysisSettingsService {
     const ctx = await this.access.context(user, projectId);
     const eff = await effectiveAnalysisSettings(this.pool, projectId);
     const role = ctx.roles.some((r) => EDITORS.includes(r)) && EDITABLE_STATES.includes(ctx.project.status);
+    const own = await loadProject(this.pool, projectId);
     return {
       automatic: eff.automatic,
       quietMinutes: eff.quietMinutes,
       projectsMayChange: eff.projectsMayChange,
       source: eff.source,
-      own: await loadProject(this.pool, projectId),
+      own,
       canEdit: role && eff.projectsMayChange,
+      // The Administrator can return the project's own values to the organisation's whatever the delegation.
+      canClear: ctx.isAdmin && (own.automatic !== null || own.quietMinutes !== null),
       history: await this.history(projectId),
     };
   }
@@ -183,8 +186,12 @@ export class AnalysisSettingsService {
     const at = this.now();
     await this.tx(async (c) => {
       const ctx = await this.access.context(user, projectId, c, true);
-      if (!ctx.roles.some((r) => EDITORS.includes(r)) || !EDITABLE_STATES.includes(ctx.project.status)) throw new ForbiddenException(NOT_EDITOR);
-      if (!(await loadOrg(c, true)).projectsMayChange) throw new ForbiddenException(NOT_DELEGATED);
+      // R31: the Administrator may always return a project's values to the organisation's (clear only, with a reason), delegated or not.
+      const clearOnly = ctx.isAdmin && [b.automatic, b.quietMinutes].some((v) => v === null) && [b.automatic, b.quietMinutes].every((v) => v === undefined || v === null);
+      if (!clearOnly) {
+        if (!ctx.roles.some((r) => EDITORS.includes(r)) || !EDITABLE_STATES.includes(ctx.project.status)) throw new ForbiddenException(NOT_EDITOR);
+        if (!(await loadOrg(c, true)).projectsMayChange) throw new ForbiddenException(NOT_DELEGATED);
+      }
       const changes: Partial<ProjectRow> = {};
       if (b.automatic !== undefined) changes.automatic = b.automatic === null ? null : boolOf(b.automatic, 'Automatic analysis');
       if (b.quietMinutes !== undefined) changes.quietMinutes = b.quietMinutes === null ? null : quietOf(b.quietMinutes);

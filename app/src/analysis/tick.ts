@@ -10,6 +10,9 @@ import { type Readiness, analysisState } from './state';
 /** Fixed text: no thread, project or message content. */
 export const THREAD_FAILED = 'An analysis could not be started for one thread; the other threads continue.';
 
+export const STALLED_MINUTES = 45;
+export const STALLED_DETAIL = 'This analysis stopped without finishing; ask again.';
+
 /** Readiness for automatic runs (ruling R5): approved spend settings, and something left of every cap that applies. */
 export async function readiness(spend: Pick<SpendService, 'summary'>): Promise<Readiness> {
   const s = await spend.summary();
@@ -28,6 +31,7 @@ export class AnalysisTick {
 
   async run(): Promise<{ started: number }> {
     const now = this.d.clock();
+    await this.failStalled(now);
     const candidates = await loadThreadFacts(this.d.pool, now);
     if (candidates.length === 0) return { started: 0 };
     const [settings, ready] = await Promise.all([
@@ -49,6 +53,23 @@ export class AnalysisTick {
     return { started };
   }
 
+  /**
+   * A run that has been queued or running for more than STALLED_MINUTES never finished (a lost job or a dead worker); it is
+   * marked failed so the thread's one active slot is freed, and so is its extraction run if that is still waiting. One set-based pass.
+   */
+  private async failStalled(now: Date): Promise<void> {
+    await this.d.pool.query(
+      `WITH stalled AS (
+         UPDATE analysis_runs SET status = 'failed', failure_code = 'stalled', failure_detail = $2, finished_at = $1
+          WHERE status IN ('queued', 'running') AND created_at < $1::timestamptz - make_interval(mins => $3)
+          RETURNING extraction_run_id
+       )
+       UPDATE extraction_runs SET status = 'failed', failure_code = 'stalled', failure_detail = $2, finished_at = $1
+        WHERE status IN ('queued', 'running') AND id IN (SELECT extraction_run_id FROM stalled WHERE extraction_run_id IS NOT NULL)`,
+      [now, STALLED_DETAIL, STALLED_MINUTES],
+    );
+  }
+
   private async startOne(threadId: string, projectId: string, ready: Readiness, now: Date): Promise<string | null> {
     const client: PoolClient = await this.d.pool.connect();
     try {
@@ -56,7 +77,8 @@ export class AnalysisTick {
       await client.query(`SELECT 1 FROM discussion_threads WHERE id = $1 FOR NO KEY UPDATE`, [threadId]);
       const [again] = await loadThreadFacts(client, now, threadId);
       const settings = (await effectiveAnalysisSettingsMany(client, [projectId])).get(projectId);
-      if (!again || !settings || !analysisState(again.facts, settings, ready, now).due) {
+      const decision = again && settings ? analysisState(again.facts, settings, ready, now) : null;
+      if (!again || !decision || !decision.due) {
         await client.query('ROLLBACK');
         return null;
       }
@@ -64,7 +86,7 @@ export class AnalysisTick {
       const id = await insertRun(client, {
         threadId,
         kind: meeting ? 'minutes' : 'proposals',
-        trigger: 'quiet_period',
+        trigger: decision.trigger ?? 'quiet_period',
         requestedBy: null,
         coversFromNo: meeting ? 1 : again.cursor + 1,
         coversThroughNo: null,

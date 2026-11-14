@@ -37,9 +37,9 @@ export const isActiveRunConflict = (err: unknown): boolean => (err as { code?: s
  * Hands a committed run to the worker. If the queue refuses, the run is marked failed at once: a run left 'queued' without a
  * job would hold the thread's only active slot for ever. Returns whether the job was accepted.
  */
-export async function enqueueOrFail(pool: Pool, queue: AnalysisQueue, runId: string, at: Date): Promise<boolean> {
+export async function enqueueOrFail(pool: Pool, queue: AnalysisQueue, runId: string, at: Date, explicit = false): Promise<boolean> {
   try {
-    await queue.enqueue(runId);
+    await queue.enqueue(runId, { explicit });
     return true;
   } catch {
     await pool.query(

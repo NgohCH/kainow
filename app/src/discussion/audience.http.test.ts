@@ -128,6 +128,14 @@ describe('changing an audience and restricted evidence', { skip: SKIP_NO_DB }, (
     assert.equal((await t.pool.query(`SELECT count(*)::int AS n FROM audience_events`)).rows[0].n, 0, 'a preview changes nothing');
   });
 
+  test('the audience of a discussion cannot be changed (400)', async () => {
+    const talk = await startMeeting(ada, { kind: 'discussion', title: 'Release plan' });
+    const r = await pm.request('PUT', `/audiences/${await audienceOf(talk)}`, { mode: 'restricted', namedUserIds: [ids.ada], reason: 'Sensitive' });
+    assert.equal(r.status, 400);
+    assert.match(r.body.message, /cannot be changed/);
+    assert.equal((await t.pool.query(`SELECT count(*)::int AS n FROM audience_events`)).rows[0].n, 0);
+  });
+
   test('history row has old and new settings and reason', async () => {
     const audience = await audienceOf(await startMeeting(ada));
     assert.equal((await sponsor.request('PUT', `/audiences/${audience}`, { mode: 'restricted', namedUserIds: [ids.ada] })).status, 400, 'a reason is required');
