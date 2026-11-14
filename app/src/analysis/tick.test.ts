@@ -123,6 +123,32 @@ describe('analysis tick', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual([ex.status, ex.failure_code], ['failed', 'stalled']);
   });
 
+  test('a run with a live pg-boss job is not stalled however old; without one it is', async () => {
+    const thread = await start(ada, 'discussion');
+    await post(ada, thread);
+    t.clock.advanceMinutes(5);
+    assert.equal((await tick.run()).started, 1);
+    const [queued] = await runs();
+    await t.pool.query(`CREATE SCHEMA IF NOT EXISTS pgboss`);
+    await t.pool.query(`CREATE TABLE pgboss.job (name text NOT NULL, singleton_key text, state text NOT NULL)`);
+    try {
+      for (const state of ['created', 'retry', 'active']) {
+        await t.pool.query(`INSERT INTO pgboss.job (name, singleton_key, state) VALUES ('ai', $1, $2)`, [queued.id, state]);
+        t.clock.advanceMinutes(120);
+        await tick.run();
+        assert.equal((await runs())[0].status, 'queued', `a ${state} job keeps the run alive`);
+        await t.pool.query(`DELETE FROM pgboss.job`);
+      }
+      // A finished job (or one on another queue) does not count.
+      await t.pool.query(`INSERT INTO pgboss.job (name, singleton_key, state) VALUES ('ai', $1, 'completed'), ('email', $1, 'active')`, [queued.id]);
+      await tick.run();
+      const [after] = await runs();
+      assert.deepEqual([after.status, after.failure_code], ['failed', 'stalled']);
+    } finally {
+      await t.pool.query(`DROP SCHEMA pgboss CASCADE`);
+    }
+  });
+
   test('second tick does not double-start', async () => {
     const thread = await start(ada, 'discussion');
     await post(ada, thread);

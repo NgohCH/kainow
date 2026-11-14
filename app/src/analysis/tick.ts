@@ -3,6 +3,7 @@ import type { Clock } from '../auth/tokens';
 import type { SpendService } from '../spend/spend.service';
 import { loadThreadFacts } from './facts';
 import type { AnalysisQueue } from './queue';
+import { BOSS_SCHEMA, QUEUES } from '../worker/queues';
 import { enqueueOrFail, insertRun, isActiveRunConflict } from './runs';
 import { effectiveAnalysisSettingsMany } from './settings.service';
 import { type Readiness, analysisState } from './state';
@@ -58,10 +59,16 @@ export class AnalysisTick {
    * marked failed so the thread's one active slot is freed, and so is its extraction run if that is still waiting. One set-based pass.
    */
   private async failStalled(now: Date): Promise<void> {
+    // A run that still has a live job (waiting in the queue, retrying or being worked) is never stalled, however old: the queue may
+    // simply be busy. Without a pg-boss schema (no queue has ever started) there is no job to find.
+    const hasJobs = (await this.d.pool.query(`SELECT to_regclass('${BOSS_SCHEMA}.job') IS NOT NULL AS ok`)).rows[0].ok as boolean;
+    const noLiveJob = hasJobs
+      ? `AND NOT EXISTS (SELECT 1 FROM ${BOSS_SCHEMA}.job j WHERE j.name = '${QUEUES.ai}' AND j.singleton_key = analysis_runs.id::text AND j.state IN ('created', 'retry', 'active'))`
+      : '';
     await this.d.pool.query(
       `WITH stalled AS (
          UPDATE analysis_runs SET status = 'failed', failure_code = 'stalled', failure_detail = $2, finished_at = $1
-          WHERE status IN ('queued', 'running') AND created_at < $1::timestamptz - make_interval(mins => $3)
+          WHERE status IN ('queued', 'running') AND created_at < $1::timestamptz - make_interval(mins => $3) ${noLiveJob}
           RETURNING extraction_run_id
        )
        UPDATE extraction_runs SET status = 'failed', failure_code = 'stalled', failure_detail = $2, finished_at = $1

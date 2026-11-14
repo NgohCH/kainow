@@ -119,6 +119,23 @@ describe('extraction runner', { skip: SKIP_NO_DB }, () => {
     assert.equal(model.calls[0].modelId, 'gpt-6.1-sol');
   });
 
+  test('a late save after the run was stalled inserts no items and does not revive it', async () => {
+    const id = await newRun();
+    const model = new FakeModel(async () => {
+      // While the AI call is out, the stalled sweep fails the run.
+      await pool.query(`UPDATE extraction_runs SET status = 'failed', failure_code = 'stalled', failure_detail = 'x', finished_at = now() WHERE id = $1`, [id]);
+      return answer([{ kind: 'decision', text: 'Ship Friday', owner: null, due: 'Friday', source_quote: 'We agreed to ship on Friday.' }]);
+    });
+    assert.equal(await runner(model).process(id, 1, false), 'skipped');
+    const r = await run(id);
+    assert.deepEqual([r.status, r.failure_code, r.item_count], ['failed', 'stalled', null]);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM extraction_items WHERE run_id = $1', [id])).rows[0].n, 0);
+    const [entry] = await entries(id);
+    assert.equal(entry.status, 'confirmed', 'the AI call was made, so its spend stays settled');
+    assert.equal(await runner(model).process(id, 2, false), 'skipped', 'a late retry does not start it again');
+    assert.equal((await run(id)).status, 'failed');
+  });
+
   test('saves the meeting date on the run and due_event and alternatives on each item', async () => {
     const model = new FakeModel(() =>
       answer(

@@ -53,19 +53,18 @@ export class AnalysisRunner {
 
     if (run.kind === 'minutes') {
       if (this.d.minutes) return this.d.minutes.process(analysisRunId, attemptNo, isLastAttempt);
-      await this.end(run, 'failed', 'minutes_not_available', 'Drafting minutes is not available on this worker.');
-      return 'failed';
+      return (await this.end(run, 'failed', 'minutes_not_available', 'Drafting minutes is not available on this worker.')) ? 'failed' : 'skipped';
     }
 
-    await pool.query(
-      `UPDATE analysis_runs SET status = 'running', attempts = $2, started_at = COALESCE(started_at, $3) WHERE id = $1`,
+    const claimed = await pool.query(
+      `UPDATE analysis_runs SET status = 'running', attempts = $2, started_at = COALESCE(started_at, $3) WHERE id = $1 AND status IN ('queued', 'running')`,
       [run.id, attemptNo, this.d.clock()],
     );
+    if (claimed.rowCount === 0) return 'skipped';
 
     const refusal = await recheckRun(this.d.pool, this.access, run, 'discussion');
     if (refusal) {
-      await this.end(run, 'blocked', refusal.code, refusal.detail);
-      return 'blocked';
+      return (await this.end(run, 'blocked', refusal.code, refusal.detail)) ? 'blocked' : 'skipped';
     }
 
     if (run.extractionRunId) {
@@ -80,14 +79,12 @@ export class AnalysisRunner {
         [run.sourceVersionId, run.extractionRunId],
       );
       if (gone.rowCount) {
-        await this.end(run, 'blocked', 'source_changed', 'A message in this analysis was hidden or deleted before it could be sent; ask for a new analysis.');
-        return 'blocked';
+        return (await this.end(run, 'blocked', 'source_changed', 'A message in this analysis was hidden or deleted before it could be sent; ask for a new analysis.')) ? 'blocked' : 'skipped';
       }
     } else {
       const blocked = await this.snapshot(run);
       if (blocked) {
-        await this.end(run, 'blocked', blocked.code, blocked.detail);
-        return 'blocked';
+        return (await this.end(run, 'blocked', blocked.code, blocked.detail)) ? 'blocked' : 'skipped';
       }
       const again = await loadRun(this.d.pool, run.id);
       if (!again?.extractionRunId) throw new Error(`analysis ${run.id}: the snapshot was not linked`);
@@ -209,10 +206,10 @@ export class AnalysisRunner {
   }
 
   /** Ends the analysis run, and the extraction run linked to it (if any) with the same reason. */
-  private async end(run: RunRow, status: 'failed' | 'blocked', code: string, detail: string): Promise<void> {
+  private async end(run: RunRow, status: 'failed' | 'blocked', code: string, detail: string): Promise<boolean> {
     const at = this.d.clock();
-    await this.d.pool.query(
-      `UPDATE analysis_runs SET status = $2, failure_code = $3, failure_detail = $4, finished_at = $5 WHERE id = $1`,
+    const done = await this.d.pool.query(
+      `UPDATE analysis_runs SET status = $2, failure_code = $3, failure_detail = $4, finished_at = $5 WHERE id = $1 AND status IN ('queued', 'running')`,
       [run.id, status, code, detail, at],
     );
     if (run.extractionRunId) {
@@ -221,6 +218,7 @@ export class AnalysisRunner {
         [run.extractionRunId, status, code, detail, at],
       );
     }
+    return (done.rowCount ?? 0) > 0;
   }
 
   /** The analysis run takes the extraction run's state, whatever the runner returned (so a crash between the two heals itself). */
@@ -231,14 +229,15 @@ export class AnalysisRunner {
     );
     const ex = rows[0];
     if (!ex || ex.status === 'queued') {
-      await this.d.pool.query(`UPDATE analysis_runs SET status = 'queued' WHERE id = $1`, [run.id]);
+      await this.d.pool.query(`UPDATE analysis_runs SET status = 'queued' WHERE id = $1 AND status IN ('queued', 'running')`, [run.id]);
       return 'retry';
     }
     if (ex.status === 'running') return outcome;
-    await this.d.pool.query(
-      `UPDATE analysis_runs SET status = $2, failure_code = $3, failure_detail = $4, finished_at = $5 WHERE id = $1`,
+    const copied = await this.d.pool.query(
+      `UPDATE analysis_runs SET status = $2, failure_code = $3, failure_detail = $4, finished_at = $5 WHERE id = $1 AND status IN ('queued', 'running')`,
       [run.id, ex.status, ex.code, ex.detail, ex.finishedAt ?? this.d.clock()],
     );
-    return ex.status as RunOutcome;
+    // The analysis run had already ended (stalled): it stays as it is and nothing is reported as done.
+    return copied.rowCount ? (ex.status as RunOutcome) : 'skipped';
   }
 }

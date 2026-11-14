@@ -90,10 +90,11 @@ export class ExtractionRunner {
       return 'skipped';
     }
 
-    await pool.query(
-      `UPDATE extraction_runs SET status = 'running', attempts = $2, started_at = COALESCE(started_at, $3) WHERE id = $1`,
+    const claimed = await pool.query(
+      `UPDATE extraction_runs SET status = 'running', attempts = $2, started_at = COALESCE(started_at, $3) WHERE id = $1 AND status IN ('queued', 'running')`,
       [runId, attemptNo, this.d.clock()],
     );
+    if (claimed.rowCount === 0) return 'skipped';
 
     await markStaleReservations(pool, spend, runId, attemptNo);
 
@@ -157,7 +158,7 @@ export class ExtractionRunner {
   }
 
   private async requeue(run: RunRow): Promise<RunOutcome> {
-    await this.d.pool.query(`UPDATE extraction_runs SET status = 'queued' WHERE id = $1`, [run.id]);
+    await this.d.pool.query(`UPDATE extraction_runs SET status = 'queued' WHERE id = $1 AND status IN ('queued', 'running')`, [run.id]);
     return 'retry';
   }
 
@@ -167,6 +168,12 @@ export class ExtractionRunner {
     const client = await this.d.pool.connect();
     try {
       await client.query('BEGIN');
+      // Items are saved only while the run is still waiting or running (a late save after a stall inserts nothing; spend stays settled).
+      const live = await client.query(`SELECT 1 FROM extraction_runs WHERE id = $1 AND status IN ('queued', 'running') FOR UPDATE`, [run.id]);
+      if (live.rowCount === 0) {
+        await client.query('ROLLBACK');
+        return 'skipped';
+      }
       let unlocated = 0;
       let repeated = 0;
       let saved = 0;
@@ -204,7 +211,7 @@ export class ExtractionRunner {
         `UPDATE extraction_runs
             SET status = 'succeeded', model_id = $2, item_count = $3, unlocated_count = $4, finished_at = $5,
                 failure_code = NULL, failure_detail = NULL, meeting_date = $6
-          WHERE id = $1`,
+          WHERE id = $1 AND status IN ('queued', 'running')`,
         [run.id, modelId, saved, unlocated, at, meetingDate],
       );
       if (spans) await client.query(`UPDATE analysis_runs SET repeated_count = $2 WHERE extraction_run_id = $1`, [run.id, repeated]);
@@ -234,10 +241,14 @@ export class ExtractionRunner {
     const client = await this.d.pool.connect();
     try {
       await client.query('BEGIN');
-      await client.query(
-        `UPDATE extraction_runs SET status = $2, failure_code = $3, failure_detail = $4, finished_at = $5 WHERE id = $1`,
+      const done = await client.query(
+        `UPDATE extraction_runs SET status = $2, failure_code = $3, failure_detail = $4, finished_at = $5 WHERE id = $1 AND status IN ('queued', 'running')`,
         [run.id, status, code, detail, at],
       );
+      if (done.rowCount === 0) {
+        await client.query('ROLLBACK');
+        return 'skipped';
+      }
       await this.audit(client, run, status, { failureCode: code });
       await client.query('COMMIT');
     } catch (err) {

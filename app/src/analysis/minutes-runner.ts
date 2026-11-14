@@ -41,11 +41,12 @@ export class MinutesRunner {
     const { pool } = this.d;
     const run = await loadRun(pool, analysisRunId);
     if (!run || run.kind !== 'minutes' || ['succeeded', 'failed', 'blocked'].includes(run.status)) return 'skipped';
-    await pool.query(`UPDATE analysis_runs SET status = 'running', attempts = $2, started_at = COALESCE(started_at, $3) WHERE id = $1`, [
-      run.id,
-      attemptNo,
-      this.d.clock(),
-    ]);
+    // A run already stalled or finished is left alone (a late retry must not revive it).
+    const claimed = await pool.query(
+      `UPDATE analysis_runs SET status = 'running', attempts = $2, started_at = COALESCE(started_at, $3) WHERE id = $1 AND status IN ('queued', 'running')`,
+      [run.id, attemptNo, this.d.clock()],
+    );
+    if (claimed.rowCount === 0) return 'skipped';
 
     const refusal = (await recheckRun(pool, this.access, run, 'meeting')) ?? (await this.humanEdited(run));
     if (refusal) return this.end(run, 'blocked', refusal);
@@ -83,7 +84,10 @@ export class MinutesRunner {
     if (outcome.kind === 'retry') return this.requeue(run);
     if (outcome.kind !== 'ok') return this.end(run, outcome.kind, outcome);
     try {
-      if (!(await this.save(run, outcome.value, first, through))) {
+      const saved = await this.save(run, outcome.value, first, through);
+      // The run ended (stalled) while the AI call ran: no draft, no success. The spend stays settled.
+      if (saved === 'stale') return 'skipped';
+      if (saved === 'human') {
         // A person saved their own version while the AI call ran: human edits win (spec 5.2). The call is still charged.
         return this.end(run, 'blocked', { code: 'human_edited', detail: PAUSED });
       }
@@ -117,7 +121,7 @@ export class MinutesRunner {
   }
 
   /** The draft, the run's cursor and its success are stored together: no draft without its run result, and the reverse. */
-  private async save(run: RunRow, answer: MinutesAnswer, first: number, through: number): Promise<boolean> {
+  private async save(run: RunRow, answer: MinutesAnswer, first: number, through: number): Promise<'saved' | 'human' | 'stale'> {
     const present = (
       await this.d.pool.query<{ name: string }>(
         `SELECT u.display_name AS name FROM meeting_attendees a JOIN users u ON u.id = a.user_id WHERE a.thread_id = $1 ORDER BY u.display_name, u.id`,
@@ -128,24 +132,30 @@ export class MinutesRunner {
     const client = await this.d.pool.connect();
     try {
       await client.query('BEGIN');
+      // The run must still be waiting or running, checked under its row lock in the same transaction as the draft.
+      const live = await client.query(`SELECT 1 FROM analysis_runs WHERE id = $1 AND status IN ('queued', 'running') FOR UPDATE`, [run.id]);
+      if (live.rowCount === 0) {
+        await client.query('ROLLBACK');
+        return 'stale';
+      }
       if (run.trigger === 'quiet_period' || run.trigger === 'meeting_end') {
         // Take the thread lock first, so a person's save either lands before this check or waits for this transaction.
         await client.query(`SELECT 1 FROM discussion_threads WHERE id = $1 FOR NO KEY UPDATE`, [run.threadId]);
         const human = await client.query(`SELECT 1 FROM minutes_drafts WHERE thread_id = $1 AND origin = 'human' LIMIT 1`, [run.threadId]);
         if (human.rowCount) {
           await client.query('ROLLBACK');
-          return false;
+          return 'human';
         }
       }
       const draft = await insertAiDraft(client, run.threadId, { body, coversThroughNo: through, analysisRunId: run.id }, this.d.clock);
       const draftId = (await client.query(`SELECT id FROM minutes_drafts WHERE thread_id = $1 AND version_no = $2`, [run.threadId, draft.versionNo])).rows[0].id;
       await client.query(
         `UPDATE analysis_runs SET status = 'succeeded', minutes_draft_id = $2, covers_from_no = $3, covers_through_no = $4,
-                failure_code = NULL, failure_detail = NULL, finished_at = $5 WHERE id = $1`,
+                failure_code = NULL, failure_detail = NULL, finished_at = $5 WHERE id = $1 AND status IN ('queued', 'running')`,
         [run.id, draftId, first, through, this.d.clock()],
       );
       await client.query('COMMIT');
-      return true;
+      return 'saved';
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
       throw err;
@@ -155,18 +165,15 @@ export class MinutesRunner {
   }
 
   private async requeue(run: RunRow): Promise<RunOutcome> {
-    await this.d.pool.query(`UPDATE analysis_runs SET status = 'queued' WHERE id = $1`, [run.id]);
+    await this.d.pool.query(`UPDATE analysis_runs SET status = 'queued' WHERE id = $1 AND status IN ('queued', 'running')`, [run.id]);
     return 'retry';
   }
 
   private async end(run: RunRow, status: 'failed' | 'blocked', why: Refusal): Promise<RunOutcome> {
-    await this.d.pool.query(`UPDATE analysis_runs SET status = $2, failure_code = $3, failure_detail = $4, finished_at = $5 WHERE id = $1`, [
-      run.id,
-      status,
-      why.code,
-      why.detail,
-      this.d.clock(),
-    ]);
-    return status;
+    const done = await this.d.pool.query(
+      `UPDATE analysis_runs SET status = $2, failure_code = $3, failure_detail = $4, finished_at = $5 WHERE id = $1 AND status IN ('queued', 'running')`,
+      [run.id, status, why.code, why.detail, this.d.clock()],
+    );
+    return done.rowCount ? status : 'skipped';
   }
 }

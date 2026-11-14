@@ -96,6 +96,22 @@ describe('minutes runner', { skip: SKIP_NO_DB }, () => {
     await t.close();
   });
 
+  test('a late success after the run was stalled inserts no draft and does not revive it', async () => {
+    await post(ada, 'Shall we ship on Friday?');
+    const id = await queueRun();
+    const model = new FakeModel(async () => {
+      await t.pool.query(`UPDATE analysis_runs SET status = 'failed', failure_code = 'stalled', failure_detail = 'x', finished_at = now() WHERE id = $1`, [id]);
+      return { ...ANSWER, usage: USAGE };
+    });
+    assert.equal(await runner(model).process(id, 1, false), 'skipped');
+    assert.deepEqual(await drafts(), []);
+    const r = await run(id);
+    assert.deepEqual([r.status, r.failure_code, r.minutes_draft_id], ['failed', 'stalled', null]);
+    assert.equal((await entries()).length, 1, 'the call was made: its spend is recorded');
+    assert.equal(await runner(model).process(id, 2, false), 'skipped');
+    assert.equal(model.calls.length, 1, 'a late retry makes no second call');
+  });
+
   test('button draft saves an ai version covering the newest message', async () => {
     await post(ada, 'Shall we ship on Friday?');
     await post(ada, 'Yes, Bob emails the vendor.');
