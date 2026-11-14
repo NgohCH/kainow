@@ -416,7 +416,10 @@ describe('analysis runner (discussion proposals)', { skip: SKIP_NO_DB }, () => {
     });
     assert.equal(auth.status, 201, JSON.stringify(auth.body));
     const aud = (await t.pool.query(`SELECT audience_id FROM discussion_threads WHERE id = $1`, [thread])).rows[0].audience_id;
-    assert.equal((await pm.request('PUT', `/audiences/${aud}`, { mode: 'restricted', namedUserIds: [ids.ada], reason: 'Sensitive' })).status, 200);
+    // A discussion's audience cannot be changed through the API (M1), so the restriction is set directly.
+    assert.equal((await pm.request('PUT', `/audiences/${aud}`, { mode: 'restricted', namedUserIds: [ids.ada], reason: 'Sensitive' })).status, 400);
+    await t.pool.query(`UPDATE audiences SET mode = 'restricted' WHERE id = $1`, [aud]);
+    await t.pool.query(`INSERT INTO audience_members (audience_id, user_id, added_by, added_at) VALUES ($1, $2, $3, now())`, [aud, ids.ada, ids.pm]);
     const task = (await bob.request('GET', `/projects/${project}/records`)).body.tasks[0];
     assert.deepEqual(task.source, { restricted: true });
   });
