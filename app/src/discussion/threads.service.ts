@@ -6,6 +6,8 @@ import { PG_POOL } from '../db/database.module';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { type ProjectAction, decide } from '../projects/matrix';
 import { todayUtc8 } from '../projects/membership';
+import { indexVersion } from '../assist/passage-index';
+import { formatMessageTime } from '../assist/passages';
 import { sha256Hex } from '../notes/text';
 import { type AudienceChange, type AudienceMode, type AudienceRow, type Person, RESTRICTED_ROLES, audienceVisibleSql, parseAudienceChange } from './audience';
 import { MINUTES_LABEL } from '../notes/notes.service';
@@ -284,6 +286,12 @@ export class ThreadsService {
     };
   }
 
+  /** Writes the passage index for a new message version, in the same transaction (spec 4.1). */
+  private async indexMessage(db: Db, versionId: string, projectId: string, messageNo: number, authorId: string, text: string, at: Date): Promise<void> {
+    const author = (await db.query(`SELECT display_name AS n FROM users WHERE id = $1`, [authorId])).rows[0].n as string;
+    await indexVersion(db, 'message_version', versionId, projectId, text, { messageNo, author, at: formatMessageTime(at) });
+  }
+
   async post(user: AuthUser, threadId: string, body: { body: unknown; replyToId?: unknown }): Promise<MessageView> {
     const messageId = await this.inTransaction(async (db) => {
       // The thread row lock keeps message numbers gap-free and in order when two people post at once.
@@ -310,10 +318,12 @@ export class ThreadsService {
         `INSERT INTO discussion_messages (id, thread_id, message_no, author_id, reply_to_id, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
         [id, t.id, no, user.id, replyTo, at],
       );
+      const versionId = uuidv7(at.getTime());
       await db.query(
         `INSERT INTO message_versions (id, message_id, version_no, body, body_sha256, created_at) VALUES ($1, $2, 1, $3, $4, $5)`,
-        [uuidv7(at.getTime()), id, text, sha256Hex(text), at],
+        [versionId, id, text, sha256Hex(text), at],
       );
+      await this.indexMessage(db, versionId, t.projectId, no, user.id, text, at);
       await db.query(
         `INSERT INTO discussion_events (id, thread_id, message_id, actor_id, action, detail, at) VALUES ($1, $2, $3, $4, 'posted', $5, $6)`,
         [uuidv7(at.getTime()), t.id, id, user.id, JSON.stringify(meta(text)), at],
@@ -358,10 +368,13 @@ export class ThreadsService {
       }
       if (latest.body === text) throw new BadRequestException('Nothing has changed in this message.');
       const at = this.now();
+      const versionId = uuidv7(at.getTime());
       await db.query(
         `INSERT INTO message_versions (id, message_id, version_no, body, body_sha256, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
-        [uuidv7(at.getTime()), messageId, latest.v + 1, text, sha256Hex(text), at],
+        [versionId, messageId, latest.v + 1, text, sha256Hex(text), at],
       );
+      const no = (await db.query(`SELECT message_no AS n FROM discussion_messages WHERE id = $1`, [messageId])).rows[0].n as number;
+      await this.indexMessage(db, versionId, m.t.projectId, no, m.authorId, text, at);
       await db.query(`UPDATE discussion_threads SET last_message_at = $2 WHERE id = $1`, [m.t.id, at]);
       await db.query(
         `INSERT INTO discussion_events (id, thread_id, message_id, actor_id, action, detail, at) VALUES ($1, $2, $3, $4, 'edited', $5, $6)`,

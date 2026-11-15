@@ -9,6 +9,7 @@ import { RESTRICTED_ROLES, audienceVisibleSql } from '../discussion/audience';
 import { refuseSecrets } from '../discussion/messages';
 import { effectiveRoles } from '../projects/membership';
 import { ProjectAccess } from '../projects/access.service';
+import { indexVersion } from '../assist/passage-index';
 import { UploadRejected, readUpload } from './readers';
 import { NoteTextError, normaliseText, sha256Hex } from './text';
 
@@ -277,6 +278,9 @@ export class NotesService {
         p.text, sha256Hex(p.text), p.text.length, actorUserId, at, minutesDraftId,
       ],
     );
+    // The passage index is written in the same transaction as the version (spec 4.1); notes from before projects have none.
+    const projectId = (await client.query(`SELECT project_id AS "projectId" FROM sources WHERE id = $1`, [sourceId])).rows[0]?.projectId;
+    if (projectId) await indexVersion(client, 'source_version', id, projectId, p.text);
     return rows[0];
   }
 
