@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import { uuidv7 } from '../common/uuid7';
+import { sha256Hex } from '../notes/text';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
@@ -279,6 +280,48 @@ describe('material search', { skip: SKIP_NO_DB }, () => {
     const found = await findMaterial(t.pool, await personal(ids.ada), [], { sourceIds: [a] });
     assert.deepEqual(found.map((i) => i.text.slice(0, 9)), ['Alpha one', 'Alpha two']);
     assert.deepEqual(await findMaterial(t.pool, await personal(ids.ada), []), []);
+  });
+
+  test('deleted, submitted and returned notes and a discussion transcript are never found', async () => {
+    await note('Kept', 'The generator inspection passed on Monday.');
+    const gone = await note('Gone', 'The generator lease ends in June.');
+    const waiting = await note('Waiting', 'The generator fuel order is waiting for review.');
+    const sentBack = await note('Sent back', 'The generator noise complaint needs more detail.');
+    await t.pool.query(`UPDATE sources SET status = 'deleted' WHERE id = $1`, [gone]);
+    await t.pool.query(`UPDATE sources SET publication = 'submitted', submitted_by = $2 WHERE id = $1`, [waiting, ids.ada]);
+    await t.pool.query(`UPDATE sources SET publication = 'returned', submitted_by = $2, returned_reason = 'Needs detail' WHERE id = $1`, [sentBack, ids.ada]);
+
+    // A thread's transcript source is never indexed; even a passage written for one directly is not material.
+    const talk = await thread(pm, { kind: 'discussion', title: 'Generators' });
+    const audience = (await t.pool.query(`SELECT audience_id FROM discussion_threads WHERE id = $1`, [talk])).rows[0].audience_id;
+    const [source, version] = [uuidv7(), uuidv7()];
+    const text = '[#1 · pm] The generator transcript mentions the lease.';
+    await t.pool.query(
+      `INSERT INTO sources (id, title, created_by, created_at, project_id, kind, audience_id, thread_id) VALUES ($1, 'Discussion: Generators', $2, now(), $3, 'discussion', $4, $5)`,
+      [source, ids.pm, project, audience, talk],
+    );
+    await t.pool.query(
+      `INSERT INTO source_versions (id, source_id, version_no, origin, text_content, text_sha256, char_count, created_by, created_at)
+       VALUES ($1, $2, 1, 'discussion', $3, $4, $5, $6, now())`,
+      [version, source, text, sha256Hex(text), text.length, ids.pm],
+    );
+    await t.pool.query(
+      `INSERT INTO passages (id, project_id, owner_kind, owner_id, ordinal, location, start_offset, end_offset, body) VALUES ($1, $2, 'source_version', $3, 0, 'Paragraph 1', 0, $4, $5)`,
+      [uuidv7(), project, version, text.length, text],
+    );
+
+    for (const scope of [await personal(ids.pm), await personal(ids.ada), await threadScope(talk)]) {
+      assert.deepEqual(texts(await ask(scope, 'generator')), ['The generator inspection passed on Monday.']);
+    }
+  });
+
+  test('stillReadable turns false after a note used by a request is deleted', async () => {
+    const source = await note('Plant notes', 'The boiler flue was cleaned on Tuesday.');
+    const request = await saveRequest(ids.ada, await ask(await personal(ids.ada), 'boiler flue'));
+    assert.equal(await stillReadable(t.pool, await ctxOf(ids.ada), request), true);
+    await t.pool.query(`UPDATE sources SET status = 'deleted' WHERE id = $1`, [source]);
+    assert.equal(await stillReadable(t.pool, await ctxOf(ids.ada), request), false);
+    assert.equal(await stillReadable(t.pool, await ctxOf(ids.pm), request), false, 'not even for the PM');
   });
 
   test('snapshotOf renders Kainow fields only', () => {

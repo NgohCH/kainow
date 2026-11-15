@@ -15,6 +15,11 @@ export const STOP_WORDS: ReadonlySet<string> = new Set([
   'not', 'of', 'on', 'or', 'our', 'ours', 'please', 'she', 'should', 'so', 'some', 'tell', 'than', 'that', 'the',
   'their', 'them', 'then', 'there', 'these', 'they', 'this', 'those', 'to', 'us', 'was', 'we', 'were', 'what', 'when',
   'where', 'which', 'while', 'who', 'whom', 'why', 'will', 'with', 'would', 'you', 'your',
+  // The rest of PostgreSQL's english.stop, so no term is a stop word alone ("contains only stop words" notices).
+  'above', 'again', 'against', 'below', 'because', 'between', 'both', 'don', 'down', 'during', 'each', 'few',
+  'further', 'hers', 'herself', 'himself', 'itself', 'more', 'most', 'myself', 'nor', 'now', 'off', 'once', 'only',
+  'other', 'ourselves', 'out', 'over', 'own', 's', 'same', 'such', 't', 'theirs', 'themselves', 'through', 'too',
+  'under', 'until', 'up', 'very', 'yours', 'yourself', 'yourselves',
   // Malay
   'ada', 'adakah', 'akan', 'apa', 'atau', 'bagaimana', 'bahawa', 'bila', 'boleh', 'dan', 'dari', 'daripada', 'dengan',
   'di', 'dia', 'ia', 'ialah', 'ini', 'itu', 'juga', 'kami', 'kamu', 'kenapa', 'ke', 'kepada', 'kita', 'lagi', 'mana',

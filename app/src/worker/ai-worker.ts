@@ -2,6 +2,8 @@ import type { PgBoss } from 'pg-boss';
 import type { Pool } from 'pg';
 import type { AnalysisRunner } from '../analysis/analysis-runner';
 import type { AnalysisJob } from '../analysis/queue';
+import type { AssistRunner } from '../assist/assist-runner';
+import type { AssistJob } from '../assist/queue';
 import type { ExtractionJob } from '../extraction/queue';
 import { MAX_ATTEMPTS } from '../extraction/prompt';
 import type { ExtractionRunner } from '../extraction/runner';
@@ -13,16 +15,25 @@ export const AI_CONCURRENCY = 2;
 export interface AiRunners {
   extraction: ExtractionRunner;
   analysis: AnalysisRunner;
+  /** AI questions, report drafts and summaries (sub-project 4b). */
+  assist?: AssistRunner;
 }
 
-const isAnalysisJob = (data: ExtractionJob | AnalysisJob): data is AnalysisJob => typeof (data as AnalysisJob).analysisRunId === 'string';
+type AiJob = ExtractionJob | AnalysisJob | AssistJob;
 
-/** Starts processing AI jobs: extraction runs and discussion analysis runs share the queue, and so the limit. Used by the worker process and the tests. */
+const isAnalysisJob = (data: AiJob): data is AnalysisJob => typeof (data as AnalysisJob).analysisRunId === 'string';
+const isAssistJob = (data: AiJob): data is AssistJob => typeof (data as AssistJob).assistRequestId === 'string';
+
+/** Starts processing AI jobs: extraction runs, discussion analysis runs and assist requests share the queue, and so the limit. Used by the worker process and the tests. */
 export async function registerAiWorker(boss: PgBoss, runners: AiRunners, pool: Pool, concurrency: number = AI_CONCURRENCY): Promise<void> {
-  await boss.work<ExtractionJob | AnalysisJob>(QUEUES.ai, { localConcurrency: concurrency, pollingIntervalSeconds: 0.5 }, async (jobs) => {
+  await boss.work<AiJob>(QUEUES.ai, { localConcurrency: concurrency, pollingIntervalSeconds: 0.5 }, async (jobs) => {
     for (const job of jobs) {
       const attemptNo = job.retryCount + 1;
       const last = attemptNo >= MAX_ATTEMPTS;
+      if (isAssistJob(job.data)) {
+        await processAssist(runners, pool, job.data.assistRequestId, attemptNo, last);
+        continue;
+      }
       const analysis = isAnalysisJob(job.data);
       const id = isAnalysisJob(job.data) ? job.data.analysisRunId : job.data.runId;
       try {
@@ -61,4 +72,24 @@ export async function registerAiWorker(boss: PgBoss, runners: AiRunners, pool: P
       }
     }
   });
+}
+
+async function processAssist(runners: AiRunners, pool: Pool, id: string, attemptNo: number, last: boolean): Promise<void> {
+  try {
+    if (!runners.assist) throw new Error('AI assist requests are not handled by this worker');
+    const outcome = await runners.assist.process(id, attemptNo, last);
+    // Throwing makes pg-boss retry the job after its delay; the request is already back to 'queued'.
+    if (outcome === 'retry') throw new Error(`assist ${id} attempt ${attemptNo} failed; will retry`);
+  } catch (err) {
+    // A failure outside the AI call must not leave the request 'running' for ever.
+    if (last) {
+      await pool.query(
+        `UPDATE ai_requests SET status = 'failed', failure_code = 'internal_error',
+                failure_detail = 'An unexpected error stopped the AI request.', finished_at = now()
+          WHERE id = $1 AND status IN ('queued', 'running')`,
+        [id],
+      );
+    }
+    throw err;
+  }
 }
