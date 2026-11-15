@@ -4,7 +4,7 @@ import type { AuthUser } from '../auth/tokens';
 import { UUID } from '../common/uuid7';
 import { activeManagerSql, audienceVisibleSql } from '../discussion/audience';
 import { PG_POOL } from '../db/database.module';
-import { summaryShownSql } from '../notes/notes.service';
+import { summaryShownSql } from '../assist/material';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { loadArchiveState } from '../projects/archive';
 import type { GrantKind } from '../projects/grants';

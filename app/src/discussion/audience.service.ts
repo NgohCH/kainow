@@ -116,7 +116,7 @@ export class AudienceService {
   }
 
   /** Named people must hold a valid membership or a grant giving access in the project today. */
-  private assertNamable(ctx: ProjectContext, change: AudienceChange): void {
+  assertNamable(ctx: ProjectContext, change: AudienceChange): void {
     for (const id of change.namedUserIds) {
       const member = effectiveRoles(ctx.rows, id, ctx.today).length > 0;
       const granted = ctx.grants.some((g) => g.userId === id && grantGivesAccess(g, ctx.today, ctx.rows));

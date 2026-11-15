@@ -5,10 +5,10 @@ import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { type AudienceChange, type AudienceRow, type Person, inAudience, parseAudienceChange } from '../discussion/audience';
-import { AudienceService, NAMED_OUTSIDE } from '../discussion/audience.service';
+import { AudienceService } from '../discussion/audience.service';
 import { refuseSecrets } from '../discussion/messages';
 import { STALE_EDIT } from '../discussion/threads.service';
-import { NotesService, formatDay } from '../notes/notes.service';
+import { NotesService, SUMMARY_APPROVED_LABEL, formatDay } from '../notes/notes.service';
 import { NoteTextError, normaliseText, sha256Hex } from '../notes/text';
 import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { grantGivesAccess } from '../projects/grants';
@@ -30,7 +30,6 @@ export const MAX_SUMMARY_INPUT = 120_000;
 const MAX_REASON = 500;
 
 export const SUMMARY_DRAFT_LABEL = 'AI draft — not approved for sharing';
-export const SUMMARY_APPROVED_LABEL = 'Summary approved for sharing';
 export const SUMMARY_UNAVAILABLE_PREFIX = 'AI summary unavailable: ';
 
 /** The 4a refusal wording (4a spec 7.5), for a source and for a meeting. */
@@ -38,6 +37,7 @@ const TOO_LONG_SOURCE = 'This source is too long to summarise in one request.';
 const TOO_LONG_MEETING = 'This meeting is too long to summarise in one request.';
 const NOTHING_TO_SUMMARISE = 'There is nothing in this meeting to summarise yet.';
 const NOT_RESTRICTED = 'Only a Restricted source or meeting can have a shareable summary; this one is already Project-wide.';
+const NOT_A_MEETING = 'Only a meeting can have a shareable summary; a discussion is already open to the whole project.';
 const NOT_A_SUMMARY_SOURCE = 'A shareable summary cannot itself be summarised.';
 const NOT_PUBLISHED = 'A submission can be summarised only after a reviewer publishes it.';
 const BAD_LEAVE_OUT = 'Leave out must be up to 1,000 characters.';
@@ -59,6 +59,7 @@ const SUMMARY_REASONS: Readonly<Record<string, string>> = {
   too_long: 'the source is too long to summarise in one request',
   nothing_to_summarise: 'there was nothing left to summarise',
   requester_not_in_audience: 'the person who asked can no longer read the original',
+  original_removed: 'the original was deleted',
   queue_unavailable: 'the summary could not be queued; request it again',
 };
 const summaryReason = (code: string | null, detail: string | null) => (code && SUMMARY_REASONS[code]) || unavailableReason(code, detail);
@@ -140,14 +141,18 @@ export async function summaryVisible(db: Db, ctx: ProjectContext | null, row: Su
 // The input, the marks and the runner's part (spec 7.1, 7.2)
 // ---------------------------------------------------------------------------------------------------------------------
 
-/** The text the summary is drafted from: the source's current version, or the meeting's visible messages (current versions). */
-async function originalText(db: Db, row: Pick<SummaryRow, 'originalSourceId' | 'originalThreadId'>): Promise<string> {
+/**
+ * The text the summary is drafted from: the source's current version, or the meeting's visible messages (current
+ * versions). Null when the original source is no longer active (deleted): nothing of it may be sent.
+ */
+async function originalText(db: Db, row: Pick<SummaryRow, 'originalSourceId' | 'originalThreadId'>): Promise<string | null> {
   if (row.originalSourceId) {
     const { rows } = await db.query<{ text: string }>(
-      `SELECT text_content AS text FROM source_versions WHERE source_id = $1 ORDER BY version_no DESC LIMIT 1`,
+      `SELECT v.text_content AS text FROM sources s JOIN source_versions v ON v.source_id = s.id
+        WHERE s.id = $1 AND s.status = 'active' ORDER BY v.version_no DESC LIMIT 1`,
       [row.originalSourceId],
     );
-    return rows[0]?.text ?? '';
+    return rows[0]?.text ?? null;
   }
   const { rows } = await db.query<{ no: number; authorName: string; at: Date; body: string }>(
     `SELECT m.message_no AS no, u.display_name AS "authorName", m.created_at AS at, v.body
@@ -214,6 +219,7 @@ export async function summaryInput(db: Db, request: AssistRequest, _material: Re
     return { code: 'requester_not_in_audience', detail: 'The person who asked can no longer read the original, so nothing was sent to the AI.' };
   }
   const text = await originalText(db, row);
+  if (text === null) return { code: 'original_removed', detail: 'The original was deleted, so nothing was sent to the AI.' };
   if (text.trim() === '') return { code: 'nothing_to_summarise', detail: 'There was nothing left to summarise, so nothing was sent to the AI.' };
   if (text.length > MAX_SUMMARY_INPUT) return { code: 'too_long', detail: row.originalSourceId ? TOO_LONG_SOURCE : TOO_LONG_MEETING };
   return { system: SUMMARY_SYSTEM(row.leaveOut, await audienceDescription(db, row.intendedAudience)), user: text };
@@ -261,17 +267,11 @@ registerRemovedCheck('summary', summaryRemoved);
 
 export type SummaryStatus = 'queued' | 'running' | 'ready' | 'failed' | 'blocked';
 
-/** A mark's id in routes: its kind and phrase (marks are kept once per phrase and kind for each version). */
-export const markIdOf = (kind: MarkKind, phrase: string) => Buffer.from(`${kind}:${phrase}`, 'utf8').toString('base64url');
-
-function parseMarkId(raw: string): { kind: MarkKind; phrase: string } | undefined {
-  if (!/^[A-Za-z0-9_-]{1,2000}$/.test(raw)) return undefined;
-  const text = Buffer.from(raw, 'base64url').toString('utf8');
-  const colon = text.indexOf(':');
-  const kind = text.slice(0, colon);
-  if (colon < 0 || (kind !== 'leave_out' && kind !== 'name')) return undefined;
-  return { kind, phrase: text.slice(colon + 1) };
-}
+/**
+ * A mark's id in routes: opaque (no phrase or name in URLs or logs), derived from the mark row's identity (version,
+ * kind, phrase), so it names one mark of one version.
+ */
+export const markIdOf = (versionId: string, kind: MarkKind, phrase: string) => sha256Hex(`${versionId}\n${kind}\n${phrase}`).slice(0, 32);
 
 export interface MarkView {
   id: string;
@@ -383,7 +383,7 @@ async function marksOf(db: Db, versionId: string, body: string): Promise<MarkVie
   return rows.map((r) => {
     const places: Mark[] = findMarks(body, r.kind === 'leave_out' ? [r.phrase] : [], r.kind === 'name' ? [r.phrase] : []);
     return {
-      id: markIdOf(r.kind, r.phrase),
+      id: markIdOf(versionId, r.kind, r.phrase),
       phrase: r.phrase,
       kind: r.kind,
       places: places.map((p) => ({ start: p.start, end: p.end })),
@@ -492,15 +492,6 @@ export class SummariesService {
     }
   }
 
-  /** Named people must hold a valid membership or a grant giving access in the project today (as for any audience). */
-  private assertNamable(ctx: ProjectContext, change: AudienceChange): void {
-    for (const id of change.namedUserIds) {
-      const member = effectiveRoles(ctx.rows, id, ctx.today).length > 0;
-      const granted = ctx.grants.some((g) => g.userId === id && grantGivesAccess(g, ctx.today, ctx.rows));
-      if (!member && !granted) throw new BadRequestException(NAMED_OUTSIDE);
-    }
-  }
-
   /** Draft shareable summary of a Restricted published note or minutes (spec 7.1). */
   async requestForSource(user: AuthUser, sourceId: string, body: { intendedAudience: unknown; leaveOut: unknown }): Promise<SummaryView> {
     return this.request(user, body, async (db) => {
@@ -521,12 +512,18 @@ export class SummariesService {
   async requestForThread(user: AuthUser, threadId: string, body: { intendedAudience: unknown; leaveOut: unknown }): Promise<SummaryView> {
     return this.request(user, body, async (db) => {
       if (!UUID.test(threadId)) throw new NotFoundException();
-      const t = (await db.query<{ projectId: string; audienceId: string }>(`SELECT project_id AS "projectId", audience_id AS "audienceId" FROM discussion_threads WHERE id = $1`, [threadId])).rows[0];
+      const t = (
+        await db.query<{ projectId: string; audienceId: string; kind: string }>(
+          `SELECT project_id AS "projectId", audience_id AS "audienceId", kind FROM discussion_threads WHERE id = $1`,
+          [threadId],
+        )
+      ).rows[0];
       if (!t) throw new NotFoundException();
       const audience = await this.audiences.load(t.audienceId, db);
       const seen = await this.access.load(t.projectId, user, db);
       if (!seen || !inAudience(seen, audience)) throw new NotFoundException();
       const ctx = await this.access.authorize(user, 'summary.request', t.projectId, db);
+      if (t.kind !== 'meeting') throw new ConflictException(NOT_A_MEETING);
       if (audience.mode !== 'restricted') throw new ConflictException(NOT_RESTRICTED);
       return { ctx, original: { originalSourceId: null, originalThreadId: threadId } };
     });
@@ -540,10 +537,12 @@ export class SummariesService {
     const { id, requestId, ctx } = await this.inTransaction(async (db) => {
       const { ctx, original } = await find(db);
       const intended = parseAudienceChange(body.intendedAudience);
-      this.assertNamable(ctx, intended);
+      // Named people must be in the project today, as for any audience.
+      this.audiences.assertNamable(ctx, intended);
       const leaveOut = cleanText(body.leaveOut, MAX_LEAVE_OUT, BAD_LEAVE_OUT, false);
       // The input limit is checked now, so nothing is queued (or charged) for a source too long to send.
       const text = await originalText(db, original);
+      if (text === null) throw new NotFoundException();
       if (text.trim() === '') throw new ConflictException(NOTHING_TO_SUMMARISE);
       if (text.length > MAX_SUMMARY_INPUT) throw new BadRequestException(original.originalSourceId ? TOO_LONG_SOURCE : TOO_LONG_MEETING);
       const at = this.now();
@@ -649,22 +648,19 @@ export class SummariesService {
     return this.mustView(ctx, id);
   }
 
-  /** Ticks one mark of the newest version Intended (spec 7.2); recorded with the version, by whom and when. */
-  async markIntended(user: AuthUser, id: string, markId: string, body: { versionNo?: unknown }): Promise<SummaryView> {
+  /** Ticks one mark of the newest version (which must be the version given) Intended (spec 7.2); recorded with the version, by whom and when. */
+  async markIntended(user: AuthUser, id: string, markId: string, body: { versionNo: unknown }): Promise<SummaryView> {
     const ctx = await this.inTransaction(async (db) => {
       const { row, ctx } = await this.changeable(db, user, id, 'summary.request');
-      const mark = parseMarkId(markId);
-      if (!mark) throw new NotFoundException();
-      const versions = await versionRows(db, row.id);
-      const latest = versions[versions.length - 1];
-      if (!latest) throw new NotFoundException();
-      if (body.versionNo !== undefined) await this.latestAs(db, ctx, row, versionNoOf(body.versionNo, BAD_VERSION));
-      const exists = await db.query<{ intended: boolean }>(
-        `SELECT intended_by IS NOT NULL AS intended FROM summary_marks WHERE version_id = $1 AND phrase = $2 AND kind = $3`,
-        [latest.id, mark.phrase, mark.kind],
+      // The version the person was looking at must still be the newest, so a tick lands only where it was seen.
+      const latest = await this.latestAs(db, ctx, row, versionNoOf(body.versionNo, BAD_VERSION));
+      const marks = await db.query<{ phrase: string; kind: MarkKind; intended: boolean }>(
+        `SELECT phrase, kind, intended_by IS NOT NULL AS intended FROM summary_marks WHERE version_id = $1`,
+        [latest.id],
       );
-      if (!exists.rows[0]) throw new NotFoundException();
-      if (exists.rows[0].intended) throw new ConflictException(MARK_ALREADY);
+      const mark = marks.rows.find((m) => markIdOf(latest.id, m.kind, m.phrase) === markId);
+      if (!mark) throw new NotFoundException();
+      if (mark.intended) throw new ConflictException(MARK_ALREADY);
       await db.query(`UPDATE summary_marks SET intended_by = $4, intended_at = $5 WHERE version_id = $1 AND phrase = $2 AND kind = $3`, [
         latest.id,
         mark.phrase,
@@ -741,7 +737,18 @@ export class SummariesService {
       } else {
         await db.query(`SELECT 1 FROM sources WHERE id = $1 FOR UPDATE`, [sourceId]);
       }
-      const version = await this.notes.addVersionText(db, sourceId, latest.body, user.id, at, { summary: true });
+      // The same text as the source's current version (an edit back to the approved wording) approves that text again,
+      // with no new source version.
+      const current = (
+        await db.query<{ no: number; sha: string }>(
+          `SELECT version_no AS no, text_sha256 AS sha FROM source_versions WHERE source_id = $1 ORDER BY version_no DESC LIMIT 1`,
+          [sourceId],
+        )
+      ).rows[0];
+      const sourceVersionNo =
+        current && current.sha === sha256Hex(latest.body)
+          ? current.no
+          : (await this.notes.addVersionText(db, sourceId, latest.body, user.id, at, { summary: true })).versionNo;
       await db.query(
         `UPDATE summaries SET state = 'approved', summary_source_id = $2, approved_version_id = $3, approved_by = $4, approved_at = $5, review_reason = NULL WHERE id = $1`,
         [row.id, sourceId, latest.id, user.id, at],
@@ -754,7 +761,7 @@ export class SummariesService {
           user.id,
           row.id,
           reason,
-          { versionNo: latest.no, versionId: latest.id, sourceId, sourceVersionNo: version.versionNo, audience: row.intendedAudience.mode, gained: gained.length },
+          { versionNo: latest.no, versionId: latest.id, sourceId, sourceVersionNo, audience: row.intendedAudience.mode, gained: gained.length },
           at,
         ],
       );

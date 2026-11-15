@@ -84,10 +84,18 @@ class Params {
   }
 }
 
+/**
+ * SQL over the sources row `s`: true unless it is a `summary` source whose summary is not approved (Access review
+ * required still shows it). The one rule for notes lists, search and material (spec 7.2, 7.3).
+ */
+export function summaryShownSql(s: string): string {
+  return `(${s}.kind <> 'summary' OR EXISTS (SELECT 1 FROM summaries sm WHERE sm.id = ${s}.summary_id AND sm.state IN ('approved', 'review_required')))`;
+}
+
 /** A source whose current text may be material: not deleted, published, not a transcript, a summary only while approved. */
 export function sourceOkSql(s: string): string {
   return `${s}.status <> 'deleted' AND ${s}.publication = 'published' AND ${s}.kind <> 'discussion'
-     AND (${s}.kind <> 'summary' OR EXISTS (SELECT 1 FROM summaries sm WHERE sm.id = ${s}.summary_id AND sm.state IN ('approved', 'review_required')))`;
+     AND ${summaryShownSql(s)}`;
 }
 
 /** The scope's audience test over the audience row `a`. */

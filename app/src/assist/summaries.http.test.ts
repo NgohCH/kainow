@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, test } from 'node:test';
+import { findCredentials } from '../extraction/credentials';
 import type { JsonSchemaModel, ModelRequest } from '../extraction/model';
+import { ProjectAccess } from '../projects/access.service';
 import type { Usage } from '../spend/cost';
 import { MVP_SPEND_SETTINGS } from '../spend/mvp-settings';
 import { SpendService } from '../spend/spend.service';
@@ -9,6 +11,7 @@ import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 import { AssistRunner } from './assist-runner';
+import { findMaterial } from './material';
 
 const USAGE: Usage = { inputTokens: 2_000, cachedInputTokens: 0, outputTokens: 300 };
 const STALE = 'Someone changed this since you opened it';
@@ -177,6 +180,68 @@ describe('shareable summaries', { skip: SKIP_NO_DB }, () => {
     assert.equal(Number((await t.pool.query(`SELECT count(*) AS n FROM summaries`)).rows[0].n), 0);
   });
 
+  test('a credential in Leave out is refused and nothing is stored', async () => {
+    const original = await boardNote();
+    const leaveOut = 'Acme Supplies\npassword: hunter2hunter2';
+    const kinds = findCredentials(leaveOut).map((f) => f.pattern).join(', ');
+    assert.notEqual(kinds, '');
+    const r = await ask(pm, original, { intendedAudience: { mode: 'project' }, leaveOut });
+    assert.equal(r.status, 400);
+    assert.equal(r.body.message, `Not posted: this looks like it contains ${kinds}. Remove it and post again.`);
+    for (const table of ['summaries', 'ai_requests', 'ai_assist_events']) {
+      assert.equal(Number((await t.pool.query(`SELECT count(*) AS n FROM ${table}`)).rows[0].n), 0, table);
+    }
+    assert.equal(queued.length, 0);
+  });
+
+  test('the Ask panel finds an approved summary only for its audience', async () => {
+    const personal = async (userId: string) => ({
+      kind: 'personal' as const,
+      ctx: (await t.app.get(ProjectAccess).load(project, { id: userId, email: 'x@example.org', displayName: 'x', role: 'member' }))!,
+    });
+    /** The sources of the passages found for "turbine". */
+    const found = async (userId: string) => {
+      const items = await findMaterial(t.pool, await personal(userId), ['turbine']);
+      const passageIds = items.map((i) => i.passageId).filter((x): x is string => x !== null);
+      return (
+        await t.pool.query(`SELECT DISTINCT v.source_id AS id FROM passages p JOIN source_versions v ON v.id = p.owner_id WHERE p.id = ANY($1::uuid[])`, [passageIds])
+      ).rows.map((x) => x.id as string);
+    };
+    // One summary for the managers and Ada only, one for the whole project.
+    const managers = await boardNote();
+    const narrow = await ask(dep, managers, { intendedAudience: { mode: 'restricted', namedUserIds: [] }, leaveOut: '' });
+    assert.equal(narrow.status, 201, JSON.stringify(narrow.body));
+    assert.equal(await run(lastRequest(), new SummaryModel('The turbine is narrow news.')), 'succeeded');
+    t.clock.advanceSeconds(1);
+    assert.deepEqual(await found(ids.ben), [], 'a draft is not material');
+    let a = await pm.request('POST', `/summaries/${narrow.body.id}/approve`, { versionNo: 1, reason: 'Managers only' });
+    assert.equal(a.status, 200, JSON.stringify(a.body));
+    const narrowSource = a.body.approved.sourceId as string;
+    assert.deepEqual(await found(ids.ben), [], 'outside its audience');
+    assert.ok((await found(ids.dep)).includes(narrowSource));
+
+    const wide = await ask(dep, managers, { intendedAudience: { mode: 'project' }, leaveOut: '' });
+    assert.equal(wide.status, 201);
+    assert.equal(await run(lastRequest(), new SummaryModel('The turbine is wide news.')), 'succeeded');
+    t.clock.advanceSeconds(1);
+    a = await pm.request('POST', `/summaries/${wide.body.id}/approve`, { versionNo: 1, reason: 'Everyone' });
+    assert.equal(a.status, 200, JSON.stringify(a.body));
+    assert.deepEqual(await found(ids.ben), [a.body.approved.sourceId], 'only the Project-wide summary, never the original');
+  });
+
+  test('a summary of a deleted original is blocked before any AI call', async () => {
+    const original = await boardNote();
+    const r = await ask(dep, original);
+    assert.equal(r.status, 201);
+    await t.pool.query(`UPDATE sources SET status = 'deleted' WHERE id = $1`, [original]);
+    const model = new SummaryModel();
+    assert.equal(await run(lastRequest(), model), 'blocked');
+    assert.equal(model.calls.length, 0);
+    const req = (await t.pool.query(`SELECT failure_code FROM ai_requests WHERE id = $1`, [lastRequest()])).rows[0];
+    assert.equal(req.failure_code, 'original_removed');
+    assert.equal(Number((await t.pool.query(`SELECT count(*) AS n FROM ai_spend_entries`)).rows[0].n), 0);
+  });
+
   test('summary of a Project-wide source refused', async () => {
     const open = await note('Open note', ORIGINAL);
     const r = await ask(pm, open);
@@ -216,12 +281,19 @@ describe('shareable summaries', { skip: SKIP_NO_DB }, () => {
     assert.equal((await pm.request('POST', `/summaries/${id}/marks/${name.id}/intended`, { versionNo: 1 })).status, 409);
     assert.equal((await pm.request('POST', `/summaries/${id}/approve`, { versionNo: 1, reason: 'Share it' })).status, 409);
 
+    // A tick names the version it was seen on: required, and refused once a newer version exists.
+    const leave = v.current.marks.find((m: { kind: string }) => m.kind === 'leave_out');
+    assert.equal((await pm.request('POST', `/summaries/${id}/marks/${leave.id}/intended`, {})).status, 400);
+    assert.ok(!/acme|ada|lim/i.test(leave.id), 'mark ids are opaque');
     // Editing the phrase away: the new version's marks are found again (the name is marked again, not yet ticked).
     r = await dep.request('PUT', `/summaries/${id}`, { body: 'The turbine replacement goes ahead next month. Ada Lim follows up.', basedOnVersion: 1 });
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.equal(r.body.current.no, 2);
     assert.match(r.body.current.editedByLabel, /^Edited by /);
     assert.deepEqual(r.body.current.marks.map((m: { kind: string; intended: boolean }) => [m.kind, m.intended]), [['name', false]]);
+    const staleTick = await pm.request('POST', `/summaries/${id}/marks/${leave.id}/intended`, { versionNo: 1 });
+    assert.equal(staleTick.status, 409);
+    assert.equal(staleTick.body.message, STALE);
     // A stale version is refused with the summary as it is now.
     const stale = await pm.request('POST', `/summaries/${id}/approve`, { versionNo: 1, reason: 'Share it' });
     assert.equal(stale.status, 409);
@@ -274,6 +346,13 @@ describe('shareable summaries', { skip: SKIP_NO_DB }, () => {
     assert.equal(again.body.approved.sourceId, sourceId);
     const versions = (await t.pool.query(`SELECT version_no, origin FROM source_versions WHERE source_id = $1 ORDER BY version_no`, [sourceId])).rows;
     assert.deepEqual(versions, [{ version_no: 1, origin: 'summary' }, { version_no: 2, origin: 'summary' }]);
+    // Edited and edited back to the approved wording: approving it again adds no source version and does not fail.
+    assert.equal((await pm.request('PUT', `/summaries/${id}`, { body: 'Something else.', basedOnVersion: 2 })).status, 200);
+    assert.equal((await pm.request('PUT', `/summaries/${id}`, { body: 'The turbine replacement goes ahead in December.', basedOnVersion: 3 })).status, 200);
+    const same = await pm.request('POST', `/summaries/${id}/approve`, { versionNo: 4, reason: 'Same wording' });
+    assert.equal(same.status, 200, JSON.stringify(same.body));
+    assert.equal(same.body.approved.versionNo, 4);
+    assert.equal(Number((await t.pool.query(`SELECT count(*) AS n FROM source_versions WHERE source_id = $1`, [sourceId])).rows[0].n), 2);
   });
 
   test('outsider sees Summary approved for sharing and From a restricted source, no link to the original', async () => {
@@ -372,8 +451,10 @@ describe('shareable summaries', { skip: SKIP_NO_DB }, () => {
     assert.equal(await run(lastRequest(), model), 'succeeded');
     assert.match(model.calls[0].user, /^\[#1 · Ada Lim · .+\]\nThe turbine goes ahead\.\n\n\[#2 · Ada Lim · .+\]\nAcme Supplies were late\.$/);
     assert.match(model.calls[0].system, /named participants: Ben Tan/);
-    // A Project-wide discussion is not Restricted.
+    // A discussion is never summarised for sharing: only a meeting.
     const d = await pm.request('POST', `/projects/${project}/threads`, { kind: 'discussion', title: 'Plant' });
-    assert.equal((await pm.request('POST', `/threads/${d.body.id}/summaries`, { intendedAudience: { mode: 'project' } })).status, 409);
+    const refused = await pm.request('POST', `/threads/${d.body.id}/summaries`, { intendedAudience: { mode: 'project' } });
+    assert.equal(refused.status, 409);
+    assert.match(refused.body.message, /^Only a meeting can have a shareable summary/);
   });
 });

@@ -9,6 +9,7 @@ import { RESTRICTED_ROLES, audienceVisibleSql } from '../discussion/audience';
 import { refuseSecrets } from '../discussion/messages';
 import { effectiveRoles } from '../projects/membership';
 import { ProjectAccess } from '../projects/access.service';
+import { summaryShownSql } from '../assist/material';
 import { indexVersion } from '../assist/passage-index';
 import { UploadRejected, readUpload } from './readers';
 import { NoteTextError, normaliseText, sha256Hex } from './text';
@@ -55,9 +56,6 @@ export const MINUTES_LABEL = 'Minutes — from meeting';
 export const SUMMARY_LIST_LABEL = 'Shareable summary';
 export const SUMMARY_APPROVED_LABEL = 'Summary approved for sharing';
 export const FROM_RESTRICTED_LABEL = 'From a restricted source';
-/** SQL: a `summary` source is readable only while its summary is approved (Access review required still shows it). */
-export const summaryShownSql = (s: string) =>
-  `(${s}.kind <> 'summary' OR EXISTS (SELECT 1 FROM summaries sm WHERE sm.id = ${s}.summary_id AND sm.state IN ('approved', 'review_required')))`;
 
 /** What a plain-notes submission adds to creating a source (spec 5.4). */
 export interface SubmissionInput {

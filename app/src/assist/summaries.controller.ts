@@ -60,7 +60,7 @@ export class SummariesController {
     return this.summaries.version(who(req), id, no);
   }
 
-  /** { versionNo? } → ticks the mark of the newest version Intended. */
+  /** { versionNo } → ticks the mark of that version (it must be the newest) Intended. */
   @Post('summaries/:id/marks/:markId/intended')
   @AnySignedInUser()
   @HttpCode(200)
