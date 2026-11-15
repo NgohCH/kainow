@@ -8,7 +8,7 @@ import { type AudienceChange, type AudienceRow, type Person, inAudience, parseAu
 import { AudienceService } from '../discussion/audience.service';
 import { refuseSecrets } from '../discussion/messages';
 import { STALE_EDIT } from '../discussion/threads.service';
-import { NotesService, SUMMARY_APPROVED_LABEL, formatDay } from '../notes/notes.service';
+import { FROM_RESTRICTED_LABEL, NotesService, SUMMARY_APPROVED_LABEL, formatDay } from '../notes/notes.service';
 import { NoteTextError, normaliseText, sha256Hex } from '../notes/text';
 import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { grantGivesAccess } from '../projects/grants';
@@ -19,6 +19,7 @@ import { type Mark, type MarkKind, findMarks, parseLeaveOut } from './leave-out'
 import { SUMMARY_SYSTEM, type SummaryOutput } from './prompts';
 import { unavailableReason } from './questions.service';
 import { ASSIST_QUEUE, type AssistQueue } from './queue';
+import { SUMMARY_REVIEW_LABEL, SUMMARY_REVIEW_REASONS, type SummaryReviewCause, onMaterialRemoved } from './removal';
 import { type AssistRequest, type RequestMaterial, type RequestStatus, createRequest } from './requests';
 
 type Db = Pick<PoolClient, 'query'>;
@@ -51,6 +52,7 @@ const NOT_OPEN = 'This summary can no longer be changed.';
 const ALREADY_APPROVED = 'This version is already approved.';
 const MARKS_OPEN = 'Every marked phrase or name must be removed by editing or ticked Intended before this version can be approved.';
 const MARK_ALREADY = 'This mark is already ticked Intended.';
+const NOT_IN_REVIEW = 'This summary is not waiting for an access review.';
 
 /** Why a summary request ended, in plain words, where the shared runner wording would not fit. */
 const SUMMARY_REASONS: Readonly<Record<string, string>> = {
@@ -82,6 +84,7 @@ export interface SummaryRow {
   approvedVersionId: string | null;
   approvedBy: string | null;
   approvedAt: Date | null;
+  reviewReason: string | null;
   createdBy: string;
   createdAt: Date;
 }
@@ -89,7 +92,7 @@ export interface SummaryRow {
 const SUMMARY_ROW = `sm.id, sm.project_id AS "projectId", sm.original_source_id AS "originalSourceId", sm.original_thread_id AS "originalThreadId",
   sm.intended_audience AS "intendedAudience", sm.leave_out AS "leaveOut", sm.state, sm.summary_source_id AS "summarySourceId",
   sm.approved_version_id AS "approvedVersionId", sm.approved_by AS "approvedBy", sm.approved_at AS "approvedAt",
-  sm.created_by AS "createdBy", sm.created_at AS "createdAt"`;
+  sm.review_reason AS "reviewReason", sm.created_by AS "createdBy", sm.created_at AS "createdAt"`;
 
 export async function loadSummaryRow(db: Db, id: string, lock = false): Promise<SummaryRow | undefined> {
   if (!UUID.test(id)) return undefined;
@@ -297,6 +300,8 @@ export interface SummaryVersionView {
 }
 
 export interface SummaryView {
+  /** The full view, for people in the original's audience. */
+  view: 'full';
   id: string;
   projectId: string;
   /** The original, for people in its audience (the only people who see this view). */
@@ -320,6 +325,27 @@ export interface SummaryView {
   canApprove: boolean;
   /** For those who may approve: the version, the audience, and exactly who gains access by approving it. */
   approval: { versionNo: number; audience: 'project' | 'restricted'; gainAccess: Person[] } | null;
+  /** "Access review required" with its reason, for PM, Owner and Sponsor while in review or hidden (spec 7.3). */
+  reviewLabel: typeof SUMMARY_REVIEW_LABEL | null;
+  reviewReason: string | null;
+  /** PM, Owner or Sponsor, while in review or hidden: Confirm or Withdraw (any project state). */
+  canReview: boolean;
+}
+
+/**
+ * What the summary's wider audience sees at /summaries/:id while it is approved or in an access review (spec 7.2):
+ * the approved text and its labels only. Never a draft, a mark, the Leave out text, omitted categories, or the
+ * original's title or link.
+ */
+export interface SharedSummaryView {
+  view: 'shared';
+  id: string;
+  projectId: string;
+  label: typeof SUMMARY_APPROVED_LABEL;
+  approved: string;
+  from: typeof FROM_RESTRICTED_LABEL;
+  sourceId: string;
+  body: string;
 }
 
 export interface SummaryListItem {
@@ -332,6 +358,8 @@ export interface SummaryListItem {
   latestVersionNo: number | null;
   openMarks: number;
   approvalRequested: boolean;
+  /** Why an access review is needed, in plain words; null for a draft. */
+  reason: string | null;
 }
 
 interface VersionRow {
@@ -406,6 +434,8 @@ const allowed = (ctx: ProjectContext, action: 'summary.request' | 'summary.appro
   ctx.roles.length > 0 && decide({ action, roles: ctx.roles, status: ctx.project.status }).allowed;
 
 const changeableState = (s: SummaryState) => s === 'draft' || s === 'approved';
+const inReview = (s: SummaryState) => s === 'review_required' || s === 'hidden';
+const reviewReasonText = (code: string | null) => (code && SUMMARY_REVIEW_REASONS[code as SummaryReviewCause]) || null;
 
 /** Everyone among the project's current readers who would be in the audience `change` (spec 7.1: shown with the people it covers). */
 async function coveredBy(db: Db, ctx: ProjectContext, change: AudienceChange): Promise<Person[]> {
@@ -579,12 +609,43 @@ export class SummariesService {
     return this.mustView(ctx, id);
   }
 
-  async get(user: AuthUser, id: string): Promise<SummaryView> {
+  /**
+   * The full view for the original's audience; for the summary's wider audience, the approved summary only while it
+   * is approved or in an access review (404 once hidden or withdrawn, and for everyone else).
+   */
+  async get(user: AuthUser, id: string): Promise<SummaryView | SharedSummaryView> {
     const row = await loadSummaryRow(this.pool, id);
     if (!row) throw new NotFoundException();
     const ctx = await this.access.load(row.projectId, user);
     if (!ctx) throw new NotFoundException();
-    return this.mustView(ctx, id);
+    const full = await this.view(this.pool, ctx, id);
+    if (full) return full;
+    const shared = await this.sharedView(ctx, row);
+    if (!shared) throw new NotFoundException();
+    return shared;
+  }
+
+  private async sharedView(ctx: ProjectContext, row: SummaryRow): Promise<SharedSummaryView | undefined> {
+    if ((row.state !== 'approved' && row.state !== 'review_required') || !row.summarySourceId || !row.approvedVersionId || !row.approvedAt) return undefined;
+    if (!canReadContent(ctx) || ctx.project.id !== row.projectId) return undefined;
+    if (!inAudience(ctx, await this.audiences.forSource(row.summarySourceId))) return undefined;
+    const r = (
+      await this.pool.query<{ body: string; by: string | null }>(
+        `SELECT v.body, u.display_name AS by FROM summary_versions v LEFT JOIN users u ON u.id = $2 WHERE v.id = $1`,
+        [row.approvedVersionId, row.approvedBy],
+      )
+    ).rows[0];
+    if (!r) return undefined;
+    return {
+      view: 'shared',
+      id: row.id,
+      projectId: row.projectId,
+      label: SUMMARY_APPROVED_LABEL,
+      approved: `Approved by ${r.by ?? 'someone'} on ${formatDay(row.approvedAt)}`,
+      from: FROM_RESTRICTED_LABEL,
+      sourceId: row.summarySourceId,
+      body: r.body,
+    };
   }
 
   /** One version's text, for comparing versions; the original's audience only. */
@@ -771,6 +832,62 @@ export class SummariesService {
   }
 
   /**
+   * The summary in an access review, locked, for Confirm or Withdraw: 404 for anyone outside the original's audience,
+   * then 403 unless PM, Owner or Sponsor (any project state: protective), then 409 when it is not in review or hidden.
+   * A reason is required (up to 500 characters, secret check); it is recorded, never the summary text.
+   */
+  private async reviewing(db: PoolClient, user: AuthUser, id: string, rawReason: unknown): Promise<{ row: SummaryRow; ctx: ProjectContext; reason: string }> {
+    const row = await loadSummaryRow(db, id, true);
+    if (!row) throw new NotFoundException();
+    if (!(await summaryVisible(db, await this.access.load(row.projectId, user, db), row))) throw new NotFoundException();
+    const ctx = await this.access.authorize(user, 'summary.review', row.projectId, db);
+    if (!inReview(row.state)) throw new ConflictException(NOT_IN_REVIEW);
+    const reason = typeof rawReason === 'string' ? rawReason.trim() : '';
+    if (reason === '' || reason.length > MAX_REASON) throw new BadRequestException(REASON_REQUIRED);
+    refuseSecrets(reason);
+    return { row, ctx, reason };
+  }
+
+  private async reviewEvent(db: PoolClient, row: SummaryRow, user: AuthUser, action: 'summary_confirmed' | 'summary_withdrawn', reason: string, at: Date) {
+    await db.query(
+      `INSERT INTO ai_assist_events (id, project_id, actor_id, action, target_kind, target_id, reason, detail, at) VALUES ($1, $2, $3, $4, 'summary', $5, $6, $7, $8)`,
+      [uuidv7(at.getTime()), row.projectId, user.id, action, row.id, reason, { from: row.state, cause: row.reviewReason }, at],
+    );
+  }
+
+  /**
+   * Confirm (spec 7.3): back to approved, the label cleared; a hidden summary is visible to its wider audience again.
+   * Answers and drafts already withdrawn or sent to review because of it are not brought back.
+   */
+  async confirm(user: AuthUser, id: string, body: { reason: unknown }): Promise<SummaryView> {
+    const ctx = await this.inTransaction(async (db) => {
+      const { row, ctx, reason } = await this.reviewing(db, user, id, body.reason);
+      const at = this.now();
+      await db.query(`UPDATE summaries SET state = 'approved', review_reason = NULL WHERE id = $1`, [row.id]);
+      await this.reviewEvent(db, row, user, 'summary_confirmed', reason, at);
+      return ctx;
+    });
+    return this.mustView(ctx, id);
+  }
+
+  /**
+   * Withdraw (spec 7.3): the summary source is no longer readable through notes, search or material, and answers and
+   * drafts that used it are removed material (private ones withdrawn, shared ones to review). Kept in history.
+   * Locks: the summary row, then (in the hook) answers and drafts.
+   */
+  async withdraw(user: AuthUser, id: string, body: { reason: unknown }): Promise<SummaryView> {
+    const ctx = await this.inTransaction(async (db) => {
+      const { row, ctx, reason } = await this.reviewing(db, user, id, body.reason);
+      const at = this.now();
+      await db.query(`UPDATE summaries SET state = 'withdrawn' WHERE id = $1`, [row.id]);
+      await this.reviewEvent(db, row, user, 'summary_withdrawn', reason, at);
+      if (row.summarySourceId) await onMaterialRemoved(db, { sourceIds: [row.summarySourceId] }, 'summary_withdrawn', at);
+      return ctx;
+    });
+    return this.mustView(ctx, id);
+  }
+
+  /**
    * Summaries to review (spec 7.2, 10): for PM, Owner and Sponsor, the project's summaries in their original's audience
    * that are drafts with a version, or that need an access review. Titles and states only.
    */
@@ -796,12 +913,13 @@ export class SummariesService {
         id: r.id,
         original: { kind: original.kind, id: original.id, title: original.title },
         state: r.state,
-        label: r.state === 'draft' ? SUMMARY_DRAFT_LABEL : 'Access review required',
+        label: r.state === 'draft' ? SUMMARY_DRAFT_LABEL : SUMMARY_REVIEW_LABEL,
         requestedBy: { id: r.createdBy, displayName: r.byName },
         createdAt: r.createdAt,
         latestVersionNo: latest?.no ?? null,
         openMarks: open,
         approvalRequested: latest ? await approvalRequested(this.pool, r.id, latest.no) : false,
+        reason: r.state === 'draft' ? null : reviewReasonText(r.reviewReason),
       });
     }
     return out;
@@ -851,7 +969,9 @@ export class SummariesService {
     const approvedVersion = versions.find((v) => v.id === row.approvedVersionId);
     const approvable = mayApprove && current !== null && current.openMarks === 0 && !current.approved;
     const by = (await people([row.createdBy]))[0] ?? { id: row.createdBy, displayName: '' };
+    const review = inReview(row.state) && allowed(ctx, 'summary.review');
     return {
+      view: 'full',
       id: row.id,
       projectId: row.projectId,
       original: { kind: original.kind, id: original.id, title: original.title },
@@ -882,6 +1002,9 @@ export class SummariesService {
         mayApprove && current !== null && !current.approved
           ? { versionNo: current.no, audience: row.intendedAudience.mode, gainAccess: (await this.audiences.preview(ctx, original.audience, row.intendedAudience)).gain }
           : null,
+      reviewLabel: review ? SUMMARY_REVIEW_LABEL : null,
+      reviewReason: review ? reviewReasonText(row.reviewReason) : null,
+      canReview: review,
     };
   }
 

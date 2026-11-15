@@ -83,4 +83,20 @@ export class SummariesController {
   approve(@Param('id') id: string, @Body() body: unknown, @Req() req: HttpRequest) {
     return this.summaries.approve(who(req), id, { versionNo: field(body, 'versionNo'), reason: field(body, 'reason') });
   }
+
+  /** { reason } → a summary in an access review (or hidden) back to approved; PM, Owner or Sponsor, any project state. */
+  @Post('summaries/:id/confirm')
+  @AnySignedInUser()
+  @HttpCode(200)
+  confirm(@Param('id') id: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    return this.summaries.confirm(who(req), id, { reason: field(body, 'reason') });
+  }
+
+  /** { reason } → withdrawn (kept in history); answers and drafts that used it are treated as removed material. */
+  @Post('summaries/:id/withdraw')
+  @AnySignedInUser()
+  @HttpCode(200)
+  withdraw(@Param('id') id: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    return this.summaries.withdraw(who(req), id, { reason: field(body, 'reason') });
+  }
 }

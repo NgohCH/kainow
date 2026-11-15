@@ -213,7 +213,8 @@ describe('shareable summaries', { skip: SKIP_NO_DB }, () => {
     assert.equal(narrow.status, 201, JSON.stringify(narrow.body));
     assert.equal(await run(lastRequest(), new SummaryModel('The turbine is narrow news.')), 'succeeded');
     t.clock.advanceSeconds(1);
-    assert.deepEqual(await found(ids.ben), [], 'a draft is not material');
+    // The Deputy is in the original's audience, so the draft is visible to him: still only the original is material.
+    assert.deepEqual(await found(ids.dep), [managers], 'a draft is not material');
     let a = await pm.request('POST', `/summaries/${narrow.body.id}/approve`, { versionNo: 1, reason: 'Managers only' });
     assert.equal(a.status, 200, JSON.stringify(a.body));
     const narrowSource = a.body.approved.sourceId as string;
@@ -366,8 +367,12 @@ describe('shareable summaries', { skip: SKIP_NO_DB }, () => {
     assert.ok(!text.includes(original), 'no link to the original');
     assert.ok(!text.includes('Board note'), 'no title of the original');
     assert.ok(!text.includes(id), 'no link to the draft');
-    // The draft and its versions stay with the original's audience.
-    assert.equal((await view(ben, id)).status, 404);
+    // The wider audience reads the approved summary only; the draft and its versions stay with the original's audience.
+    const shared = await view(ben, id);
+    assert.equal(shared.status, 200, JSON.stringify(shared.body));
+    assert.deepEqual(Object.keys(shared.body).sort(), ['approved', 'body', 'from', 'id', 'label', 'projectId', 'sourceId', 'view']);
+    assert.equal(shared.body.view, 'shared');
+    assert.equal(shared.body.approved, `Approved by ${pmName} on 9 Nov 2026`);
     assert.equal((await ben.request('GET', `/summaries/${id}/versions/1`)).status, 404);
     const versionId = (await view(pm, id)).body.current.id;
     const flag = (c: Client) => c.request('POST', `/projects/${project}/feedback`, { targetKind: 'summary_version', targetId: versionId, category: 'incorrect', note: 'Wrong date.' });

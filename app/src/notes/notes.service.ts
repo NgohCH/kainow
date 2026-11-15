@@ -319,7 +319,7 @@ export class NotesService {
               max(v.version_no)::int AS "latestVersion", count(v.id)::int AS "versionCount"
          FROM sources s JOIN source_versions v ON v.source_id = s.id JOIN audiences a ON a.id = s.audience_id
         WHERE s.status = 'active' AND s.project_id = $1 AND s.kind IN ('notes', 'minutes', 'summary') AND s.publication = 'published'
-          AND ${summaryShownSql('s')} AND ${audienceVisibleSql('a', '$2', '$3')}
+          AND ${summaryShownSql('s', { user: '$2', today: '$3' })} AND ${audienceVisibleSql('a', '$2', '$3')}
         GROUP BY s.id ORDER BY s.created_at DESC, s.id DESC`,
       [projectId, userId, this.access.today(), MINUTES_LABEL, SUMMARY_LIST_LABEL],
     );

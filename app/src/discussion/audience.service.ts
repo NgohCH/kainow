@@ -22,6 +22,8 @@ export interface SourceAccessRow {
   audience: AudienceRow;
   /** For a `summary` source, its summary's state (AI assist spec 7.2, 7.3); null otherwise. */
   summaryState?: string | null;
+  /** For a hidden `summary` source, the audience of the summarised original (still shown to it, spec 7.3). */
+  originalAudience?: AudienceRow | null;
 }
 
 export const NAMED_OUTSIDE = 'Only people in this project can be named.';
@@ -88,8 +90,15 @@ export class AudienceService {
    * holding PM, Deputy, Owner or Sponsor today, whatever audience is intended (spec 5.4).
    */
   canSeeSource(ctx: ProjectContext, user: AuthUser, row: SourceAccessRow): boolean {
-    // A shareable summary is readable only while approved (Access review required still shows it).
-    if (row.kind === 'summary' && row.summaryState !== 'approved' && row.summaryState !== 'review_required') return false;
+    // A shareable summary is readable while approved (Access review required still shows it); a hidden one only by
+    // people also in the original's audience; a draft or withdrawn one by nobody (the same rule as summaryShownSql).
+    if (row.kind === 'summary') {
+      const shown =
+        row.summaryState === 'approved' ||
+        row.summaryState === 'review_required' ||
+        (row.summaryState === 'hidden' && !!row.originalAudience && inAudience(ctx, row.originalAudience));
+      if (!shown) return false;
+    }
     if (row.publication === 'published') return inAudience(ctx, row.audience);
     if (!canReadContent(ctx)) return false;
     return row.submittedBy === user.id || ctx.roles.some((r) => RESTRICTED_ROLES.includes(r));
@@ -104,13 +113,21 @@ export class AudienceService {
     const ctx = await this.access.authorize(user, 'note.view', projectId, db);
     const { rows } = await db.query(
       `SELECT s.id, s.project_id AS "projectId", s.kind, s.publication, s.submitted_by AS "submittedBy", s.audience_id AS "audienceId",
-              (SELECT sm.state FROM summaries sm WHERE sm.id = s.summary_id) AS "summaryState"
-         FROM sources s WHERE s.id = $1`,
+              sm.state AS "summaryState", COALESCE(os.audience_id, ot.audience_id) AS "originalAudienceId"
+         FROM sources s
+         LEFT JOIN summaries sm ON sm.id = s.summary_id
+         LEFT JOIN sources os ON os.id = sm.original_source_id
+         LEFT JOIN discussion_threads ot ON ot.id = sm.original_thread_id
+        WHERE s.id = $1`,
       [sourceId],
     );
     if (!rows[0]) throw new NotFoundException();
-    const { audienceId, ...rest } = rows[0];
-    const row: SourceAccessRow = { ...rest, audience: await this.load(audienceId, db) };
+    const { audienceId, originalAudienceId, ...rest } = rows[0];
+    const row: SourceAccessRow = {
+      ...rest,
+      audience: await this.load(audienceId, db),
+      originalAudience: rest.summaryState === 'hidden' && originalAudienceId ? await this.load(originalAudienceId, db) : null,
+    };
     if (!this.canSeeSource(ctx, user, row)) throw new NotFoundException();
     return { ctx, row };
   }

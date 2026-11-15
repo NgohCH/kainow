@@ -85,11 +85,23 @@ class Params {
 }
 
 /**
- * SQL over the sources row `s`: true unless it is a `summary` source whose summary is not approved (Access review
- * required still shows it). The one rule for notes lists, search and material (spec 7.2, 7.3).
+ * SQL over the sources row `s`: true unless it is a `summary` source whose summary is not shown. The one rule for
+ * notes lists, search and material (spec 7.2, 7.3):
+ *   - approved, or Access review required (audience of the original tightened): shown;
+ *   - hidden (a message of the meeting hidden or deleted, or the original deleted): shown only to a `viewer` in the
+ *     original's audience; with no viewer (AI material, spec 4.3) never;
+ *   - a draft or withdrawn: never.
+ * The caller still applies the summary source's own audience.
  */
-export function summaryShownSql(s: string): string {
-  return `(${s}.kind <> 'summary' OR EXISTS (SELECT 1 FROM summaries sm WHERE sm.id = ${s}.summary_id AND sm.state IN ('approved', 'review_required')))`;
+export function summaryShownSql(s: string, viewer?: { user: string; today: string }): string {
+  const hidden = viewer
+    ? ` OR (sm.state = 'hidden' AND EXISTS (
+          SELECT 1 FROM audiences oa
+           WHERE oa.id = COALESCE((SELECT os.audience_id FROM sources os WHERE os.id = sm.original_source_id),
+                                  (SELECT ot.audience_id FROM discussion_threads ot WHERE ot.id = sm.original_thread_id))
+             AND ${audienceVisibleSql('oa', viewer.user, viewer.today)}))`
+    : '';
+  return `(${s}.kind <> 'summary' OR EXISTS (SELECT 1 FROM summaries sm WHERE sm.id = ${s}.summary_id AND (sm.state IN ('approved', 'review_required')${hidden})))`;
 }
 
 /** A source whose current text may be material: not deleted, published, not a transcript, a summary only while approved. */

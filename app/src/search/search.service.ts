@@ -85,9 +85,10 @@ WITH hits AS (
      AND (d.publication IS NULL OR d.publication = 'published' OR d.submitted_by = ${user}::uuid
           OR ${activeManagerSql('d.project_id', user, '$3')})
      -- A deleted note's text and proposals are hidden (sub-project 5 quarantine adds its condition here too).
-     -- An approved shareable summary is found as a note by its own audience; a draft, hidden or withdrawn one is not.
+     -- An approved shareable summary is found as a note by its own audience; a hidden one only by people also in the
+     -- original's audience; a draft or withdrawn one by nobody.
      AND (d.kind NOT IN ('note', 'ai_proposal') OR EXISTS (SELECT 1 FROM sources s WHERE s.id = d.source_id AND s.status <> 'deleted' AND (d.kind <> 'note' OR s.kind <> 'discussion')
-          AND ${summaryShownSql('s')}))
+          AND ${summaryShownSql('s', { user, today: '$3' })}))
      AND (d.kind <> 'person' OR d.ends_on IS NULL OR d.ends_on >= $3::date)
 ), best AS (
   SELECT DISTINCT ON (project_id, kind, item_id) * FROM hits
