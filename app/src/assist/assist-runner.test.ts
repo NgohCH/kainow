@@ -10,7 +10,7 @@ import { MVP_SPEND_SETTINGS } from '../spend/mvp-settings';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
-import { AssistRunner, registerCompletion, registerInputBuilder } from './assist-runner';
+import { AssistRunner, registerCompletion, registerInputBuilder, unregisterKind } from './assist-runner';
 import { type MaterialItem, findMaterial } from './material';
 import { QUESTION_SYSTEM, SUMMARY_SYSTEM } from './prompts';
 import { createRequest, loadRequest } from './requests';
@@ -109,7 +109,7 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     assert.equal(req.maxOutputTokens, 1_500);
     assert.equal(req.timeoutMs, 120_000);
     assert.ok(req.user.includes('When is the pump service?'));
-    assert.ok(req.user.includes('[P1] Plant room — Paragraph 1\nThe pump service is booked for Thursday morning.'), req.user);
+    assert.ok(req.user.includes('<passage marker="P1" location="Plant room — Paragraph 1">\nThe pump service is booked for Thursday morning.\n</passage>'), req.user);
 
     // A finished request is left alone.
     assert.equal(await runner(model).process(id, 2, false), 'skipped');
@@ -143,7 +143,7 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     await t.pool.query(`UPDATE sources SET status = 'deleted' WHERE id = $1`, [hidden]);
 
     const model = new FakeModel((req) => {
-      const marker = /\[(P\d)\] Plant room/.exec(req.user)?.[1] as string;
+      const marker = /marker="(P\d)" location="Plant room/.exec(req.user)?.[1] as string;
       return { answer_markdown: `Thursday [${marker}].`, not_found: false, cited: [marker] };
     });
     assert.equal(await runner(model).process(id, 1, false), 'succeeded');
@@ -153,7 +153,7 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     const gone = rows.find((m) => m.location.startsWith('Pump costs'));
     const kept = rows.find((m) => m.location.startsWith('Plant room'));
     assert.deepEqual([gone.dropped_at_start, gone.cited, kept.dropped_at_start, kept.cited], [true, false, false, true]);
-    assert.ok(!user.includes(`[${gone.marker}]`), 'its marker was not sent either');
+    assert.ok(!user.includes(`marker="${gone.marker}"`), 'its marker was not sent either');
   });
 
   test('all material dropped at start blocks without an AI call or spend', async () => {
@@ -182,7 +182,7 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     assert.equal(mine.length, 2);
     const id = await ask('pump service', { by: ids.pm, scope: 'thread', threadId: r.body.id, material: mine });
     const model = new FakeModel((req) => {
-      const marker = /\[(P\d)\] Plant room/.exec(req.user)?.[1] as string;
+      const marker = /marker="(P\d)" location="Plant room/.exec(req.user)?.[1] as string;
       return { answer_markdown: `Thursday [${marker}].`, not_found: false, cited: [marker] };
     });
     assert.equal(await runner(model).process(id, 1, false), 'succeeded');
@@ -200,6 +200,18 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual([r.status, r.failure_code, r.failure_detail], ['blocked', 'project_not_open', 'The project is no longer open, so the AI request did not run.']);
     assert.equal(model.calls.length, 0);
     assert.equal((await entries()).length, 0);
+  });
+
+  test('a refusal on a later attempt still marks the stale reservation of a stopped attempt', async () => {
+    await note('Plant room', 'The pump service is booked for Thursday morning.');
+    const id = await ask('When is the pump service?');
+    // Attempt 1 reserved and then its worker stopped: the entry stays reserved.
+    const reserved = await spend.reserve({ requestId: id, attemptNo: 1, estimateMicroMyr: 1_000n, purpose: 'question_answer', actorUserId: ids.ada });
+    assert.equal(reserved.status, 'reserved');
+    await t.pool.query(`UPDATE projects SET status = 'deferred' WHERE id = $1`, [project]);
+    assert.equal(await runner(new FakeModel()).process(id, 2, false), 'blocked');
+    assert.equal((await request(id)).failure_code, 'project_not_open');
+    assert.deepEqual((await entries()).map((e) => [e.attempt_no, e.status]), [[1, 'uncertain']]);
   });
 
   test('requester removed from project blocks without spend', async () => {
@@ -266,7 +278,7 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
   test('a registered kind builds its own input and completes in the same transaction', async () => {
     // Stand-ins for Task 9: the summary input is the source text, not passages.
     const seen: string[] = [];
-    registerInputBuilder('summary', async (_db, req) => ({ system: SUMMARY_SYSTEM('the vendor name'), user: `Source text for ${req.id}` }));
+    registerInputBuilder('summary', async (_db, req) => ({ system: SUMMARY_SYSTEM('the vendor name', 'everyone on the project'), user: `Source text for ${req.id}` }));
     registerCompletion('summary', async (_db, req, output) => {
       seen.push(`${req.id}:${(output as { summary_markdown: string }).summary_markdown}`);
     });
@@ -282,6 +294,7 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual([loaded?.kind, loaded?.status, loaded?.material.length], ['summary', 'succeeded', 0]);
 
     // A report with no builder registered fails visibly rather than guessing.
+    unregisterKind('report');
     const report = await createRequest(t.pool, { projectId: project, kind: 'report', requestedBy: ids.pm, scope: 'personal', material: [], at: t.clock.now() });
     assert.equal(await runner(model).process(report, 1, false), 'failed');
     assert.equal((await request(report)).failure_code, 'kind_not_available');

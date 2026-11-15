@@ -4,17 +4,36 @@
  * have been sent. Details name markers only, never the answer text.
  */
 
-const MARKER = /\[(P\d+)\]/g;
+const GROUP = /\[([^\]]*)\]/g;
+const MARKER = /\bP\d+\b/gi;
 
-/** The passage markers written in the text, each once, in order of first appearance. */
+/**
+ * The passage markers written in the text, each once, upper-cased, in order of first appearance. Every square-bracket
+ * group is read and every P-marker in it counts, so `[P1, P4]`, `[P1; P4]` and `[p4]` are all checked.
+ */
 export function markersIn(markdown: string): string[] {
   const out: string[] = [];
-  for (const m of markdown.matchAll(MARKER)) if (!out.includes(m[1])) out.push(m[1]);
+  for (const g of markdown.matchAll(GROUP)) {
+    for (const m of g[1].matchAll(MARKER)) {
+      const marker = m[0].toUpperCase();
+      if (!out.includes(marker)) out.push(marker);
+    }
+  }
   return out;
+}
+
+/** A cited entry as a marker (`p3 ` becomes `P3`), or null when it is not a marker at all. */
+export function normalizeMarker(entry: string): string | null {
+  const t = entry.trim();
+  return /^P\d+$/i.test(t) ? t.toUpperCase() : null;
 }
 
 export function validateCitations(markdown: string, cited: string[], sent: string[]): { ok: true } | { ok: false; detail: string } {
   const known = new Set(sent);
+  const normal = cited.map(normalizeMarker);
+  // Never echo a malformed entry: it is model output and could hold any text.
+  if (normal.some((m) => m === null)) return { ok: false, detail: 'The AI answer listed a cited entry that is not a passage marker.' };
+  cited = normal as string[];
   const listed = new Set(cited);
   const written = markersIn(markdown);
   const unknownInText = written.filter((m) => !known.has(m));

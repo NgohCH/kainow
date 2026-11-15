@@ -1,5 +1,5 @@
 import type { Pool, PoolClient } from 'pg';
-import { type AiPurpose, guardedAiCall } from '../ai/guarded-call';
+import { type AiPurpose, guardedAiCall, markStaleReservations } from '../ai/guarded-call';
 import type { Clock } from '../auth/tokens';
 import { type AudienceMode, inAudience } from '../discussion/audience';
 import { findCredentials } from '../extraction/credentials';
@@ -10,7 +10,7 @@ import { ProjectAccess, canReadContent } from '../projects/access.service';
 import type { ProjectStatus } from '../projects/matrix';
 import type { Usage } from '../spend/cost';
 import type { SpendService } from '../spend/spend.service';
-import { validateCitations } from './citations';
+import { normalizeMarker, validateCitations } from './citations';
 import { type MaterialScope, readableMaterial } from './material';
 import {
   ANSWER_MAX_OUTPUT_TOKENS,
@@ -64,6 +64,12 @@ export function registerInputBuilder(kind: AssistKind, fn: InputBuilder): void {
 
 export function registerCompletion(kind: AssistKind, fn: Completion): void {
   completions.set(kind, fn);
+}
+
+/** For tests: removes a kind's input builder and completion, so the kind is not available until registered again. */
+export function unregisterKind(kind: AssistKind): void {
+  builders.delete(kind);
+  completions.delete(kind);
 }
 
 /** The fixed part of each kind: spend purpose, output limit, schema, parsing, and which text carries citations. */
@@ -160,6 +166,9 @@ export class AssistRunner {
       [request.id, attemptNo, this.d.clock()],
     );
     if (claimed.rowCount === 0) return 'skipped';
+    // An earlier attempt whose worker stopped mid-call left its reservation open. Mark it now, before any refusal below
+    // ends the request without reaching guardedAiCall (which would otherwise do it): the outcome is unknown, so it stays counted.
+    await markStaleReservations(pool, this.d.spend, request.id, attemptNo);
 
     const scope = await this.recheck(request);
     if ('code' in scope) return this.end(request, 'blocked', scope);
@@ -209,7 +218,7 @@ export class AssistRunner {
           const check = validateCitations(markdown, cited, sent);
           // The provider did the work, so a bad citation is charged; nothing is saved.
           if (!check.ok) throw new ModelBadResponse(check.detail, usage);
-          return { output, cited, usage };
+          return { output, cited: cited.map((c) => normalizeMarker(c) as string), usage };
         },
       },
     );
