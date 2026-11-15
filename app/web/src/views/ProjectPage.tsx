@@ -41,6 +41,12 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
   const [error, setError] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
   const askButton = useRef<HTMLButtonElement>(null);
+  // Focus goes back to the Ask button only after the panel has unmounted (the page behind it is inert until then).
+  const wasAsking = useRef(false);
+  useEffect(() => {
+    if (wasAsking.current && !asking) askButton.current?.focus();
+    wasAsking.current = asking;
+  }, [asking]);
   const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(() => {
@@ -147,10 +153,7 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
       {asking && contentAllowed && (
         <AskPanel
           projectId={project.id}
-          onClose={() => {
-            setAsking(false);
-            askButton.current?.focus();
-          }}
+          onClose={() => setAsking(false)}
         />
       )}
       {error && <p role="alert" className="error">{error}</p>}
