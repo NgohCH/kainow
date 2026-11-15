@@ -95,21 +95,38 @@ export function AskPanel({ projectId, onClose }: { projectId: string; onClose: (
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
 
-  // On a narrow screen the panel is a full page: everything behind it is inert so Tab cannot reach it.
+  // On a narrow screen the panel is a full page: everything outside it (page, header, navigation, skip links) is inert
+  // so Tab cannot reach it. Siblings are inerted at every level from the panel up to the body, including ones added later.
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 719px)');
-    let marked: HTMLElement[] = [];
-    const apply = () => {
+    const marked = new Set<HTMLElement>();
+    const release = () => {
       for (const el of marked) el.inert = false;
-      const siblings = [...(aside.current?.parentElement?.children ?? [])].filter((el) => el !== aside.current) as HTMLElement[];
-      marked = mq.matches ? siblings.filter((el) => !el.inert) : [];
-      for (const el of marked) el.inert = true;
+      marked.clear();
+    };
+    const apply = () => {
+      release();
+      if (!mq.matches) return;
+      for (let node: HTMLElement | null = aside.current; node && node !== document.body; node = node.parentElement) {
+        for (const sib of node.parentElement?.children ?? []) {
+          if (sib !== node && sib instanceof HTMLElement && !sib.inert) {
+            sib.inert = true;
+            marked.add(sib);
+          }
+        }
+      }
     };
     apply();
     mq.addEventListener('change', apply);
+    // A sibling added while the panel is open (a notice, a toast) is made inert too; our own changes do not loop.
+    const watcher = new MutationObserver(() => {
+      if (mq.matches) apply();
+    });
+    watcher.observe(document.body, { childList: true, subtree: true });
     return () => {
+      watcher.disconnect();
       mq.removeEventListener('change', apply);
-      for (const el of marked) el.inert = false;
+      release();
     };
   }, []);
 
