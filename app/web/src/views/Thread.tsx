@@ -23,7 +23,9 @@ import {
   threadReducer,
   type ThreadView,
 } from '../discussion.ts';
+import { mergeTimeline } from '../assist.ts';
 import { formatWhen } from '../format.ts';
+import { ThreadAnswerItem } from './AiAnswer.tsx';
 import { AnalysisStatus } from './AnalysisStatus.tsx';
 import { MeetingControls } from './Meeting.tsx';
 import { MinutesPanel, useMinutes } from './MinutesPanel.tsx';
@@ -200,27 +202,31 @@ function ThreadBody({ first, projectId, meId, messageNo, project }: { first: Thr
       <div className={meeting ? 'meeting-split' : undefined}>
       <div>
       <section aria-label="Messages">
-        {t.messages.length === 0 && <p className="empty">No messages yet.</p>}
+        {t.messages.length === 0 && (t.aiAnswers ?? []).length === 0 && <p className="empty">No messages yet.</p>}
         <ol className="messages">
-          {t.messages.map((m) => (
-            <MessageItem
-              key={m.id}
-              m={m}
-              s={s}
-              canPost={t.canPost}
-              canModerate={t.canModerate}
-              canRestore={canRestore}
-              meId={meId}
-              selectable={t.kind === 'discussion' && t.canPost && m.state === 'visible'}
-              checked={chosen.includes(m.id)}
-              onToggle={() => toggle(m.id)}
-              dispatch={dispatch}
-              onReply={() => {
-                dispatch({ type: 'replyTo', id: m.id });
-                composer.current?.focus();
-              }}
-            />
-          ))}
+          {mergeTimeline(t.messages, t.aiAnswers ?? []).map((item) =>
+            item.kind === 'answer' ? (
+              <ThreadAnswerItem key={`a-${item.answer.id}`} answer={item.answer} projectId={projectId} canModerate={t.canModerate} onChanged={() => void reloadThread()} />
+            ) : (
+              <MessageItem
+                key={item.message.id}
+                m={item.message}
+                s={s}
+                canPost={t.canPost}
+                canModerate={t.canModerate}
+                canRestore={canRestore}
+                meId={meId}
+                selectable={t.kind === 'discussion' && t.canPost && item.message.state === 'visible'}
+                checked={chosen.includes(item.message.id)}
+                onToggle={() => toggle(item.message.id)}
+                dispatch={dispatch}
+                onReply={() => {
+                  dispatch({ type: 'replyTo', id: item.message.id });
+                  composer.current?.focus();
+                }}
+              />
+            ),
+          )}
         </ol>
       </section>
 

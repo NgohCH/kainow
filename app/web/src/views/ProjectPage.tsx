@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, api, type Membership, type Project } from '../api.ts';
 import { formatWhen } from '../format.ts';
 import {
@@ -22,6 +22,7 @@ import { HumanProposals } from './HumanProposals.tsx';
 import { ProjectApprovals } from './ApprovalSettings.tsx';
 import { Closing, DelegationControl, type ClosedSummary, type ClosureView } from './Closing.tsx';
 import { DeadlineReview } from './DeadlineReview.tsx';
+import { AskPanel } from './AskPanel.tsx';
 import { Discussion } from './Discussion.tsx';
 import { Work } from './Work.tsx';
 import { DeliveryHistory } from './Deliveries.tsx';
@@ -38,6 +39,8 @@ const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.mes
 export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: string; tab: Tab; meId: string; itemId?: string }) {
   const [project, setProject] = useState<Project | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [asking, setAsking] = useState(false);
+  const askButton = useRef<HTMLButtonElement>(null);
   const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(() => {
@@ -136,6 +139,20 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
           </a>
         ))}
       </nav>
+      {contentAllowed && (
+        <p>
+          <button type="button" ref={askButton} aria-expanded={asking} onClick={() => setAsking((v) => !v)}>Ask about this project</button>
+        </p>
+      )}
+      {asking && contentAllowed && (
+        <AskPanel
+          projectId={project.id}
+          onClose={() => {
+            setAsking(false);
+            askButton.current?.focus();
+          }}
+        />
+      )}
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
       {tab === 'overview' && <Overview project={project} act={act} />}

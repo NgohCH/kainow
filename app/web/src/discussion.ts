@@ -1,6 +1,7 @@
 // Notes & discussion: the shapes the API returns, the calls, and the pure helpers the list and thread screens use.
 import { ApiError, api, type Membership } from './api.ts';
 import { formatWhen } from './format.ts';
+import { answersAnnouncement, mergeAnswers, type ThreadAnswerView } from './assist.ts';
 
 export interface Person {
   id: string;
@@ -38,6 +39,8 @@ export interface ThreadView {
   meetingDate: string | null;
   state: 'open' | 'ended' | null;
   messages: MessageView[];
+  /** AI answers shared into the thread; shown among the messages by time. */
+  aiAnswers?: ThreadAnswerView[];
   present: Person[];
   canPost: boolean;
   canModerate: boolean;
@@ -176,7 +179,14 @@ export function threadReducer(s: ThreadState, a: ThreadAction): ThreadState {
     case 'polled': {
       const known = new Set(s.thread.messages.map((m) => m.id));
       const arrived = a.thread.messages.filter((m) => !known.has(m.id));
-      return { ...s, thread: { ...a.thread, messages: mergeMessages(s.thread.messages, a.thread.messages) }, announce: announcement(arrived, s.meId) };
+      const oldAnswers = s.thread.aiAnswers ?? [];
+      const knownAnswers = new Set(oldAnswers.map((x) => x.id));
+      const arrivedAnswers = (a.thread.aiAnswers ?? []).filter((x) => !knownAnswers.has(x.id) && !x.hidden);
+      return {
+        ...s,
+        thread: { ...a.thread, messages: mergeMessages(s.thread.messages, a.thread.messages), aiAnswers: mergeAnswers(oldAnswers, a.thread.aiAnswers ?? []) },
+        announce: announcement(arrived, s.meId) || answersAnnouncement(arrivedAnswers),
+      };
     }
     case 'draft':
       return { ...s, draft: a.text };

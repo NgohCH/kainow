@@ -1,14 +1,14 @@
 // Feedback on AI output (spec 8): labels, form checks and who sees which actions. Pure, so they can be tested.
 import { api } from './api.ts';
 
-export type TargetKind = 'minutes_draft' | 'analysis_run' | 'proposal';
+export type TargetKind = 'minutes_draft' | 'analysis_run' | 'proposal' | 'answer' | 'report_version' | 'summary_version';
 export type Category = 'incorrect' | 'missed_item' | 'misleading' | 'other';
 export type FeedbackStatus = 'open' | 'reviewed' | 'closed';
 
 export const CATEGORY_LABEL: Record<Category, string> = { incorrect: 'Incorrect', missed_item: 'Missed item', misleading: 'Misleading', other: 'Other' };
 export const CATEGORIES = Object.keys(CATEGORY_LABEL) as Category[];
 export const STATUS_LABEL: Record<FeedbackStatus, string> = { open: 'Open', reviewed: 'Reviewed', closed: 'Closed' };
-export const TARGET_LABEL: Record<TargetKind, string> = { minutes_draft: 'Draft minutes', analysis_run: 'Analysis', proposal: 'Proposal' };
+export const TARGET_LABEL: Record<TargetKind, string> = { minutes_draft: 'Draft minutes', analysis_run: 'Analysis', proposal: 'Proposal', answer: 'AI answer', report_version: 'Report draft', summary_version: 'Summary' };
 export const MAX_NOTE = 2000;
 export const NOTE_MESSAGE = `Write a note of 1 to ${MAX_NOTE.toLocaleString('en-US')} characters.`;
 export const CATEGORY_MESSAGE = 'Choose what was wrong.';
