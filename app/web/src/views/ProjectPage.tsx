@@ -23,6 +23,7 @@ import { ProjectApprovals } from './ApprovalSettings.tsx';
 import { Closing, DelegationControl, type ClosedSummary, type ClosureView } from './Closing.tsx';
 import { DeadlineReview } from './DeadlineReview.tsx';
 import { AskPanel } from './AskPanel.tsx';
+import { Drafts } from './Drafts.tsx';
 import { Discussion } from './Discussion.tsx';
 import { Work } from './Work.tsx';
 import { DeliveryHistory } from './Deliveries.tsx';
@@ -32,7 +33,7 @@ import { ProjectSettings } from './NotificationSettings.tsx';
 import { ProjectCalendarProvider } from './ProjectCalendar.tsx';
 import { type Act, ArchivePanel, DepartmentMove, GrantsSection, HandoverForm, HoldActions } from './ProjectAccessPanels.tsx';
 
-type Tab = 'overview' | 'people' | 'notes' | 'work' | 'settings' | 'feedback' | 'closing' | 'deadline-review';
+type Tab = 'overview' | 'people' | 'notes' | 'work' | 'drafts' | 'settings' | 'feedback' | 'closing' | 'deadline-review';
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
@@ -92,7 +93,7 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
   const tabs: Array<[Tab, string]> = [
     ['overview', 'Overview'],
     ['people', 'People'],
-    ...(contentAllowed ? ([['notes', 'Notes & discussion'], ['work', 'Work']] as Array<[Tab, string]>) : []),
+    ...(contentAllowed ? ([['notes', 'Notes & discussion'], ['work', 'Work'], ['drafts', 'Drafts']] as Array<[Tab, string]>) : []),
     ...(contentAllowed ? ([['feedback', 'Feedback']] as Array<[Tab, string]>) : []),
     ['settings', 'Settings'],
   ];
@@ -159,6 +160,7 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
       {tab === 'overview' && <Overview project={project} act={act} />}
+      {tab === 'drafts' && contentAllowed && <Drafts projectId={project.id} draftId={itemId} />}
       {tab === 'feedback' && contentAllowed && <Feedback projectId={project.id} />}
       {tab === 'settings' && <ProjectSettings projectId={project.id} />}
       {tab === 'closing' && <Closing project={project} act={act} />}

@@ -1,11 +1,9 @@
-import { type FormEvent, Fragment, useRef, useState } from 'react';
+import { type FormEvent, useRef, useState } from 'react';
 import { ApiError } from '../api.ts';
 import {
   ANSWER_LABEL,
   type AnswerSource,
-  type Inline,
   hideAnswer,
-  parseMarkdown,
   safeHref,
   sourcesSummary,
   type ThreadAnswerView,
@@ -13,6 +11,7 @@ import {
 } from '../assist.ts';
 import { formatWhen } from '../format.ts';
 import { FeedbackButton } from './Feedback.tsx';
+import { Markdown } from './Markdown.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
 
@@ -41,37 +40,11 @@ export function AnswerBody({
     requestAnimationFrame(() => document.getElementById(sourceId(marker))?.focus());
   }
 
-  const inline = (parts: Inline[]) =>
-    parts.map((p, i) => {
-      if (p.t === 'bold') return <strong key={i}>{p.text}</strong>;
-      if (p.t === 'code') return <code key={i}>{p.text}</code>;
-      if (p.t === 'marker')
-        return known.has(p.text) ? (
-          <button key={i} type="button" className="quiet marker" aria-label={`Source ${p.text}`} onClick={() => jump(p.text)}>
-            {p.text}
-          </button>
-        ) : (
-          <Fragment key={i}>{p.text}</Fragment>
-        );
-      return <Fragment key={i}>{p.text}</Fragment>;
-    });
-
   return (
     <>
       {markdown !== null && (
         <div className="answer-text">
-          {parseMarkdown(markdown).map((b, i) => {
-            if (b.t === 'p') return <p key={i}>{inline(b.inlines)}</p>;
-            if (b.t === 'h') return <p key={i}><strong>{inline(b.inlines)}</strong></p>;
-            const Tag = b.t;
-            return (
-              <Tag key={i}>
-                {b.items.map((item, j) => (
-                  <li key={j}>{inline(item)}</li>
-                ))}
-              </Tag>
-            );
-          })}
+          <Markdown markdown={markdown} idPrefix={`${scope}-${id}`} known={(m) => known.has(m)} onMarker={jump} />
         </div>
       )}
       {(shown.length > 0 || droppedText) && (
