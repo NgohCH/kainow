@@ -36,4 +36,34 @@ export class QuestionsController {
   get(@Param('requestId') requestId: string, @Req() req: HttpRequest) {
     return this.questions.get(who(req), requestId);
   }
+
+  /** { threadId } → the shared AnswerView; 409 with canReanswer when some thread readers could not read what it used. */
+  @Post('questions/:requestId/share')
+  @AnySignedInUser()
+  @HttpCode(200)
+  share(@Param('requestId') requestId: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    return this.questions.share(who(req), requestId, { threadId: field(body, 'threadId') });
+  }
+
+  /** { threadId } → the new thread-scope question; it is shared into the thread when answered. */
+  @Post('questions/:requestId/reanswer')
+  @AnySignedInUser()
+  @HttpCode(201)
+  reanswer(@Param('requestId') requestId: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    return this.questions.reanswer(who(req), requestId, { threadId: field(body, 'threadId') });
+  }
+
+  @Post('questions/:requestId/hide')
+  @AnySignedInUser()
+  @HttpCode(200)
+  hide(@Param('requestId') requestId: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    return this.questions.hide(who(req), requestId, { reason: field(body, 'reason') });
+  }
+
+  @Post('questions/:requestId/unhide')
+  @AnySignedInUser()
+  @HttpCode(200)
+  unhide(@Param('requestId') requestId: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    return this.questions.unhide(who(req), requestId, { reason: field(body, 'reason') });
+  }
 }

@@ -8,6 +8,7 @@ import { type ProjectAction, decide } from '../projects/matrix';
 import { todayUtc8 } from '../projects/membership';
 import { indexVersion } from '../assist/passage-index';
 import { formatMessageTime } from '../assist/passages';
+import { type ThreadAnswerView, threadAnswers } from '../assist/questions.service';
 import { sha256Hex } from '../notes/text';
 import { type AudienceChange, type AudienceMode, type AudienceRow, type Person, RESTRICTED_ROLES, audienceVisibleSql, parseAudienceChange } from './audience';
 import { MINUTES_LABEL } from '../notes/notes.service';
@@ -44,6 +45,8 @@ export interface ThreadView {
   meetingDate: string | null;
   state: 'open' | 'ended' | null;
   messages: MessageView[];
+  /** AI answers shared into the thread (spec 5.4), oldest first: not numbered messages; the web merges them by time. */
+  aiAnswers: ThreadAnswerView[];
   /** The Present list of a meeting (empty for a discussion). */
   present: Person[];
   canPost: boolean;
@@ -277,6 +280,7 @@ export class ThreadsService {
       meetingDate: t.meetingDate,
       state: t.state,
       messages: await this.messageViews(this.pool, user.id, 'm.thread_id = $1 AND m.message_no > $2', [t.id, afterNo]),
+      aiAnswers: await threadAnswers(this.pool, ctx, t.id),
       present: await this.people(
         this.pool,
         (await this.pool.query(`SELECT user_id AS id FROM meeting_attendees WHERE thread_id = $1`, [t.id])).rows.map((r) => r.id),

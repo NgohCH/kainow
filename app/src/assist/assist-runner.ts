@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from 'pg';
 import { type AiPurpose, guardedAiCall, markStaleReservations } from '../ai/guarded-call';
 import type { Clock } from '../auth/tokens';
+import { uuidv7 } from '../common/uuid7';
 import { type AudienceMode, inAudience } from '../discussion/audience';
 import { findCredentials } from '../extraction/credentials';
 import { type JsonSchemaModel, ModelBadResponse } from '../extraction/model';
@@ -51,8 +52,9 @@ export type InputBuilder = (db: Db, request: AssistRequest, material: RequestMat
 /**
  * Saves a kind's validated output. Runs in the transaction that also marks the cited material and sets the request
  * `succeeded`, so there is never an output without its request result, or the reverse. Throwing rolls everything back.
+ * `at` is the request's finish time.
  */
-export type Completion = (db: PoolClient, request: AssistRequest, output: unknown) => Promise<void>;
+export type Completion = (db: PoolClient, request: AssistRequest, output: unknown, at: Date) => Promise<void>;
 
 const builders = new Map<AssistKind, InputBuilder>();
 const completions = new Map<AssistKind, Completion>();
@@ -122,11 +124,26 @@ export async function questionInput(db: Db, request: AssistRequest, material: Re
   return { system: QUESTION_SYSTEM, user: `Question:\n${question}\n\nPassages:\n\n${renderInput(material)}` };
 }
 
-/** Writes the answer. The cited flags are set by the runner in the same transaction. */
-export async function completeQuestion(db: PoolClient, request: AssistRequest, output: unknown): Promise<void> {
+/**
+ * Writes the answer. The cited flags are set by the runner in the same transaction. A thread-scope question (Re-answer
+ * for this thread, spec 5.4) is shared into its thread at its finish time, by its requester, when it found an answer
+ * and the thread is still open for posting; otherwise it stays private in the requester's own list.
+ */
+export async function completeQuestion(db: PoolClient, request: AssistRequest, output: unknown, at: Date): Promise<void> {
   const o = output as QuestionOutput;
   const done = await db.query(`UPDATE ai_answers SET answer_markdown = $2, not_found = $3 WHERE request_id = $1`, [request.id, o.answer_markdown, o.not_found]);
   if (done.rowCount !== 1) throw new Error(`assist ${request.id}: no answer row to complete`);
+  if (request.scope !== 'thread' || o.not_found) return;
+  const open = await db.query(`SELECT 1 FROM discussion_threads WHERE id = $1 AND state IS DISTINCT FROM 'ended' FOR NO KEY UPDATE`, [request.scopeThreadId]);
+  if (open.rowCount !== 1) return;
+  await db.query(
+    `UPDATE ai_answers SET visibility = 'shared', shared_thread_id = $2, shared_by = $3, shared_at = $4 WHERE request_id = $1 AND visibility = 'private'`,
+    [request.id, request.scopeThreadId, request.requestedBy, at],
+  );
+  await db.query(
+    `INSERT INTO ai_assist_events (id, project_id, actor_id, action, target_kind, target_id, detail, at) VALUES ($1, $2, $3, 'shared', 'answer', $4, $5, $6)`,
+    [uuidv7(at.getTime()), request.projectId, request.requestedBy, request.id, { threadId: request.scopeThreadId, reanswer: true }, at],
+  );
 }
 
 registerInputBuilder('question', questionInput);
@@ -253,6 +270,8 @@ export class AssistRunner {
     const ctx = await this.access.load(request.projectId, user);
     if (!canReadContent(ctx)) return refused;
     if (request.scope === 'personal') return { kind: 'personal', ctx };
+    // Thread scope is only for Re-answer for this thread, which an Audit/Oversight grant holder may not use (spec 5.1).
+    if (ctx.roles.length === 0) return refused;
 
     const thread = (
       await pool.query<{ id: string; mode: AudienceMode; named: string[] }>(
@@ -279,11 +298,12 @@ export class AssistRunner {
         await client.query('ROLLBACK');
         return false;
       }
+      const at = this.d.clock();
       await markCited(client, request.id, cited);
-      await complete(client, request, output);
+      await complete(client, request, output, at);
       await client.query(
         `UPDATE ai_requests SET status = 'succeeded', model_id = $2, failure_code = NULL, failure_detail = NULL, finished_at = $3 WHERE id = $1`,
-        [request.id, modelId, this.d.clock()],
+        [request.id, modelId, at],
       );
       await client.query('COMMIT');
       return true;
