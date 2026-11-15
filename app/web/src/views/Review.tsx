@@ -1,18 +1,20 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, api, type Item, type Project, type Run } from '../api.ts';
+import { FeedbackButton } from './Feedback.tsx';
 import { AuthoriseForm, type Person } from './AuthoriseForm.tsx';
 import { ProjectCalendarProvider } from './ProjectCalendar.tsx';
 import { ChangeRequestPanel, pendingAuthorisation, useRequests } from './ChangeRequest.tsx';
 import { waitingLine, type RequestView } from '../changes.ts';
 import { KIND_LABEL, plural } from '../format.ts';
 import { REVIEW_STATUS_LABEL } from '../records.ts';
+import { canMarkByOffset, evidenceView, occurrenceChoiceText } from '../discussion.ts';
 import { buildSegments, contextAround, markedSpan } from '../segments.ts';
 import { type EditFields, blocksApproval, dueLine, editFormFrom, formatDay } from '../due.ts';
 
 interface RunView {
   projectId: string;
   run: Run;
-  source: { sourceId: string; title: string; versionNo: number };
+  source: { sourceId: string; title: string; versionNo: number; sourceKind?: string };
   items: Item[];
   /** What this viewer may do here; note says why approving is not open to them, when it is not. */
   permissions: { approve: boolean; reject: boolean; edit: boolean; note: string | null };
@@ -102,9 +104,11 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
   }, [view, meetingInput, runId]);
 
   const items = view?.items ?? [];
+  // A discussion transcript is shown with hidden and deleted messages masked, so its quote offsets no longer fit the text: no passage is marked there.
+  const offsetsFit = canMarkByOffset(view?.source.sourceKind);
   const segments = useMemo(
-    () => (text === null ? [] : buildSegments(text, items.map((i) => ({ id: i.id, ...markedSpan(i, pick[i.id]) })))),
-    [text, items, pick],
+    () => (text === null ? [] : buildSegments(text, offsetsFit ? items.map((i) => ({ id: i.id, ...markedSpan(i, pick[i.id]) })) : [])),
+    [text, items, pick, offsetsFit],
   );
   const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
   const current = selected ? byId.get(selected) : undefined;
@@ -390,7 +394,18 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                   Edit wording
                 </button>
               )}
-              <blockquote>{item.quote}</blockquote>
+              {(() => {
+                const ev = evidenceView({ quote: item.quote, quoteMasked: item.quoteMasked, sourceFlag: item.sourceFlag, discussionEvidence: item.discussionEvidence }, view.projectId);
+                return (
+                  ev.kind === 'quote' && (
+                    <>
+                      <blockquote>{ev.quote}</blockquote>
+                      {ev.flag && <p className="warn" role="note">{ev.flag}</p>}
+                      {ev.from && <p className="meta">{ev.href ? <a href={ev.href}>{ev.from}</a> : ev.from}</p>}
+                    </>
+                  )
+                );
+              })()}
               {item.quoteMatches === 0 && (
                 <p className="warn">This quote is not in the notes. The model may have made it up, so it cannot be approved.</p>
               )}
@@ -400,7 +415,7 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                     The quote appears {plural(item.quoteMatches, 'time')} in the notes. Choose the passage meant.
                   </legend>
                   {(item.occurrences ?? []).map((o, n) => {
-                    const ctx = contextAround(text, o.start, o.end);
+                    const ctx = offsetsFit ? contextAround(text, o.start, o.end) : { before: '', match: '', after: '' };
                     const checked = (item.chosenOccurrence ?? pick[item.id]) === n;
                     return (
                       <label key={n} className="occurrence">
@@ -416,9 +431,15 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                         />
                         <span>
                           <span className="meta">Place {n + 1}: </span>
-                          {ctx.before}
-                          <strong>{ctx.match}</strong>
-                          {ctx.after}
+                          {offsetsFit ? (
+                            <>
+                              {ctx.before}
+                              <strong>{ctx.match}</strong>
+                              {ctx.after}
+                            </>
+                          ) : (
+                            occurrenceChoiceText(o.label)
+                          )}
                         </span>
                       </label>
                     );
@@ -438,6 +459,7 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                 ) : (
                   <span className={`badge badge-${item.reviewStatus}`}>{STATUS_LABEL[item.reviewStatus]}</span>
                 )}
+                <FeedbackButton projectId={view.projectId} targetKind="proposal" targetId={item.id} label="Flag this proposal" />
                 {view.permissions.approve && !item.record && !pendingAuthorisation(requests, item.id) && (
                 <button
                   className="approve"

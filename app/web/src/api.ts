@@ -1,11 +1,17 @@
 export class ApiError extends Error {
-  constructor(message: string, readonly status: number) {
+  readonly status: number;
+  /** The parsed body of the refusal, when the server sent one (a 409 may carry the current copy). */
+  readonly data: unknown;
+  constructor(message: string, status: number, data?: unknown) {
     super(message);
+    this.status = status;
+    this.data = data;
   }
 }
 
+// (import.meta.env is missing when the pure helpers are tested under plain node.)
 // In development Vite serves the page and proxies /api to the API; in production the API serves the page itself.
-const BASE = import.meta.env.DEV ? '/api' : '';
+const BASE = import.meta.env?.DEV ? '/api' : '';
 
 // Given by the server at sign-in and on /auth/me; sent back on every request that changes something.
 let csrfToken: string | null = null;
@@ -40,7 +46,7 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   if (!res.ok) {
     const m = (data as { message?: string | string[] } | undefined)?.message;
     const message = Array.isArray(m) ? m.join(' ') : m;
-    throw new ApiError(message || `The server answered ${res.status}.`, res.status);
+    throw new ApiError(message || `The server answered ${res.status}.`, res.status, data);
   }
   return data as T;
 }
@@ -76,7 +82,7 @@ export interface VersionSummary {
   id: string;
   sourceId: string;
   versionNo: number;
-  origin: 'paste' | 'upload';
+  origin: 'paste' | 'upload' | 'meeting' | 'discussion';
   filename: string | null;
   mediaType: string | null;
   charCount: number;
@@ -96,6 +102,8 @@ export interface Run {
   unlocatedCount: number | null;
   createdAt: string;
   finishedAt: string | null;
+  /** Who asked for this run, or why it started automatically. */
+  requestedByLabel?: string;
   /** The meeting date in force: the reviewer's for this version, else the one in the notes. */
   meetingDate: string | null;
   meetingDateSource: 'notes' | 'reviewer' | 'none';
@@ -138,12 +146,14 @@ export interface Item {
   alternatives: string[];
   dueReading: DueReading;
   reviewerDue: ReviewerDue | null;
-  quote: string;
+  /** Null when the quote's message is now hidden or deleted (see quoteMasked). */
+  quote: string | null;
+  quoteMasked?: 'deleted' | 'hidden' | null;
   quoteStart: number | null;
   quoteEnd: number | null;
   quoteMatches: number;
   /** Where a repeated quote occurs (the first places only, if it repeats very often). Absent unless it repeats. */
-  occurrences?: Array<{ start: number; end: number }>;
+  occurrences?: Array<{ start: number; end: number; label?: string | null }>;
   /** Which of the occurrences the reviewer approved, 0-based. null unless approved and repeated. */
   chosenOccurrence: number | null;
   reviewStatus: ReviewStatus;
@@ -151,6 +161,10 @@ export interface Item {
   record: { kind: 'task' | 'decision' | 'question' | 'risk'; id: string } | null;
   /** Approved before records existed: it still needs authorising to become a record. */
   approvedWithoutRecord: boolean;
+  /** Set when the quote lies in a discussion message that is now hidden or deleted. */
+  sourceFlag?: 'deleted' | 'hidden' | null;
+  /** Set when the quote lies in a discussion message: which message, by whom and when. */
+  discussionEvidence?: { threadId: string; messageNo: number; authorName: string; at: string } | null;
   /** True when a reviewer has changed the wording. `original` is then what the model said. */
   edited?: boolean;
   original?: { text: string; owner: string | null; due: string | null };

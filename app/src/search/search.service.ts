@@ -2,6 +2,7 @@ import { Inject, Injectable, ServiceUnavailableException } from '@nestjs/common'
 import type { Pool, PoolClient } from 'pg';
 import type { AuthUser } from '../auth/tokens';
 import { UUID } from '../common/uuid7';
+import { activeManagerSql, audienceVisibleSql } from '../discussion/audience';
 import { PG_POOL } from '../db/database.module';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { loadArchiveState } from '../projects/archive';
@@ -56,26 +57,34 @@ export interface SearchStatementInput {
   first: string;
   scoped: boolean;
   offset: number;
+  userId: string;
 }
 
 /**
  * The one statement over search_documents. $1 readable project ids, $2 kinds, $3 today, $4 first word, $5 whether
- * one project is asked for, $6 offset within it, then one parameter per pattern from $7. Each pattern is its own
+ * one project is asked for, $6 offset within it, then one parameter per pattern from $7, then the viewer's id. Each pattern is its own
  * `ILIKE` condition, ANDed: a GIN trigram index can serve `text ILIKE $n` but not `ILIKE ALL` over an array.
  * Only placeholders are generated here; every word stays a bound parameter.
  */
 export function buildSearchStatement(input: SearchStatementInput): { text: string; values: unknown[] } {
   const match = input.patterns.map((_, i) => `d.text ILIKE $${7 + i}::text`).join(' AND ');
+  const user = `$${7 + input.patterns.length}`;
   const text = `
 WITH hits AS (
   SELECT d.* FROM search_documents d
    WHERE d.project_id = ANY($1::uuid[])
      AND d.kind = ANY($2::text[])
      AND ${match}
-     -- The one place that decides whether this person may read a note's content. Restricted note audiences (O09)
-     -- and quarantine and logical deletion (sub-project 5) add their conditions here, so every result derived
-     -- from a note (its text, its title, its AI proposals) obeys them.
-     AND (d.source_id IS NULL OR EXISTS (SELECT 1 FROM sources s WHERE s.id = d.source_id AND s.status <> 'deleted'))
+     -- The one place that decides whether this person may read content bound to an audience. Rows of notes,
+     -- minutes, their versions and proposals, and of discussion messages carry the audience_id of their source or
+     -- thread; the project's read access was settled by the caller ($1 holds only readable projects), which is what
+     -- audienceVisibleSql needs. Transcripts and hidden or deleted messages never reach this view.
+     AND (d.audience_id IS NULL OR EXISTS (SELECT 1 FROM audiences au WHERE au.id = d.audience_id AND ${audienceVisibleSql('au', user, '$3')}))
+     -- A submission or returned note is seen by its submitter and the managers only, whatever audience is intended.
+     AND (d.publication IS NULL OR d.publication = 'published' OR d.submitted_by = ${user}::uuid
+          OR ${activeManagerSql('d.project_id', user, '$3')})
+     -- A deleted note's text and proposals are hidden (sub-project 5 quarantine adds its condition here too).
+     AND (d.kind NOT IN ('note', 'ai_proposal') OR EXISTS (SELECT 1 FROM sources s WHERE s.id = d.source_id AND s.status <> 'deleted' AND (d.kind <> 'note' OR s.kind <> 'discussion')))
      AND (d.kind <> 'person' OR d.ends_on IS NULL OR d.ends_on >= $3::date)
 ), best AS (
   SELECT DISTINCT ON (project_id, kind, item_id) * FROM hits
@@ -93,7 +102,7 @@ WITH hits AS (
    WHERE CASE WHEN $5::boolean THEN r.rn > $6::bigint AND r.rn <= $6::bigint + ${PAGE} ELSE r.rn <= ${FIRST} END
 )
 SELECT c.project_id AS "projectId", p.name AS "projectName", c.kind, c.item_id AS "itemId", c.run_id AS "runId", c.version_no AS "versionNo",
-       c.version_count AS "versionCount", c.is_current AS "isCurrent", c.match_note AS "matchNote", c.ref_title AS title,
+       c.version_count AS "versionCount", c.is_current AS "isCurrent", c.source_id AS "threadId", c.message_no AS "messageNo", c.match_note AS "matchNote", c.ref_title AS title,
        c.status, c.total::int AS total,
        regexp_replace(
          (CASE WHEN c.start > 1 THEN '…' ELSE '' END) || substr(c.text, c.start, ${SNIPPET})
@@ -101,8 +110,8 @@ SELECT c.project_id AS "projectId", p.name AS "projectName", c.kind, c.item_id A
          '\\s+', ' ', 'g') AS snippet
   FROM chosen c JOIN projects p ON p.id = c.project_id
  ORDER BY lower(p.name), p.id, c.rn`;
-  const { ids, kinds, today, first, scoped, offset, patterns } = input;
-  return { text, values: [ids, kinds, today, first, scoped, offset, ...patterns] };
+  const { ids, kinds, today, first, scoped, offset, patterns, userId } = input;
+  return { text, values: [ids, kinds, today, first, scoped, offset, ...patterns, userId] };
 }
 
 /**
@@ -126,6 +135,8 @@ interface Row {
   versionNo: number | null;
   versionCount: number | null;
   isCurrent: boolean;
+  threadId: string | null;
+  messageNo: number | null;
   matchNote: string | null;
   title: string;
   status: string | null;
@@ -165,7 +176,7 @@ export class SearchService {
     if (ids.length === 0) return { searched, projects: [] };
 
     const today = this.access.today();
-    const rows = await this.run(buildSearchStatement({ ids, kinds, patterns, today, first: words.find((w) => [...w].length >= 3) as string, scoped: project !== null, offset }));
+    const rows = await this.run(buildSearchStatement({ ids, kinds, patterns, today, first: words.find((w) => [...w].length >= 3) as string, scoped: project !== null, offset, userId: user.id }));
     return { searched, projects: this.build(rows, readable) };
   }
 
@@ -249,7 +260,7 @@ export class SearchService {
       snippet,
       matchNote,
       status: row.status,
-      href: hrefFor({ kind: row.kind, projectId: row.projectId, itemId: row.itemId, runId: row.runId, versionNo: row.versionNo, isCurrent: row.isCurrent }),
+      href: hrefFor({ kind: row.kind, projectId: row.projectId, itemId: row.itemId, runId: row.runId, versionNo: row.versionNo, isCurrent: row.isCurrent, threadId: row.threadId, messageNo: row.messageNo }),
     };
   }
 

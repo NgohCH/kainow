@@ -1,5 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { ApiError, api } from '../api.ts';
+import { type EvidenceSource, evidenceView } from '../discussion.ts';
 import { formatWhen } from '../format.ts';
 import {
   DECISION_STATUS_LABEL,
@@ -46,7 +47,7 @@ interface TaskView {
   invitation: string | null;
   dueAfterParent: boolean;
   mayAct: TaskAction[];
-  source: { quote: string } | null;
+  source: EvidenceSource | null;
   changeWaiting: boolean;
   parentCancelled: boolean;
   deadlineReviewRequired: boolean;
@@ -176,7 +177,7 @@ export function Work({ projectId, people, canPropose, canClear, focusId }: { pro
         ) : (
           <ul className="plain work-list">
             {records.tasks.map((t) => (
-              <TaskRow key={t.id} t={t} hasChildren={hasChildren.has(t.id)} work={work} act={act} propose={propose} canPropose={canPropose} canClear={canClear} />
+              <TaskRow key={t.id} projectId={projectId} t={t} hasChildren={hasChildren.has(t.id)} work={work} act={act} propose={propose} canPropose={canPropose} canClear={canClear} />
             ))}
           </ul>
         )}
@@ -272,13 +273,26 @@ function Flags({ flags, canClear }: { flags: ReviewFlag[]; canClear: boolean }) 
   );
 }
 
+/** The passage a record came from: the quote, the discussion message it came from, a review flag, or a note that the source is restricted. */
+function Evidence({ source, projectId }: { source: EvidenceSource; projectId: string }) {
+  const ev = evidenceView(source, projectId);
+  if (ev.kind === 'restricted') return <p className="quote restricted-evidence">{ev.text}</p>;
+  return (
+    <>
+      <blockquote className="quote">{ev.quote}</blockquote>
+      {ev.flag && <p className="warn" role="note">{ev.flag}</p>}
+      {ev.from && <p className="meta">{ev.href ? <a href={ev.href}>{ev.from}</a> : ev.from}</p>}
+    </>
+  );
+}
+
 type Act = (path: string, body: object, done: string) => Promise<boolean>;
 type TaskForm = TaskAction | 'amend' | 'subtask' | 'cancel' | 'followup';
 
 function TaskRow({
-  t, hasChildren, work, act, propose, canPropose, canClear,
+  projectId, t, hasChildren, work, act, propose, canPropose, canClear,
 }: {
-  t: TaskView; hasChildren: boolean; work: WorkContext; act: Act; propose: Propose; canPropose: boolean; canClear: boolean;
+  projectId: string; t: TaskView; hasChildren: boolean; work: WorkContext; act: Act; propose: Propose; canPropose: boolean; canClear: boolean;
 }) {
   const [open, setOpen] = useState<TaskForm | null>(null);
   const [note, setNote] = useState('');
@@ -339,7 +353,7 @@ function TaskRow({
         {t.follows ? ` · Follows ${t.follows.title}` : ''}
         {t.followedBy ? ` · Followed by ${t.followedBy.title}` : ''}
       </span>
-      {t.source && <blockquote className="quote">{t.source.quote}</blockquote>}
+      {t.source && <Evidence source={t.source} projectId={projectId} />}
       <Flags flags={t.reviewFlags} canClear={canClear} />
       {open === null && (
         <div className="decision">

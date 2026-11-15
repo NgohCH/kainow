@@ -55,7 +55,7 @@ test('parseOffset', () => {
 });
 
 test('KIND_ORDER', () => {
-  assert.deepEqual(KIND_ORDER, { project: 0, person: 1, task: 2, decision: 3, question: 4, risk: 5, ai_proposal: 6, human_proposal: 6, note: 7 });
+  assert.deepEqual(KIND_ORDER, { project: 0, person: 1, task: 2, decision: 3, question: 4, risk: 5, ai_proposal: 6, human_proposal: 6, note: 7, message: 8 });
 });
 
 test('hrefFor', () => {
@@ -75,4 +75,11 @@ test('parsePhrase drops one-character words before keeping eight', () => {
   assert.deepEqual(parsePhrase('a vendor').patterns, ['%vendor%']);
   const r = parsePhrase('a b c d e f g h vendor');
   assert.deepEqual(r.words, ['vendor']);
+});
+
+test('hrefFor a message names the thread and the message number', () => {
+  assert.equal(
+    hrefFor({ kind: 'message', projectId: 'p1', itemId: 'm1', runId: null, versionNo: null, isCurrent: true, threadId: 't1', messageNo: 12 }),
+    '#/projects/p1/threads/t1?m=12',
+  );
 });

@@ -1,4 +1,5 @@
 import type { PgBoss } from 'pg-boss';
+import type { AnalysisTick } from '../analysis/tick';
 import type { EmailDispatcher } from '../email/dispatcher';
 import type { Sweep } from '../notifications/sweep';
 import { QUEUES } from './queues';
@@ -6,16 +7,19 @@ import { QUEUES } from './queues';
 export interface ScheduleDeps {
   sweep: Pick<Sweep, 'runIfDue'>;
   dispatcher: Pick<EmailDispatcher, 'dispatchDue'>;
+  /** The per-minute analysis decision (spec 7.2). */
+  analysis?: Pick<AnalysisTick, 'run'>;
   /** Fixed messages only; never an error object or message. */
   log?: (message: string) => void;
 }
 
 const EVERY_MINUTE = '* * * * *';
 export const SWEEP_FAILED = 'The notification sweep failed; it will run again on the next tick.';
+export const ANALYSIS_FAILED = 'The analysis tick failed; it will run again on the next tick.';
 export const DISPATCH_FAILED = 'The email dispatch failed; it will run again on the next tick.';
 
 /**
- * Schedules a tick every minute for the sweep and the email dispatch, and processes jobs on both queues.
+ * Schedules a tick every minute for the sweep, the email dispatch and the analysis decision, and processes jobs on both queues.
  * The sweep decides for itself whether it is due (its interval is a setting); the dispatcher reads the outbox.
  * Nudges from the API are jobs on the email queue and are handled exactly like a tick.
  * Each worker has concurrency 1, so runs do not overlap inside one process. Across processes (and for ticks versus nudges,
@@ -27,6 +31,7 @@ export async function registerSchedules(boss: PgBoss, deps: ScheduleDeps): Promi
 
   await boss.schedule(QUEUES.sweep, EVERY_MINUTE, null, { key: 'tick', singletonKey: 'tick' });
   await boss.schedule(QUEUES.email, EVERY_MINUTE, null, { key: 'tick', singletonKey: 'tick' });
+  if (deps.analysis) await boss.schedule(QUEUES.analysis, EVERY_MINUTE, null, { key: 'tick', singletonKey: 'tick' });
 
   // A failed run must not make pg-boss retry or crash the worker: the next tick looks at everything again.
   await boss.work(QUEUES.sweep, { localConcurrency: 1 }, async () => {
@@ -43,4 +48,15 @@ export async function registerSchedules(boss: PgBoss, deps: ScheduleDeps): Promi
       log(DISPATCH_FAILED);
     }
   });
+  const analysis = deps.analysis;
+  if (analysis) {
+    // Overlapping ticks are harmless: a thread already queued or running is skipped by the partial unique index.
+    await boss.work(QUEUES.analysis, { localConcurrency: 1 }, async () => {
+      try {
+        await analysis.run();
+      } catch {
+        log(ANALYSIS_FAILED);
+      }
+    });
+  }
 }

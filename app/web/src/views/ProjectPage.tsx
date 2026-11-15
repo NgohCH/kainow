@@ -22,15 +22,16 @@ import { HumanProposals } from './HumanProposals.tsx';
 import { ProjectApprovals } from './ApprovalSettings.tsx';
 import { Closing, DelegationControl, type ClosedSummary, type ClosureView } from './Closing.tsx';
 import { DeadlineReview } from './DeadlineReview.tsx';
-import { Notes } from './Notes.tsx';
+import { Discussion } from './Discussion.tsx';
 import { Work } from './Work.tsx';
 import { DeliveryHistory } from './Deliveries.tsx';
 import { DigestSend, EscalationFlags } from './DigestSend.tsx';
+import { Feedback } from './Feedback.tsx';
 import { ProjectSettings } from './NotificationSettings.tsx';
 import { ProjectCalendarProvider } from './ProjectCalendar.tsx';
 import { type Act, ArchivePanel, DepartmentMove, GrantsSection, HandoverForm, HoldActions } from './ProjectAccessPanels.tsx';
 
-type Tab = 'overview' | 'people' | 'notes' | 'work' | 'settings' | 'closing' | 'deadline-review';
+type Tab = 'overview' | 'people' | 'notes' | 'work' | 'settings' | 'feedback' | 'closing' | 'deadline-review';
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
@@ -82,7 +83,8 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
   const tabs: Array<[Tab, string]> = [
     ['overview', 'Overview'],
     ['people', 'People'],
-    ...(contentAllowed ? ([['notes', 'Notes'], ['work', 'Work']] as Array<[Tab, string]>) : []),
+    ...(contentAllowed ? ([['notes', 'Notes & discussion'], ['work', 'Work']] as Array<[Tab, string]>) : []),
+    ...(contentAllowed ? ([['feedback', 'Feedback']] as Array<[Tab, string]>) : []),
     ['settings', 'Settings'],
   ];
   // The project's current people, for choosing assignees, requesters and responsible people.
@@ -137,13 +139,21 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
       {tab === 'overview' && <Overview project={project} act={act} />}
+      {tab === 'feedback' && contentAllowed && <Feedback projectId={project.id} />}
       {tab === 'settings' && <ProjectSettings projectId={project.id} />}
       {tab === 'closing' && <Closing project={project} act={act} />}
       {tab === 'deadline-review' && <DeadlineReview project={project} />}
       {tab === 'people' && <People project={project} act={act} />}
       {tab === 'notes' && contentAllowed && (
         <>
-          <Notes projectId={project.id} canAdd={roles.some((r) => r !== 'member') && open} />
+          <Discussion
+            projectId={project.id}
+            canAdd={roles.some((r) => r !== 'member') && open}
+            canSubmit={roles.length > 0 && !roles.some((r) => r !== 'member') && open}
+            canStart={roles.length > 0 && open}
+            canRestrict={roles.some((r) => r !== 'member') && open}
+            memberships={project.memberships}
+          />
           <HumanProposals
             projectId={project.id}
             canPropose={roles.length > 0 && open}

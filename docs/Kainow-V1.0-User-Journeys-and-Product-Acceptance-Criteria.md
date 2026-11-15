@@ -25,7 +25,7 @@ Meeting content is data. Instructions embedded in it must not become commands, t
 
 ### Future versions
 
-Native meeting minute-taking within Kainow is a future capability. It is not required for V1.0 acceptance. Recording, transcription, live meeting participation and their associated consent and retention rules are not authorised by this future direction and require a separate specification.
+Typed-meeting minute-taking in Kainow is included in V1.0 (D74). Audio recording, transcription and OCR are not included. Recording, transcription, live meeting participation and their associated consent and retention rules are not authorised by D74 and require a separate specification.
 
 ## 3. Required user journeys
 

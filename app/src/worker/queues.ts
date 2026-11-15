@@ -6,6 +6,7 @@ export const QUEUES = {
   email: 'email',
   document: 'document',
   sweep: 'sweep',
+  analysis: 'analysis',
 } as const;
 
 export const BOSS_SCHEMA = 'pgboss';

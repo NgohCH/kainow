@@ -7,6 +7,7 @@ import { Letterhead, LogoImage } from './views/Letterhead.tsx';
 import { NoteDetail } from './views/NoteDetail.tsx';
 import { BeingSetUp, Onboarding } from './views/Onboarding.tsx';
 import { ApprovalSettings } from './views/ApprovalSettings.tsx';
+import { EscalatedFeedback } from './views/EscalatedFeedback.tsx';
 import { Departments, Domains } from './views/Organisation.tsx';
 import { OrganisationScreen } from './views/OrganisationProfile.tsx';
 import { Setup } from './views/Setup.tsx';
@@ -20,6 +21,8 @@ import { Projects } from './views/Projects.tsx';
 import { Review } from './views/Review.tsx';
 import { HeaderSearch, isSearchHash, Search } from './views/Search.tsx';
 import { Spending } from './views/Spending.tsx';
+import { Thread } from './views/Thread.tsx';
+import { parseThreadHash } from './discussion.ts';
 
 function useHash(): string {
   const [hash, setHash] = useState(window.location.hash || '#/');
@@ -240,9 +243,10 @@ export function App() {
   }
   const note = /^#\/notes\/([0-9a-f-]{36})(?:\/v\/(\d+))?$/i.exec(hash);
   const run = /^#\/runs\/([0-9a-f-]{36})$/i.exec(hash);
-  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work|settings|closing|deadline-review)(?:\/([0-9a-f-]{36}))?)?$/i.exec(hash);
+  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work|settings|feedback|closing|deadline-review)(?:\/([0-9a-f-]{36}))?)?$/i.exec(hash);
+  const thread = parseThreadHash(hash);
   const searching = isSearchHash(hash);
-  const adminPage = /^#\/(people|spending|departments|domains|organisation|approvals|notifications-settings|deliveries|go-live)$/.exec(hash)?.[1];
+  const adminPage = /^#\/(people|spending|departments|domains|organisation|approvals|notifications-settings|deliveries|go-live|escalated-feedback)$/.exec(hash)?.[1];
 
   let page;
   if (invitation) page = <Invitation token={invitation[1]} user={user} onSignedIn={setUser} />;
@@ -255,11 +259,13 @@ export function App() {
   else if (isAdmin && adminPage === 'notifications-settings') page = <NotificationsSettings />;
   else if (isAdmin && adminPage === 'deliveries') page = <Deliveries />;
   else if (isAdmin && adminPage === 'go-live') page = <GoLive />;
+  else if (isAdmin && adminPage === 'escalated-feedback') page = <EscalatedFeedback />;
   else if (hash === '#/notifications') page = <Notifications />;
   else if (searching) page = <Search hash={hash} />;
+  else if (thread) page = <Thread key={thread.threadId} projectId={thread.projectId} threadId={thread.threadId} meId={user.id} messageNo={thread.messageNo} />;
   else if (run) page = <Review runId={run[1]} meId={user.id} />;
   else if (note) page = <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} />;
-  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | 'settings' | 'closing' | 'deadline-review' | undefined) ?? 'overview'} itemId={project[3]} />;
+  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | 'settings' | 'feedback' | 'closing' | 'deadline-review' | undefined) ?? 'overview'} itemId={project[3]} />;
   else page = <Projects isAdmin={isAdmin} />;
 
   return (
@@ -281,6 +287,7 @@ export function App() {
               {/* Always there for Administrators: after closing, the page is the read-only record. */}
               <a href="#/go-live" aria-current={adminPage === 'go-live' ? 'page' : undefined}>Go-live</a>
               <a href="#/domains" aria-current={adminPage === 'domains' ? 'page' : undefined}>Domains</a>
+              <a href="#/escalated-feedback" aria-current={adminPage === 'escalated-feedback' ? 'page' : undefined}>Escalated feedback</a>
               <a href="#/spending" aria-current={adminPage === 'spending' ? 'page' : undefined}>AI spending</a>
             </>
           )}

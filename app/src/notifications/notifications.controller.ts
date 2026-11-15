@@ -87,7 +87,8 @@ export class NotificationsController {
     const isAdmin = user.role === 'enterprise_administrator';
     const items = rows.slice(0, PAGE).map((r) => {
       // The minimal fallback holds only the project name, and it is addressed to the Administrator role, not a project role.
-      const adminFallback = r.minimal === true && isAdmin;
+      // The escalated-feedback notice is addressed to the Administrator role too: it holds the project name only.
+      const adminFallback = (r.minimal === true || r.kind === 'feedback_escalated') && isAdmin;
       const noAccess = r.projectId !== null && !adminFallback && readable.get(r.projectId) !== true;
       return {
         id: r.id,

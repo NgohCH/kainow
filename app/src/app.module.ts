@@ -5,6 +5,7 @@ import { ClockModule } from './common/clock.module';
 import { APP_CONFIG, type AppConfig } from './config';
 import { DatabaseModule } from './db/database.module';
 import { HealthController } from './health/health.controller';
+import type { AnalysisQueue } from './analysis/queue';
 import { ChangesModule } from './changes/changes.module';
 import { EmailModule, type EmailNudge } from './email/nudge';
 import { ExtractionModule } from './extraction/extraction.module';
@@ -13,6 +14,9 @@ import { GoLiveModule } from './golive/golive.module';
 import { NotesModule } from './notes/notes.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { DigestsModule } from './digests/digests.module';
+import { DiscussionModule } from './discussion/discussion.module';
+import type { AutomaticAnalysis } from './discussion/automatic-analysis';
+import type { MeetingEndHook } from './discussion/meetings.service';
 import { OrganisationModule } from './organisation/organisation.module';
 import { ProjectsModule } from './projects/projects.module';
 import { SearchModule } from './search/search.module';
@@ -37,6 +41,12 @@ export interface AppOptions extends AuthOptions {
   extractionQueue?: ExtractionQueue;
   /** Tests only: replaces the pg-boss job that wakes the email worker. */
   emailNudge?: EmailNudge;
+  /** Tests only: replaces the pg-boss queue that carries analysis runs to the worker. */
+  analysisQueue?: AnalysisQueue;
+  /** Tests only: replaces what happens when a meeting ends (the real one requests the final draft). */
+  meetingEndHook?: MeetingEndHook;
+  /** Tests only: replaces the reader of the project's automatic-analysis setting (Task 9 binds the real one). */
+  automaticAnalysis?: AutomaticAnalysis;
 }
 
 @Module({})
@@ -61,6 +71,7 @@ export class AppModule {
         DigestsModule,
         GoLiveModule,
         SearchModule,
+        DiscussionModule.register(options.meetingEndHook, options.automaticAnalysis, options.analysisQueue),
       ],
       controllers: [HealthController],
     };

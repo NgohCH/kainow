@@ -119,6 +119,23 @@ describe('extraction runner', { skip: SKIP_NO_DB }, () => {
     assert.equal(model.calls[0].modelId, 'gpt-6.1-sol');
   });
 
+  test('a late save after the run was stalled inserts no items and does not revive it', async () => {
+    const id = await newRun();
+    const model = new FakeModel(async () => {
+      // While the AI call is out, the stalled sweep fails the run.
+      await pool.query(`UPDATE extraction_runs SET status = 'failed', failure_code = 'stalled', failure_detail = 'x', finished_at = now() WHERE id = $1`, [id]);
+      return answer([{ kind: 'decision', text: 'Ship Friday', owner: null, due: 'Friday', source_quote: 'We agreed to ship on Friday.' }]);
+    });
+    assert.equal(await runner(model).process(id, 1, false), 'skipped');
+    const r = await run(id);
+    assert.deepEqual([r.status, r.failure_code, r.item_count], ['failed', 'stalled', null]);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM extraction_items WHERE run_id = $1', [id])).rows[0].n, 0);
+    const [entry] = await entries(id);
+    assert.equal(entry.status, 'confirmed', 'the AI call was made, so its spend stays settled');
+    assert.equal(await runner(model).process(id, 2, false), 'skipped', 'a late retry does not start it again');
+    assert.equal((await run(id)).status, 'failed');
+  });
+
   test('saves the meeting date on the run and due_event and alternatives on each item', async () => {
     const model = new FakeModel(() =>
       answer(
@@ -211,6 +228,37 @@ describe('extraction runner', { skip: SKIP_NO_DB }, () => {
     const model = new FakeModel(() => answer([]));
     assert.equal(await runner(model).process(id, 1, false), 'blocked');
     assert.equal(model.calls.length, 0);
+  });
+
+  async function newAutomaticRun(trigger: 'minutes_published' | 'discussion'): Promise<string> {
+    const id = uuidv7();
+    await pool.query(
+      `INSERT INTO extraction_runs (id, source_version_id, requested_by, trigger, status, created_at) VALUES ($1, $2, NULL, $3, 'queued', $4)`,
+      [id, versionId, trigger, clock.now()],
+    );
+    return id;
+  }
+
+  test('runner runs a run with no requester while the project is open', async () => {
+    const id = await newAutomaticRun('minutes_published');
+    const model = new FakeModel(() => answer([{ kind: 'decision', text: 'd', owner: null, due: null, source_quote: 'We agreed to ship on Friday.' }]));
+    assert.equal(await runner(model).process(id, 1, false), 'succeeded');
+    assert.equal(model.calls.length, 1);
+    const [e] = await entries(id);
+    assert.equal(e.status, 'confirmed');
+    assert.equal(e.actor_user_id, null);
+  });
+
+  test('runner blocks a run with no requester when the project is Deferred', async () => {
+    const id = await newAutomaticRun('discussion');
+    await pool.query("UPDATE projects SET status = 'deferred' WHERE id = $1", [projectId]);
+    const model = new FakeModel(() => answer([]));
+    assert.equal(await runner(model).process(id, 1, false), 'blocked');
+    const r = await run(id);
+    assert.equal(r.failure_code, 'project_not_open');
+    assert.ok(!/person|who asked/i.test(r.failure_detail), 'an automatic run names no person');
+    assert.equal(model.calls.length, 0);
+    assert.deepEqual(await entries(id), []);
   });
 
   test('a timeout keeps the full estimate counted, and the retry is a second counted attempt', async () => {

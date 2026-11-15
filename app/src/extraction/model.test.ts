@@ -154,3 +154,18 @@ test('a good OpenAI answer passes the meeting date through', async () => {
   const client = new OpenAiModelClient('key', 'https://example.test/v1', reply(ok({ meeting_date: '2026-11-04', items: [ITEM] })));
   assert.equal((await client.extract(REQ)).meetingDate, '2026-11-04');
 });
+
+test('draftMinutes sends the minutes schema and returns the parsed sections with the reported usage', async () => {
+  const sections = { summary: 's', discussion_points: [], decisions: ['d'], action_items: [{ text: 't', owner: null, due: null }], open_questions: [], risks: [] };
+  let sent: any;
+  const fetchImpl = (async (_url: string, init: RequestInit) => {
+    sent = JSON.parse(String(init.body));
+    return new Response(JSON.stringify(ok(sections)), { status: 200 });
+  }) as unknown as typeof fetch;
+  const out = await new OpenAiModelClient('key', 'https://example.test/v1', fetchImpl).draftMinutes(REQ);
+  assert.equal(sent.response_format.json_schema.name, 'meeting_minutes');
+  assert.equal(sent.response_format.json_schema.strict, true);
+  assert.deepEqual([out.decisions, out.actionItems, out.usage.cachedInputTokens], [['d'], [{ text: 't', owner: null, due: null }], 30]);
+  const bad = new OpenAiModelClient('key', 'https://example.test/v1', reply(ok({ summary: 's' })));
+  await assert.rejects(bad.draftMinutes(REQ), (e: unknown) => e instanceof ModelBadResponse && e.usage.inputTokens === 100);
+});

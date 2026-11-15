@@ -1,3 +1,4 @@
+import { itemDiscussionEvidence, itemSourceFlags } from '../discussion/masking';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
@@ -13,7 +14,9 @@ import { taskHandlers } from '../changes/task-handlers';
 import { PG_POOL } from '../db/database.module';
 import { isCalendarDate, readDue } from '../extraction/due';
 import { ExtractionService } from '../extraction/extraction.service';
-import { type ProjectContext, ProjectAccess } from '../projects/access.service';
+import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
+import { audienceVisibleSql } from '../discussion/audience';
+import { AudienceService } from '../discussion/audience.service';
 import { InvitationsService } from '../projects/invitations.service';
 import { GRANT_READ_ONLY } from '../projects/matrix';
 import { checkNewAppointment } from '../projects/memberships.service';
@@ -66,6 +69,7 @@ export class RecordsService {
     private readonly extraction: ExtractionService,
     private readonly invitations: InvitationsService,
     private readonly changes: ChangesService,
+    private readonly audiences: AudienceService,
   ) {
     changes.register(authoriseProposalHandler({ records: this, extraction }));
     for (const h of taskHandlers({ records: this })) changes.register(h);
@@ -107,8 +111,12 @@ export class RecordsService {
   async authoriseItem(user: AuthUser, runId: string, itemId: string, body: Record<string, unknown>): Promise<Authorised> {
     if (!UUID.test(itemId)) throw new NotFoundException();
     const projectId = await this.access.projectOfRun(runId);
-    const item = (await this.pool.query(`SELECT run_id FROM extraction_items WHERE id = $1`, [itemId])).rows[0];
+    const item = (await this.pool.query(`SELECT run_id, source_version_id AS "versionId" FROM extraction_items WHERE id = $1`, [itemId])).rows[0];
     if (!item || item.run_id !== runId) throw new NotFoundException();
+    // Someone outside the note's audience finds nothing, before any other answer.
+    const sourceId = (await this.pool.query(`SELECT source_id FROM source_versions WHERE id = $1`, [item.versionId])).rows[0]?.source_id;
+    if (!sourceId) throw new NotFoundException();
+    await this.audiences.assertSourceReadable(user, sourceId);
     return this.authoriseThrough(user, projectId, 'extraction_item', itemId, body);
   }
 
@@ -565,7 +573,8 @@ export class RecordsService {
                 t.owner_as_written AS "ownerAsWritten", to_char(t.due_on, 'YYYY-MM-DD') AS "dueOn", t.status,
                 to_char(p.due_on, 'YYYY-MM-DD') AS "parentDueOn",
                 CASE WHEN i.id IS NULL THEN NULL WHEN i.status = 'invited' AND i.expires_at <= now() THEN 'expired' ELSE i.status END AS "invitationStatus",
-                x.quote, p.status AS "parentStatus",
+                x.quote, x.id AS "itemId",
+                COALESCE(${audienceVisibleSql('qa', '$2', '$3')}, true) AS "evidenceVisible", p.status AS "parentStatus",
                 CASE WHEN fo.id IS NULL THEN NULL ELSE json_build_object('id', fo.id, 'title', fo.title) END AS follows,
                 (SELECT json_build_object('id', n.id, 'title', n.title) FROM tasks n WHERE n.follows_task_id = t.id ORDER BY n.authorised_at, n.id LIMIT 1) AS "followedBy",
                 EXISTS (SELECT 1 FROM change_requests r WHERE r.target_kind = 'task' AND r.target_id = t.id AND r.status = 'pending') AS "changeWaiting",
@@ -575,11 +584,17 @@ export class RecordsService {
            LEFT JOIN tasks fo ON fo.id = t.follows_task_id
            LEFT JOIN invitations i ON i.id = t.invitation_id
            LEFT JOIN extraction_items x ON x.id = t.origin_item_id
+           LEFT JOIN extraction_runs xr ON xr.id = x.run_id
+           LEFT JOIN source_versions xv ON xv.id = xr.source_version_id
+           LEFT JOIN sources xs ON xs.id = xv.source_id
+           LEFT JOIN audiences qa ON qa.id = xs.audience_id
           WHERE t.project_id = $1
           ORDER BY t.due_on, t.authorised_at, t.id`,
-        [ctx.project.id],
+        [ctx.project.id, user.id, ctx.today],
       )
     ).rows;
+    const itemIds = tasks.filter((t) => t.itemId).map((t) => t.itemId as string);
+    const [flags, evidence] = await Promise.all([itemSourceFlags(this.pool, itemIds), itemDiscussionEvidence(this.pool, itemIds)]);
     const view = tasks.map((t) => ({
       id: t.id,
       parentId: t.parentId,
@@ -598,7 +613,8 @@ export class RecordsService {
         today: ctx.today,
         deadlineReviewRequired: t.deadlineReviewRequired,
       }),
-      source: t.quote ? { quote: t.quote as string } : null,
+      // Outside a restricted source's audience the quote is withheld, and so is what it would reveal (spec 6.3).
+      source: t.quote ? (t.evidenceVisible && canReadContent(ctx) ? { quote: flags.get(t.itemId) ? null : (t.quote as string), quoteMasked: flags.get(t.itemId) ?? null, sourceFlag: flags.get(t.itemId) ?? null, discussionEvidence: evidence.get(t.itemId) ?? null } : { restricted: true as const }) : null,
       changeWaiting: t.changeWaiting as boolean,
       parentCancelled: t.parentStatus === 'cancelled' && t.status !== 'cancelled' && t.status !== 'completed',
       follows: (t.follows ?? null) as { id: string; title: string } | null,

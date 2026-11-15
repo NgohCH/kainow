@@ -285,6 +285,7 @@ AI output remains proposed; project-specific credentials and all applicable caps
 - General document repository.
 - Resource booking/allocation and full financial accounting.
 - General-purpose AI assistant functionality.
+- Audio recording and transcription. Typed-meeting minutes are included (D74).
 
 Additional capabilities may be considered for future versions or extensions. Mention of future plugins does not include plugin loading in V1.0.
 

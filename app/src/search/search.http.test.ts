@@ -8,7 +8,7 @@ import { SEARCH_KINDS, type SearchKind, parsePhrase } from './query';
 import { SearchService, applySearchSettings, buildSearchStatement } from './search.service';
 
 /** The kinds seeded by `seedAllKinds` and so checked by every access test below. */
-const ACCESS_COVERED: SearchKind[] = ['project', 'person', 'note', 'ai_proposal', 'human_proposal', 'task', 'decision', 'question', 'risk'];
+const ACCESS_COVERED: SearchKind[] = ['project', 'person', 'note', 'ai_proposal', 'human_proposal', 'task', 'decision', 'question', 'risk', 'message'];
 
 const NEEDS_WORD = 'Type at least one word of 3 or more letters.';
 const TOO_LONG = 'Search took too long. Try more specific words.';
@@ -127,13 +127,72 @@ describe('cross-project search', { skip: SKIP_NO_DB }, () => {
     return { runId, itemId };
   };
 
+  /** An audience of a project: Project-wide (null), or Restricted to the named people (managers see it through their role). */
+  const audience = async (projectId: string, named: string[] | null) => {
+    const id = uuidv7();
+    await t.pool.query(`INSERT INTO audiences (id, project_id, mode, created_at) VALUES ($1, $2, $3, now())`, [id, projectId, named ? 'restricted' : 'project']);
+    for (const u of named ?? []) {
+      await t.pool.query(`INSERT INTO audience_members (audience_id, user_id, added_by, added_at) VALUES ($1, $2, $3, now())`, [id, u, ids.pm]);
+    }
+    return id;
+  };
+  const thread = async (projectId: string, title: string, audienceId: string, kind: 'discussion' | 'meeting' = 'discussion') => {
+    const id = uuidv7();
+    await t.pool.query(
+      `INSERT INTO discussion_threads (id, project_id, kind, title, audience_id, meeting_date, state, created_by, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())`,
+      [id, projectId, kind, title, audienceId, kind === 'meeting' ? '2026-11-10' : null, kind === 'meeting' ? 'open' : null, ids.pm],
+    );
+    return id;
+  };
+  /** A message with one version per body, the last being current. */
+  const message = async (threadId: string, no: number, bodies: string[], state: 'visible' | 'hidden' | 'deleted' = 'visible') => {
+    const id = uuidv7();
+    const marked = state !== 'visible';
+    await t.pool.query(
+      `INSERT INTO discussion_messages (id, thread_id, message_no, author_id, state, state_reason, state_by, state_at, created_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())`,
+      [id, threadId, no, ids.member, state, marked ? 'reason' : null, marked ? ids.pm : null, marked ? new Date() : null],
+    );
+    for (const [i, body] of bodies.entries()) {
+      await t.pool.query(`INSERT INTO message_versions (id, message_id, version_no, body, body_sha256, created_at) VALUES ($1, $2, $3, $4, md5($4), now())`, [uuidv7(), id, i + 1, body]);
+    }
+    return id;
+  };
+  /** A source of the given kind in a thread, with one version of the given text. */
+  const threadSource = async (
+    projectId: string,
+    threadId: string,
+    audienceId: string,
+    o: { kind: 'minutes' | 'discussion'; title: string; text: string; publication?: string; submittedBy?: string },
+  ) => {
+    const sourceId = uuidv7();
+    const versionId = uuidv7();
+    const publication = o.publication ?? 'published';
+    const auto = o.kind === 'discussion';
+    await t.pool.query(
+      `INSERT INTO sources (id, title, created_by, created_at, project_id, kind, audience_id, thread_id, publication, submitted_by, intended_mode, returned_reason)
+       VALUES ($1, $2, $3, now(), $4, $5, $6, $7, $8, $9, $10, $11)`,
+      [sourceId, o.title, auto ? null : ids.pm, projectId, o.kind, audienceId, threadId, publication, o.submittedBy ?? null, o.submittedBy ? 'project' : null, publication === 'returned' ? 'Please revise' : null],
+    );
+    await t.pool.query(
+      `INSERT INTO source_versions (id, source_id, version_no, origin, text_content, text_sha256, char_count, created_by, created_at)
+       VALUES ($1, $2, 1, $3, $4, md5($4), length($4), $5, now())`,
+      [versionId, sourceId, auto ? 'discussion' : 'meeting', o.text, auto ? null : ids.pm],
+    );
+    return { sourceId, versionId };
+  };
+
   /** One item of every kind whose text contains "kestrel". */
   const seedAllKinds = async (by: Client, projectId: string, personId: string, personName: string) => {
     await t.pool.query(`UPDATE projects SET purpose = 'Kestrel bay works' WHERE id = $1`, [projectId]);
     await t.pool.query(`UPDATE users SET display_name = $2 WHERE id = $1`, [personId, personName]);
     const n = await note(by, projectId, 'Kestrel meeting', 'Kestrel site walk notes.');
     const ai = await aiProposal(n.versionId, 'Kestrel proposal', 'Kestrel site walk notes.');
+    const thr = await thread(projectId, 'Kestrel thread', await audience(projectId, null));
     return {
+      thread: thr,
+      message: await message(thr, 1, ['Kestrel message']),
       project: projectId,
       person: personId,
       note: n.sourceId,
@@ -344,6 +403,7 @@ describe('cross-project search', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(order.slice(0, 6), ['project', 'person', 'task', 'decision', 'question', 'risk']);
     assert.deepEqual(order.slice(6, 8).sort(), ['ai_proposal', 'human_proposal']);
     assert.equal(order[8], 'note');
+    assert.equal(order[9], 'message');
     const by = Object.fromEntries(p.results.map((r) => [r.kind, r]));
     const expect: Record<string, Omit<Result, 'kind' | 'snippet'>> = {
       project: { id: harbour, title: 'Harbour Works', matchNote: null, status: 'active', href: `#/projects/${harbour}` },
@@ -361,6 +421,7 @@ describe('cross-project search', { skip: SKIP_NO_DB }, () => {
       decision: { id: seeded.decision, title: 'Kestrel decision', matchNote: null, status: 'active', href: `#/projects/${harbour}/work/${seeded.decision}` },
       question: { id: seeded.question, title: 'Kestrel question', matchNote: null, status: 'open', href: `#/projects/${harbour}/work/${seeded.question}` },
       risk: { id: seeded.risk, title: 'Kestrel risk', matchNote: null, status: 'open', href: `#/projects/${harbour}/work/${seeded.risk}` },
+      message: { id: seeded.message, title: 'Kestrel thread', matchNote: null, status: null, href: `#/projects/${harbour}/threads/${seeded.thread}?m=1` },
     };
     for (const [kind, want] of Object.entries(expect)) {
       const { kind: _k, snippet: _s, ...got } = by[kind];
@@ -371,7 +432,7 @@ describe('cross-project search', { skip: SKIP_NO_DB }, () => {
     assert.equal(by.project.snippet, 'Harbour Works Kestrel bay works', 'line breaks collapse to one space');
     assert.deepEqual(p.myAccess, { roles: ['member'], grant: null });
     assert.equal(p.name, 'Harbour Works');
-    assert.equal(p.total, 9);
+    assert.equal(p.total, 10);
 
     const qid = await question(harbour, 'Which crane do we hire?');
     await t.pool.query(`INSERT INTO question_answers (id, question_id, answer, author_id, at) VALUES ($1, $2, 'Hire the gantry crane', $3, now())`, [uuidv7(), qid, ids.pm]);
@@ -597,7 +658,7 @@ describe('cross-project search', { skip: SKIP_NO_DB }, () => {
     );
     await t.pool.query('VACUUM ANALYZE');
     const { words, patterns } = parsePhrase('turbine pump');
-    const statement = buildSearchStatement({ ids: [harbour, bridge, extra], kinds: [...SEARCH_KINDS], patterns, today: '2026-11-09', first: words[0], scoped: false, offset: 0 });
+    const statement = buildSearchStatement({ ids: [harbour, bridge, extra], kinds: [...SEARCH_KINDS], patterns, today: '2026-11-09', first: words[0], scoped: false, offset: 0, userId: ids.pm });
     const client = await t.pool.connect();
     try {
       await client.query('BEGIN READ ONLY');
@@ -610,6 +671,160 @@ describe('cross-project search', { skip: SKIP_NO_DB }, () => {
     } finally {
       client.release();
     }
+  });
+
+  // --- Discussion: messages and source audiences ---
+
+  const found = async (c: Client, phrase: string, extra = '') => (await projectsOf(c, q(phrase, extra))).flatMap((p) => p.results);
+
+  test('message found by a participant', async () => {
+    const thr = await thread(harbour, 'Berth planning', await audience(harbour, null));
+    const id = await message(thr, 7, ['First wording about pontoon anchors', 'Second wording about pontoon moorings']);
+    const hits = await found(member, 'pontoon moorings');
+    assert.deepEqual(hits.map((r) => [r.kind, r.id, r.title, r.href]), [['message', id, 'Berth planning', `#/projects/${harbour}/threads/${thr}?m=7`]]);
+    assert.match(hits[0].snippet as string, /Second wording about pontoon moorings/);
+    assert.deepEqual(await found(member, 'pontoon anchors'), [], 'an earlier version is not searched');
+    assert.deepEqual(await found(member, 'pontoon moorings', '&kinds=task'), []);
+    assert.equal((await found(await t.signIn('auditor@example.org'), 'pontoon moorings')).length, 1, 'an Audit grant holder reads a Project-wide thread');
+    assert.deepEqual(await found(await t.signIn('outsider@example.org'), 'pontoon moorings'), []);
+  });
+
+  test('hidden and deleted messages not found', async () => {
+    const thr = await thread(harbour, 'Berth planning', await audience(harbour, null));
+    await message(thr, 1, ['Visible dredging remark']);
+    await message(thr, 2, ['Hidden dredging remark'], 'hidden');
+    await message(thr, 3, ['Deleted dredging remark'], 'deleted');
+    for (const c of [member, pm]) {
+      assert.deepEqual((await found(c, 'dredging remark')).map((r) => r.snippet), ['Visible dredging remark']);
+    }
+  });
+
+  test('restricted meeting message not found by an outsider', async () => {
+    await addMember(harbour, ids.held, 'member');
+    const named = await t.signIn('held@example.org');
+    const thr = await thread(harbour, 'Contract talks', await audience(harbour, [ids.held]), 'meeting');
+    const id = await message(thr, 1, ['Secret retainer figure']);
+    assert.deepEqual(await found(member, 'retainer figure'), [], 'a project member outside the audience');
+    assert.deepEqual((await found(named, 'retainer figure')).map((r) => r.id), [id], 'a named person');
+    assert.deepEqual((await found(pm, 'retainer figure')).map((r) => r.id), [id], 'the Project Manager');
+    const owner = await t.signIn('owner@example.org');
+    assert.deepEqual((await found(owner, 'retainer figure')).map((r) => r.id), [id], 'Owner and Sponsor');
+    assert.deepEqual(await found(await t.signIn('auditor@example.org'), 'retainer figure'), [], 'an Audit grant holder outside the audience');
+    // The audience is the thread's: widening it shows the message.
+    await t.pool.query(`UPDATE audiences SET mode = 'project' WHERE id = (SELECT audience_id FROM discussion_threads WHERE id = $1)`, [thr]);
+    assert.equal((await found(member, 'retainer figure')).length, 1);
+  });
+
+  test('restricted minutes and their proposals not found by an outsider', async () => {
+    await addMember(harbour, ids.held, 'member');
+    const named = await t.signIn('held@example.org');
+    const aud = await audience(harbour, [ids.held]);
+    const thr = await thread(harbour, 'Board session', aud, 'meeting');
+    const { sourceId, versionId } = await threadSource(harbour, thr, aud, { kind: 'minutes', title: 'Zeppelin minutes', text: 'Zeppelin budget was cut. Quarry lease agreed.' });
+    const run = await aiProposal(versionId, 'Quarry lease proposal', 'Quarry lease agreed.');
+    await t.pool.query(`INSERT INTO extraction_item_edits (id, item_id, text, edited_by, edited_at) VALUES ($1, $2, 'Quarry rental proposal', $3, now())`, [uuidv7(), run.itemId, ids.pm]);
+    for (const phrase of ['zeppelin', 'budget cut', 'quarry lease', 'quarry rental']) {
+      assert.deepEqual(await found(member, phrase), [], `outsider: ${phrase}`);
+      assert.ok((await found(named, phrase)).length >= 1, `named: ${phrase}`);
+      assert.ok((await found(pm, phrase)).length >= 1, `manager: ${phrase}`);
+    }
+    assert.deepEqual([...new Set((await found(named, 'quarry')).map((r) => r.kind))].sort(), ['ai_proposal', 'note']);
+    assert.deepEqual((await found(named, 'zeppelin')).map((r) => r.id), [sourceId]);
+    // Project-wide minutes are found by everyone.
+    const open = await audience(harbour, null);
+    await threadSource(harbour, await thread(harbour, 'Open session', open), open, { kind: 'minutes', title: 'Open minutes', text: 'Gazebo roof agreed.' });
+    assert.equal((await found(member, 'gazebo roof')).length, 1);
+  });
+
+  test('submitted notes found only by submitter and managers', async () => {
+    await addMember(harbour, ids.held, 'member');
+    await addMember(harbour, ids.expired, 'deputy_pm');
+    await addMember(harbour, ids.scheduled, 'deputy_pm', { startsOn: '2026-12-01' });
+    await addMember(harbour, ids.revoked, 'deputy_pm', { revoked: true });
+    const aud = await audience(harbour, null);
+    const submitted = await threadSource(harbour, await thread(harbour, 'Review meeting', aud, 'meeting'), aud, {
+      kind: 'minutes',
+      title: 'Yardarm minutes',
+      text: 'Yardarm inspection planned.',
+      publication: 'submitted',
+      submittedBy: ids.member,
+    });
+    await threadSource(harbour, await thread(harbour, 'Second meeting', aud, 'meeting'), aud, {
+      kind: 'minutes',
+      title: 'Yardarm second',
+      text: 'Yardarm second review.',
+      publication: 'returned',
+      submittedBy: ids.member,
+    });
+    const wants: Array<[string, number]> = [
+      ['member@example.org', 2],
+      ['pm@example.org', 2],
+      ['owner@example.org', 2],
+      ['expired@example.org', 2],
+      ['held@example.org', 0],
+      ['scheduled@example.org', 0],
+      ['revoked@example.org', 0],
+      ['auditor@example.org', 0],
+      ['bpm@example.org', 0],
+    ];
+    for (const [email, n] of wants) {
+      const hits = (await found(await t.signIn(email), 'yardarm')).filter((r) => r.kind === 'note');
+      assert.equal(hits.length, n, email);
+    }
+    await t.pool.query(`UPDATE sources SET publication = 'published' WHERE id = $1`, [submitted.sourceId]);
+    assert.equal((await found(await t.signIn('held@example.org'), 'yardarm inspection')).length, 1, 'published: everyone in the audience');
+  });
+
+  test('transcript text never matched directly', async () => {
+    const aud = await audience(harbour, null);
+    const { sourceId, versionId } = await threadSource(harbour, await thread(harbour, 'Open thread', aud), aud, {
+      kind: 'discussion',
+      title: 'Transcript of Open thread',
+      text: '#1 Ada Member 2026-11-10 10:00\nThe ballast timetable is late.',
+    });
+    // The proposal's own wording is searchable by the audience; its quote, which copies message text, is not.
+    const prop = await aiProposal(versionId, 'Reschedule ballast delivery', 'The ballast timetable is late.');
+    for (const c of [member, pm]) {
+      assert.deepEqual(await found(c, 'ballast timetable'), [], 'transcript text and the quote');
+      assert.deepEqual(await found(c, 'Transcript of Open'), [], 'transcript title');
+      assert.deepEqual((await found(c, 'reschedule ballast')).map((r) => [r.kind, r.id]), [['ai_proposal', prop.itemId]]);
+    }
+    // Under a Restricted audience an outsider does not find the proposal either.
+    await t.pool.query(`UPDATE sources SET audience_id = $2 WHERE id = $1`, [sourceId, await audience(harbour, [ids.pm])]);
+    assert.deepEqual(await found(member, 'reschedule ballast'), []);
+    assert.equal((await found(pm, 'reschedule ballast')).length, 1);
+  });
+
+  test('message search uses the trigram index, not a scan of every version', async () => {
+    const thr = await thread(harbour, 'Bulk thread', await audience(harbour, null));
+    await t.pool.query(
+      `INSERT INTO discussion_messages (id, thread_id, message_no, author_id, created_at)
+       SELECT gen_random_uuid(), $1, g, $2, now() FROM generate_series(1, 3000) g`,
+      [thr, ids.member],
+    );
+    await t.pool.query(
+      `INSERT INTO message_versions (id, message_id, version_no, body, body_sha256, created_at)
+       SELECT gen_random_uuid(), m.id, v, 'Message ' || m.message_no || ' revision ' || v || ' ' || md5(m.id::text || v), 'x', now()
+         FROM discussion_messages m CROSS JOIN generate_series(1, 3) v WHERE m.thread_id = $1`,
+      [thr],
+    );
+    await message(thr, 9000, ['A lone bollard mention']);
+    await t.pool.query('VACUUM ANALYZE');
+    const { words, patterns } = parsePhrase('bollard mention');
+    const statement = buildSearchStatement({ ids: [harbour], kinds: ['message'], patterns, today: '2026-11-09', first: words[0], scoped: false, offset: 0, userId: ids.member });
+    const client = await t.pool.connect();
+    try {
+      await client.query('BEGIN READ ONLY');
+      await applySearchSettings(client, t.app.get(SearchService).timeoutMs);
+      const plan = (await client.query(`EXPLAIN (ANALYZE, COSTS OFF, TIMING OFF) ${statement.text}`, statement.values)).rows.map((r) => r['QUERY PLAN']).join('\n');
+      await client.query('ROLLBACK');
+      if (process.env.KAINOW_PRINT_PLAN) console.log(plan);
+      assert.match(plan, /message_versions_trgm/);
+      assert.doesNotMatch(plan, /Seq Scan on message_versions/);
+    } finally {
+      client.release();
+    }
+    assert.equal((await found(member, 'bollard mention')).length, 1);
   });
 
   // --- Guard ---

@@ -1,3 +1,5 @@
+import { triggerLabelSql } from '../analysis/labels';
+import { itemDiscussionEvidence, itemSourceFlags, occurrenceLabels } from '../discussion/masking';
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
@@ -108,6 +110,12 @@ const RUN_COLUMNS = `id, source_version_id AS "sourceVersionId", status, failure
   attempts, item_count AS "itemCount", unlocated_count AS "unlocatedCount", model_id AS "modelId",
   created_at AS "createdAt", started_at AS "startedAt", finished_at AS "finishedAt"`;
 
+/** Who asked for a run, for display: the person's name, or why the system started it. Run table aliased r. */
+const REQUESTER_LABEL = `${triggerLabelSql(
+  `COALESCE((SELECT ar.trigger FROM analysis_runs ar WHERE ar.extraction_run_id = r.id LIMIT 1), r.trigger)`,
+  `(SELECT display_name FROM users WHERE id = r.requested_by)`,
+)} AS "requestedByLabel"`;
+
 @Injectable()
 export class ExtractionService {
   constructor(
@@ -118,12 +126,14 @@ export class ExtractionService {
 
   /** Starts an extraction of one exact version. The worker does the work later; this only records and queues it. */
   async request(sourceId: string, versionNo: number, actorUserId: string) {
-    const found = await this.pool.query<{ id: string }>(
-      `SELECT v.id FROM source_versions v JOIN sources s ON s.id = v.source_id
+    const found = await this.pool.query<{ id: string; publication: string; kind: string }>(
+      `SELECT v.id, s.publication, s.kind FROM source_versions v JOIN sources s ON s.id = v.source_id
         WHERE v.source_id = $1 AND v.version_no = $2 AND s.status = 'active'`,
       [sourceId, versionNo],
     );
-    if (!found.rows[0]) throw new NotFoundException();
+    // A discussion transcript is analysed only by the analysis runner, which rebuilds it from the messages visible at that moment.
+    if (!found.rows[0] || found.rows[0].kind === 'discussion') throw new NotFoundException();
+    if (found.rows[0].publication !== 'published') throw new ConflictException('A submission is analysed only after a reviewer publishes it.');
     const versionId = found.rows[0].id;
 
     const at = this.now();
@@ -155,7 +165,7 @@ export class ExtractionService {
     }
 
     try {
-      await this.queue.enqueue(runId);
+      await this.queue.enqueue(runId, { explicit: true });
     } catch {
       await this.pool.query(
         `UPDATE extraction_runs SET status = 'failed', failure_code = 'queue_unavailable',
@@ -167,8 +177,45 @@ export class ExtractionService {
     return this.getRun(runId);
   }
 
+  /**
+   * Starts an extraction that no person asked for (published minutes, a discussion), recorded with no requester and
+   * the reason it started. Queued like any run; the runner rechecks the project, the spend caps and the model when it
+   * starts, so this only records and queues. Returns the run id.
+   */
+  async requestAutomatic(versionId: string, trigger: 'minutes_published' | 'discussion'): Promise<string> {
+    const at = this.now();
+    const runId = uuidv7(at.getTime());
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `INSERT INTO extraction_runs (id, source_version_id, requested_by, trigger, status, created_at) VALUES ($1, $2, NULL, $3, 'queued', $4)`,
+        [runId, versionId, trigger, at],
+      );
+      await writeAudit(client, { at, action: 'extraction.requested', subjectType: 'extraction_run', subjectId: runId, detail: { sourceVersionId: versionId, trigger } });
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      if ((err as { code?: string }).code === '23505') throw new ConflictException('An extraction of this version is already queued or running');
+      throw err;
+    } finally {
+      client.release();
+    }
+    try {
+      await this.queue.enqueue(runId);
+    } catch {
+      await this.pool.query(
+        `UPDATE extraction_runs SET status = 'failed', failure_code = 'queue_unavailable',
+                failure_detail = 'The job could not be queued. Nothing was sent or charged.', finished_at = $2 WHERE id = $1`,
+        [runId, this.now()],
+      );
+      throw new ServiceUnavailableException('The extraction could not be queued.');
+    }
+    return runId;
+  }
+
   async getRun(runId: string) {
-    const run = await this.pool.query(`SELECT ${RUN_COLUMNS} FROM extraction_runs WHERE id = $1`, [runId]);
+    const run = await this.pool.query(`SELECT ${RUN_COLUMNS}, ${REQUESTER_LABEL} FROM extraction_runs r WHERE r.id = $1`, [runId]);
     if (!run.rows[0]) throw new NotFoundException();
     const meeting = await this.meetingDateFor(this.pool, runId);
     const items = await this.pool.query(
@@ -196,14 +243,20 @@ export class ExtractionService {
       const withDue = { ...item, reviewerDue: reviewerDueOf(dueRow), dueReading: dueReadingOf(dueRow, meeting.meetingDate), approvedWithoutRecord: item.reviewStatus === 'approved' && item.record === null };
       return item.edited ? { ...withDue, original: { text: originalText, owner: originalOwner, due: originalDue } } : withDue;
     });
+    const itemIds = shaped.map((i) => i.id);
+    const [flags, evidence] = await Promise.all([itemSourceFlags(this.pool, itemIds), itemDiscussionEvidence(this.pool, itemIds)]);
+    const flagged = shaped.map((i) => ({ ...i, sourceFlag: flags.get(i.id) ?? null, discussionEvidence: evidence.get(i.id) ?? null }));
     Object.assign(run.rows[0], meeting);
     const src = await this.pool.query(
-      `SELECT s.id AS "sourceId", s.title, v.version_no AS "versionNo"
+      `SELECT s.id AS "sourceId", s.title, s.kind AS "sourceKind", v.version_no AS "versionNo"
          FROM extraction_runs r JOIN source_versions v ON v.id = r.source_version_id JOIN sources s ON s.id = v.source_id
         WHERE r.id = $1`,
       [runId],
     );
-    return { run: run.rows[0], source: src.rows[0], items: await this.withOccurrences(run.rows[0].sourceVersionId, shaped) };
+    const placed = await this.withOccurrences(run.rows[0].sourceVersionId, flagged);
+    // A quote whose message is now hidden or deleted reaches no one (the places above carry labels, not text).
+    const items2 = placed.map((i) => (i.sourceFlag ? { ...i, quote: null as string | null, quoteMasked: i.sourceFlag } : i));
+    return { run: run.rows[0], source: src.rows[0], items: items2 };
   }
 
   /** The due inputs of one item as they stand now (wording, model's event, latest reviewer due). */
@@ -271,16 +324,24 @@ export class ExtractionService {
     if (!items.some((i) => i.quoteMatches > 1)) return items;
     const { rows } = await this.pool.query<{ text: string }>('SELECT text_content AS text FROM source_versions WHERE id = $1', [sourceVersionId]);
     const text = rows[0]?.text ?? '';
-    return items.map((i) =>
-      i.quoteMatches > 1
-        ? { ...i, occurrences: locateQuote(text, i.quote).slice(0, MAX_OCCURRENCE_CHOICES).map(({ start, end }) => ({ start, end })) }
-        : i,
-    );
+    const out = [];
+    for (const i of items) {
+      if (i.quoteMatches <= 1) {
+        out.push(i);
+        continue;
+      }
+      const places = locateQuote(text, i.quote).slice(0, MAX_OCCURRENCE_CHOICES).map(({ start, end }) => ({ start, end }));
+      // For a discussion transcript each place also says which message it is in (null for any other source).
+      const labels = await occurrenceLabels(this.pool, sourceVersionId, places);
+      const named = labels.some((l) => l !== null);
+      out.push({ ...i, occurrences: places.map((p, n) => (named ? { ...p, label: labels[n] } : p)) });
+    }
+    return out;
   }
 
   async listForVersion(sourceId: string, versionNo: number) {
     const { rows } = await this.pool.query(
-      `SELECT ${RUN_COLUMNS.split(',').map((c) => 'r.' + c.trim()).join(', ')}
+      `SELECT ${RUN_COLUMNS.split(',').map((c) => 'r.' + c.trim()).join(', ')}, ${REQUESTER_LABEL}
          FROM extraction_runs r
          JOIN source_versions v ON v.id = r.source_version_id
          JOIN sources s ON s.id = v.source_id

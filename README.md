@@ -38,6 +38,7 @@ Four rules shape everything:
 | **Notes intake** | Paste text, or upload TXT, Markdown, DOCX or text-based PDF. Files are checked for safety, text is normalised, and each change to a note is a new, immutable version. Originals are kept. |
 | **AI extraction** | A background worker sends the note to the configured model and gets back proposals. A basic credential check runs first and blocks sending if it finds keys, tokens or passwords. Quotes are located in the stored text by character position. |
 | **Review screen** | The notes on the left with every proposed passage highlighted, the proposals on the right. Approve or reject each one with the keyboard or mouse. A quote that repeats must be resolved by choosing which place was meant. A proposal's wording, owner and due date can be edited; the model's original is kept beside it and the proposal goes back to review. |
+| **Discussion and meeting minutes** (V1.0 sub-project 4a) | Each project has a shared discussion of threads and replies; a message in which a suspected credential is found is refused and not stored, and the author is told the kind. Participants can ask the AI, which analyses a thread after a quiet period (5 minutes by default, 5 to 30 whole minutes, at most two automatic analyses per thread in 20 minutes). A meeting can be typed in Kainow, Project-wide or Restricted; AI drafts minutes in fixed sections, a person edits them, and a Project Manager, Deputy, Owner or Sponsor publishes a chosen version as a minutes source with its audience (D73-D75). |
 | **Spending control** | A monthly AI spending cap (MYR 20 by default, reset on the first of the month, UTC+8). Each call reserves its worst-case cost before it runs and is refused if it would not fit. An optional per-person monthly limit. Administrators see and change the settings. |
 | **Languages** | English, Bahasa Melayu and mixed-language notes. |
 | **Audit** | Sign-ins, decisions, edits, settings changes and administration are recorded and cannot be changed or deleted. |
@@ -68,7 +69,7 @@ The MVP and the deferrals are recorded in [`docs/MVP-DECISIONS.md`](docs/MVP-DEC
 
 ## What Kainow is not
 
-Kainow does not take minutes, record or transcribe meetings, or read scanned documents (no OCR). It is not a chat app, calendar, email client, document repository, Gantt or portfolio planner, resource-booking system or accounting package. It does not run actions on its own. Plugins and a public API are outside V1.0.
+Kainow does not record or transcribe audio, or read scanned documents (no OCR). It is not a chat app, calendar, email client, document repository, Gantt or portfolio planner, resource-booking system or accounting package. It does not run actions on its own. Plugins and a public API are outside V1.0.
 
 ## How it works
 
