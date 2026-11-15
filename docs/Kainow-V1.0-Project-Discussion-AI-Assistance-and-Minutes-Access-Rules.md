@@ -109,6 +109,8 @@ AI-generated reports and specifications remain clearly labelled drafts until app
 
 `Owning Department > Project > Year > Report Type`
 
+In V1.0, AI drafts of reports, specifications and summaries remain drafts in Kainow until the outputs capability adds approval and filing (D77).
+
 Creating or approving a draft does not grant external-storage access. Filing and distribution follow the separate permissions and confirmed-outcome requirements.
 
 ## 9. AI configuration, usage and settings
