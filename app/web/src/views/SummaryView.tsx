@@ -139,6 +139,8 @@ export function SummaryPage({ summaryId }: { summaryId: string }) {
   const editButton = useRef<HTMLButtonElement>(null);
   const approveButton = useRef<HTMLButtonElement>(null);
   const pending = useRef(new Set<number>());
+  // A button that was disabled while its request ran gets focus back once it is enabled (or the marks heading if it is gone).
+  const refocus = useRef<HTMLElement | null>(null);
   const focusLater = (r: { current: HTMLElement | null }) => requestAnimationFrame(() => r.current?.focus());
 
   const apply = useCallback((v: SummaryFullView) => {
@@ -164,7 +166,7 @@ export function SummaryPage({ summaryId }: { summaryId: string }) {
     if (arrived) heading.current?.focus();
   }, [arrived]);
 
-  const active = view?.view === 'full' && (view.status === 'queued' || view.status === 'running');
+  const active = !gone && view?.view === 'full' && (view.status === 'queued' || view.status === 'running');
   useEffect(() => {
     if (!active) return;
     const timer = window.setTimeout(() => void load().finally(() => setTick((n) => n + 1)), SUMMARY_POLL_MS);
@@ -185,6 +187,13 @@ export function SummaryPage({ summaryId }: { summaryId: string }) {
       .finally(() => pending.current.delete(shownNo));
   }, [full, shownNo, texts]);
 
+  useEffect(() => {
+    if (busy || !refocus.current) return;
+    const el = refocus.current;
+    refocus.current = null;
+    requestAnimationFrame(() => (el.isConnected && !(el as HTMLButtonElement).disabled ? el : marksHeading.current)?.focus());
+  }, [busy]);
+
   const marks = full?.current?.marks ?? [];
   const body = texts[shownNo];
   const pieces = useMemo(() => (body !== undefined && isNewest ? highlightPieces(body, marks) : null), [body, isNewest, marks]);
@@ -200,7 +209,7 @@ export function SummaryPage({ summaryId }: { summaryId: string }) {
           <span className="ai-label">{view.label}</span> · {view.approved} · {view.from}
         </p>
         <p><a href={`#/notes/${view.sourceId}`}>Open as a note</a></p>
-        <div className="ai-proposed answer-text draft-text source" tabIndex={0} aria-label="Approved summary text">{view.body}</div>
+        <div className="ai-proposed answer-text draft-text source" role="region" aria-label="Approved summary text">{view.body}</div>
       </main>
     );
   }
@@ -212,14 +221,28 @@ export function SummaryPage({ summaryId }: { summaryId: string }) {
   const label = approvedNow ? SUMMARY_APPROVED_LABEL : SUMMARY_DRAFT_LABEL;
   const originalHref = v.original.kind === 'source' ? `#/notes/${v.original.id}` : `#/projects/${v.projectId}/threads/${v.original.id}`;
 
-  async function act(fn: () => Promise<SummaryFullView>, done: string, after?: () => void) {
+  /** Someone changed the summary since it was opened: show the current version and say so. */
+  async function showNewer(): Promise<void> {
+    try {
+      const fresh = await getSummary(v.id);
+      if (fresh.view === 'full') apply(fresh);
+      else setView(fresh);
+    } catch (e) {
+      if (e instanceof ApiError && e.status === 404) return setGone(true);
+    }
+    setShown(null);
+    setInfo('A newer version is shown. Check it, then try again.');
+  }
+
+  async function act(fn: () => Promise<SummaryFullView>, done: string, button?: HTMLElement | null) {
     setBusy(true);
     setError(null);
+    refocus.current = button ?? null;
     try {
       apply(await fn());
       setInfo(done);
-      after?.();
     } catch (e) {
+      if (e instanceof ApiError && e.status === 409) await showNewer();
       setError(errText(e));
     } finally {
       setBusy(false);
@@ -265,7 +288,9 @@ export function SummaryPage({ summaryId }: { summaryId: string }) {
 
   return (
     <main className="page">
-      <p><a href={`#/projects/${v.projectId}/review`}>Back to Review</a></p>
+      <p>
+        {v.canReview || v.approval ? <a href={`#/projects/${v.projectId}/review`}>Back to Review</a> : <a href={originalHref}>Back to {v.original.kind === 'meeting' ? 'the meeting' : 'the source'}</a>}
+      </p>
       <h1 tabIndex={-1} ref={heading}>Shareable summary of {v.original.title}</h1>
       <p className="meta">
         <span className="badge badge-pending">{FROM_RESTRICTED_LABEL}</span>{' '}
@@ -313,7 +338,7 @@ export function SummaryPage({ summaryId }: { summaryId: string }) {
             {body === undefined ? (
               <p className="loading">Loading</p>
             ) : (
-              <div className="summary-text source" tabIndex={0} aria-label={`Summary text, version ${shownNo}`}>
+              <div className="summary-text source" role="region" aria-label={`Summary text, version ${shownNo}`}>
                 {pieces
                   ? pieces.map((p, i) =>
                       p.marks.length === 0 ? (
@@ -351,7 +376,7 @@ export function SummaryPage({ summaryId }: { summaryId: string }) {
                   {!m.intended && v.canMarkIntended && (
                     <>
                       {' '}
-                      <button type="button" disabled={busy || !isNewest} onClick={() => void act(() => markIntended(v.id, m.id, cur.no), `${markKindText(m.kind)} ticked Intended`, () => focusLater(marksHeading))}>
+                      <button type="button" disabled={busy || !isNewest} onClick={(e) => void act(() => markIntended(v.id, m.id, cur.no), `${markKindText(m.kind)} ticked Intended`, e.currentTarget)}>
                         Intended<span className="visually-hidden">: keep {m.phrase} in the summary</span>
                       </button>
                     </>
@@ -368,7 +393,7 @@ export function SummaryPage({ summaryId }: { summaryId: string }) {
         <div className="actions">
           {v.canEdit && <button type="button" ref={editButton} disabled={!isNewest} onClick={startEdit}>Edit</button>}
           {v.canAskApproval && cur && (
-            <button type="button" disabled={busy || !isNewest} onClick={() => void act(() => askSummaryApproval(v.id, cur.no), 'Approval was asked for: the Project Manager, Owner and Sponsors were told')}>
+            <button type="button" disabled={busy || !isNewest} onClick={(e) => void act(() => askSummaryApproval(v.id, cur.no), 'Approval was asked for: the Project Manager, Owner and Sponsors were told', e.currentTarget)}>
               {cur.approvalRequested ? 'Ask for approval again' : 'Ask for approval'}
             </button>
           )}
@@ -416,7 +441,17 @@ export function SummaryPage({ summaryId }: { summaryId: string }) {
             submitLabel="Approve"
             onCancel={() => { setApproving(false); focusLater(approveButton); }}
             onSubmit={async (reason) => {
-              const r = await approveSummary(v.id, v.approval!.versionNo, reason);
+              let r;
+              try {
+                r = await approveSummary(v.id, v.approval!.versionNo, reason);
+              } catch (e) {
+                if (!(e instanceof ApiError && e.status === 409)) throw e;
+                setApproving(false);
+                await showNewer();
+                setError(errText(e));
+                focusLater(heading);
+                return;
+              }
               apply(r);
               setApproving(false);
               setInfo(`Version ${v.approval!.versionNo} was approved for sharing. ${r.gainedAccess.length} ${r.gainedAccess.length === 1 ? 'person gained' : 'people gained'} access.`);

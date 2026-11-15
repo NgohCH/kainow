@@ -315,3 +315,11 @@ test('the answer in a thread address is read from the query', () => {
   assert.equal(answerIdFromHash('#/projects/p/threads/t?answer=nope'), null);
   assert.equal(answerIdFromHash('#/projects/p/threads/t'), null);
 });
+
+test('mark places are UTF-16 offsets: an accented phrase after an emoji is cut at the right text', () => {
+  const body = '\u{1F600} Caf\u00e9 Zo\u00eb met Dana';
+  const start = body.indexOf('Zo\u00eb');
+  const pieces = highlightPieces(body, [mk('n', 'name', 'Zoe', [[start, start + 3]])]);
+  assert.deepEqual(pieces.filter((p) => p.marks.length).map((p) => p.text), ['Zo\u00eb']);
+  assert.equal(pieces.map((p) => p.text).join(''), body);
+});

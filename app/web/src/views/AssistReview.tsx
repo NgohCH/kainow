@@ -87,7 +87,8 @@ export function AssistReview({ projectId, roles }: { projectId: string; roles: s
   const summaryActions = reviewActions('summary', roles);
   const [items, setItems] = useState<ReviewItem[] | null>(null);
   const [summaries, setSummaries] = useState<SummaryListItem[] | null>(null);
-  const [loadError, setLoadError] = useState<string | null>(null);
+  const [itemsError, setItemsError] = useState<string | null>(null);
+  const [summariesError, setSummariesError] = useState<string | null>(null);
   const [pending, setPending] = useState<Pending>(null);
   const [info, setInfo] = useState('');
   const heading = useRef<HTMLHeadingElement>(null);
@@ -95,14 +96,19 @@ export function AssistReview({ projectId, roles }: { projectId: string; roles: s
   const openButtons = useRef(new Map<string, HTMLButtonElement>());
 
   const load = useCallback(async () => {
-    const errs: string[] = [];
+    // A list that cannot be reloaded is emptied and the error shown, so a stale row is never left to act on.
     if (answerActions.length > 0) {
-      await listAssistReview(projectId).then(setItems, (e) => errs.push(errText(e)));
+      await listAssistReview(projectId).then(
+        (r) => { setItems(r); setItemsError(null); },
+        (e) => { setItems([]); setItemsError(`Could not load the answers and drafts to review. ${errText(e)}`); },
+      );
     }
     if (summaryActions.length > 0) {
-      await listSummariesToReview(projectId).then(setSummaries, (e) => errs.push(errText(e)));
+      await listSummariesToReview(projectId).then(
+        (r) => { setSummaries(r); setSummariesError(null); },
+        (e) => { setSummaries([]); setSummariesError(`Could not load the summaries to review. ${errText(e)}`); },
+      );
     }
-    setLoadError(errs.length ? errs[0] : null);
     // The roles never change while the tab is open.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [projectId, answerActions.length, summaryActions.length]);
@@ -125,20 +131,25 @@ export function AssistReview({ projectId, roles }: { projectId: string; roles: s
     else openButtons.current.delete(key);
   };
 
-  if (answerActions.length === 0 && summaryActions.length === 0) return <p className="empty">Nothing here is for your role to review.</p>;
+  if (answerActions.length === 0 && summaryActions.length === 0)
+    return (
+      <p className="empty">
+        Nothing here is for your role to review. A summary you drafted is opened from the <a href={`#/projects/${projectId}/notes`}>note or meeting</a> it came from.
+      </p>
+    );
 
   return (
     <section aria-labelledby="review-heading">
       <h2 id="review-heading">Review</h2>
       <div className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{info}</div>
-      {loadError && <p role="alert" className="error">{loadError}</p>}
 
       {answerActions.length > 0 && (
         <section aria-labelledby="review-answers-heading">
           <h3 id="review-answers-heading" tabIndex={-1} ref={heading}>Answers and drafts to review</h3>
           <p className="meta">Shared AI answers and drafts that used something since removed. Until you decide, only the Project Manager and Deputies see them.</p>
-          {items === null && !loadError && <p className="loading">Loading</p>}
-          {items?.length === 0 && <p className="empty">Nothing is waiting for review.</p>}
+          {itemsError && <p role="alert" className="error">{itemsError}</p>}
+          {items === null && !itemsError && <p className="loading">Loading</p>}
+          {items?.length === 0 && !itemsError && <p className="empty">Nothing is waiting for review.</p>}
           <ul className="ask-list">
             {items?.map((i) => {
               const key = `${i.kind}:${i.id}`;
@@ -182,8 +193,9 @@ export function AssistReview({ projectId, roles }: { projectId: string; roles: s
         <section aria-labelledby="review-summaries-heading">
           <h3 id="review-summaries-heading" tabIndex={-1} ref={summariesHeading}>Summaries to review</h3>
           <p className="meta">Shareable summaries of restricted sources and meetings: drafts waiting for approval, and approved ones whose access needs a check.</p>
-          {summaries === null && !loadError && <p className="loading">Loading</p>}
-          {summaries?.length === 0 && <p className="empty">No summaries are waiting.</p>}
+          {summariesError && <p role="alert" className="error">{summariesError}</p>}
+          {summaries === null && !summariesError && <p className="loading">Loading</p>}
+          {summaries?.length === 0 && !summariesError && <p className="empty">No summaries are waiting.</p>}
           <ul className="ask-list">
             {summaries?.map((s) => {
               const key = `summary:${s.id}`;
