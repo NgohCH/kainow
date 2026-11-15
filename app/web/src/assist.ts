@@ -102,6 +102,17 @@ export function shareRefusal(e: unknown): { message: string; canReanswer: boolea
   return { message: 'Something went wrong. Try again.', canReanswer: false };
 }
 
+/** The panel's list after a load: by id, the fresh copy wins, items the load did not know about (just asked) are kept; newest first. */
+export function mergeViews(old: AnswerView[], fresh: AnswerView[]): AnswerView[] {
+  const byId = new Map<string, AnswerView>();
+  for (const a of old) byId.set(a.id, a);
+  for (const a of fresh) byId.set(a.id, a);
+  return [...byId.values()].sort((a, b) => b.askedAt.localeCompare(a.askedAt) || b.id.localeCompare(a.id));
+}
+
+/** A source is only linked when it points inside the app. */
+export const safeHref = (href: string | null): string | null => (href !== null && href.startsWith('#/') ? href : null);
+
 /** Joins a poll to what is shown: by id (the server returns every shared answer each time); the fresh copy wins. */
 export function mergeAnswers(old: ThreadAnswerView[], fresh: ThreadAnswerView[]): ThreadAnswerView[] {
   const byId = new Map<string, ThreadAnswerView>();

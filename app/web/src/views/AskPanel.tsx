@@ -7,6 +7,7 @@ import {
   askQuestion,
   isActive,
   listQuestions,
+  mergeViews,
   MAX_QUESTION,
   questionCounter,
   questionProblem,
@@ -32,6 +33,13 @@ export function AskPanel({ projectId, onClose }: { projectId: string; onClose: (
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [announce, setAnnounce] = useState('');
+  const [tick, setTick] = useState(0);
+  const aside = useRef<HTMLElement>(null);
+  // Clear then set, so the same words said twice are read twice.
+  const say = useCallback((msg: string) => {
+    setAnnounce('');
+    requestAnimationFrame(() => setAnnounce(msg));
+  }, []);
   const [threads, setThreads] = useState<DiscussionItem[]>([]);
   const heading = useRef<HTMLHeadingElement>(null);
   const seen = useRef(new Map<string, AnswerView['status']>());
@@ -42,18 +50,18 @@ export function AskPanel({ projectId, onClose }: { projectId: string; onClose: (
       for (const a of fresh) {
         const before = seen.current.get(a.id);
         if (before && (before === 'queued' || before === 'running') && !isActive(a)) {
-          setAnnounce(a.status === 'answered' || a.status === 'not_found' ? 'An AI answer is ready' : 'An AI question could not be answered');
+          say(a.status === 'answered' || a.status === 'not_found' ? 'An AI answer is ready' : 'An AI question could not be answered');
         }
         seen.current.set(a.id, a.status);
       }
-      setItems(fresh);
+      setItems((cur) => mergeViews(cur, fresh));
       setError(null);
     } catch (e) {
       setError(errText(e));
     } finally {
       setLoaded(true);
     }
-  }, [projectId]);
+  }, [projectId, say]);
 
   useEffect(() => {
     void load();
@@ -61,21 +69,49 @@ export function AskPanel({ projectId, onClose }: { projectId: string; onClose: (
     heading.current?.focus();
   }, [load, projectId]);
 
-  // Poll every 3 seconds while anything is queued or running.
+  // Poll every 3 seconds while anything is queued or running; the next poll is armed whether this one worked or failed.
   const active = items.some(isActive);
   useEffect(() => {
     if (!active) return;
-    const timer = window.setTimeout(() => void load(), ANSWER_POLL_MS);
-    return () => window.clearTimeout(timer);
-  }, [active, items, load]);
+    let stopped = false;
+    const timer = window.setTimeout(() => {
+      void load().finally(() => {
+        if (!stopped) setTick((n) => n + 1);
+      });
+    }, ANSWER_POLL_MS);
+    return () => {
+      stopped = true;
+      window.clearTimeout(timer);
+    };
+  }, [active, tick, load]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') onClose();
+      if (e.key !== 'Escape' || e.defaultPrevented) return;
+      if ((e.target as Element | null)?.closest?.('dialog, [role="dialog"], select')) return;
+      onClose();
     };
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
+
+  // On a narrow screen the panel is a full page: everything behind it is inert so Tab cannot reach it.
+  useEffect(() => {
+    const mq = window.matchMedia('(max-width: 719px)');
+    let marked: HTMLElement[] = [];
+    const apply = () => {
+      for (const el of marked) el.inert = false;
+      const siblings = [...(aside.current?.parentElement?.children ?? [])].filter((el) => el !== aside.current) as HTMLElement[];
+      marked = mq.matches ? siblings.filter((el) => !el.inert) : [];
+      for (const el of marked) el.inert = true;
+    };
+    apply();
+    mq.addEventListener('change', apply);
+    return () => {
+      mq.removeEventListener('change', apply);
+      for (const el of marked) el.inert = false;
+    };
+  }, []);
 
   async function send(e: FormEvent) {
     e.preventDefault();
@@ -89,7 +125,7 @@ export function AskPanel({ projectId, onClose }: { projectId: string; onClose: (
       seen.current.set(a.id, a.status);
       setItems((cur) => [a, ...cur.filter((x) => x.id !== a.id)]);
       setText('');
-      setAnnounce('Question sent');
+      say('Question sent');
     } catch (err) {
       // The text stays in the box so nothing is lost.
       setError(errText(err));
@@ -105,7 +141,7 @@ export function AskPanel({ projectId, onClose }: { projectId: string; onClose: (
   const replace = (a: AnswerView) => setItems((cur) => cur.map((x) => (x.id === a.id ? a : x)));
 
   return (
-    <aside className="ask-panel" aria-labelledby="ask-heading">
+    <aside ref={aside} className="ask-panel" aria-labelledby="ask-heading">
       <div className="row">
         <h2 id="ask-heading" tabIndex={-1} ref={heading}>Ask about this project</h2>
         <button type="button" onClick={onClose}>Close</button>
@@ -171,7 +207,9 @@ function AskCard({ a, projectId, threads, onNew, onChanged }: { a: AnswerView; p
     <li className="ask-card ai-proposed">
       <p className="meta">
         {done && <span className="ai-label">AI answer</span>}
-        Asked {formatWhen(a.askedAt)}
+        Asked by {a.askedBy.displayName} · {formatWhen(a.askedAt)}
+        {a.answeredAt ? ` · answered ${formatWhen(a.answeredAt)}` : ''}
+        {a.model ? ` · ${a.model}` : ''}
       </p>
       {a.question !== null && <p className="answer-question"><strong>Question:</strong> {a.question}</p>}
       <p className={a.status === 'failed' || a.status === 'blocked' ? 'warn' : 'meta'} role={isActive(a) ? 'status' : undefined}>
@@ -179,8 +217,8 @@ function AskCard({ a, projectId, threads, onNew, onChanged }: { a: AnswerView; p
       </p>
       {a.status === 'not_found' && a.searchedWords.length > 0 && <p className="meta">Searched for: {a.searchedWords.join(', ')}</p>}
       {a.notice && done && <p className="notice">{a.notice}</p>}
-      {a.answerMarkdown !== null && <AnswerBody id={a.id} markdown={a.answerMarkdown} sources={a.sources} droppedCount={a.droppedCount} />}
-      {(a.status === 'not_found' || a.status === 'failed') && a.sources.length > 0 && <AnswerBody id={a.id} markdown={null} sources={a.sources} droppedCount={a.droppedCount} />}
+      {a.answerMarkdown !== null && <AnswerBody id={a.id} scope="panel" markdown={a.answerMarkdown} sources={a.sources} droppedCount={a.droppedCount} />}
+      {a.answerMarkdown === null && (a.sources.length > 0 || a.droppedCount > 0) && <AnswerBody id={a.id} scope="panel" markdown={null} sources={a.sources} droppedCount={a.droppedCount} />}
       {done && <FeedbackButton projectId={projectId} targetKind="answer" targetId={a.id} label="Give feedback on this AI answer" />}
       {done && sharedTo && (
         <p className="meta">

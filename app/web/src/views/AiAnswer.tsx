@@ -1,4 +1,4 @@
-import { type FormEvent, Fragment, useState } from 'react';
+import { type FormEvent, Fragment, useRef, useState } from 'react';
 import { ApiError } from '../api.ts';
 import {
   ANSWER_LABEL,
@@ -6,6 +6,7 @@ import {
   type Inline,
   hideAnswer,
   parseMarkdown,
+  safeHref,
   sourcesSummary,
   type ThreadAnswerView,
   unhideAnswer,
@@ -18,11 +19,14 @@ const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something 
 /** The answer text (read as Markdown into plain React nodes, never HTML), then the sources used. [Pn] markers open the matching source. */
 export function AnswerBody({
   id,
+  scope,
   markdown,
   sources,
   droppedCount,
 }: {
   id: string;
+  /** 'panel' or 'thread': the same answer can be on screen in both, so DOM ids carry the scope. */
+  scope: string;
   markdown: string | null;
   sources: AnswerSource[];
   droppedCount: number;
@@ -30,7 +34,7 @@ export function AnswerBody({
   const [open, setOpen] = useState(false);
   const { shown, droppedText } = sourcesSummary(sources, droppedCount);
   const known = new Set(shown.map((s) => s.marker));
-  const sourceId = (marker: string) => `src-${id}-${marker}`;
+  const sourceId = (marker: string) => `${scope}-src-${id}-${marker}`;
 
   function jump(marker: string) {
     setOpen(true);
@@ -77,7 +81,7 @@ export function AnswerBody({
             {shown.map((s) => (
               <li key={s.marker} id={sourceId(s.marker)} tabIndex={-1}>
                 <strong>{s.marker}</strong>{' '}
-                {s.href ? <a href={s.href}>{s.location ?? 'Open source'}</a> : (s.location ?? 'Source')}
+                {safeHref(s.href) ? <a href={safeHref(s.href)!}>{s.location ?? 'Open source'}</a> : (s.location ?? 'Source')}
                 {s.cited ? ' (cited in the answer)' : ' (looked at, not cited)'}
               </li>
             ))}
@@ -105,6 +109,12 @@ export function ThreadAnswerItem({
   const [reason, setReason] = useState('');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const hideButton = useRef<HTMLButtonElement>(null);
+  const closeForm = () => {
+    setReasonFor(null);
+    setError(null);
+    requestAnimationFrame(() => hideButton.current?.focus());
+  };
 
   async function run(e: FormEvent) {
     e.preventDefault();
@@ -113,8 +123,8 @@ export function ThreadAnswerItem({
     setError(null);
     try {
       await (reasonFor === 'hide' ? hideAnswer : unhideAnswer)(answer.id, reason);
-      setReasonFor(null);
       setReason('');
+      closeForm();
       onChanged();
     } catch (err) {
       setError(errText(err));
@@ -131,11 +141,11 @@ export function ThreadAnswerItem({
       </p>
       {answer.question !== null && <p className="answer-question"><strong>Question:</strong> {answer.question}</p>}
       {answer.notice && <p className="notice">{answer.notice}</p>}
-      {answer.answerMarkdown !== null && !answer.hidden && <p className="meta">{ANSWER_LABEL}</p>}
-      {!answer.hidden && <AnswerBody id={answer.id} markdown={answer.answerMarkdown} sources={answer.sources} droppedCount={answer.droppedCount} />}
+      {answer.answerMarkdown !== null && <p className="meta">{ANSWER_LABEL}</p>}
+      {(answer.answerMarkdown !== null || answer.sources.length > 0) && <AnswerBody id={answer.id} scope="thread" markdown={answer.answerMarkdown} sources={answer.sources} droppedCount={answer.droppedCount} />}
       <div className="actions">
         {canModerate && (
-          <button type="button" className="quiet" aria-label={`${answer.hidden ? 'Unhide' : 'Hide'} AI answer asked by ${answer.askedBy.displayName}`} onClick={() => { setReasonFor(answer.hidden ? 'unhide' : 'hide'); setError(null); }}>
+          <button type="button" ref={hideButton} className="quiet" aria-label={`${answer.hidden ? 'Unhide' : 'Hide'} AI answer asked by ${answer.askedBy.displayName}`} onClick={() => { setReasonFor(answer.hidden ? 'unhide' : 'hide'); setError(null); }}>
             {answer.hidden ? 'Unhide' : 'Hide'}
           </button>
         )}
@@ -150,7 +160,7 @@ export function ThreadAnswerItem({
             <input value={reason} onChange={(e) => setReason(e.target.value)} required maxLength={500} autoFocus />
           </label>
           <button className="primary" disabled={busy || reason.trim() === ''}>{reasonFor === 'hide' ? 'Hide' : 'Unhide'}</button>
-          <button type="button" onClick={() => { setReasonFor(null); setError(null); }}>Cancel</button>
+          <button type="button" onClick={closeForm}>Cancel</button>
         </form>
       )}
       {error && <p role="alert" className="error">{error}</p>}

@@ -5,6 +5,8 @@ import {
   BAD_QUESTION,
   mergeAnswers,
   mergeTimeline,
+  mergeViews,
+  safeHref,
   parseInline,
   parseMarkdown,
   questionCounter,
@@ -86,4 +88,17 @@ test('markdown becomes tokens, never HTML; markers are found', () => {
   );
   const blocks = parseMarkdown('# Title\n\nOne line\ncontinues.\n\n- a\n- b\n\n1. x\n2. y');
   assert.deepEqual(blocks.map((b) => b.t), ['h', 'p', 'ul', 'ol']);
+});
+
+test('mergeViews keeps a just-asked item a poll did not know and lets the fresh copy win', () => {
+  const v = (id: string, askedAt: string, status: string) => ({ id, askedAt, status }) as never;
+  const merged = mergeViews([v('b', '2026-11-11T05:00:00Z', 'queued'), v('a', '2026-11-11T03:00:00Z', 'running')], [v('a', '2026-11-11T03:00:00Z', 'answered')]) as unknown as Array<{ id: string; status: string }>;
+  assert.deepEqual(merged.map((x) => `${x.id}:${x.status}`), ['b:queued', 'a:answered']);
+});
+
+test('only in-app source links are used', () => {
+  assert.equal(safeHref('#/notes/n1'), '#/notes/n1');
+  assert.equal(safeHref('javascript:alert(1)'), null);
+  assert.equal(safeHref('https://elsewhere.example.com'), null);
+  assert.equal(safeHref(null), null);
 });
