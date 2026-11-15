@@ -118,9 +118,13 @@ function label(s: string | null | undefined): string {
   return t.charAt(0).toUpperCase() + t.slice(1);
 }
 
-/** One table cell: one line, no pipe that would split the cell, no bracket that would open a link. */
+/** Longest text in one table cell; record texts are cut so the facts always fit the draft. */
+const MAX_CELL = 120;
+
+/** One table cell: one line, at most 120 characters, no pipe that would split the cell, no bracket that would open a link. */
 function cell(s: string | null | undefined): string {
-  const t = (s ?? '').replace(/\s+/g, ' ').trim();
+  const flat = (s ?? '').replace(/\s+/g, ' ').trim();
+  const t = flat.length > MAX_CELL ? `${flat.slice(0, MAX_CELL - 1).trimEnd()}…` : flat;
   return t === '' ? '—' : t.replace(/\\/g, '\\\\').replace(/\|/g, '\\|').replace(/([[\]])/g, '\\$1');
 }
 
@@ -244,12 +248,28 @@ function footnotes(markdown: string): string {
 const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase();
 
 /**
+ * The AI writes text only: its own footnote definitions, links and images are removed (the link text stays), so every
+ * source link in a draft is one Kainow rendered from the material. Raw HTML tags are removed too.
+ */
+export function plainNarrative(markdown: string): string {
+  return markdown
+    .split('\n')
+    .filter((line) => !/^\s{0,3}\[\^[^\]]*\]:/.test(line) && !/^\s{0,3}\[[^\]]+\]:\s*\S/.test(line))
+    .join('\n')
+    .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+    .replace(/<\/?[a-z][^>]*>/gi, '')
+    .replace(/\[\^([^\]]*)\]/g, '[$1]');
+}
+
+/**
  * The draft (spec 6.2): Kainow's heading block, then each section of the kind in order, Kainow's facts first and the
  * AI narrative after, with citations as footnote links, then the Sources list of every cited marker. Sections the AI
  * wrote that the kind does not have are left out.
  */
 export function assembleDraft(head: DraftHead, facts: Record<string, string>, narrative: ReportOutput, material: Array<Pick<MaterialItem, 'marker' | 'location' | 'href'>>): string {
   const lines: string[] = [`# ${head.title.replace(/\s+/g, ' ').trim()}`, '', `${KIND_LABELS[head.kind]}`];
+  // The caller passes a period only when the draft's material and facts are limited by it.
   if (head.period) lines.push(`Period: ${head.period.from} to ${head.period.to}`);
   lines.push(`Drafted by AI for ${head.requester} on ${head.date}`);
   const cited: string[] = [];
@@ -260,7 +280,7 @@ export function assembleDraft(head: DraftHead, facts: Record<string, string>, na
     if (fact) parts.push(fact);
     const written = narrative.sections.filter((s) => sameName(s.section, section));
     for (const s of written) {
-      const text = s.markdown.trim();
+      const text = plainNarrative(s.markdown).trim();
       if (text !== '') parts.push(footnotes(text));
       for (const m of [...markersIn(text), ...s.cited.map((c) => normalizeMarker(c)).filter((c): c is string => c !== null)]) {
         if (!cited.includes(m)) cited.push(m);

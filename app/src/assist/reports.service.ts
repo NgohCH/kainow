@@ -11,7 +11,7 @@ import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/
 import { todayUtc8 } from '../projects/membership';
 import { decide } from '../projects/matrix';
 import { hrefFor } from '../search/query';
-import { type AssistInput, type Refusal, registerCompletion, registerInputBuilder, registerRemovedCheck } from './assist-runner';
+import { type AssistInput, CompletionRefused, type Refusal, registerCompletion, registerInputBuilder, registerRemovedCheck } from './assist-runner';
 import { MAX_RECORDS, type MaterialItem, type MaterialScope, type RecordKind, findMaterial, snapshotOf, sourceOkSql, stillReadable } from './material';
 import { REPORT_SYSTEM, type ReportOutput, renderInput } from './prompts';
 import { answerSources, unavailableReason } from './questions.service';
@@ -63,6 +63,7 @@ const REPORT_REASONS: Readonly<Record<string, string>> = {
   material_unavailable: 'nothing found for this draft can be read any more',
   bad_response: 'the AI draft did not match its sources, so nothing was kept',
   draft_not_found: 'the draft for this request was not found',
+  draft_too_long: 'the draft would be longer than 100,000 characters, so nothing was kept',
   queue_unavailable: 'the draft could not be queued; request it again',
 };
 const reportReason = (code: string | null, detail: string | null) => (code && REPORT_REASONS[code]) || unavailableReason(code, detail);
@@ -232,7 +233,7 @@ interface DraftSpec {
   kind: ReportKind;
   period: Period | null;
   chosen: { sourceIds: string[]; threadIds: string[] };
-  /** Free-form only: the period the person gave, which then limits the passages. */
+  /** Specification and free-form: a period the person gave, which then limits the passages (there is no default). */
   periodGiven: boolean;
 }
 
@@ -318,7 +319,10 @@ export async function completeReport(db: PoolClient, request: AssistRequest, out
     output as ReportOutput,
     sources.map((s) => ({ marker: s.marker, location: s.location as string, href: s.href as string })),
   );
-  if (body.length > MAX_BODY) throw new Error(`assist ${request.id}: the assembled draft is longer than ${MAX_BODY} characters`);
+  // Asking again would not help: the request ends failed now (no retry, no second charge), and nothing is kept.
+  if (body.length > MAX_BODY) {
+    throw new CompletionRefused('draft_too_long', `The assembled draft would be longer than ${MAX_BODY.toLocaleString('en-US')} characters, so nothing was kept.`);
+  }
   const no = Number((await db.query(`SELECT coalesce(max(version_no), 0) AS n FROM report_draft_versions WHERE draft_id = $1`, [draft.id])).rows[0].n) + 1;
   await db.query(
     `INSERT INTO report_draft_versions (id, draft_id, version_no, origin, body, request_id, created_by, created_at) VALUES ($1, $2, $3, 'ai', $4, $5, $6, $7)`,
@@ -459,6 +463,30 @@ function mayEdit(ctx: ProjectContext, row: DraftRow): boolean {
 
 const chosenOf = (row: DraftRow) => ({ sourceIds: row.chosen?.sourceIds ?? [], threadIds: row.chosen?.threadIds ?? [] });
 
+/**
+ * The chosen sources and threads this person can read now, in the chosen order: in the project, published and not
+ * deleted (sources, by the material rule), and in an audience they are in.
+ */
+async function readableChosen(db: Db, ctx: ProjectContext, chosen: { sourceIds: string[]; threadIds: string[] }): Promise<{ sourceIds: string[]; threadIds: string[] }> {
+  const keep = async (wanted: string[], sql: string) => {
+    if (wanted.length === 0) return [];
+    const found = new Set((await db.query<{ id: string }>(sql, [wanted, ctx.project.id, ctx.viewerId, ctx.today])).rows.map((r) => r.id));
+    return wanted.filter((id) => found.has(id));
+  };
+  return {
+    sourceIds: await keep(
+      chosen.sourceIds,
+      `SELECT s.id FROM sources s JOIN audiences au ON au.id = s.audience_id
+        WHERE s.id = ANY($1::uuid[]) AND s.project_id = $2 AND ${sourceOkSql('s')} AND ${audienceVisibleSql('au', '$3', '$4')}`,
+    ),
+    threadIds: await keep(
+      chosen.threadIds,
+      `SELECT th.id FROM discussion_threads th JOIN audiences au ON au.id = th.audience_id
+        WHERE th.id = ANY($1::uuid[]) AND th.project_id = $2 AND ${audienceVisibleSql('au', '$3', '$4')}`,
+    ),
+  };
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // The service
 // ---------------------------------------------------------------------------------------------------------------------
@@ -543,11 +571,15 @@ export class ReportsService {
     }
   }
 
-  /** The period: both dates or neither; neither means the last 14 days to today (UTC+8), or none for free-form. */
+  /**
+   * The period: both dates or neither. Neither means the last 14 days to today (UTC+8) for the record-based kinds, and
+   * no period for a specification or free-form draft (their material is then not limited by date, and the heading shows
+   * no period).
+   */
   private period(kind: ReportKind, from: unknown, to: unknown, today: string): { period: Period | null; given: boolean } {
     const absent = (v: unknown) => v === undefined || v === null || v === '';
     if (absent(from) && absent(to)) {
-      return { period: kind === 'free_form' ? null : { from: addDays(today, -(PERIOD_DAYS - 1)), to: today }, given: false };
+      return { period: RECORD_KINDS.includes(kind) ? { from: addDays(today, -(PERIOD_DAYS - 1)), to: today } : null, given: false };
     }
     if (!validDate(from) || !validDate(to) || from > to) throw new BadRequestException(BAD_PERIOD);
     return { period: { from, to }, given: true };
@@ -558,22 +590,8 @@ export class ReportsService {
    * deleted (sources), and in an audience they are in. Anything else is not found (404), as a direct link would be.
    */
   private async assertChosenReadable(db: Db, ctx: ProjectContext, chosen: { sourceIds: string[]; threadIds: string[] }): Promise<void> {
-    if (chosen.sourceIds.length > 0) {
-      const { rows } = await db.query(
-        `SELECT s.id FROM sources s JOIN audiences au ON au.id = s.audience_id
-          WHERE s.id = ANY($1::uuid[]) AND s.project_id = $2 AND ${sourceOkSql('s')} AND ${audienceVisibleSql('au', '$3', '$4')}`,
-        [chosen.sourceIds, ctx.project.id, ctx.viewerId, ctx.today],
-      );
-      if (rows.length !== chosen.sourceIds.length) throw new NotFoundException();
-    }
-    if (chosen.threadIds.length > 0) {
-      const { rows } = await db.query(
-        `SELECT th.id FROM discussion_threads th JOIN audiences au ON au.id = th.audience_id
-          WHERE th.id = ANY($1::uuid[]) AND th.project_id = $2 AND ${audienceVisibleSql('au', '$3', '$4')}`,
-        [chosen.threadIds, ctx.project.id, ctx.viewerId, ctx.today],
-      );
-      if (rows.length !== chosen.threadIds.length) throw new NotFoundException();
-    }
+    const ok = await readableChosen(db, ctx, chosen);
+    if (ok.sourceIds.length !== chosen.sourceIds.length || ok.threadIds.length !== chosen.threadIds.length) throw new NotFoundException();
   }
 
   /** Stores the request with its material and its `draft_requested` event (no text: lengths only). */
@@ -749,7 +767,7 @@ export class ReportsService {
       if (!RECORD_KINDS.includes(row.kind)) await this.assertChosenReadable(db, ctx, chosen);
       const period = periodOf(row);
       const at = this.now();
-      const requestId = await this.requestDraft(db, ctx, row, { kind: row.kind, period, chosen, periodGiven: row.kind === 'free_form' && period !== null }, user.id, at, {
+      const requestId = await this.requestDraft(db, ctx, row, { kind: row.kind, period, chosen, periodGiven: period !== null }, user.id, at, {
         regenerate: true,
       });
       return { requestId, ctx };
@@ -810,7 +828,8 @@ export class ReportsService {
       title: row.title,
       period: periodOf(row),
       brief: readable ? row.brief : null,
-      chosen: chosenOf(row),
+      // Only the chosen items this viewer can read: the ids of others are not revealed.
+      chosen: await readableChosen(db, ctx, chosenOf(row)),
       requestedBy: { id: row.createdBy, displayName: by },
       createdAt: row.createdAt,
       shared: row.shared,

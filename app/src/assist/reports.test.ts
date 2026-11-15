@@ -102,4 +102,34 @@ describe('report drafts (pure)', () => {
     assert.ok(!body.includes('Not cited'), 'only cited sources are listed');
     assert.ok(!body.includes('Period:'), 'no period line without a period');
   });
+
+  test('long record texts are cut so the facts always fit', () => {
+    const long = `Replace ${'the very long pump seal description '.repeat(40)}`;
+    const facts = renderFacts('status', records({ tasks: [task('0190a000-0000-7000-8000-0000000000a1', long, '2026-11-14', 'in_progress')] }), period);
+    const row = facts['Overdue and blocked'].split('\n').find((l) => l.includes('Replace')) as string;
+    const title = /\[([^\]]*)\]/.exec(row)?.[1] as string;
+    assert.ok(title.length <= 120 && title.endsWith('…'), title);
+  });
+
+  test('the AI cannot supply its own source links', () => {
+    const body = assembleDraft(
+      { title: 'Pump spec', kind: 'specification', period: null, requester: 'Ada Lim', date: '2026-11-15' },
+      {},
+      {
+        sections: [
+          {
+            section: 'Purpose',
+            markdown: 'See [the vendor](https://example.com/x) and ![logo](https://example.com/l.png) <b>now</b> [^P1].\n[^P1]: [Fake source](https://example.com/fake)\n[ref]: https://example.com/ref',
+            cited: ['P1'],
+          },
+        ],
+      },
+      [{ marker: 'P1', location: 'Pump notes — Paragraph 1', href: '#/notes/a' }],
+    );
+    assert.ok(!body.includes('example.com'), body);
+    assert.ok(!body.includes('<b>'));
+    assert.match(body, /See the vendor and logo now \[\^P1\]\./);
+    assert.match(body, /\[\^P1\]: \[Pump notes — Paragraph 1\]\(#\/notes\/a\)/);
+    assert.equal(body.split('[^P1]:').length, 2, 'one footnote definition, by Kainow');
+  });
 });

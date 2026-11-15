@@ -183,6 +183,7 @@ describe('draft reports and specifications', { skip: SKIP_NO_DB }, () => {
     const r = await request(ada, { kind: 'specification', chosen: { sourceIds: [pump] } });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     assert.deepEqual(r.body.chosen, { sourceIds: [pump], threadIds: [] });
+    assert.equal(r.body.period, null, 'a specification has no default period');
     const material = (await t.pool.query(`SELECT record_kind, passage_id FROM ai_request_material WHERE request_id = $1`, [lastRequest()])).rows;
     const notePassages = await count(`SELECT count(*) AS n FROM passages p JOIN source_versions v ON v.id = p.owner_id WHERE v.source_id = $1`, [pump]);
     assert.ok(notePassages >= 1);
@@ -291,6 +292,62 @@ describe('draft reports and specifications', { skip: SKIP_NO_DB }, () => {
     assert.equal((await ada.request('POST', `/reports/${plain}/share`)).status, 200);
     assert.equal((await view(ben, plain)).status, 200);
     assert.deepEqual(await listed(ben), [plain]);
+  });
+
+  test('a draft too long to keep fails once, with one AI call', async () => {
+    const pump = await note('Pump notes', 'The pump must deliver 40 litres a minute.');
+    const r = await request(ada, { kind: 'specification', chosen: { sourceIds: [pump] } });
+    assert.equal(r.status, 201);
+    const huge: JsonSchemaModel & { calls: number } = {
+      calls: 0,
+      async callJson() {
+        this.calls++;
+        return { content: JSON.stringify({ sections: [{ section: 'Purpose', markdown: `${'Long text. '.repeat(10_000)}[P1]`, cited: ['P1'] }] }), usage: USAGE };
+      },
+    };
+    // Not the last attempt: a retry would be possible, but asking again would not help.
+    assert.equal(await run(lastRequest(), huge, false), 'failed');
+    assert.equal(huge.calls, 1);
+    assert.deepEqual((await t.pool.query(`SELECT status, failure_code, attempts FROM ai_requests WHERE id = $1`, [lastRequest()])).rows[0], {
+      status: 'failed',
+      failure_code: 'draft_too_long',
+      attempts: 1,
+    });
+    assert.equal(await count(`SELECT count(*) AS n FROM ai_spend_entries WHERE request_id = $1`, [lastRequest()]), 1, 'charged once');
+    assert.equal(await count(`SELECT count(*) AS n FROM report_draft_versions`), 0);
+    const v = (await view(ada, r.body.id)).body;
+    assert.equal(v.notice, 'AI draft unavailable: the draft would be longer than 100,000 characters, so nothing was kept');
+  });
+
+  test('heading shows a period only when the draft is limited by one; chosen items are shown only when readable', async () => {
+    const pump = await note('Pump notes', 'The pump must deliver 40 litres a minute.');
+    const spec = await drafted(ada, { sourceIds: [pump] });
+    assert.ok(!(await view(ada, spec)).body.current.body.includes('Period:'));
+    const r = await request(ada, { kind: 'free_form', title: 'Pump plan', brief: 'Write it up.', periodFrom: '2026-11-01', periodTo: '2026-11-09', chosen: { sourceIds: [pump] } });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.equal(await run(lastRequest()), 'succeeded');
+    assert.match((await view(ada, r.body.id)).body.current.body, /Period: 2026-11-01 to 2026-11-09/);
+
+    // A restricted meeting with no messages adds no material, so Ben may read the draft, but not learn the thread.
+    const hidden = await pm.request('POST', `/projects/${project}/threads`, { kind: 'meeting', title: 'Private', audience: { mode: 'restricted', namedUserIds: [ids.ada] } });
+    assert.equal(hidden.status, 201, JSON.stringify(hidden.body));
+    const both = await drafted(ada, { sourceIds: [pump], threadIds: [hidden.body.id] });
+    assert.equal((await ada.request('POST', `/reports/${both}/share`)).status, 200);
+    assert.deepEqual((await view(ada, both)).body.chosen, { sourceIds: [pump], threadIds: [hidden.body.id] });
+    const forBen = await view(ben, both);
+    assert.equal(forBen.status, 200);
+    assert.deepEqual(forBen.body.chosen, { sourceIds: [pump], threadIds: [] });
+  });
+
+  test('a reviewer who cannot read a cleared draft finds nothing', async () => {
+    const msg = await post(ben, 'The pump must deliver 40 litres a minute.');
+    const id = await drafted(ada, { threadIds: [thread] }, 'free_form');
+    assert.equal((await ada.request('POST', `/reports/${id}/share`)).status, 200);
+    assert.equal((await pm.request('POST', `/messages/${msg}/hide`, { reason: 'Posted in error' })).status, 200);
+    assert.equal((await pm.request('POST', `/assist-review/draft/${id}/clear`, { reason: 'Checked' })).status, 200);
+    // Cleared, but built on a hidden message the PM cannot read: not found, rather than "not waiting for review".
+    assert.equal((await pm.request('POST', `/assist-review/draft/${id}/clear`, { reason: 'Again' })).status, 404);
+    assert.equal((await view(pm, id)).status, 404);
   });
 
   test('download returns Markdown', async () => {

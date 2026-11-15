@@ -57,6 +57,19 @@ export type InputBuilder = (db: Db, request: AssistRequest, material: RequestMat
 export type Completion = (db: PoolClient, request: AssistRequest, output: unknown, at: Date) => Promise<void>;
 
 /**
+ * Thrown by a completion when the output cannot be kept and asking the AI again would not help (for example an
+ * assembled draft over its size limit). The request ends failed with this code at once: no retry, no further charge.
+ */
+export class CompletionRefused extends Error {
+  constructor(
+    readonly code: string,
+    readonly detail: string,
+  ) {
+    super(detail);
+  }
+}
+
+/**
  * Whether the request's output was already withdrawn or sent to review by the removal hook (spec 5.5) while the request
  * waited or ran. Such a request is blocked before any AI call, so nobody is charged for output nobody can see.
  */
@@ -312,6 +325,7 @@ export class AssistRunner {
       // The request ended (for example stalled) while the AI call ran: nothing saved. The spend stays settled.
       return saved ? 'succeeded' : 'skipped';
     } catch (err) {
+      if (err instanceof CompletionRefused) return this.end(request, 'failed', { code: err.code, detail: err.detail });
       this.d.log?.(`assist ${request.id}: unexpected error: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
       if (!isLastAttempt) return this.requeue(request);
       return this.end(request, 'failed', { code: 'internal_error', detail: 'An unexpected error stopped the AI request.' });

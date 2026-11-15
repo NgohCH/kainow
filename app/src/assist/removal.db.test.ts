@@ -62,6 +62,13 @@ describe('removal hook', { skip: SKIP_NO_DB }, () => {
       [id, project, ids.ada, shared, shared ? new Date() : null],
     );
     for (const [n, r] of requestIds.entries()) {
+      // As the draft service links each request to its draft: a draft_requested event at the request's own time.
+      await t.pool.query(
+        `INSERT INTO ai_assist_events (id, project_id, actor_id, action, target_kind, target_id, detail, at)
+         SELECT $1, r.project_id, r.requested_by, 'draft_requested', 'report_draft', $2, jsonb_build_object('requestId', r.id), r.created_at
+           FROM ai_requests r WHERE r.id = $3`,
+        [uuidv7(), id, r],
+      );
       await t.pool.query(
         `INSERT INTO report_draft_versions (id, draft_id, version_no, origin, body, request_id, created_at) VALUES ($1, $2, $3, 'ai', 'Draft body [P1].', $4, now())`,
         [uuidv7(), id, n + 1, r],
@@ -118,7 +125,7 @@ describe('removal hook', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(await draftState(privateDraft), { review_state: 'withdrawn', review_reason: 'material_removed' });
     assert.deepEqual(await draftState(sharedDraft), { review_state: 'review_required', review_reason: 'material_removed' });
     assert.deepEqual(await draftState(untouched), { review_state: 'none', review_reason: null });
-    const ev = (await t.pool.query(`SELECT action, actor_id, target_kind, target_id, reason, detail FROM ai_assist_events ORDER BY action`)).rows;
+    const ev = (await t.pool.query(`SELECT action, actor_id, target_kind, target_id, reason, detail FROM ai_assist_events WHERE action <> 'draft_requested' ORDER BY action`)).rows;
     assert.deepEqual(ev, [
       { action: 'review_required', actor_id: null, target_kind: 'report_draft', target_id: sharedDraft, reason: 'material_removed', detail: { cause: 'hidden' } },
       { action: 'withdrawn', actor_id: null, target_kind: 'report_draft', target_id: privateDraft, reason: 'material_removed', detail: { cause: 'hidden' } },

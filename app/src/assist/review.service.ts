@@ -118,7 +118,8 @@ export class ReviewService {
     // else who may not see the draft (a Member while it is in review, or one who cannot read what it used) finds
     // nothing (404); a Member who can see it is refused by the matrix (403).
     const reviewer = canReadContent(ctx) && decide({ action: 'assist.review', roles: ctx.roles, status: ctx.project.status }).allowed;
-    if (!reviewer && (await draftAccess(db, ctx, d)) === 'none') throw new NotFoundException();
+    // A reviewer who cannot read a draft that is not in review finds nothing either (no 409 that would reveal it).
+    if ((!reviewer || d.reviewState !== 'review_required') && (await draftAccess(db, ctx, d)) === 'none') throw new NotFoundException();
     await this.access.authorize(user, 'assist.review', d.projectId, db);
     return { projectId: d.projectId, state: d.reviewState };
   }
