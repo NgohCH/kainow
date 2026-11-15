@@ -58,7 +58,12 @@ function splitLong(text: string, span: Span): Span[] {
     let cut = from;
     while (e - cut > MAX_PASSAGE) {
       let at = body.lastIndexOf(' ', cut + MAX_PASSAGE);
-      if (at <= cut) at = cut + MAX_PASSAGE;
+      if (at <= cut) {
+        at = cut + MAX_PASSAGE;
+        // Never cut between the halves of a surrogate pair (emoji, some CJK): a lone surrogate cannot be stored.
+        const c = body.charCodeAt(at - 1);
+        if (c >= 0xd800 && c <= 0xdbff) at--;
+      }
       pieces.push(at);
       cut = at;
     }

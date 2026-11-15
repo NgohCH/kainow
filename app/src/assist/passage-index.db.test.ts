@@ -134,4 +134,23 @@ describe('passage index', { skip: SKIP_NO_DB }, () => {
     const msg = (await passages('message_version'))[0];
     assert.match(msg.location, /^Message #1 by Ada Lim, 9 Nov 10:\d\d$/);
   });
+
+  test('backfill ends and counts nothing for a version with blank text', async () => {
+    const note = await pm.request('POST', `/projects/${project}/notes`, { title: 'Real', text: 'Real text.' });
+    assert.equal(note.status, 201);
+    const sourceId = note.body.source.id;
+    const blank = uuidv7();
+    await t.pool.query(
+      `INSERT INTO source_versions (id, source_id, version_no, origin, text_content, text_sha256, char_count, created_by, created_at)
+       VALUES ($1, $2, 2, 'paste', '   ', $3, 3, $4, now())`,
+      [blank, sourceId, sha256Hex('   '), ids.pm],
+    );
+    await t.pool.query(`ALTER TABLE passages DISABLE TRIGGER USER`);
+    await t.pool.query(`DELETE FROM passages`);
+    await t.pool.query(`ALTER TABLE passages ENABLE TRIGGER USER`);
+    const first = await backfillPassages(t.pool, () => undefined);
+    assert.deepEqual({ v: first.versions, p: first.passages }, { v: 1, p: 1 });
+    const second = await backfillPassages(t.pool, () => undefined);
+    assert.deepEqual({ v: second.versions, p: second.passages }, { v: 0, p: 0 });
+  });
 });

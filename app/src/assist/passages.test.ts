@@ -65,6 +65,17 @@ describe('splitPassages', () => {
     }
   });
 
+  test('a hard cut never splits a surrogate pair', () => {
+    const text = 'a'.repeat(1499) + '😀'.repeat(300);
+    const p = splitPassages(text, 'message', { messageNo: 1, author: 'Ada', at: 'x' });
+    assert.ok(p.length >= 2);
+    for (const x of p) {
+      assert.ok(x.body.length <= 1500);
+      assert.doesNotMatch(x.body, /[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/);
+      assert.equal(text.slice(x.start, x.end), x.body);
+    }
+  });
+
   test('time is shown in UTC+8', () => {
     assert.equal(formatMessageTime(new Date('2026-11-11T02:31:00Z')), '11 Nov 10:31');
   });
