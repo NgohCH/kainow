@@ -56,8 +56,15 @@ export type InputBuilder = (db: Db, request: AssistRequest, material: RequestMat
  */
 export type Completion = (db: PoolClient, request: AssistRequest, output: unknown, at: Date) => Promise<void>;
 
+/**
+ * Whether the request's output was already withdrawn or sent to review by the removal hook (spec 5.5) while the request
+ * waited or ran. Such a request is blocked before any AI call, so nobody is charged for output nobody can see.
+ */
+export type RemovedCheck = (db: Db, request: AssistRequest) => Promise<boolean>;
+
 const builders = new Map<AssistKind, InputBuilder>();
 const completions = new Map<AssistKind, Completion>();
+const removedChecks = new Map<AssistKind, RemovedCheck>();
 
 /** Tasks for reports and summaries register their own input; a later registration replaces an earlier one. */
 export function registerInputBuilder(kind: AssistKind, fn: InputBuilder): void {
@@ -68,10 +75,16 @@ export function registerCompletion(kind: AssistKind, fn: Completion): void {
   completions.set(kind, fn);
 }
 
+/** Report drafts (Task 8) and summaries register their own check, as questions do below. */
+export function registerRemovedCheck(kind: AssistKind, fn: RemovedCheck): void {
+  removedChecks.set(kind, fn);
+}
+
 /** For tests: removes a kind's input builder and completion, so the kind is not available until registered again. */
 export function unregisterKind(kind: AssistKind): void {
   builders.delete(kind);
   completions.delete(kind);
+  removedChecks.delete(kind);
 }
 
 /** The fixed part of each kind: spend purpose, output limit, schema, parsing, and which text carries citations. */
@@ -183,8 +196,15 @@ async function mayStillPost(db: PoolClient, request: AssistRequest, at: Date): P
   return inAudience(ctx, { id: thread.audienceId, projectId: request.projectId, mode: thread.mode, namedUserIds: thread.named });
 }
 
+/** A question's answer is withdrawn (private) or in review (shared) once the removal hook touched its material. */
+export async function questionRemoved(db: Db, request: AssistRequest): Promise<boolean> {
+  const state = (await db.query<{ state: string }>(`SELECT review_state AS state FROM ai_answers WHERE request_id = $1`, [request.id])).rows[0]?.state;
+  return state !== undefined && state !== 'none';
+}
+
 registerInputBuilder('question', questionInput);
 registerCompletion('question', completeQuestion);
+registerRemovedCheck('question', questionRemoved);
 
 export interface AssistRunnerDeps {
   pool: Pool;
@@ -232,6 +252,15 @@ export class AssistRunner {
     const complete = completions.get(request.kind);
     if (!build || !complete) {
       return this.end(request, 'failed', { code: 'kind_not_available', detail: 'This kind of AI request is not available on this worker.' });
+    }
+    // Material removed while it waited (hidden, deleted, audience narrowed): its output was already withdrawn or sent to
+    // review, so the AI is not called and nothing is charged, even when the requester could still read everything.
+    const removed = removedChecks.get(request.kind);
+    if (removed && (await removed(pool, request))) {
+      return this.end(request, 'blocked', {
+        code: 'material_removed',
+        detail: 'Something this request used was removed or its audience narrowed, so the AI request did not run.',
+      });
     }
 
     // Drop what the scope can no longer read; it is never sent, and the answer can say so.

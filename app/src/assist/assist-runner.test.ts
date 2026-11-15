@@ -202,6 +202,26 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     assert.equal((await entries()).length, 0);
   });
 
+  test('a request whose answer was withdrawn while queued blocks without an AI call or spend', async () => {
+    const plant = await note('Plant room', 'The pump service is booked for Thursday morning.');
+    const id = await ask('When is the pump service?');
+    // The note is narrowed to Ada alone: she can still read it, so nothing would be dropped, but the removal hook has
+    // withdrawn her private answer, which nobody will ever see.
+    const audienceId = (await t.pool.query(`SELECT audience_id FROM sources WHERE id = $1`, [plant])).rows[0].audience_id;
+    const narrowed = await pm.request('PUT', `/audiences/${audienceId}`, { mode: 'restricted', namedUserIds: [ids.ada], reason: 'Leaders and Ada only' });
+    assert.equal(narrowed.status, 200, JSON.stringify(narrowed.body));
+    assert.equal((await answer(id)).review_state, 'withdrawn');
+    const model = new FakeModel();
+    assert.equal(await runner(model).process(id, 1, false), 'blocked');
+    const r = await request(id);
+    assert.deepEqual([r.status, r.failure_code], ['blocked', 'material_removed']);
+    assert.equal(r.failure_detail, 'Something this request used was removed or its audience narrowed, so the AI request did not run.');
+    assert.deepEqual((await material(id)).map((m) => m.dropped_at_start), [false], 'still readable: nothing dropped');
+    assert.equal(model.calls.length, 0);
+    assert.equal((await entries()).length, 0);
+    assert.equal((await answer(id)).answer_markdown, null);
+  });
+
   test('a refusal on a later attempt still marks the stale reservation of a stopped attempt', async () => {
     await note('Plant room', 'The pump service is booked for Thursday morning.');
     const id = await ask('When is the pump service?');

@@ -21,28 +21,49 @@ export const MATERIAL_REMOVED = 'material_removed';
  * version that was sent is still the same content), passages owned by a source or thread using that audience, and
  * records (pending proposals) sent with that audience. Material dropped at start was never sent, so it does not
  * count; a request still queued has dropped nothing yet, so all its material counts.
+ *
+ * Runs under the caller's thread, message or audience lock, so it stays on indexes: the touched passage ids are found
+ * first from the owners (message_versions (message_id, version_no), source_versions (source_id, version_no),
+ * sources/discussion_threads by audience_id, passages (owner_kind, owner_id, ordinal)), then the material rows by
+ * ai_request_material_passage_idx; records by the audience's project (ai_requests_project_idx, then the material key).
  */
 async function touchedRequests(db: Db, what: RemovedMaterial): Promise<string[]> {
   const messageIds = what.messageIds ?? [];
   const sourceIds = what.sourceIds ?? [];
   const audienceId = what.audienceId ?? null;
   if (messageIds.length === 0 && sourceIds.length === 0 && audienceId === null) return [];
+  const passageIds = (
+    await db.query<{ id: string }>(
+      `WITH owners (kind, id) AS (
+         SELECT 'message_version', mv.id FROM message_versions mv WHERE mv.message_id = ANY($1::uuid[])
+         UNION ALL
+         SELECT 'source_version', sv.id FROM source_versions sv WHERE sv.source_id = ANY($2::uuid[])
+         UNION ALL
+         SELECT 'source_version', sv.id
+           FROM audiences au JOIN sources s ON s.audience_id = au.id AND s.project_id = au.project_id
+           JOIN source_versions sv ON sv.source_id = s.id
+          WHERE au.id = $3::uuid
+         UNION ALL
+         SELECT 'message_version', mv.id
+           FROM audiences au JOIN discussion_threads th ON th.audience_id = au.id AND th.project_id = au.project_id
+           JOIN discussion_messages dm ON dm.thread_id = th.id
+           JOIN message_versions mv ON mv.message_id = dm.id
+          WHERE au.id = $3::uuid
+       )
+       SELECT p.id FROM owners o JOIN passages p ON p.owner_kind = o.kind AND p.owner_id = o.id`,
+      [messageIds, sourceIds, audienceId],
+    )
+  ).rows.map((r) => r.id);
   const { rows } = await db.query<{ id: string }>(
-    `SELECT DISTINCT m.request_id AS id
-       FROM ai_request_material m
-       JOIN passages p ON p.id = m.passage_id
-       LEFT JOIN message_versions mv ON p.owner_kind = 'message_version' AND mv.id = p.owner_id
-       LEFT JOIN discussion_messages dm ON dm.id = mv.message_id
-       LEFT JOIN discussion_threads th ON th.id = dm.thread_id
-       LEFT JOIN source_versions sv ON p.owner_kind = 'source_version' AND sv.id = p.owner_id
-       LEFT JOIN sources s ON s.id = sv.source_id
-      WHERE NOT m.dropped_at_start
-        AND (mv.message_id = ANY($1::uuid[]) OR sv.source_id = ANY($2::uuid[]) OR th.audience_id = $3::uuid OR s.audience_id = $3::uuid)
+    `SELECT m.request_id AS id FROM ai_request_material m
+      WHERE m.passage_id = ANY($1::uuid[]) AND NOT m.dropped_at_start
      UNION
-     SELECT m.request_id FROM ai_request_material m
-      WHERE NOT m.dropped_at_start AND m.record_audience_id = $3::uuid
+     SELECT m.request_id FROM audiences au
+       JOIN ai_requests r ON r.project_id = au.project_id
+       JOIN ai_request_material m ON m.request_id = r.id
+      WHERE au.id = $2::uuid AND m.record_audience_id = au.id AND NOT m.dropped_at_start
      ORDER BY 1`,
-    [messageIds, sourceIds, audienceId],
+    [passageIds, audienceId],
   );
   return rows.map((r) => r.id);
 }

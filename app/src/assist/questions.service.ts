@@ -155,6 +155,7 @@ const REASONS: Readonly<Record<string, string>> = {
   thread_not_found: 'the thread no longer exists',
   meeting_ended: 'the meeting has ended, so the answer could not be posted',
   material_unavailable: 'nothing found for this question can be read any more',
+  material_removed: 'something it used was removed or its audience narrowed',
   queue_unavailable: 'the question could not be queued; ask again',
   bad_response: 'the AI answer did not match its sources, so it was not kept',
   model_rejected: 'the AI service refused the request',
