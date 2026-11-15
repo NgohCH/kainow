@@ -85,7 +85,7 @@ class Params {
 }
 
 /** A source whose current text may be material: not deleted, published, not a transcript, a summary only while approved. */
-function sourceOkSql(s: string): string {
+export function sourceOkSql(s: string): string {
   return `${s}.status <> 'deleted' AND ${s}.publication = 'published' AND ${s}.kind <> 'discussion'
      AND (${s}.kind <> 'summary' OR EXISTS (SELECT 1 FROM summaries sm WHERE sm.id = ${s}.summary_id AND sm.state IN ('approved', 'review_required')))`;
 }

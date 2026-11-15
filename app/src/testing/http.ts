@@ -23,6 +23,8 @@ export interface Client {
   request(method: string, path: string, body?: unknown): Promise<Reply>;
   /** Sends raw bytes (a file upload) with the given type. */
   upload(method: string, path: string, body: Buffer, contentType: string): Promise<Reply>;
+  /** A request whose answer is not JSON (a download): status, headers and the text as sent. */
+  raw(method: string, path: string): Promise<{ status: number; headers: Headers; text: string }>;
 }
 
 /** A queued email as the tests see it. */
@@ -99,6 +101,10 @@ export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opt
         const res = await fetch(`${base}${path}`, { method, headers: { Cookie: cookie, 'X-CSRF-Token': csrfToken, 'Content-Type': contentType }, body: new Uint8Array(body) });
         const text = await res.text();
         return { status: res.status, body: text ? JSON.parse(text) : undefined };
+      },
+      raw: async (method, path) => {
+        const res = await fetch(`${base}${path}`, { method, headers: { Cookie: cookie, 'X-CSRF-Token': csrfToken } });
+        return { status: res.status, headers: res.headers, text: await res.text() };
       },
     };
   }

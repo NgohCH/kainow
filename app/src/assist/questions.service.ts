@@ -208,7 +208,7 @@ const LIST_LIMIT = 100;
  * The material the request stored, in found order, with a link to each passage or record. Material dropped at start
  * keeps its marker and flag but no location or link: it was not sent, and may be something the viewer cannot read now.
  */
-async function answerSources(db: Db, requestId: string, projectId: string): Promise<AnswerSource[]> {
+export async function answerSources(db: Db, requestId: string, projectId: string): Promise<AnswerSource[]> {
   const { rows } = await db.query(
     `SELECT m.marker, m.location, m.cited, m.dropped_at_start AS dropped, m.passage_id AS "passageId", m.record_kind AS "recordKind",
             m.record_id AS "recordId", sv.source_id AS "sourceId", dm.thread_id AS "threadId", dm.message_no AS "messageNo", x.run_id AS "runId"

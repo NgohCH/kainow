@@ -4,6 +4,8 @@ import { MinutesRunner } from '../analysis/minutes-runner';
 import { AnalysisTick } from '../analysis/tick';
 import { bossAnalysisQueue } from '../analysis/queue';
 import { AssistRunner } from '../assist/assist-runner';
+// Registers the report kind's input, completion and removal check with the assist runner.
+import '../assist/reports.service';
 import { ExtractionRunner } from '../extraction/runner';
 import { OpenAiModelClient } from '../extraction/model';
 import { SpendService } from '../spend/spend.service';

@@ -3,6 +3,8 @@ import { ProjectsModule } from '../projects/projects.module';
 import { ASSIST_QUEUE, type AssistQueue, PgBossAssistQueue } from './queue';
 import { QuestionsController } from './questions.controller';
 import { QuestionsService } from './questions.service';
+import { ReportsController } from './reports.controller';
+import { ReportsService } from './reports.service';
 import { ReviewController } from './review.controller';
 import { ReviewService } from './review.service';
 
@@ -17,8 +19,8 @@ export class AssistModule {
     return {
       module: AssistModule,
       imports: [ProjectsModule],
-      controllers: [QuestionsController, ReviewController],
-      providers: [QuestionsService, ReviewService, ...queueProviders],
+      controllers: [QuestionsController, ReportsController, ReviewController],
+      providers: [QuestionsService, ReportsService, ReviewService, ...queueProviders],
       exports: [QuestionsService],
     };
   }

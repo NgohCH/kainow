@@ -4,9 +4,11 @@ import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import type { Person } from '../discussion/audience';
-import { ProjectAccess } from '../projects/access.service';
+import { ProjectAccess, canReadContent } from '../projects/access.service';
+import { decide } from '../projects/matrix';
 import { answerAccess, loadAnswerRow } from './questions.service';
 import type { RemovalReason } from './removal';
+import { draftAccess, loadDraftRow } from './reports.service';
 
 type Db = Pick<PoolClient, 'query'>;
 
@@ -108,17 +110,17 @@ export class ReviewService {
       await this.access.authorize(user, 'assist.review', row.projectId, db);
       return { projectId: row.projectId, state: row.reviewState };
     }
-    const d = (
-      await db.query<{ projectId: string; shared: boolean; state: string }>(
-        `SELECT project_id AS "projectId", shared, review_state AS state FROM report_drafts WHERE id = $1 FOR UPDATE`,
-        [id],
-      )
-    ).rows[0];
-    if (!d || !d.shared) throw new NotFoundException();
-    // Draft visibility belongs to the draft service (sub-project 4b Task 8); here only reviewers act on shared drafts.
+    const d = await loadDraftRow(db, id, true);
+    // Withdrawn drafts are seen by nobody, and an unshared draft is never reviewed: both are not found, before any 403.
+    if (!d || !d.shared || d.reviewState === 'withdrawn') throw new NotFoundException();
+    const ctx = await this.access.load(d.projectId, user, db);
+    // A reviewer acts on a shared draft whatever they can read of it (in review, it used something removed). Anyone
+    // else who may not see the draft (a Member while it is in review, or one who cannot read what it used) finds
+    // nothing (404); a Member who can see it is refused by the matrix (403).
+    const reviewer = canReadContent(ctx) && decide({ action: 'assist.review', roles: ctx.roles, status: ctx.project.status }).allowed;
+    if (!reviewer && (await draftAccess(db, ctx, d)) === 'none') throw new NotFoundException();
     await this.access.authorize(user, 'assist.review', d.projectId, db);
-    if (d.state === 'withdrawn') throw new NotFoundException();
-    return { projectId: d.projectId, state: d.state };
+    return { projectId: d.projectId, state: d.reviewState };
   }
 
   private async decide(user: AuthUser, rawKind: string, id: string, to: 'cleared' | 'withdrawn', body: { reason: unknown }): Promise<{ kind: ReviewKind; id: string; reviewState: string }> {

@@ -119,13 +119,24 @@ export async function onMaterialRemoved(
     else review++;
   }
 
-  // A draft is built on the material of every one of its AI versions' requests (spec 6.3).
+  // A draft is built on the material of every one of its AI versions' requests (spec 6.3), and is about to be built on
+  // the material of a request still queued or running for it (a first draft or a Regenerate), which has no version yet:
+  // that request is linked to its draft by its draft_requested event, written at the request's own time (found through
+  // ai_assist_events_project_idx). The runner then blocks the request (reportRemoved) and nothing is charged.
   const drafts = (
     await db.query<{ id: string; projectId: string; shared: boolean }>(
-      `SELECT d.id, d.project_id AS "projectId", d.shared
-         FROM report_drafts d
+      `WITH linked (id) AS (
+         SELECT v.draft_id FROM report_draft_versions v WHERE v.origin = 'ai' AND v.request_id = ANY($1::uuid[])
+         UNION
+         SELECT e.target_id
+           FROM ai_requests r
+           JOIN ai_assist_events e ON e.project_id = r.project_id AND e.at = r.created_at
+                                  AND e.action = 'draft_requested' AND e.target_kind = 'report_draft' AND e.detail->>'requestId' = r.id::text
+          WHERE r.id = ANY($1::uuid[]) AND r.kind = 'report' AND r.status IN ('queued', 'running')
+       )
+       SELECT d.id, d.project_id AS "projectId", d.shared
+         FROM report_drafts d JOIN linked l ON l.id = d.id
         WHERE d.review_state IN ('none', 'cleared')
-          AND EXISTS (SELECT 1 FROM report_draft_versions v WHERE v.draft_id = d.id AND v.origin = 'ai' AND v.request_id = ANY($1::uuid[]))
         ORDER BY d.id FOR UPDATE OF d`,
       [requestIds],
     )

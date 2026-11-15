@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { answerAccess, loadAnswerRow } from '../assist/questions.service';
+import { draftAccess, loadDraftRow } from '../assist/reports.service';
 import { writeAudit } from '../audit/audit';
 import { can } from '../auth/permissions';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -94,8 +95,17 @@ export class FeedbackService {
       if (row.answerMarkdown === null) throw new BadRequestException('Only AI output can be flagged; this question has no AI answer.');
       return;
     }
-    // Report and summary versions have no readers yet (AI assist Tasks 8 and 9 add their visibility rules).
-    if (kind === 'report_version' || kind === 'summary_version') throw new NotFoundException();
+    if (kind === 'report_version') {
+      // The draft's own visibility (AI assist spec 6.3): requester, or shared and every passage of its AI versions readable.
+      const v = (await db.query<{ draftId: string; origin: string }>(`SELECT draft_id AS "draftId", origin FROM report_draft_versions WHERE id = $1`, [id])).rows[0];
+      const draft = v ? await loadDraftRow(db, v.draftId) : undefined;
+      if (!draft || draft.projectId !== projectId) throw new NotFoundException();
+      if ((await draftAccess(db, await this.access.load(projectId, user, db), draft)) !== 'readable') throw new NotFoundException();
+      if (v.origin !== 'ai') throw new BadRequestException('Only AI output can be flagged; this version was written by a person.');
+      return;
+    }
+    // Summary versions have no readers yet (AI assist Task 9 adds their visibility rules).
+    if (kind === 'summary_version') throw new NotFoundException();
     if (kind === 'proposal') {
       const { rows } = await db.query(
         `SELECT sv.source_id AS "sourceId", s.project_id AS "projectId"
@@ -234,7 +244,7 @@ export class FeedbackService {
 
   /**
    * The Administrator's list: project, category, model, run reference, time and the PM's note, nothing else.
-   * The run is the analysis run (analysis_run, minutes_draft), the extraction run (proposal) or the AI request (answer). The model is the one
+   * The run is the analysis run (analysis_run, minutes_draft), the extraction run (proposal) or the AI request (answer, report_version). The model is the one
    * the extraction run recorded, else the one the spend ledger charged for that run; null when neither says.
    */
   async adminList(user: AuthUser): Promise<{ feedback: AdminFeedbackRow[] }> {
@@ -252,12 +262,14 @@ export class FeedbackService {
                     WHEN 'proposal' THEN (SELECT i.run_id FROM extraction_items i WHERE i.id = f.target_id)
                     WHEN 'analysis_run' THEN f.target_id
                     WHEN 'answer' THEN f.target_id
+                    WHEN 'report_version' THEN (SELECT v.request_id FROM report_draft_versions v WHERE v.id = f.target_id)
                     ELSE (SELECT d.analysis_run_id FROM minutes_drafts d WHERE d.id = f.target_id)
                   END AS run_ref,
                   CASE f.target_kind
                     WHEN 'proposal' THEN (SELECT i.run_id FROM extraction_items i WHERE i.id = f.target_id)
                     WHEN 'analysis_run' THEN (SELECT a.extraction_run_id FROM analysis_runs a WHERE a.id = f.target_id)
                     WHEN 'answer' THEN NULL
+                    WHEN 'report_version' THEN NULL
                     ELSE (SELECT a.extraction_run_id FROM minutes_drafts d JOIN analysis_runs a ON a.id = d.analysis_run_id WHERE d.id = f.target_id)
                   END AS extraction_ref
          ) r ON true
