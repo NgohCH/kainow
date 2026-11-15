@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { headerOf } from '../analysis/transcript';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -53,6 +53,7 @@ const ALREADY_APPROVED = 'This version is already approved.';
 const MARKS_OPEN = 'Every marked phrase or name must be removed by editing or ticked Intended before this version can be approved.';
 const MARK_ALREADY = 'This mark is already ticked Intended.';
 const NOT_IN_REVIEW = 'This summary is not waiting for an access review.';
+const MODERATED_SINCE = 'A message this draft was built from has since been hidden or deleted. Draft the summary again before approving.';
 
 /** Why a summary request ended, in plain words, where the shared runner wording would not fit. */
 const SUMMARY_REASONS: Readonly<Record<string, string>> = {
@@ -620,15 +621,24 @@ export class SummariesService {
     if (!ctx) throw new NotFoundException();
     const full = await this.view(this.pool, ctx, id);
     if (full) return full;
-    const shared = await this.sharedView(ctx, row);
+    const shared = await this.sharedView(user, row);
     if (!shared) throw new NotFoundException();
     return shared;
   }
 
-  private async sharedView(ctx: ProjectContext, row: SummaryRow): Promise<SharedSummaryView | undefined> {
+  /**
+   * The approved summary for its wider audience: only while approved or in an access review (a hidden one is for the
+   * original's audience, who get the full view), and only to someone the summary source's own check
+   * (AudienceService.assertSourceReadable, the rule every source route uses) lets read it.
+   */
+  private async sharedView(user: AuthUser, row: SummaryRow): Promise<SharedSummaryView | undefined> {
     if ((row.state !== 'approved' && row.state !== 'review_required') || !row.summarySourceId || !row.approvedVersionId || !row.approvedAt) return undefined;
-    if (!canReadContent(ctx) || ctx.project.id !== row.projectId) return undefined;
-    if (!inAudience(ctx, await this.audiences.forSource(row.summarySourceId))) return undefined;
+    try {
+      await this.audiences.assertSourceReadable(user, row.summarySourceId);
+    } catch (err) {
+      if (err instanceof NotFoundException || err instanceof ForbiddenException) return undefined;
+      throw err;
+    }
     const r = (
       await this.pool.query<{ body: string; by: string | null }>(
         `SELECT v.body, u.display_name AS by FROM summary_versions v LEFT JOIN users u ON u.id = $2 WHERE v.id = $1`,
@@ -671,6 +681,29 @@ export class SummariesService {
     const ctx = await this.access.authorize(user, action, row.projectId, db);
     if (!changeableState(row.state)) throw new ConflictException(NOT_OPEN);
     return { row, ctx };
+  }
+
+  /**
+   * Whether a message of the meeting that this version may be built from has been hidden or deleted since its drafting
+   * began (spec 7.3, before approval): posted by the time this version was written (for a human version, its own time,
+   * which covers everything the editor could have seen) and moderated after the earliest AI request in its chain of
+   * versions. A message hidden before that request was never sent, so it does not count.
+   */
+  private async moderatedSince(db: PoolClient, threadId: string, versionId: string): Promise<boolean> {
+    const { rowCount } = await db.query(
+      `WITH RECURSIVE chain AS (
+         SELECT id, edited_from_id, request_id, created_at FROM summary_versions WHERE id = $2
+         UNION ALL
+         SELECT v.id, v.edited_from_id, v.request_id, v.created_at FROM summary_versions v JOIN chain c ON v.id = c.edited_from_id
+       )
+       SELECT 1 FROM discussion_messages m
+        WHERE m.thread_id = $1 AND m.state IN ('hidden', 'deleted')
+          AND m.created_at <= (SELECT created_at FROM summary_versions WHERE id = $2)
+          AND m.state_at > COALESCE((SELECT min(r.created_at) FROM chain c JOIN ai_requests r ON r.id = c.request_id), '-infinity'::timestamptz)
+        LIMIT 1`,
+      [threadId, versionId],
+    );
+    return (rowCount ?? 0) > 0;
   }
 
   /** The newest version, which must be the one the person was looking at; otherwise 409 with the summary as it is now. */
@@ -780,6 +813,7 @@ export class SummariesService {
       if (row.approvedVersionId === latest.id) throw new ConflictException(ALREADY_APPROVED);
       const open = Number((await db.query(`SELECT count(*) AS n FROM summary_marks WHERE version_id = $1 AND intended_by IS NULL`, [latest.id])).rows[0].n);
       if (open > 0) throw new ConflictException(MARKS_OPEN);
+      if (row.originalThreadId && (await this.moderatedSince(db, row.originalThreadId, latest.id))) throw new ConflictException(MODERATED_SINCE);
       const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
       if (reason === '' || reason.length > MAX_REASON) throw new BadRequestException(REASON_REQUIRED);
       refuseSecrets(reason);
@@ -879,7 +913,7 @@ export class SummariesService {
     const ctx = await this.inTransaction(async (db) => {
       const { row, ctx, reason } = await this.reviewing(db, user, id, body.reason);
       const at = this.now();
-      await db.query(`UPDATE summaries SET state = 'withdrawn' WHERE id = $1`, [row.id]);
+      await db.query(`UPDATE summaries SET state = 'withdrawn', review_reason = NULL WHERE id = $1`, [row.id]);
       await this.reviewEvent(db, row, user, 'summary_withdrawn', reason, at);
       if (row.summarySourceId) await onMaterialRemoved(db, { sourceIds: [row.summarySourceId] }, 'summary_withdrawn', at);
       return ctx;

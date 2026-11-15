@@ -8,6 +8,8 @@ import { SpendSettingsService } from '../spend/spend.settings';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
+import { uuidv7 } from '../common/uuid7';
+import { NotesService } from '../notes/notes.service';
 import { AssistRunner } from './assist-runner';
 import { onMaterialRemoved } from './removal';
 
@@ -25,6 +27,16 @@ class SummaryModel implements JsonSchemaModel {
     return { content: JSON.stringify({ summary_markdown: this.body, omitted_categories: [] }), usage: USAGE };
   }
 }
+
+/** Writes one narrative per requested section, citing P1. */
+class ReportModel implements JsonSchemaModel {
+  async callJson(req: ModelRequest): Promise<{ content: unknown; usage: Usage }> {
+    const sections = [...req.user.matchAll(/^- (.+)$/gm)].map((m) => m[1]);
+    return { content: JSON.stringify({ sections: sections.map((section) => ({ section, markdown: `Narrative for ${section} [P1].`, cited: ['P1'] })) }), usage: USAGE };
+  }
+}
+
+const MODERATED_SINCE = 'A message this draft was built from has since been hidden or deleted. Draft the summary again before approving.';
 
 class AnswerModel implements JsonSchemaModel {
   async callJson(): Promise<{ content: unknown; usage: Usage }> {
@@ -308,5 +320,128 @@ describe('shareable summaries when the original changes', { skip: SKIP_NO_DB }, 
     assert.equal((await ben.request('GET', `/notes/${sourceId}`)).status, 404);
     assert.equal((await answerState(answer)).review_state, 'withdrawn');
     assert.equal((await view(pm, id)).body.reviewReason, 'The original was deleted.');
+  });
+
+  /** A Restricted meeting (Ada named) with the given messages; returns the thread and message ids. */
+  const meeting = async (bodies: string[]) => {
+    const m = await pm.request('POST', `/projects/${project}/threads`, { kind: 'meeting', title: 'Board meeting', audience: { mode: 'restricted', namedUserIds: [ids.ada] } });
+    assert.equal(m.status, 201, JSON.stringify(m.body));
+    const messages: string[] = [];
+    for (const body of bodies) {
+      const p = await ada.request('POST', `/threads/${m.body.id}/messages`, { body });
+      assert.equal(p.status, 201, JSON.stringify(p.body));
+      messages.push(p.body.id);
+    }
+    t.clock.advanceSeconds(1);
+    return { thread: m.body.id as string, messages };
+  };
+  const hide = async (messageId: string) => assert.equal((await pm.request('POST', `/messages/${messageId}/hide`, { reason: 'Posted in error' })).status, 200);
+
+  test('a message hidden after drafting began blocks approval; one hidden before the request does not', async () => {
+    const { thread, messages } = await meeting(['The turbine replacement goes ahead next month.', 'The supplier was late again.', 'Old remark.']);
+    // Hidden before any request: never sent, so it does not block.
+    await hide(messages[2]);
+    t.clock.advanceSeconds(1);
+    const r = await dep.request('POST', `/threads/${thread}/summaries`, { intendedAudience: { mode: 'project' }, leaveOut: '' });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.equal(await run(lastRequest(), new SummaryModel()), 'succeeded');
+    t.clock.advanceSeconds(1);
+    // Hidden after the draft was made, before approval: approving is refused, nothing reaches the wider audience.
+    await hide(messages[1]);
+    t.clock.advanceSeconds(1);
+    const refused = await pm.request('POST', `/summaries/${r.body.id}/approve`, { versionNo: 1, reason: 'Fine to share' });
+    assert.equal(refused.status, 409, JSON.stringify(refused.body));
+    assert.equal(refused.body.message, MODERATED_SINCE);
+    assert.equal((await state(r.body.id)).state, 'draft');
+    assert.equal(Number((await t.pool.query(`SELECT count(*) AS n FROM sources WHERE kind = 'summary'`)).rows[0].n), 0);
+    // A fresh draft, requested after both were hidden, can be approved.
+    const again = await approve(() => dep.request('POST', `/threads/${thread}/summaries`, { intendedAudience: { mode: 'project' }, leaveOut: '' }));
+    assert.equal((await state(again.id)).state, 'approved');
+  });
+
+  test('a newer version is refused when a message posted before it is hidden before approval', async () => {
+    const { thread, id } = await approvedMeeting();
+    const late = await ada.request('POST', `/threads/${thread}/messages`, { body: 'The supplier will be replaced.' });
+    assert.equal(late.status, 201);
+    t.clock.advanceSeconds(1);
+    const v2 = await dep.request('PUT', `/summaries/${id}`, { body: 'The turbine replacement goes ahead next month. The supplier will be replaced.', basedOnVersion: 1 });
+    assert.equal(v2.status, 200, JSON.stringify(v2.body));
+    t.clock.advanceSeconds(1);
+    await hide(late.body.id);
+    // Not in the approved version 1, so the approved summary stays as it is.
+    assert.equal((await state(id)).state, 'approved');
+    const refused = await pm.request('POST', `/summaries/${id}/approve`, { versionNo: 2, reason: 'Updated' });
+    assert.equal(refused.status, 409, JSON.stringify(refused.body));
+    assert.equal(refused.body.message, MODERATED_SINCE);
+    assert.equal((await view(ben, id)).body.body, SUMMARY, 'the wider audience still reads version 1');
+  });
+
+  /** Ben asks for a specification from the summary source; drafted by the AI. */
+  const bensDraft = async (sourceId: string) => {
+    const r = await ben.request('POST', `/projects/${project}/reports`, { kind: 'specification', title: 'Turbine specification', chosen: { sourceIds: [sourceId] } });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.equal(await run(lastRequest(), new ReportModel()), 'succeeded');
+    t.clock.advanceSeconds(1);
+    return r.body.id as string;
+  };
+  const draftState = async (id: string) => (await t.pool.query(`SELECT review_state, review_reason FROM report_drafts WHERE id = $1`, [id])).rows[0];
+
+  test('a hidden summary sends shared answers and drafts to review and withdraws private drafts', async () => {
+    const { messages, sourceId, id } = await approvedMeeting();
+    const d = await pm.request('POST', `/projects/${project}/threads`, { kind: 'discussion', title: 'Plant' });
+    assert.equal(d.status, 201);
+    const sharedAnswer = await bensAnswer();
+    const s = await ben.request('POST', `/questions/${sharedAnswer}/share`, { threadId: d.body.id });
+    assert.equal(s.status, 200, JSON.stringify(s.body));
+    const privateDraft = await bensDraft(sourceId);
+    const sharedDraft = await bensDraft(sourceId);
+    assert.equal((await ben.request('POST', `/reports/${sharedDraft}/share`)).status, 200);
+
+    await hide(messages[0]);
+    assert.equal((await state(id)).state, 'hidden');
+    assert.deepEqual(await answerState(sharedAnswer), { review_state: 'review_required', review_reason: 'material_removed' });
+    assert.deepEqual(await draftState(privateDraft), { review_state: 'withdrawn', review_reason: 'material_removed' });
+    assert.deepEqual(await draftState(sharedDraft), { review_state: 'review_required', review_reason: 'material_removed' });
+    const causes = (await t.pool.query(`SELECT target_id, detail->>'cause' AS cause FROM ai_assist_events WHERE target_id = ANY($1::uuid[]) AND action IN ('withdrawn', 'review_required')`, [[sharedAnswer, privateDraft, sharedDraft]])).rows;
+    assert.equal(causes.length, 3);
+    assert.ok(causes.every((c) => c.cause === 'summary_withdrawn'));
+    const items = (await pm.request('GET', `/projects/${project}/assist-review`)).body.items as Array<{ id: string }>;
+    assert.deepEqual(items.map((i) => i.id).sort(), [sharedAnswer, sharedDraft].sort());
+  });
+
+  test('withdrawing a summary sends a shared draft built on it to review', async () => {
+    const { original, id, sourceId } = await approvedNote();
+    const sharedDraft = await bensDraft(sourceId);
+    assert.equal((await ben.request('POST', `/reports/${sharedDraft}/share`)).status, 200);
+    await setAudience(await audienceOf(original), []);
+    assert.deepEqual(await draftState(sharedDraft), { review_state: 'none', review_reason: null }, 'review alone touches nothing');
+    assert.equal((await decide(spo, 'withdraw', id)).status, 200);
+    assert.deepEqual(await state(id), { state: 'withdrawn', review_reason: null });
+    assert.deepEqual(await draftState(sharedDraft), { review_state: 'review_required', review_reason: 'material_removed' });
+  });
+
+  test('a meeting and its minutes share an audience row: tightening flags both summaries', async () => {
+    const { thread } = await meeting(['The turbine replacement goes ahead next month.']);
+    const audienceId = (await t.pool.query(`SELECT audience_id FROM discussion_threads WHERE id = $1`, [thread])).rows[0].audience_id as string;
+    const minutes = uuidv7(t.clock.now().getTime());
+    const client = await t.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `INSERT INTO sources (id, title, created_by, created_at, project_id, kind, audience_id, thread_id, publication) VALUES ($1, 'Board meeting', $2, $3, $4, 'minutes', $5, $6, 'published')`,
+        [minutes, ids.pm, t.clock.now(), project, audienceId, thread],
+      );
+      await t.app.get(NotesService).addVersionText(client, minutes, ORIGINAL, ids.pm, t.clock.now());
+      await client.query('COMMIT');
+    } finally {
+      client.release();
+    }
+    t.clock.advanceSeconds(1);
+    const ofMinutes = await approve(() => dep.request('POST', `/sources/${minutes}/summaries`, { intendedAudience: { mode: 'project' }, leaveOut: '' }));
+    const ofMeeting = await approve(() => dep.request('POST', `/threads/${thread}/summaries`, { intendedAudience: { mode: 'project' }, leaveOut: '' }));
+    await setAudience(audienceId, []);
+    assert.equal((await state(ofMinutes.id)).state, 'review_required');
+    assert.equal((await state(ofMeeting.id)).state, 'review_required');
+    assert.equal((await reviewNotices()).length, 4, 'PM/Owner and Sponsor, for each summary');
   });
 });

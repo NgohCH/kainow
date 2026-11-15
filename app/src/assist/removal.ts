@@ -105,6 +105,10 @@ async function reviewers(db: Db, projectId: string, at: Date): Promise<string[]>
  * Each move is recorded (no actor, no text) and PM, Owner and Sponsors are told in-app with the summary's own title.
  * Returns the summary sources that became hidden: their dependent answers and drafts are removed material.
  *
+ * Candidates are found without a state filter; the state (and, for a message, whether it was posted by the time
+ * the approved version was written) is decided only after the summary row is locked, by statements that run after
+ * the lock is granted, so a Confirm or Approve committing meanwhile is seen and the move is not lost.
+ *
  * Locks: after the caller's thread, message or audience rows; summary rows in id order, before any answer or draft.
  */
 async function moveSummaries(db: Db, what: RemovedMaterial, reason: RemovalReason, at: Date): Promise<string[]> {
@@ -117,27 +121,23 @@ async function moveSummaries(db: Db, what: RemovedMaterial, reason: RemovalReaso
   if (audienceId !== null) {
     // The originals using that audience (sources_audience / threads by audience), then summaries_source_idx / summaries_thread_idx.
     const { rows } = await db.query<{ id: string }>(
-      `SELECT sm.id FROM sources s JOIN summaries sm ON sm.original_source_id = s.id WHERE s.audience_id = $1 AND sm.state = 'approved'
+      `SELECT sm.id FROM sources s JOIN summaries sm ON sm.original_source_id = s.id WHERE s.audience_id = $1
        UNION
-       SELECT sm.id FROM discussion_threads t JOIN summaries sm ON sm.original_thread_id = t.id WHERE t.audience_id = $1 AND sm.state = 'approved'`,
+       SELECT sm.id FROM discussion_threads t JOIN summaries sm ON sm.original_thread_id = t.id WHERE t.audience_id = $1`,
       [audienceId],
     );
     for (const r of rows) causes.set(r.id, 'audience_tightened');
   }
   if (messageIds.length > 0) {
     const { rows } = await db.query<{ id: string }>(
-      `SELECT DISTINCT sm.id
-         FROM discussion_messages m
-         JOIN summaries sm ON sm.original_thread_id = m.thread_id
-         JOIN summary_versions av ON av.id = sm.approved_version_id
-        WHERE m.id = ANY($1::uuid[]) AND sm.state IN ('approved', 'review_required') AND m.created_at <= av.created_at`,
+      `SELECT DISTINCT sm.id FROM discussion_messages m JOIN summaries sm ON sm.original_thread_id = m.thread_id WHERE m.id = ANY($1::uuid[])`,
       [messageIds],
     );
     for (const r of rows) causes.set(r.id, reason === 'deleted' ? 'message_deleted' : 'message_hidden');
   }
   if (sourceIds.length > 0) {
     const { rows } = await db.query<{ id: string }>(
-      `SELECT sm.id FROM summaries sm WHERE sm.original_source_id = ANY($1::uuid[]) AND sm.state IN ('approved', 'review_required')`,
+      `SELECT sm.id FROM summaries sm WHERE sm.original_source_id = ANY($1::uuid[])`,
       [sourceIds],
     );
     for (const r of rows) causes.set(r.id, reason === 'deleted' ? 'original_deleted' : 'original_removed');
@@ -158,6 +158,16 @@ async function moveSummaries(db: Db, what: RemovedMaterial, reason: RemovalReaso
     const to = cause === 'audience_tightened' ? 'review_required' : 'hidden';
     // Tightening moves only an approved summary: never one already in review or hidden.
     if (to === 'review_required' && sm.state !== 'approved') continue;
+    // A message counts only if it was posted by the time the approved version (as it is now, after the lock) was written.
+    if (cause === 'message_hidden' || cause === 'message_deleted') {
+      const inText = await db.query(
+        `SELECT 1 FROM summaries sm JOIN summary_versions av ON av.id = sm.approved_version_id
+           JOIN discussion_messages m ON m.thread_id = sm.original_thread_id
+          WHERE sm.id = $1 AND m.id = ANY($2::uuid[]) AND m.created_at <= av.created_at LIMIT 1`,
+        [sm.id, messageIds],
+      );
+      if (!inText.rowCount) continue;
+    }
     await db.query(`UPDATE summaries SET state = $2, review_reason = $3 WHERE id = $1`, [sm.id, to, cause]);
     await db.query(
       `INSERT INTO ai_assist_events (id, project_id, actor_id, action, target_kind, target_id, reason, detail, at) VALUES ($1, $2, NULL, $3, 'summary', $4, $5, $6, $7)`,
