@@ -153,6 +153,7 @@ const REASONS: Readonly<Record<string, string>> = {
   project_not_open: 'the project is not open (Deferred or Closed)',
   requester_not_allowed: 'you can no longer read this project',
   thread_not_found: 'the thread no longer exists',
+  meeting_ended: 'the meeting has ended, so the answer could not be posted',
   material_unavailable: 'nothing found for this question can be read any more',
   queue_unavailable: 'the question could not be queued; ask again',
   bad_response: 'the AI answer did not match its sources, so it was not kept',
@@ -515,6 +516,14 @@ export class QuestionsService {
       const { row, ctx } = await this.ownAnswer(db, user, requestId);
       const target = await this.postableThread(db, user, ctx, body.threadId);
       const question = (await db.query<{ question: string }>(`SELECT question FROM ai_answers WHERE request_id = $1`, [row.requestId])).rows[0].question;
+      // One re-answer of a question for a thread at a time (the thread row is locked, so two requests cannot both pass).
+      const pending = await db.query(
+        `SELECT 1 FROM ai_requests r JOIN ai_answers a ON a.request_id = r.id
+          WHERE r.kind = 'question' AND r.scope = 'thread' AND r.scope_thread_id = $1 AND r.requested_by = $2
+            AND r.status IN ('queued', 'running') AND a.question = $3 LIMIT 1`,
+        [target.id, user.id, question],
+      );
+      if (pending.rowCount) throw new ConflictException('This question is already being answered again for this thread.');
       const terms = buildTerms(question);
       const material = terms.length > 0 ? await findMaterial(db, { kind: 'thread', ctx, threadAudienceId: target.audienceId }, terms) : [];
       const at = this.now();

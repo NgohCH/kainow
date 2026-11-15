@@ -8,7 +8,7 @@ import { type JsonSchemaModel, ModelBadResponse } from '../extraction/model';
 import { REQUEST_TIMEOUT_MS } from '../extraction/prompt';
 import type { RunOutcome } from '../extraction/runner';
 import { ProjectAccess, canReadContent } from '../projects/access.service';
-import type { ProjectStatus } from '../projects/matrix';
+import { type ProjectStatus, decide } from '../projects/matrix';
 import type { Usage } from '../spend/cost';
 import type { SpendService } from '../spend/spend.service';
 import { normalizeMarker, validateCitations } from './citations';
@@ -134,16 +134,49 @@ export async function completeQuestion(db: PoolClient, request: AssistRequest, o
   const done = await db.query(`UPDATE ai_answers SET answer_markdown = $2, not_found = $3 WHERE request_id = $1`, [request.id, o.answer_markdown, o.not_found]);
   if (done.rowCount !== 1) throw new Error(`assist ${request.id}: no answer row to complete`);
   if (request.scope !== 'thread' || o.not_found) return;
-  const open = await db.query(`SELECT 1 FROM discussion_threads WHERE id = $1 AND state IS DISTINCT FROM 'ended' FOR NO KEY UPDATE`, [request.scopeThreadId]);
-  if (open.rowCount !== 1) return;
-  await db.query(
-    `UPDATE ai_answers SET visibility = 'shared', shared_thread_id = $2, shared_by = $3, shared_at = $4 WHERE request_id = $1 AND visibility = 'private'`,
+  if (!(await mayStillPost(db, request, at))) return;
+  const shared = await db.query(
+    `UPDATE ai_answers SET visibility = 'shared', shared_thread_id = $2, shared_by = $3, shared_at = $4
+      WHERE request_id = $1 AND visibility = 'private' AND review_state = 'none'`,
     [request.id, request.scopeThreadId, request.requestedBy, at],
   );
+  if (shared.rowCount !== 1) return;
   await db.query(
     `INSERT INTO ai_assist_events (id, project_id, actor_id, action, target_kind, target_id, detail, at) VALUES ($1, $2, $3, 'shared', 'answer', $4, $5, $6)`,
     [uuidv7(at.getTime()), request.projectId, request.requestedBy, request.id, { threadId: request.scopeThreadId, reanswer: true }, at],
   );
+}
+
+/**
+ * The posting rule at the moment a re-answer would be posted (spec 8: the requester, who can post in the thread, in a
+ * Draft, Planned or Active project). Checked again here because the AI call can take minutes: the project may have been
+ * deferred, the requester removed or taken out of a Restricted thread, or the meeting ended. Locks the thread row.
+ */
+async function mayStillPost(db: PoolClient, request: AssistRequest, at: Date): Promise<boolean> {
+  const thread = (
+    await db.query<{ audienceId: string; state: 'open' | 'ended' | null; mode: AudienceMode; named: string[] }>(
+      `SELECT t.audience_id AS "audienceId", t.state, a.mode,
+              COALESCE((SELECT array_agg(m.user_id) FROM audience_members m WHERE m.audience_id = a.id), '{}') AS named
+         FROM discussion_threads t JOIN audiences a ON a.id = t.audience_id
+        WHERE t.id = $1 AND t.project_id = $2
+        FOR NO KEY UPDATE OF t`,
+      [request.scopeThreadId, request.projectId],
+    )
+  ).rows[0];
+  if (!thread || thread.state === 'ended') return false;
+  const user = (
+    await db.query<{ id: string; email: string; displayName: string; role: string; status: string }>(
+      `SELECT id, email, display_name AS "displayName", role, status FROM users WHERE id = $1`,
+      [request.requestedBy],
+    )
+  ).rows[0];
+  if (!user || user.status !== 'active') return false;
+  // ProjectAccess reads through the transaction's client; the clock is the finish time.
+  const ctx = await new ProjectAccess(db as unknown as Pool, () => at).load(request.projectId, user, db);
+  if (!ctx || ctx.roles.length === 0) return false;
+  if (!decide({ action: 'discussion.post', roles: ctx.roles, status: ctx.project.status }).allowed) return false;
+  if (!decide({ action: 'assist.share', roles: ctx.roles, status: ctx.project.status }).allowed) return false;
+  return inAudience(ctx, { id: thread.audienceId, projectId: request.projectId, mode: thread.mode, namedUserIds: thread.named });
 }
 
 registerInputBuilder('question', questionInput);
@@ -274,14 +307,15 @@ export class AssistRunner {
     if (ctx.roles.length === 0) return refused;
 
     const thread = (
-      await pool.query<{ id: string; mode: AudienceMode; named: string[] }>(
-        `SELECT a.id, a.mode, COALESCE((SELECT array_agg(m.user_id) FROM audience_members m WHERE m.audience_id = a.id), '{}') AS named
+      await pool.query<{ id: string; state: 'open' | 'ended' | null; mode: AudienceMode; named: string[] }>(
+        `SELECT a.id, t.state, a.mode, COALESCE((SELECT array_agg(m.user_id) FROM audience_members m WHERE m.audience_id = a.id), '{}') AS named
            FROM discussion_threads t JOIN audiences a ON a.id = t.audience_id
           WHERE t.id = $1 AND t.project_id = $2`,
         [request.scopeThreadId, request.projectId],
       )
     ).rows[0];
     if (!thread) return { code: 'thread_not_found', detail: 'The thread for this request no longer exists, so the AI request did not run.' };
+    if (thread.state === 'ended') return { code: 'meeting_ended', detail: 'The meeting has ended, so the answer could not be posted and the AI request did not run.' };
     if (!inAudience(ctx, { id: thread.id, projectId: request.projectId, mode: thread.mode, namedUserIds: thread.named })) {
       return { code: 'requester_not_allowed', detail: 'The person who asked can no longer read this thread, so the AI request did not run.' };
     }

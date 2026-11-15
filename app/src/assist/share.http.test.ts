@@ -342,17 +342,80 @@ describe('sharing AI answers into threads', { skip: SKIP_NO_DB }, () => {
     assert.equal((await t.pool.query(`SELECT visibility FROM ai_answers WHERE request_id = $1`, [a.id])).rows[0].visibility, 'private');
   });
 
-  test('a re-answer finishing after the meeting ended stays private', async () => {
+  test('a re-answer for a meeting that ended before it ran is blocked with no AI call', async () => {
     const meeting = await startThread(ada, { kind: 'meeting', title: 'Weekly check-in' });
     const a = await answered();
     const r = await reanswer(ada, a.id, meeting);
     assert.equal(r.status, 201, JSON.stringify(r.body));
     assert.equal((await ada.request('POST', `/threads/${meeting}/end`)).status, 200);
-    assert.equal(await run(r.body.id), 'succeeded');
+    const spentBefore = await count(`SELECT count(*) AS n FROM ai_spend_entries`);
+    const model = new FakeModel();
+    assert.equal(await run(r.body.id, model), 'blocked');
+    assert.equal(model.calls.length, 0);
+    assert.equal(await count(`SELECT count(*) AS n FROM ai_spend_entries`), spentBefore, 'nothing charged');
     const done = (await ada.request('GET', `/questions/${r.body.id}`)).body;
-    assert.equal(done.status, 'answered');
+    assert.equal(done.status, 'blocked');
+    assert.equal(done.notice, 'AI answer unavailable: the meeting has ended, so the answer could not be posted');
     assert.equal(done.visibility, 'private');
     assert.deepEqual(await aiAnswers(ada, meeting), []);
+  });
+
+  /** Runs the re-answer, changing something while the AI call is in progress; the answer must stay private. */
+  const changedDuringCall = async (threadId: string, change: () => Promise<unknown>) => {
+    const a = await answered();
+    const r = await reanswer(ada, a.id, threadId);
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    const model = new FakeModel();
+    const call = model.callJson.bind(model);
+    model.callJson = async (req) => {
+      await change();
+      return call(req);
+    };
+    assert.equal(await run(r.body.id, model), 'succeeded');
+    assert.equal(model.calls.length, 1);
+    const row = (await t.pool.query(`SELECT visibility, shared_thread_id FROM ai_answers WHERE request_id = $1`, [r.body.id])).rows[0];
+    assert.deepEqual(row, { visibility: 'private', shared_thread_id: null });
+    assert.equal(await count(`SELECT count(*) AS n FROM ai_assist_events WHERE action = 'shared' AND target_id = $1`, [r.body.id]), 0);
+    return r.body.id as string;
+  };
+
+  test('a re-answer finishing after the meeting ended stays private', async () => {
+    const meeting = await startThread(ada, { kind: 'meeting', title: 'Weekly check-in' });
+    await changedDuringCall(meeting, () => ada.request('POST', `/threads/${meeting}/end`));
+    assert.deepEqual(await aiAnswers(ada, meeting), []);
+  });
+
+  test('a re-answer finishing after the project was deferred stays private', async () => {
+    const id = await changedDuringCall(thread, () => t.pool.query(`UPDATE projects SET status = 'deferred' WHERE id = $1`, [project]));
+    assert.equal((await ada.request('GET', `/questions/${id}`)).body.status, 'answered');
+  });
+
+  test('a re-answer finishing after the requester left the Restricted meeting stays private', async () => {
+    const closedDoor = await startThread(pm, { kind: 'meeting', title: 'Closed door', audience: { mode: 'restricted', namedUserIds: [ids.ada] } });
+    const audienceId = (await t.pool.query(`SELECT audience_id FROM discussion_threads WHERE id = $1`, [closedDoor])).rows[0].audience_id;
+    await changedDuringCall(closedDoor, () => t.pool.query(`DELETE FROM audience_members WHERE audience_id = $1 AND user_id = $2`, [audienceId, ids.ada]));
+  });
+
+  test('a re-answer withdrawn for review while running is not posted', async () => {
+    const id = await changedDuringCall(thread, async () => {
+      const req = (await t.pool.query(`SELECT id FROM ai_requests WHERE scope = 'thread' ORDER BY created_at DESC LIMIT 1`)).rows[0].id;
+      await t.pool.query(`UPDATE ai_answers SET review_state = 'withdrawn', review_reason = 'material_removed' WHERE request_id = $1`, [req]);
+    });
+    assert.equal((await t.pool.query(`SELECT review_state FROM ai_answers WHERE request_id = $1`, [id])).rows[0].review_state, 'withdrawn');
+  });
+
+  test('a second re-answer for the same thread is refused while the first is pending', async () => {
+    const a = await answered();
+    const first = await reanswer(ada, a.id);
+    assert.equal(first.status, 201, JSON.stringify(first.body));
+    const again = await reanswer(ada, a.id);
+    assert.equal(again.status, 409);
+    assert.equal(again.body.message, 'This question is already being answered again for this thread.');
+    // Another thread is fine; once the first has finished, the same thread is fine again.
+    const other = await startThread(pm, { kind: 'discussion', title: 'Other' });
+    assert.equal((await reanswer(ada, a.id, other)).status, 201);
+    assert.equal(await run(first.body.id), 'succeeded');
+    assert.equal((await reanswer(ada, a.id)).status, 201);
   });
 
   test('Member cannot hide; PM can', async () => {
