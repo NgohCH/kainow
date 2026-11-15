@@ -23,7 +23,9 @@ import { ProjectApprovals } from './ApprovalSettings.tsx';
 import { Closing, DelegationControl, type ClosedSummary, type ClosureView } from './Closing.tsx';
 import { DeadlineReview } from './DeadlineReview.tsx';
 import { AskPanel } from './AskPanel.tsx';
+import { AssistReview } from './AssistReview.tsx';
 import { Drafts } from './Drafts.tsx';
+import { mayReviewAnswers, mayReviewSummaries } from '../assist.ts';
 import { Discussion } from './Discussion.tsx';
 import { Work } from './Work.tsx';
 import { DeliveryHistory } from './Deliveries.tsx';
@@ -33,7 +35,7 @@ import { ProjectSettings } from './NotificationSettings.tsx';
 import { ProjectCalendarProvider } from './ProjectCalendar.tsx';
 import { type Act, ArchivePanel, DepartmentMove, GrantsSection, HandoverForm, HoldActions } from './ProjectAccessPanels.tsx';
 
-type Tab = 'overview' | 'people' | 'notes' | 'work' | 'drafts' | 'settings' | 'feedback' | 'closing' | 'deadline-review';
+type Tab = 'overview' | 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'feedback' | 'closing' | 'deadline-review';
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
@@ -94,6 +96,7 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
     ['overview', 'Overview'],
     ['people', 'People'],
     ...(contentAllowed ? ([['notes', 'Notes & discussion'], ['work', 'Work'], ['drafts', 'Drafts']] as Array<[Tab, string]>) : []),
+    ...(contentAllowed && (mayReviewAnswers(roles) || mayReviewSummaries(roles)) ? ([['review', 'Review']] as Array<[Tab, string]>) : []),
     ...(contentAllowed ? ([['feedback', 'Feedback']] as Array<[Tab, string]>) : []),
     ['settings', 'Settings'],
   ];
@@ -161,6 +164,7 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
       {notice && <p role="status" className="meta">{notice}</p>}
       {tab === 'overview' && <Overview project={project} act={act} />}
       {tab === 'drafts' && contentAllowed && <Drafts projectId={project.id} draftId={itemId} />}
+      {tab === 'review' && contentAllowed && <AssistReview projectId={project.id} roles={roles} />}
       {tab === 'feedback' && contentAllowed && <Feedback projectId={project.id} />}
       {tab === 'settings' && <ProjectSettings projectId={project.id} />}
       {tab === 'closing' && <Closing project={project} act={act} />}

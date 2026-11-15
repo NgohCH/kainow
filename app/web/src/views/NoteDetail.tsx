@@ -3,7 +3,9 @@ import { ApiError, api, type Project, type Run, type VersionSummary } from '../a
 import { go } from '../App.tsx';
 import { type AudienceView, returnedNotice, versionOriginText } from '../discussion.ts';
 import { formatWhen, plural } from '../format.ts';
+import { mayDraftSummary } from '../assist.ts';
 import { AudiencePanel } from './AudiencePanel.tsx';
+import { SummaryRequest } from './SummaryView.tsx';
 import { Intake } from './Intake.tsx';
 import { SubmissionReview } from './Submissions.tsx';
 
@@ -136,6 +138,9 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
           canChange={projectOpen && roles.some((r) => r === 'pm' || r === 'owner' || r === 'sponsor')}
           onChanged={() => void load()}
         />
+      )}
+      {published && src.kind !== 'discussion' && src.kind !== 'summary' && src.audience.mode === 'restricted' && mayDraftSummary(roles, projectOpen) && (
+        <SummaryRequest target={{ kind: 'source', id: sourceId }} memberships={memberships} />
       )}
       <nav aria-label="Versions" className="versions">
         {detail.versions.map((v) => (

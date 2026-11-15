@@ -481,3 +481,195 @@ export function lineDiff(a: string, b: string): DiffLine[] {
 
 /** The words that stand for a diff line, so colour is never the only signal. */
 export const diffWord = (op: DiffLine['op']): string => (op === 'added' ? 'Added' : op === 'removed' ? 'Removed' : 'Unchanged');
+
+// --- Shareable summaries of restricted sources and meetings (spec 7) and the review lists (spec 5.5, 7.3) ---
+
+export const SUMMARY_DRAFT_LABEL = 'AI draft — not approved for sharing';
+export const SUMMARY_APPROVED_LABEL = 'Summary approved for sharing';
+export const FROM_RESTRICTED_LABEL = 'From a restricted source';
+export const REVIEW_REQUIRED_LABEL = 'Access review required';
+export const MAX_LEAVE_OUT = 1_000;
+export const MAX_REASON = 500;
+export const SUMMARY_POLL_MS = 3_000;
+
+export type SummaryState = 'draft' | 'approved' | 'review_required' | 'hidden' | 'withdrawn';
+export type MarkKind = 'leave_out' | 'name';
+
+export interface SummaryMark {
+  id: string;
+  phrase: string;
+  kind: MarkKind;
+  places: Array<{ start: number; end: number }>;
+  intended: boolean;
+  intendedBy: Person | null;
+  intendedAt: string | null;
+}
+export interface SummaryVersion {
+  id: string;
+  no: number;
+  origin: 'ai' | 'human';
+  createdBy: Person | null;
+  editedByLabel: string | null;
+  createdAt: string;
+  approved: boolean;
+  label: string;
+}
+export interface SummaryFullView {
+  view: 'full';
+  id: string;
+  projectId: string;
+  original: { kind: 'source' | 'meeting'; id: string; title: string };
+  intendedAudience: { mode: 'project' | 'restricted'; namedUsers: Person[]; covers: Person[] };
+  leaveOut: string;
+  state: SummaryState;
+  label: string;
+  status: 'queued' | 'running' | 'ready' | 'failed' | 'blocked';
+  unavailableReason: string | null;
+  notice: string | null;
+  approved: { versionNo: number; by: Person; at: string; sourceId: string | null } | null;
+  requestedBy: Person;
+  createdAt: string;
+  versions: SummaryVersion[];
+  current: (SummaryVersion & { body: string; omittedCategories: string[]; marks: SummaryMark[]; openMarks: number; approvalRequested: boolean }) | null;
+  canEdit: boolean;
+  canMarkIntended: boolean;
+  canAskApproval: boolean;
+  canApprove: boolean;
+  approval: { versionNo: number; audience: 'project' | 'restricted'; gainAccess: Person[] } | null;
+  reviewLabel: string | null;
+  reviewReason: string | null;
+  canReview: boolean;
+}
+export interface SummarySharedView {
+  view: 'shared';
+  id: string;
+  projectId: string;
+  label: string;
+  approved: string;
+  from: string;
+  sourceId: string;
+  body: string;
+}
+export type SummaryAny = SummaryFullView | SummarySharedView;
+export interface SummaryListItem {
+  id: string;
+  original: { kind: 'source' | 'meeting'; id: string; title: string };
+  state: SummaryState;
+  label: string;
+  requestedBy: Person;
+  createdAt: string;
+  latestVersionNo: number | null;
+  openMarks: number;
+  approvalRequested: boolean;
+  reason: string | null;
+}
+export interface ReviewItem {
+  kind: 'answer' | 'draft';
+  id: string;
+  title: string;
+  reviewReason: string | null;
+  reason: string;
+  by: Person;
+  sharedThreadId: string | null;
+  sharedAt: string | null;
+  flaggedAt: string | null;
+  href: string;
+}
+export interface NewSummary {
+  intendedAudience: { mode: 'project' | 'restricted'; namedUserIds: string[] };
+  leaveOut: string;
+}
+
+export const requestSummaryForSource = (sourceId: string, body: NewSummary) => api.post<SummaryFullView>(`/sources/${sourceId}/summaries`, body);
+export const requestSummaryForThread = (threadId: string, body: NewSummary) => api.post<SummaryFullView>(`/threads/${threadId}/summaries`, body);
+export const getSummary = (id: string) => api.get<SummaryAny>(`/summaries/${id}`);
+export const getSummaryVersion = (id: string, no: number) => api.get<SummaryVersion & { body: string }>(`/summaries/${id}/versions/${no}`);
+export const editSummary = (id: string, body: string, basedOnVersion: number) => api.put<SummaryFullView>(`/summaries/${id}`, { body, basedOnVersion });
+export const markIntended = (id: string, markId: string, versionNo: number) => api.post<SummaryFullView>(`/summaries/${id}/marks/${markId}/intended`, { versionNo });
+export const askSummaryApproval = (id: string, versionNo: number) => api.post<SummaryFullView & { notified: number }>(`/summaries/${id}/ask-approval`, { versionNo });
+export const approveSummary = (id: string, versionNo: number, reason: string) =>
+  api.post<SummaryFullView & { gainedAccess: Person[] }>(`/summaries/${id}/approve`, { versionNo, reason });
+export const confirmSummary = (id: string, reason: string) => api.post<SummaryFullView>(`/summaries/${id}/confirm`, { reason });
+export const withdrawSummary = (id: string, reason: string) => api.post<SummaryFullView>(`/summaries/${id}/withdraw`, { reason });
+export const listSummariesToReview = (projectId: string) => api.get<{ items: SummaryListItem[] }>(`/projects/${projectId}/summaries-to-review`).then((r) => r.items);
+export const listAssistReview = (projectId: string) => api.get<{ items: ReviewItem[] }>(`/projects/${projectId}/assist-review`).then((r) => r.items);
+export const decideReview = (kind: 'answer' | 'draft', id: string, action: 'clear' | 'withdraw', reason: string) =>
+  api.post<{ kind: string; id: string; reviewState: string }>(`/assist-review/${kind}/${id}/${action}`, { reason });
+
+export const summaryPath = (id: string) => `#/summaries/${id}`;
+
+/** Roles that may ask for a shareable summary (the server decides again). */
+export const mayDraftSummary = (roles: string[], projectOpen: boolean): boolean =>
+  projectOpen && roles.some((r) => r === 'pm' || r === 'deputy_pm' || r === 'owner' || r === 'sponsor');
+/** Roles that review answers and drafts after removed material. */
+export const mayReviewAnswers = (roles: string[]): boolean => roles.some((r) => r === 'pm' || r === 'deputy_pm');
+/** Roles that approve and review summaries. */
+export const mayReviewSummaries = (roles: string[]): boolean => roles.some((r) => r === 'pm' || r === 'owner' || r === 'sponsor');
+
+export const leaveOutCounter = (text: string): string => `${text.length.toLocaleString('en')} / ${MAX_LEAVE_OUT.toLocaleString('en')}`;
+export const leaveOutProblem = (text: string): string | null => (text.length > MAX_LEAVE_OUT ? `Leave out must be up to ${MAX_LEAVE_OUT.toLocaleString('en')} characters.` : null);
+
+export const newSummaryBody = (mode: 'project' | 'restricted', named: string[], leaveOut: string): NewSummary => ({
+  intendedAudience: { mode, namedUserIds: mode === 'project' ? [] : named },
+  leaveOut: leaveOut.trim(),
+});
+
+/** What a mark is, in words: colour is never the only signal. */
+export const markKindText = (k: MarkKind): string => (k === 'leave_out' ? 'Leave-out phrase' : 'Name');
+export const markText = (m: Pick<SummaryMark, 'phrase' | 'kind' | 'intended'>): string =>
+  `${markKindText(m.kind)}: “${m.phrase}” — ${m.intended ? 'Intended' : 'not yet resolved'}`;
+
+/** Marks still to resolve in the newest version. Approve stays off until this is zero. */
+export const openMarks = (marks: SummaryMark[]): SummaryMark[] => marks.filter((m) => !m.intended);
+export const marksResolved = (marks: SummaryMark[]): boolean => openMarks(marks).length === 0;
+export const markProgress = (marks: SummaryMark[]): string =>
+  marks.length === 0 ? 'Nothing is marked in this version.' : `${marks.length - openMarks(marks).length} of ${marks.length} marks resolved`;
+
+export interface TextPiece {
+  text: string;
+  /** The marks this piece belongs to (empty for plain text). */
+  marks: SummaryMark[];
+}
+
+/** The text cut at every mark place, so each piece is plain or marked; overlapping places are joined. Places out of range are ignored. */
+export function highlightPieces(body: string, marks: SummaryMark[]): TextPiece[] {
+  const spans: Array<{ start: number; end: number; mark: SummaryMark }> = [];
+  for (const m of marks) for (const p of m.places) if (p.start >= 0 && p.end > p.start && p.end <= body.length) spans.push({ ...p, mark: m });
+  const cuts = [...new Set([0, body.length, ...spans.flatMap((s) => [s.start, s.end])])].sort((a, b) => a - b);
+  const out: TextPiece[] = [];
+  for (let i = 0; i + 1 < cuts.length; i++) {
+    const [a, b] = [cuts[i], cuts[i + 1]];
+    const here = [...new Map(spans.filter((s) => s.start <= a && s.end >= b).map((s) => [s.mark.id, s.mark])).values()];
+    const last = out[out.length - 1];
+    if (last && last.marks.length === here.length && last.marks.every((m, j) => m.id === here[j].id)) last.text += body.slice(a, b);
+    else out.push({ text: body.slice(a, b), marks: here });
+  }
+  return out;
+}
+
+/** The lines of the approve confirmation: the version, the audience and exactly who gains access. */
+export function approvalLines(a: { versionNo: number; audience: 'project' | 'restricted'; gainAccess: Person[] }): string[] {
+  return [
+    `Version ${a.versionNo} will be approved.`,
+    `Audience: ${a.audience === 'project' ? 'Project-wide, everyone in the project' : 'Restricted, the people named'}.`,
+    a.gainAccess.length === 0
+      ? 'No one gains access they do not already have.'
+      : `${a.gainAccess.length === 1 ? 'This person gains' : 'These people gain'} access: ${a.gainAccess.map((p) => p.displayName).join(', ')}.`,
+  ];
+}
+
+/** `?answer=<id>` on a thread address: the shared answer to scroll to. */
+export function answerIdFromHash(hash: string): string | null {
+  const m = /\?(.*)$/.exec(hash);
+  const id = m ? new URLSearchParams(m[1]).get('answer') : null;
+  return id && /^[0-9a-f-]{36}$/i.test(id) ? id : null;
+}
+
+export const REVIEW_REASON_NEEDED = 'Say why (up to 500 characters).';
+export const reasonProblem = (reason: string): string | null => (reason.trim().length < 1 || reason.trim().length > MAX_REASON ? REVIEW_REASON_NEEDED : null);
+
+/** Which of the review actions each role gets on an item in the review lists. */
+export const reviewActions = (kind: 'answer' | 'draft' | 'summary', roles: string[]): Array<'clear' | 'confirm' | 'withdraw'> => {
+  if (kind === 'summary') return mayReviewSummaries(roles) ? ['confirm', 'withdraw'] : [];
+  return mayReviewAnswers(roles) ? ['clear', 'withdraw'] : [];
+};

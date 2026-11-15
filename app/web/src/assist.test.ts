@@ -226,3 +226,92 @@ test('a table with alignment colons is still a table', () => {
   assert.equal(b[0].t, 'table');
   assert.equal(parseMarkdown(['| a | b |', '|:-:|:--|', '| 1 | 2 |'].join(String.fromCharCode(10)))[0].t, 'table');
 });
+
+// --- Task 13: shareable summaries and review lists ---
+import {
+  answerIdFromHash,
+  approvalLines,
+  highlightPieces,
+  leaveOutCounter,
+  leaveOutProblem,
+  markProgress,
+  markText,
+  marksResolved,
+  mayDraftSummary,
+  newSummaryBody,
+  openMarks,
+  reasonProblem,
+  reviewActions,
+  type SummaryMark,
+} from './assist.ts';
+
+const mk = (id: string, kind: 'leave_out' | 'name', phrase: string, places: Array<[number, number]>, intended = false): SummaryMark => ({
+  id,
+  kind,
+  phrase,
+  places: places.map(([start, end]) => ({ start, end })),
+  intended,
+  intendedBy: null,
+  intendedAt: null,
+});
+
+test('marks are listed with text equivalents and Approve stays disabled until all are resolved', () => {
+  const marks = [mk('a', 'leave_out', 'Project Falcon', [[4, 18]]), mk('b', 'name', 'Dana Cole', [[30, 39]])];
+  assert.equal(markText(marks[0]), 'Leave-out phrase: “Project Falcon” — not yet resolved');
+  assert.equal(markText({ ...marks[1], intended: true }), 'Name: “Dana Cole” — Intended');
+  assert.equal(marksResolved(marks), false);
+  assert.equal(markProgress(marks), '0 of 2 marks resolved');
+  assert.equal(marksResolved([{ ...marks[0], intended: true }, marks[1]]), false);
+  assert.deepEqual(openMarks([{ ...marks[0], intended: true }, marks[1]]).map((m) => m.id), ['b']);
+  assert.equal(marksResolved(marks.map((m) => ({ ...m, intended: true }))), true);
+  assert.equal(marksResolved([]), true);
+  // The text is cut at the marks, so each place shows with its kind and the rest stays plain.
+  const body = 'See Project Falcon notes from Dana Cole today';
+  const pieces = highlightPieces(body, marks.map((m, i) => ({ ...m, places: [i === 0 ? { start: 4, end: 18 } : { start: 30, end: 39 }] })));
+  assert.equal(pieces.map((p) => p.text).join(''), body);
+  assert.deepEqual(pieces.filter((p) => p.marks.length).map((p) => [p.text, p.marks[0].kind]), [['Project Falcon', 'leave_out'], ['Dana Cole', 'name']]);
+  // Overlapping places are joined without losing text; out-of-range places are ignored.
+  const o = highlightPieces('abcdefgh', [mk('x', 'leave_out', 'bcde', [[1, 5]]), mk('y', 'name', 'defg', [[3, 7]]), mk('z', 'name', 'q', [[50, 60]])]);
+  assert.equal(o.map((p) => p.text).join(''), 'abcdefgh');
+  assert.deepEqual(o.map((p) => [p.text, p.marks.map((m) => m.id)]), [['a', []], ['bc', ['x']], ['de', ['x', 'y']], ['fg', ['y']], ['h', []]]);
+});
+
+test('approve confirmation lists who gains access', () => {
+  const lines = approvalLines({ versionNo: 3, audience: 'restricted', gainAccess: [{ id: '1', displayName: 'Ben' }, { id: '2', displayName: 'Cy' }] });
+  assert.deepEqual(lines, ['Version 3 will be approved.', 'Audience: Restricted, the people named.', 'These people gain access: Ben, Cy.']);
+  assert.match(approvalLines({ versionNo: 1, audience: 'project', gainAccess: [{ id: '1', displayName: 'Ben' }] })[2], /^This person gains access: Ben\.$/);
+  assert.match(approvalLines({ versionNo: 1, audience: 'project', gainAccess: [] })[2], /^No one gains access/);
+  assert.match(approvalLines({ versionNo: 1, audience: 'project', gainAccess: [] })[1], /Project-wide/);
+});
+
+test('review lists show reason and actions per role', () => {
+  assert.deepEqual(reviewActions('answer', ['pm']), ['clear', 'withdraw']);
+  assert.deepEqual(reviewActions('draft', ['deputy_pm']), ['clear', 'withdraw']);
+  assert.deepEqual(reviewActions('answer', ['owner']), []);
+  assert.deepEqual(reviewActions('summary', ['owner']), ['confirm', 'withdraw']);
+  assert.deepEqual(reviewActions('summary', ['sponsor']), ['confirm', 'withdraw']);
+  assert.deepEqual(reviewActions('summary', ['deputy_pm']), []);
+  assert.deepEqual(reviewActions('summary', ['member']), []);
+  assert.notEqual(reasonProblem('  '), null);
+  assert.notEqual(reasonProblem('x'.repeat(501)), null);
+  assert.equal(reasonProblem('Checked with the team'), null);
+});
+
+test('summary request form: leave-out limit, audience body and who may draft', () => {
+  assert.equal(leaveOutCounter('abc'), '3 / 1,000');
+  assert.equal(leaveOutProblem('x'.repeat(1000)), null);
+  assert.notEqual(leaveOutProblem('x'.repeat(1001)), null);
+  assert.deepEqual(newSummaryBody('project', ['u1'], ' Budget '), { intendedAudience: { mode: 'project', namedUserIds: [] }, leaveOut: 'Budget' });
+  assert.deepEqual(newSummaryBody('restricted', ['u1'], ''), { intendedAudience: { mode: 'restricted', namedUserIds: ['u1'] }, leaveOut: '' });
+  assert.equal(mayDraftSummary(['deputy_pm'], true), true);
+  assert.equal(mayDraftSummary(['pm'], false), false);
+  assert.equal(mayDraftSummary(['member'], true), false);
+});
+
+test('the answer in a thread address is read from the query', () => {
+  const id = '0190a1b2-c3d4-7e5f-8a9b-0c1d2e3f4a5b';
+  assert.equal(answerIdFromHash(`#/projects/p/threads/t?answer=${id}`), id);
+  assert.equal(answerIdFromHash(`#/projects/p/threads/t?m=3&answer=${id}`), id);
+  assert.equal(answerIdFromHash('#/projects/p/threads/t?answer=nope'), null);
+  assert.equal(answerIdFromHash('#/projects/p/threads/t'), null);
+});

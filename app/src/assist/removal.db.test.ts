@@ -135,7 +135,7 @@ describe('removal hook', { skip: SKIP_NO_DB }, () => {
     const list = await pm.request('GET', `/projects/${project}/assist-review`);
     assert.equal(list.status, 200, JSON.stringify(list.body));
     assert.deepEqual(list.body.items.map((i: { kind: string; id: string; title: string; href: string }) => [i.kind, i.id, i.title, i.href]), [
-      ['draft', sharedDraft, 'Weekly status', `#/reports/${sharedDraft}`],
+      ['draft', sharedDraft, 'Weekly status', `#/projects/${project}/drafts/${sharedDraft}`],
     ]);
     // Clear and withdraw take kind 'draft'.
     const cleared = await pm.request('POST', `/assist-review/draft/${sharedDraft}/clear`, { reason: 'Checked' });

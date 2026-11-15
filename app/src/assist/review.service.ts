@@ -90,7 +90,7 @@ export class ReviewService {
       sharedThreadId: r.sharedThreadId,
       sharedAt: r.sharedAt,
       flaggedAt: r.flaggedAt,
-      href: r.kind === 'answer' ? `#/projects/${projectId}/threads/${r.sharedThreadId}?answer=${r.id}` : `#/reports/${r.id}`,
+      href: r.kind === 'answer' ? `#/projects/${projectId}/threads/${r.sharedThreadId}?answer=${r.id}` : `#/projects/${projectId}/drafts/${r.id}`,
     }));
   }
 

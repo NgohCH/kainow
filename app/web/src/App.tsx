@@ -21,7 +21,9 @@ import { Projects } from './views/Projects.tsx';
 import { Review } from './views/Review.tsx';
 import { HeaderSearch, isSearchHash, Search } from './views/Search.tsx';
 import { Spending } from './views/Spending.tsx';
+import { SummaryPage } from './views/SummaryView.tsx';
 import { Thread } from './views/Thread.tsx';
+import { answerIdFromHash } from './assist.ts';
 import { parseThreadHash } from './discussion.ts';
 
 function useHash(): string {
@@ -243,7 +245,8 @@ export function App() {
   }
   const note = /^#\/notes\/([0-9a-f-]{36})(?:\/v\/(\d+))?$/i.exec(hash);
   const run = /^#\/runs\/([0-9a-f-]{36})$/i.exec(hash);
-  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work|drafts|settings|feedback|closing|deadline-review)(?:\/([0-9a-f-]{36}))?)?$/i.exec(hash);
+  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work|drafts|review|settings|feedback|closing|deadline-review)(?:\/([0-9a-f-]{36}))?)?$/i.exec(hash);
+  const summary = /^#\/summaries\/([0-9a-f-]{36})$/i.exec(hash);
   const thread = parseThreadHash(hash);
   const searching = isSearchHash(hash);
   const adminPage = /^#\/(people|spending|departments|domains|organisation|approvals|notifications-settings|deliveries|go-live|escalated-feedback)$/.exec(hash)?.[1];
@@ -262,10 +265,11 @@ export function App() {
   else if (isAdmin && adminPage === 'escalated-feedback') page = <EscalatedFeedback />;
   else if (hash === '#/notifications') page = <Notifications />;
   else if (searching) page = <Search hash={hash} />;
-  else if (thread) page = <Thread key={thread.threadId} projectId={thread.projectId} threadId={thread.threadId} meId={user.id} messageNo={thread.messageNo} />;
+  else if (summary) page = <SummaryPage key={summary[1]} summaryId={summary[1]} />;
+  else if (thread) page = <Thread key={thread.threadId} projectId={thread.projectId} threadId={thread.threadId} meId={user.id} messageNo={thread.messageNo} answerId={answerIdFromHash(hash)} />;
   else if (run) page = <Review runId={run[1]} meId={user.id} />;
   else if (note) page = <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} />;
-  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | 'drafts' | 'settings' | 'feedback' | 'closing' | 'deadline-review' | undefined) ?? 'overview'} itemId={project[3]} />;
+  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'feedback' | 'closing' | 'deadline-review' | undefined) ?? 'overview'} itemId={project[3]} />;
   else page = <Projects isAdmin={isAdmin} />;
 
   return (

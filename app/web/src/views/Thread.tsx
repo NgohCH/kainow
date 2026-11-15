@@ -23,18 +23,19 @@ import {
   threadReducer,
   type ThreadView,
 } from '../discussion.ts';
-import { mergeTimeline } from '../assist.ts';
+import { mayDraftSummary, mergeTimeline } from '../assist.ts';
 import { formatWhen } from '../format.ts';
 import { ThreadAnswerItem } from './AiAnswer.tsx';
 import { AnalysisStatus } from './AnalysisStatus.tsx';
 import { MeetingControls } from './Meeting.tsx';
 import { MinutesPanel, useMinutes } from './MinutesPanel.tsx';
+import { SummaryRequest } from './SummaryView.tsx';
 import { useFocusItem } from './useFocusItem.ts';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
 
 /** One discussion thread or meeting: the messages, the composer and the analysis status. */
-export function Thread({ projectId, threadId, meId, messageNo }: { projectId: string; threadId: string; meId: string; messageNo: number | null }) {
+export function Thread({ projectId, threadId, meId, messageNo, answerId = null }: { projectId: string; threadId: string; meId: string; messageNo: number | null; answerId?: string | null }) {
   const [first, setFirst] = useState<ThreadView | null>(null);
   const [project, setProject] = useState<Project | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -55,10 +56,10 @@ export function Thread({ projectId, threadId, meId, messageNo }: { projectId: st
       </main>
     );
   }
-  return <ThreadBody key={threadId} first={first} projectId={projectId} meId={meId} messageNo={messageNo} project={project} />;
+  return <ThreadBody key={threadId} first={first} projectId={projectId} meId={meId} messageNo={messageNo} answerId={answerId} project={project} />;
 }
 
-function ThreadBody({ first, projectId, meId, messageNo, project }: { first: ThreadView; projectId: string; meId: string; messageNo: number | null; project: Project | null }) {
+function ThreadBody({ first, projectId, meId, messageNo, answerId, project }: { first: ThreadView; projectId: string; meId: string; messageNo: number | null; answerId: string | null; project: Project | null }) {
   const roles: string[] = project?.myRoles ?? [];
   const memberships = project?.memberships ?? [];
   const canRestore = roles.some((r) => r === 'pm' || r === 'deputy_pm');
@@ -124,6 +125,21 @@ function ThreadBody({ first, projectId, meId, messageNo, project }: { first: Thr
 
   // A link from search (`?m=<no>`) scrolls to the message and focuses it.
   useFocusItem(messageNo === null ? undefined : String(messageNo), true);
+  // A link from the review list (`?answer=<id>`) scrolls to the shared answer and focuses it, once it is in the thread.
+  const answerThere = answerId !== null && (t.aiAnswers ?? []).some((a) => a.id === answerId);
+  useEffect(() => {
+    if (!answerId || !answerThere) return;
+    const el = document.getElementById(`answer-${answerId}`);
+    if (!el) return;
+    el.scrollIntoView({ block: 'center' });
+    el.focus({ preventScroll: true });
+    el.classList.add('found');
+    const timer = window.setTimeout(() => el.classList.remove('found'), 3000);
+    return () => {
+      window.clearTimeout(timer);
+      el.classList.remove('found');
+    };
+  }, [answerId, answerThere]);
 
   async function post(e: FormEvent) {
     e.preventDefault();
@@ -192,6 +208,7 @@ function ThreadBody({ first, projectId, meId, messageNo, project }: { first: Thr
           onAudienceChanged={() => void reloadThread()}
         />
       )}
+      {meeting && t.audience.mode === 'restricted' && mayDraftSummary(roles, open) && <SummaryRequest target={{ kind: 'thread', id: t.id }} memberships={memberships} />}
       {t.state === 'ended' && <p className="meta">This meeting has ended, so no more messages can be posted.</p>}
       {!t.canPost && t.state !== 'ended' && <p className="meta">You can read this thread but not write in it.</p>}
       {pollError && <p role="status" className="warn">Could not refresh just now: {pollError}. Trying again.</p>}
