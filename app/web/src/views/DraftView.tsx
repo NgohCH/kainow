@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type KeyboardEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError } from '../api.ts';
 import {
   diffWord,
@@ -47,6 +47,10 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
   const [comparing, setComparing] = useState(false);
   const heading = useRef<HTMLHeadingElement>(null);
   const prevCount = useRef(0);
+  const pending = useRef(new Set<number>());
+  const editButton = useRef<HTMLButtonElement>(null);
+  const regenButton = useRef<HTMLButtonElement>(null);
+  const focusLater = (r: { current: HTMLElement | null }) => requestAnimationFrame(() => r.current?.focus());
 
   const apply = useCallback((d: DraftView) => {
     setDraft(d);
@@ -56,16 +60,17 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
   const load = useCallback(async () => {
     try {
       apply(await getDraft(draftId));
-      setError(null);
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) setGone(true);
       else setError(errText(e));
     }
   }, [draftId, apply]);
+  useEffect(() => void load(), [load]);
+  // The heading takes focus once, when the draft first arrives.
+  const arrived = draft !== null;
   useEffect(() => {
-    void load();
-    heading.current?.focus();
-  }, [load]);
+    if (arrived) heading.current?.focus();
+  }, [arrived]);
 
   const active = draft !== null && isDraftActive(draft);
   useEffect(() => {
@@ -87,12 +92,15 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
 
   const ensureText = useCallback(
     async (no: number) => {
-      if (texts[no] !== undefined) return;
+      if (texts[no] !== undefined || pending.current.has(no)) return;
+      pending.current.add(no);
       try {
         const v = await getDraftVersion(draftId, no);
         setTexts((t) => ({ ...t, [no]: v.body }));
       } catch (e) {
         setError(errText(e));
+      } finally {
+        pending.current.delete(no);
       }
     },
     [draftId, texts],
@@ -142,6 +150,7 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
       apply(await editDraft(draft!.id, text, base));
       setShown(null);
       setEditing(false);
+      focusLater(editButton);
       setStale(false);
       setInfo('Your edit was saved as a new version');
     } catch (e) {
@@ -157,6 +166,13 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
     } finally {
       setBusy(false);
     }
+  }
+
+  function closeConfirm(e: KeyboardEvent) {
+    if (e.key !== "Escape") return;
+    e.stopPropagation();
+    setConfirming(false);
+    focusLater(regenButton);
   }
 
   function startEdit() {
@@ -221,8 +237,10 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
 
       {!editing && (
         <div className="actions">
-          {draft.canEdit && <button type="button" onClick={startEdit}>Edit</button>}
-          {draft.canRegenerate && <button type="button" disabled={busy} onClick={() => setConfirming(true)}>Regenerate</button>}
+          {draft.canEdit && (
+            <button type="button" ref={editButton} disabled={!isNewest} aria-describedby={isNewest ? undefined : "edit-old"} onClick={startEdit}>Edit</button>
+          )}
+          {draft.canRegenerate && <button type="button" ref={regenButton} disabled={busy} onClick={() => setConfirming(true)}>Regenerate</button>}
           {draft.canShare && <button type="button" disabled={busy} onClick={() => void act(() => shareDraft(draft.id), 'This draft is shared')}>Share</button>}
           {draft.canUnshare && <button type="button" disabled={busy} onClick={() => void act(() => unshareDraft(draft.id), 'This draft is no longer shared')}>Unshare</button>}
           {shownVersion && <a href={draftDownloadUrl(draft.id, shownNo)} download>Download Markdown (version {shownNo})</a>}
@@ -231,13 +249,15 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
         </div>
       )}
 
+      {draft.canEdit && !isNewest && !editing && <p id="edit-old" className="meta">Editing starts from the newest version. Choose it in the version list to edit.</p>}
+
       {confirming && (
-        <div className="panel" role="alertdialog" aria-labelledby="regen-title" aria-describedby="regen-warning">
+        <div className="panel" role="alertdialog" onKeyDown={closeConfirm} aria-labelledby="regen-title" aria-describedby="regen-warning">
           <p id="regen-title"><strong>Make a new AI version?</strong></p>
           <p id="regen-warning" className="warn">{REGENERATE_WARNING}</p>
           <div className="actions">
-            <button type="button" className="primary" autoFocus disabled={busy} onClick={() => { setConfirming(false); void act(() => regenerateDraft(draft.id), 'A new AI version was requested'); }}>Make a new version</button>
-            <button type="button" onClick={() => setConfirming(false)}>Cancel</button>
+            <button type="button" className="primary" autoFocus disabled={busy} onClick={() => { setConfirming(false); focusLater(regenButton); void act(() => regenerateDraft(draft.id), 'A new AI version was requested'); }}>Make a new version</button>
+            <button type="button" onClick={() => { setConfirming(false); focusLater(regenButton); }}>Cancel</button>
           </div>
         </div>
       )}
@@ -252,7 +272,7 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
           <span className="hint">{text.length.toLocaleString('en')} / {MAX_BODY.toLocaleString('en')} characters. Do not paste passwords or keys. Saving makes a new version marked as edited by you.</span>
           <div className="actions">
             <button className="primary" disabled={busy || text.trim() === ''}>Save as a new version</button>
-            <button type="button" onClick={() => { setEditing(false); setStale(false); setError(null); }}>Cancel</button>
+            <button type="button" onClick={() => { setEditing(false); focusLater(editButton); setStale(false); setError(null); }}>Cancel</button>
           </div>
         </form>
       )}
@@ -278,7 +298,7 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
           ) : diff.every((l) => l.op === 'same') ? (
             <p className="meta">These two versions are the same.</p>
           ) : (
-            <pre className="diff" aria-label={`Changes from version ${compareA} to version ${compareB}`}>
+            <pre className="diff" role="group" aria-label={`Changes from version ${compareA} to version ${compareB}`}>
               {diff.map((l, i) => (
                 <span key={i} className={`diff-${l.op}`}>
                   <span className="visually-hidden">{diffWord(l.op)}: </span>

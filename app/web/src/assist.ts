@@ -161,11 +161,17 @@ export type Block =
   /** Footnote definitions (the Sources list of a draft): `[^P1]: [place](#/link)`; the link is kept only if it stays inside the app. */
   | { t: 'defs'; items: Array<{ marker: string; label: string; href: string | null }> };
 
-const INLINE = /(\*\*[^*\n]+\*\*)|(`[^`\n]+`)|(\[\s*P\d+(?:\s*[,;]\s*P\d+)*\s*\])|(\[\^P\d+\])|(\[(?:\\.|[^\]\\\n])+\]\(#\/[^)\s]*\))/gi;
+const INLINE = /(\*\*[^*\n]+\*\*)|(`[^`\n]+`)|(\[\s*P\d+(?:\s*[,;]\s*P\d+)*\s*\])|(\[\^P\d+\])|(\[(?:\\.|[^\]\\\n]){1,200}\]\(#\/[^)\s]{0,500}\))/gi;
 
 const FN_DEF = /^\s{0,3}\[\^(P\d+)\]:\s*(.*)$/i;
 const FN_LINK = /^\[((?:\\.|[^\]\\])*)\]\(([^)\s]*)\)$/;
-const TABLE_RULE = /^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$/;
+/** `| --- | :-: |`: checked cell by cell on the trimmed line, so a long run of spaces or dashes cannot make it slow. */
+function isTableRule(line: string): boolean {
+  let t = line.trim();
+  if (t.startsWith('|')) t = t.slice(1);
+  if (t.endsWith('|')) t = t.slice(0, -1);
+  return t.split('|').every((c) => /^:?-+:?$/.test(c.trim()));
+}
 
 /** The cells of one table row; `\|` is a pipe inside a cell. */
 function splitRow(line: string): Inline[][] {
@@ -187,7 +193,7 @@ function splitRow(line: string): Inline[][] {
 }
 
 const isTableStart = (lines: string[], i: number): boolean =>
-  lines[i].includes('|') && i + 1 < lines.length && lines[i + 1].includes('-') && TABLE_RULE.test(lines[i + 1]) && splitRow(lines[i]).length === splitRow(lines[i + 1]).length;
+  lines[i].includes('|') && i + 1 < lines.length && lines[i + 1].includes('-') && isTableRule(lines[i + 1]) && splitRow(lines[i]).length === splitRow(lines[i + 1]).length;
 
 /** `[P1, P4]` becomes marker tokens P1 and P4 between plain separators; `**bold**` and `code` are kept. */
 export function parseInline(text: string): Inline[] {
@@ -405,7 +411,8 @@ const BAD_PERIOD = 'A period needs two dates, the first not after the second.';
 /** What is wrong with the form, shown before anything is sent; null when it can be sent. */
 export function newDraftProblem(f: NewDraftForm): string | null {
   const title = f.title.trim().length;
-  const brief = f.brief.trim().length;
+  // The brief box is hidden for the record kinds, so whatever was typed there before is ignored.
+  const brief = isRecordKind(f.kind) ? 0 : f.brief.trim().length;
   const free = f.kind === 'free_form';
   if (title > MAX_TITLE || (free && title < 1)) return `A title must be 1 to ${MAX_TITLE} characters.`;
   if (brief > MAX_BRIEF || (free && brief < 1)) return 'A brief must be 1 to 2,000 characters.';
@@ -421,7 +428,7 @@ export function newDraftProblem(f: NewDraftForm): string | null {
 export function newDraftBody(f: NewDraftForm): NewDraft {
   const body: NewDraft = { kind: f.kind };
   if (f.title.trim() !== '') body.title = f.title.trim();
-  if (f.brief.trim() !== '') body.brief = f.brief.trim();
+  if (!isRecordKind(f.kind) && f.brief.trim() !== '') body.brief = f.brief.trim();
   if (f.periodFrom !== '' && f.periodTo !== '') {
     body.periodFrom = f.periodFrom;
     body.periodTo = f.periodTo;

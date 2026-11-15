@@ -205,3 +205,18 @@ test('footnote references, definitions and tables read as text tokens', () => {
   // A line that merely has a pipe is not a table.
   assert.equal(parseMarkdown('a | b').some((b) => b.t === 'table'), false);
 });
+
+test('a hidden brief is ignored once the kind is a record kind', () => {
+  const f = { ...emptyDraftForm('status'), brief: 'x'.repeat(5000) };
+  assert.equal(newDraftProblem(f), null);
+  assert.equal(newDraftBody({ ...f, brief: 'left over' }).brief, undefined);
+});
+
+test('adversarial Markdown lines tokenize quickly', () => {
+  const lines = ['['.repeat(100_000), `[${'a'.repeat(99_990)}`, `|a|\n|${' '.repeat(99_990)}`, `|${'-'.repeat(50_000)}${' '.repeat(49_990)}x`, '[a]('.repeat(20_000), '**a'.repeat(33_000), ' '.repeat(99_990) + '|'];
+  for (const l of lines) {
+    const t = Date.now();
+    parseMarkdown(l);
+    assert.ok(Date.now() - t < 200, `slow: ${l.slice(0, 12)}`);
+  }
+});
