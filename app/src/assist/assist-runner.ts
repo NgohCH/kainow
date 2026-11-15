@@ -131,6 +131,10 @@ export async function questionInput(db: Db, request: AssistRequest, material: Re
  */
 export async function completeQuestion(db: PoolClient, request: AssistRequest, output: unknown, at: Date): Promise<void> {
   const o = output as QuestionOutput;
+  // Thread row before answer row: the order moderation takes them (it locks the thread, then the removal hook locks
+  // answers), so a re-answer finishing while a message is hidden cannot deadlock with it. The answer text is written
+  // whatever its review_state; a withdrawn answer stays withdrawn and is never shared (the update below needs 'none').
+  if (request.scope === 'thread') await db.query(`SELECT 1 FROM discussion_threads WHERE id = $1 FOR NO KEY UPDATE`, [request.scopeThreadId]);
   const done = await db.query(`UPDATE ai_answers SET answer_markdown = $2, not_found = $3 WHERE request_id = $1`, [request.id, o.answer_markdown, o.not_found]);
   if (done.rowCount !== 1) throw new Error(`assist ${request.id}: no answer row to complete`);
   if (request.scope !== 'thread' || o.not_found) return;

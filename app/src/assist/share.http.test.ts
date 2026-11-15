@@ -275,9 +275,13 @@ describe('sharing AI answers into threads', { skip: SKIP_NO_DB }, () => {
     assert.equal((await ben.request('GET', `/threads/${closedDoor}`)).status, 404);
     assert.deepEqual((await aiAnswers(ada, closedDoor)).map((i) => i.id), [b.body.id]);
 
-    // Per-viewer recheck: once Ben can no longer read the note, he sees the notice and no content.
+    // Per-viewer recheck: narrowing the note sends the answer to review (Task 7); once the PM clears it, Ben, who can
+    // no longer read the note, sees the notice and no content, while Ada still sees the answer.
     const plant = (await t.pool.query(`SELECT id FROM sources WHERE title = 'Plant room'`)).rows[0].id;
     await restrictNote(plant, [ids.ada]);
+    assert.equal((await aiAnswers(ben)).find((i) => i.id === a.id), undefined, 'in review: hidden from members');
+    const cleared = await pm.request('POST', `/assist-review/answer/${a.id}/clear`, { reason: 'Fine for the thread; others get the notice' });
+    assert.equal(cleared.status, 200, JSON.stringify(cleared.body));
     const after = (await aiAnswers(ben)).find((i) => i.id === a.id) as Record<string, unknown>;
     assert.equal(after.answerMarkdown, null);
     assert.deepEqual(after.sources, []);

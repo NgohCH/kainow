@@ -1,5 +1,6 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
+import { onMaterialRemoved } from '../assist/removal';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID, uuidv7 } from '../common/uuid7';
@@ -25,6 +26,16 @@ export const NAMED_OUTSIDE = 'Only people in this project can be named.';
 const REASON_REQUIRED = 'A reason is required (up to 500 characters).';
 
 const sameSet = (a: string[], b: string[]) => a.length === b.length && a.every((x) => b.includes(x));
+
+/**
+ * Whether a change takes access away from anyone by the audience itself: Project-wide becoming Restricted, or a named
+ * person removed from a Restricted audience. Adding named people, or Restricted becoming Project-wide, does not.
+ */
+export function narrows(from: Pick<AudienceRow, 'mode' | 'namedUserIds'>, to: AudienceChange): boolean {
+  if (to.mode === 'project') return false;
+  if (from.mode === 'project') return true;
+  return from.namedUserIds.some((id) => !to.namedUserIds.includes(id));
+}
 
 /** The audience of a source or thread (spec 6): loading it, checking it, previewing and recording changes to it. */
 @Injectable()
@@ -204,6 +215,9 @@ export class AudienceService {
         subjectId: audienceId,
         detail: { from: locked.mode, to: change.mode, named: change.namedUserIds.length, unchanged: locked.mode === change.mode && sameSet(locked.namedUserIds, change.namedUserIds) },
       });
+      // Narrowing (Project-wide to Restricted, or a named person removed) sends AI answers and drafts built on material
+      // with this audience through the removal hook (4b spec 5.5), in this transaction. Widening never does.
+      if (narrows(locked, change)) await onMaterialRemoved(client, { audienceId }, 'audience_tightened', at);
       await client.query('COMMIT');
       return { ...locked, mode: change.mode, namedUserIds: [...change.namedUserIds] };
     } catch (err) {

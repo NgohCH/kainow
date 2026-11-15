@@ -9,6 +9,7 @@ import { todayUtc8 } from '../projects/membership';
 import { indexVersion } from '../assist/passage-index';
 import { formatMessageTime } from '../assist/passages';
 import { type ThreadAnswerView, threadAnswers } from '../assist/questions.service';
+import { onMaterialRemoved } from '../assist/removal';
 import { sha256Hex } from '../notes/text';
 import { type AudienceChange, type AudienceMode, type AudienceRow, type Person, RESTRICTED_ROLES, audienceVisibleSql, parseAudienceChange } from './audience';
 import { MINUTES_LABEL } from '../notes/notes.service';
@@ -411,6 +412,10 @@ export class ThreadsService {
         `INSERT INTO discussion_events (id, thread_id, message_id, actor_id, action, reason, at) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [uuidv7(at.getTime()), m.t.id, messageId, user.id, rule.event, reason, at],
       );
+      // AI answers and drafts built on this message (4b spec 5.5): private ones withdrawn, shared ones to review. Same
+      // transaction; the thread and message rows are already locked, and the hook locks answers and drafts after them.
+      // Unhiding or restoring brings nothing back.
+      if (rule.to === 'hidden' || rule.to === 'deleted') await onMaterialRemoved(db, { messageIds: [messageId] }, rule.to, at);
     });
     return (await this.messageViews(this.pool, user.id, 'm.id = $1', [messageId]))[0];
   }

@@ -233,14 +233,22 @@ describe('AI questions', { skip: SKIP_NO_DB }, () => {
   });
 
   test('answer hidden from me after my access to a cited source ends', async () => {
-    const mine = await ask(ada, QUESTION);
-    assert.equal(await run(mine.body.id), 'succeeded');
-    assert.equal((await ada.request('GET', `/questions/${mine.body.id}`)).body.answerMarkdown, 'The pump service is on Thursday [P1].');
-
+    // Ada reads the Restricted note only through a Deputy role that expires; the member role stays. Her role ending is
+    // not an audience change, so the answer is not withdrawn: the per-viewer recheck alone hides its content.
+    await t.pool.query(
+      `INSERT INTO memberships (id, project_id, user_id, role, starts_on, expires_on) VALUES ($1, $2, $3, 'deputy_pm', '2026-11-01', '2026-11-09')`,
+      [uuidv7(), project, ids.ada],
+    );
     const audienceId = (await t.pool.query(`SELECT audience_id FROM sources WHERE id = $1`, [noteId])).rows[0].audience_id;
     const narrowed = await pm.request('PUT', `/audiences/${audienceId}`, { mode: 'restricted', namedUserIds: [], reason: 'Leaders only from now on' });
     assert.equal(narrowed.status, 200, JSON.stringify(narrowed.body));
+    const mine = await ask(ada, QUESTION);
+    assert.equal(mine.body.sources.length, 1, 'the Restricted note was found through the Deputy role');
+    assert.equal(await run(mine.body.id), 'succeeded');
+    assert.equal((await ada.request('GET', `/questions/${mine.body.id}`)).body.answerMarkdown, 'The pump service is on Thursday [P1].');
 
+    t.clock.advanceSeconds(2 * 24 * 3600);
+    ada = await t.signIn('ada@example.org');
     const r = await ada.request('GET', `/questions/${mine.body.id}`);
     assert.equal(r.status, 200);
     assert.equal(r.body.answerMarkdown, null);

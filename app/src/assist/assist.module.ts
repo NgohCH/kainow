@@ -3,6 +3,8 @@ import { ProjectsModule } from '../projects/projects.module';
 import { ASSIST_QUEUE, type AssistQueue, PgBossAssistQueue } from './queue';
 import { QuestionsController } from './questions.controller';
 import { QuestionsService } from './questions.service';
+import { ReviewController } from './review.controller';
+import { ReviewService } from './review.service';
 
 /** AI questions, report drafts and summaries (sub-project 4b). The AI part runs on the worker (AssistRunner). */
 @Module({})
@@ -15,8 +17,8 @@ export class AssistModule {
     return {
       module: AssistModule,
       imports: [ProjectsModule],
-      controllers: [QuestionsController],
-      providers: [QuestionsService, ...queueProviders],
+      controllers: [QuestionsController, ReviewController],
+      providers: [QuestionsService, ReviewService, ...queueProviders],
       exports: [QuestionsService],
     };
   }

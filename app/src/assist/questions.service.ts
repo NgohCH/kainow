@@ -445,6 +445,15 @@ export class QuestionsService {
     return { row, ctx };
   }
 
+  /**
+   * Locks the chosen thread row (if the id names one) before anything locks the answer row: threads before answers is
+   * the order moderation and its removal hook use (spec 5.5), so sharing cannot deadlock with hiding a message.
+   * Only a lock: whether the person may see or post in the thread is checked by postableThread.
+   */
+  private async lockThreadFirst(db: PoolClient, raw: unknown): Promise<void> {
+    if (typeof raw === 'string' && UUID.test(raw)) await db.query(`SELECT 1 FROM discussion_threads WHERE id = $1 FOR NO KEY UPDATE`, [raw]);
+  }
+
   /** A thread or meeting in the project that the person can read and post in (open; Draft, Planned or Active). */
   private async postableThread(db: PoolClient, user: AuthUser, ctx: ProjectContext, raw: unknown): Promise<Target> {
     if (typeof raw !== 'string' || !UUID.test(raw)) throw new BadRequestException(CHOOSE_THREAD);
@@ -471,6 +480,7 @@ export class QuestionsService {
    */
   async share(user: AuthUser, requestId: string, body: { threadId: unknown }): Promise<AnswerView> {
     const ctx = await this.inTransaction(async (db) => {
+      await this.lockThreadFirst(db, body.threadId);
       const { row, ctx } = await this.ownAnswer(db, user, requestId);
       const target = await this.postableThread(db, user, ctx, body.threadId);
       if (row.visibility === 'shared') throw new ConflictException('This answer is already shared.');
@@ -513,6 +523,7 @@ export class QuestionsService {
    */
   async reanswer(user: AuthUser, requestId: string, body: { threadId: unknown }): Promise<AnswerView> {
     const { id, queue, ctx } = await this.inTransaction(async (db) => {
+      await this.lockThreadFirst(db, body.threadId);
       const { row, ctx } = await this.ownAnswer(db, user, requestId);
       const target = await this.postableThread(db, user, ctx, body.threadId);
       const question = (await db.query<{ question: string }>(`SELECT question FROM ai_answers WHERE request_id = $1`, [row.requestId])).rows[0].question;
