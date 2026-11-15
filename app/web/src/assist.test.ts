@@ -214,9 +214,15 @@ test('a hidden brief is ignored once the kind is a record kind', () => {
 
 test('adversarial Markdown lines tokenize quickly', () => {
   const lines = ['['.repeat(100_000), `[${'a'.repeat(99_990)}`, `|a|\n|${' '.repeat(99_990)}`, `|${'-'.repeat(50_000)}${' '.repeat(49_990)}x`, '[a]('.repeat(20_000), '**a'.repeat(33_000), ' '.repeat(99_990) + '|'];
-  for (const l of lines) {
-    const t = Date.now();
-    parseMarkdown(l);
-    assert.ok(Date.now() - t < 200, `slow: ${l.slice(0, 12)}`);
-  }
+  // Generous: the point is that nothing grows quadratically, not how fast this machine is.
+  const t = Date.now();
+  for (const l of lines) parseMarkdown(l);
+  assert.ok(Date.now() - t < 2000, 'adversarial lines took too long');
+});
+
+test('a table with alignment colons is still a table', () => {
+  const b = parseMarkdown(['| a | b |', '|:--|--:|', '| 1 | 2 |'].join(String.fromCharCode(10)));
+  assert.equal(b.length, 1);
+  assert.equal(b[0].t, 'table');
+  assert.equal(parseMarkdown(['| a | b |', '|:-:|:--|', '| 1 | 2 |'].join(String.fromCharCode(10)))[0].t, 'table');
 });

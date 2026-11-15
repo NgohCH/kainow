@@ -31,7 +31,8 @@ const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something 
 export function DraftDetail({ projectId, draftId }: { projectId: string; draftId: string }) {
   const [draft, setDraft] = useState<DraftView | null>(null);
   const [gone, setGone] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null); // from something the person did
+  const [loadError, setLoadError] = useState<string | null>(null); // from loading or polling; cleared by the next good load
   const [info, setInfo] = useState('');
   const [tick, setTick] = useState(0);
   const [shown, setShown] = useState<number | null>(null); // the version on screen; null follows the newest
@@ -50,6 +51,7 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
   const pending = useRef(new Set<number>());
   const editButton = useRef<HTMLButtonElement>(null);
   const regenButton = useRef<HTMLButtonElement>(null);
+  const focusAfterBusy = useRef(false);
   const focusLater = (r: { current: HTMLElement | null }) => requestAnimationFrame(() => r.current?.focus());
 
   const apply = useCallback((d: DraftView) => {
@@ -60,9 +62,10 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
   const load = useCallback(async () => {
     try {
       apply(await getDraft(draftId));
+      setLoadError(null);
     } catch (e) {
       if (e instanceof ApiError && e.status === 404) setGone(true);
-      else setError(errText(e));
+      else setLoadError(errText(e));
     }
   }, [draftId, apply]);
   useEffect(() => void load(), [load]);
@@ -85,6 +88,13 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
     if (prevCount.current > 0 && draft.versions.length > prevCount.current) setInfo('A new version of this draft is ready');
     prevCount.current = draft.versions.length;
   }, [draft]);
+
+  // After a new version is requested the button is disabled while the request runs; focus returns once it is done (to the heading if the button is gone).
+  useEffect(() => {
+    if (busy || !focusAfterBusy.current) return;
+    focusAfterBusy.current = false;
+    requestAnimationFrame(() => (regenButton.current ?? heading.current)?.focus());
+  }, [busy]);
 
   const newest = draft?.versions[draft.versions.length - 1];
   const shownNo = shown ?? newest?.no ?? 0;
@@ -123,7 +133,7 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
   }, [body]);
 
   if (gone) return <p className="empty">This draft was not found.</p>;
-  if (!draft) return error ? <p role="alert" className="error">{error}</p> : <p className="loading">Loading</p>;
+  if (!draft) return error || loadError ? <p role="alert" className="error">{error ?? loadError}</p> : <p className="loading">Loading</p>;
 
   const isNewest = shownNo === newest?.no;
   const idPrefix = `draft-${draft.id}-${shownNo}`;
@@ -206,7 +216,7 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
       <div className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{info}</div>
       {active && <p className="meta" role="status">{draft.status === 'queued' ? 'Waiting to start' : 'Being drafted'}</p>}
       {draft.notice && <p className="warn" role="alert">{draft.notice}</p>}
-      {error && <p role="alert" className="error">{error}</p>}
+      {(error ?? loadError) && <p role="alert" className="error">{error ?? loadError}</p>}
 
       {draft.versions.length > 0 && (
         <>
@@ -256,7 +266,7 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
           <p id="regen-title"><strong>Make a new AI version?</strong></p>
           <p id="regen-warning" className="warn">{REGENERATE_WARNING}</p>
           <div className="actions">
-            <button type="button" className="primary" autoFocus disabled={busy} onClick={() => { setConfirming(false); focusLater(regenButton); void act(() => regenerateDraft(draft.id), 'A new AI version was requested'); }}>Make a new version</button>
+            <button type="button" className="primary" autoFocus disabled={busy} onClick={() => { setConfirming(false); focusAfterBusy.current = true; void act(() => regenerateDraft(draft.id), 'A new AI version was requested'); }}>Make a new version</button>
             <button type="button" onClick={() => { setConfirming(false); focusLater(regenButton); }}>Cancel</button>
           </div>
         </div>
