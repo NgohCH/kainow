@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
+import { answerAccess, loadAnswerRow } from '../assist/questions.service';
 import { writeAudit } from '../audit/audit';
 import { can } from '../auth/permissions';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -11,7 +12,7 @@ import { AudienceService } from './audience.service';
 import { refuseSecrets } from './messages';
 import { ThreadsService } from './threads.service';
 
-export const TARGET_KINDS = ['minutes_draft', 'analysis_run', 'proposal'] as const;
+export const TARGET_KINDS = ['minutes_draft', 'analysis_run', 'proposal', 'answer', 'report_version', 'summary_version'] as const;
 export const CATEGORIES = ['incorrect', 'missed_item', 'misleading', 'other'] as const;
 export const STATUSES = ['open', 'reviewed', 'closed'] as const;
 type TargetKind = (typeof TARGET_KINDS)[number];
@@ -85,6 +86,16 @@ export class FeedbackService {
 
   /** Finds the target inside the project and applies the reading rule of its thread or source; anything else is 404. */
   private async assertTargetReadable(db: PoolClient, user: AuthUser, projectId: string, kind: TargetKind, id: string): Promise<void> {
+    if (kind === 'answer') {
+      // The answer's own visibility (AI assist spec 5.3, 5.5): requester or thread, review state, every source still readable.
+      const row = await loadAnswerRow(db, id);
+      if (!row || row.projectId !== projectId) throw new NotFoundException();
+      if ((await answerAccess(db, await this.access.load(projectId, user, db), row)) !== 'readable') throw new NotFoundException();
+      if (row.answerMarkdown === null) throw new BadRequestException('Only AI output can be flagged; this question has no AI answer.');
+      return;
+    }
+    // Report and summary versions have no readers yet (AI assist Tasks 8 and 9 add their visibility rules).
+    if (kind === 'report_version' || kind === 'summary_version') throw new NotFoundException();
     if (kind === 'proposal') {
       const { rows } = await db.query(
         `SELECT sv.source_id AS "sourceId", s.project_id AS "projectId"
@@ -223,7 +234,7 @@ export class FeedbackService {
 
   /**
    * The Administrator's list: project, category, model, run reference, time and the PM's note, nothing else.
-   * The run is the analysis run (analysis_run, minutes_draft) or the extraction run (proposal). The model is the one
+   * The run is the analysis run (analysis_run, minutes_draft), the extraction run (proposal) or the AI request (answer). The model is the one
    * the extraction run recorded, else the one the spend ledger charged for that run; null when neither says.
    */
   async adminList(user: AuthUser): Promise<{ feedback: AdminFeedbackRow[] }> {
@@ -240,11 +251,13 @@ export class FeedbackService {
            SELECT CASE f.target_kind
                     WHEN 'proposal' THEN (SELECT i.run_id FROM extraction_items i WHERE i.id = f.target_id)
                     WHEN 'analysis_run' THEN f.target_id
+                    WHEN 'answer' THEN f.target_id
                     ELSE (SELECT d.analysis_run_id FROM minutes_drafts d WHERE d.id = f.target_id)
                   END AS run_ref,
                   CASE f.target_kind
                     WHEN 'proposal' THEN (SELECT i.run_id FROM extraction_items i WHERE i.id = f.target_id)
                     WHEN 'analysis_run' THEN (SELECT a.extraction_run_id FROM analysis_runs a WHERE a.id = f.target_id)
+                    WHEN 'answer' THEN NULL
                     ELSE (SELECT a.extraction_run_id FROM minutes_drafts d JOIN analysis_runs a ON a.id = d.analysis_run_id WHERE d.id = f.target_id)
                   END AS extraction_ref
          ) r ON true

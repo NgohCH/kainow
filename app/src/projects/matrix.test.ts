@@ -28,6 +28,14 @@ test('the matrix holds exactly the agreed rows', () => {
     'message.moderate': ['pm,deputy_pm', 'draft,planned,active'],
     'message.restore': ['pm,deputy_pm', 'draft,planned,active,deferred,closed'],
     'feedback.review': ['pm,deputy_pm', 'draft,planned,active,deferred,closed'],
+    'assist.ask': ['participant', 'draft,planned,active'],
+    'assist.share': ['participant', 'draft,planned,active'],
+    'assist.review': ['pm,deputy_pm', 'draft,planned,active,deferred,closed'],
+    'report.request': ['participant', 'draft,planned,active'],
+    'report.manage': ['pm,deputy_pm', 'draft,planned,active'],
+    'summary.request': ['pm,deputy_pm,owner,sponsor', 'draft,planned,active'],
+    'summary.approve': ['pm,owner,sponsor', 'draft,planned,active'],
+    'summary.review': ['pm,owner,sponsor', 'draft,planned,active,deferred,closed'],
   });
   assert.equal(PROJECT_MATRIX['proposal.review'].refusal, 'Only the Owner or a Sponsor can approve or reject proposals, and only while the project is Planned or Active.');
 });
@@ -84,9 +92,45 @@ test('role managers follow the accepted matrix for every target, manager and sta
   assert.deepEqual(locked, { allowed: false, reason: 'Only the Project Manager, the Owner or a Sponsor can invite for the Member role, and not while the project is Deferred or Closed.' });
 });
 
-test('a grant allows reading only', async () => {
+test('a grant allows reading, and asking the AI privately', async () => {
   const { GRANT_ACTIONS } = await import('./matrix');
-  assert.deepEqual(GRANT_ACTIONS, ['project.view', 'note.view']);
+  assert.deepEqual(GRANT_ACTIONS, ['project.view', 'note.view', 'assist.ask']);
+});
+
+test('AI assist actions: participants ask, share and request reports; leaders review; summaries for accountable roles', () => {
+  const ok = (action: ProjectAction, role: ProjectRole, status: 'draft' | 'planned' | 'active' | 'deferred' | 'closed') => decide({ action, roles: [role], status }).allowed;
+  // assist.ask
+  assert.equal(ok('assist.ask', 'member', 'draft'), true);
+  assert.equal(ok('assist.ask', 'member', 'active'), true);
+  assert.equal(ok('assist.ask', 'pm', 'deferred'), false);
+  assert.equal(ok('assist.ask', 'owner', 'closed'), false);
+  // assist.share
+  assert.equal(ok('assist.share', 'member', 'planned'), true);
+  assert.equal(ok('assist.share', 'member', 'closed'), false);
+  // assist.review: PM and Deputy, in every state (protective)
+  assert.equal(ok('assist.review', 'pm', 'closed'), true);
+  assert.equal(ok('assist.review', 'deputy_pm', 'deferred'), true);
+  assert.equal(ok('assist.review', 'owner', 'active'), false);
+  assert.equal(ok('assist.review', 'member', 'active'), false);
+  // report.request and report.manage
+  assert.equal(ok('report.request', 'member', 'active'), true);
+  assert.equal(ok('report.request', 'pm', 'deferred'), false);
+  assert.equal(ok('report.manage', 'deputy_pm', 'active'), true);
+  assert.equal(ok('report.manage', 'sponsor', 'active'), false);
+  assert.equal(ok('report.manage', 'pm', 'closed'), false);
+  // summary.request: PM, Deputy, Owner, Sponsor
+  assert.equal(ok('summary.request', 'deputy_pm', 'draft'), true);
+  assert.equal(ok('summary.request', 'sponsor', 'active'), true);
+  assert.equal(ok('summary.request', 'member', 'active'), false);
+  assert.equal(ok('summary.request', 'owner', 'deferred'), false);
+  // summary.approve: PM, Owner, Sponsor (not the Deputy)
+  assert.equal(ok('summary.approve', 'owner', 'active'), true);
+  assert.equal(ok('summary.approve', 'deputy_pm', 'active'), false);
+  assert.equal(ok('summary.approve', 'pm', 'closed'), false);
+  // summary.review: PM, Owner, Sponsor in every state
+  assert.equal(ok('summary.review', 'sponsor', 'closed'), true);
+  assert.equal(ok('summary.review', 'deputy_pm', 'active'), false);
+  assert.equal(ok('summary.review', 'member', 'deferred'), false);
 });
 
 test('discussion actions: members post, leaders moderate, restore and feedback review work in every state', () => {
