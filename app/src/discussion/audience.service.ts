@@ -16,10 +16,12 @@ type Db = Pool | PoolClient;
 export interface SourceAccessRow {
   id: string;
   projectId: string;
-  kind: 'notes' | 'minutes' | 'discussion';
+  kind: 'notes' | 'minutes' | 'discussion' | 'summary';
   publication: 'published' | 'submitted' | 'returned';
   submittedBy: string | null;
   audience: AudienceRow;
+  /** For a `summary` source, its summary's state (AI assist spec 7.2, 7.3); null otherwise. */
+  summaryState?: string | null;
 }
 
 export const NAMED_OUTSIDE = 'Only people in this project can be named.';
@@ -86,6 +88,8 @@ export class AudienceService {
    * holding PM, Deputy, Owner or Sponsor today, whatever audience is intended (spec 5.4).
    */
   canSeeSource(ctx: ProjectContext, user: AuthUser, row: SourceAccessRow): boolean {
+    // A shareable summary is readable only while approved (Access review required still shows it).
+    if (row.kind === 'summary' && row.summaryState !== 'approved' && row.summaryState !== 'review_required') return false;
     if (row.publication === 'published') return inAudience(ctx, row.audience);
     if (!canReadContent(ctx)) return false;
     return row.submittedBy === user.id || ctx.roles.some((r) => RESTRICTED_ROLES.includes(r));
@@ -99,7 +103,9 @@ export class AudienceService {
     const projectId = await this.access.projectOfSource(sourceId, db);
     const ctx = await this.access.authorize(user, 'note.view', projectId, db);
     const { rows } = await db.query(
-      `SELECT id, project_id AS "projectId", kind, publication, submitted_by AS "submittedBy", audience_id AS "audienceId" FROM sources WHERE id = $1`,
+      `SELECT s.id, s.project_id AS "projectId", s.kind, s.publication, s.submitted_by AS "submittedBy", s.audience_id AS "audienceId",
+              (SELECT sm.state FROM summaries sm WHERE sm.id = s.summary_id) AS "summaryState"
+         FROM sources s WHERE s.id = $1`,
       [sourceId],
     );
     if (!rows[0]) throw new NotFoundException();

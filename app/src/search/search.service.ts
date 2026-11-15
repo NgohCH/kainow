@@ -4,6 +4,7 @@ import type { AuthUser } from '../auth/tokens';
 import { UUID } from '../common/uuid7';
 import { activeManagerSql, audienceVisibleSql } from '../discussion/audience';
 import { PG_POOL } from '../db/database.module';
+import { summaryShownSql } from '../notes/notes.service';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { loadArchiveState } from '../projects/archive';
 import type { GrantKind } from '../projects/grants';
@@ -84,7 +85,9 @@ WITH hits AS (
      AND (d.publication IS NULL OR d.publication = 'published' OR d.submitted_by = ${user}::uuid
           OR ${activeManagerSql('d.project_id', user, '$3')})
      -- A deleted note's text and proposals are hidden (sub-project 5 quarantine adds its condition here too).
-     AND (d.kind NOT IN ('note', 'ai_proposal') OR EXISTS (SELECT 1 FROM sources s WHERE s.id = d.source_id AND s.status <> 'deleted' AND (d.kind <> 'note' OR s.kind <> 'discussion')))
+     -- An approved shareable summary is found as a note by its own audience; a draft, hidden or withdrawn one is not.
+     AND (d.kind NOT IN ('note', 'ai_proposal') OR EXISTS (SELECT 1 FROM sources s WHERE s.id = d.source_id AND s.status <> 'deleted' AND (d.kind <> 'note' OR s.kind <> 'discussion')
+          AND ${summaryShownSql('s')}))
      AND (d.kind <> 'person' OR d.ends_on IS NULL OR d.ends_on >= $3::date)
 ), best AS (
   SELECT DISTINCT ON (project_id, kind, item_id) * FROM hits

@@ -20,11 +20,17 @@ export interface NewContent {
 }
 
 interface Prepared {
-  origin: 'paste' | 'upload' | 'meeting';
+  origin: 'paste' | 'upload' | 'meeting' | 'summary';
   text: string;
   filename: string | null;
   mediaType: string | null;
   original: Buffer | null;
+}
+
+export interface SummaryLabels {
+  label: string;
+  approved: string | null;
+  from: string;
 }
 
 export interface SourceSummary {
@@ -35,13 +41,23 @@ export interface SourceSummary {
   versionCount: number;
 }
 
-/** One line of a project's notes list: published notes, and minutes published from a meeting (labelled as such). */
+/**
+ * One line of a project's notes list: published notes, minutes published from a meeting, and approved shareable
+ * summaries (each of the last two labelled as such).
+ */
 export interface ListedSource extends SourceSummary {
-  kind: 'notes' | 'minutes';
+  kind: 'notes' | 'minutes' | 'summary';
   label: string | null;
 }
 
 export const MINUTES_LABEL = 'Minutes — from meeting';
+/** A `summary` source in lists (AI assist spec 7.2). */
+export const SUMMARY_LIST_LABEL = 'Shareable summary';
+export const SUMMARY_APPROVED_LABEL = 'Summary approved for sharing';
+export const FROM_RESTRICTED_LABEL = 'From a restricted source';
+/** SQL: a `summary` source is readable only while its summary is approved (Access review required still shows it). */
+export const summaryShownSql = (s: string) =>
+  `(${s}.kind <> 'summary' OR EXISTS (SELECT 1 FROM summaries sm WHERE sm.id = ${s}.summary_id AND sm.state IN ('approved', 'review_required')))`;
 
 /** What a plain-notes submission adds to creating a source (spec 5.4). */
 export interface SubmissionInput {
@@ -57,7 +73,7 @@ export interface VersionSummary {
   id: string;
   sourceId: string;
   versionNo: number;
-  origin: 'paste' | 'upload' | 'meeting' | 'discussion';
+  origin: 'paste' | 'upload' | 'meeting' | 'discussion' | 'summary';
   filename: string | null;
   mediaType: string | null;
   charCount: number;
@@ -171,6 +187,7 @@ export class NotesService {
       );
       if (src.rowCount === 0) throw new NotFoundException();
       const row = src.rows[0];
+      if (row.kind === 'summary') throw new ConflictException('A shareable summary gets a new version only when a new version of the summary is approved.');
       if (row.kind !== 'notes') throw new ConflictException('Minutes get a new version by publishing a draft from the meeting.');
       // A returned submission is revised by its submitter alone, and goes back to the reviewers.
       const revising = row.publication === 'returned' && row.submittedBy === actorUserId;
@@ -227,9 +244,17 @@ export class NotesService {
   /**
    * Adds text as the next version of a source the caller has already locked (FOR UPDATE) inside `client`'s
    * transaction, so numbers stay gap-free. Refuses text identical to the newest version (409). With a minutes draft
-   * the version's origin is `meeting`; otherwise it is a paste. The caller writes the audit event.
+   * the version's origin is `meeting`; for an approved shareable summary it is `summary`; otherwise it is a paste.
+   * The version's passages are indexed in the same transaction. The caller writes the audit event.
    */
-  async addVersionText(client: PoolClient, sourceId: string, text: string, actorId: string, at: Date, extra: { minutesDraftId?: string } = {}): Promise<VersionSummary> {
+  async addVersionText(
+    client: PoolClient,
+    sourceId: string,
+    text: string,
+    actorId: string,
+    at: Date,
+    extra: { minutesDraftId?: string; summary?: boolean } = {},
+  ): Promise<VersionSummary> {
     const latest = await client.query<{ version_no: number; text_sha256: string }>(
       'SELECT version_no, text_sha256 FROM source_versions WHERE source_id = $1 ORDER BY version_no DESC LIMIT 1',
       [sourceId],
@@ -237,7 +262,7 @@ export class NotesService {
     if (latest.rows[0]?.text_sha256 === sha256Hex(text)) {
       throw new ConflictException('This text is identical to the latest version, so no new version was made');
     }
-    const prepared: Prepared = { origin: extra.minutesDraftId ? 'meeting' : 'paste', text, filename: null, mediaType: null, original: null };
+    const prepared: Prepared = { origin: extra.minutesDraftId ? 'meeting' : extra.summary ? 'summary' : 'paste', text, filename: null, mediaType: null, original: null };
     return this.insertVersion(client, sourceId, (latest.rows[0]?.version_no ?? 0) + 1, prepared, actorId, at, extra.minutesDraftId ?? null);
   }
 
@@ -285,19 +310,20 @@ export class NotesService {
   }
 
   /**
-   * The published notes and meeting minutes of one project that the viewer's audience rule lets them read, newest
-   * first. Submissions and discussion transcripts are never listed here. Notes from before projects belong to none.
+   * The published notes, meeting minutes and approved shareable summaries of one project that the viewer's audience
+   * rule lets them read, newest first. Submissions and discussion transcripts are never listed here. Notes from before
+   * projects belong to none.
    */
   async list(userId: string, projectId: string): Promise<ListedSource[]> {
     const { rows } = await this.pool.query<ListedSource>(
       `SELECT s.id, s.title, s.created_at AS "createdAt", s.kind,
-              CASE WHEN s.kind = 'minutes' THEN $4::text END AS label,
+              CASE WHEN s.kind = 'minutes' THEN $4::text WHEN s.kind = 'summary' THEN $5::text END AS label,
               max(v.version_no)::int AS "latestVersion", count(v.id)::int AS "versionCount"
          FROM sources s JOIN source_versions v ON v.source_id = s.id JOIN audiences a ON a.id = s.audience_id
-        WHERE s.status = 'active' AND s.project_id = $1 AND s.kind IN ('notes', 'minutes') AND s.publication = 'published'
-          AND ${audienceVisibleSql('a', '$2', '$3')}
+        WHERE s.status = 'active' AND s.project_id = $1 AND s.kind IN ('notes', 'minutes', 'summary') AND s.publication = 'published'
+          AND ${summaryShownSql('s')} AND ${audienceVisibleSql('a', '$2', '$3')}
         GROUP BY s.id ORDER BY s.created_at DESC, s.id DESC`,
-      [projectId, userId, this.access.today(), MINUTES_LABEL],
+      [projectId, userId, this.access.today(), MINUTES_LABEL, SUMMARY_LIST_LABEL],
     );
     return rows;
   }
@@ -313,6 +339,10 @@ export class NotesService {
       returnedReason: string | null;
       provenance: string | null;
       audience: { id: string; mode: string; namedUsers: Array<{ id: string; displayName: string }>; changedAt: string | null };
+      /** An approved shareable summary's labels (AI assist spec 7.2); null for any other source. Never names the original. */
+      summary: SummaryLabels | null;
+      /** False for a shareable summary: it is never evidence, so no extraction is offered on it. */
+      mayExtract: boolean;
     };
     versions: VersionSummary[];
   }> {
@@ -336,8 +366,32 @@ export class NotesService {
       [audienceId],
     );
     return {
-      source: { ...s, audience: { id: audienceId, mode: aud.mode, namedUsers: named.rows, changedAt: aud.changedAt ? (aud.changedAt as Date).toISOString() : null }, label: s.kind === 'minutes' ? MINUTES_LABEL : null, provenance: rows.length ? await this.provenance(rows[rows.length - 1].id) : null },
+      source: {
+        ...s,
+        audience: { id: audienceId, mode: aud.mode, namedUsers: named.rows, changedAt: aud.changedAt ? (aud.changedAt as Date).toISOString() : null },
+        label: s.kind === 'minutes' ? MINUTES_LABEL : s.kind === 'summary' ? SUMMARY_LIST_LABEL : null,
+        provenance: rows.length ? await this.provenance(rows[rows.length - 1].id) : null,
+        summary: s.kind === 'summary' ? await this.summaryLabels(sourceId) : null,
+        mayExtract: s.kind !== 'summary',
+      },
       versions: rows,
+    };
+  }
+
+  /** "Summary approved for sharing", "Approved by <name> on <date>" (the latest approval) and "From a restricted source". */
+  private async summaryLabels(sourceId: string): Promise<SummaryLabels | null> {
+    const { rows } = await this.pool.query<{ by: string | null; at: Date | null }>(
+      `SELECT u.display_name AS by, sm.approved_at AS at
+         FROM sources s JOIN summaries sm ON sm.id = s.summary_id LEFT JOIN users u ON u.id = sm.approved_by
+        WHERE s.id = $1`,
+      [sourceId],
+    );
+    const r = rows[0];
+    if (!r) return null;
+    return {
+      label: SUMMARY_APPROVED_LABEL,
+      approved: r.at ? `Approved by ${r.by ?? 'someone'} on ${formatDay(r.at)}` : null,
+      from: FROM_RESTRICTED_LABEL,
     };
   }
 
