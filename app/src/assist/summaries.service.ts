@@ -63,6 +63,7 @@ const SUMMARY_REASONS: Readonly<Record<string, string>> = {
   nothing_to_summarise: 'there was nothing left to summarise',
   requester_not_in_audience: 'the person who asked can no longer read the original',
   original_removed: 'the original was deleted',
+  requester_cannot_request: 'the person who asked can no longer request a summary',
   queue_unavailable: 'the summary could not be queued; request it again',
   stalled: 'the summary drafting stopped without finishing; request it again',
 };
@@ -130,6 +131,21 @@ export async function loadOriginal(db: Db, row: Pick<SummaryRow, 'originalSource
     title: r.title,
     audience: { id: r.audienceId, projectId: r.projectId, mode: r.mode, namedUserIds: r.namedUserIds },
   };
+}
+
+/**
+ * The audience an approval publishes to: the summary source's audience as it is now once one exists (it may have been
+ * changed since the first approval), otherwise the intended audience.
+ */
+async function publishedAudience(db: Db, row: Pick<SummaryRow, 'summarySourceId' | 'intendedAudience'>): Promise<AudienceChange> {
+  if (!row.summarySourceId) return row.intendedAudience;
+  const r = (
+    await db.query<AudienceChange>(
+      `SELECT a.mode, ${NAMED('a')} AS "namedUserIds" FROM sources s JOIN audiences a ON a.id = s.audience_id WHERE s.id = $1`,
+      [row.summarySourceId],
+    )
+  ).rows[0];
+  return r ?? row.intendedAudience;
 }
 
 /**
@@ -212,14 +228,18 @@ export async function summaryOfRequest(db: Db, request: Pick<AssistRequest, 'id'
 /**
  * A summary's prompt: the standing rules, the Leave out text and the audience in the system part; only the original's
  * text in the user part. Built from the original as it is now (a message hidden since the request is not sent). The
- * requester must still be in the original's audience, judged on the day of the request.
+ * requester must still hold a role that may request summaries and still be in the original's audience, judged at job
+ * start (`at`), so a role that ended while the request waited stops it before any AI call.
  */
-export async function summaryInput(db: Db, request: AssistRequest, _material: RequestMaterial[]): Promise<AssistInput | Refusal> {
+export async function summaryInput(db: Db, request: AssistRequest, _material: RequestMaterial[], at: Date): Promise<AssistInput | Refusal> {
   const id = await summaryOfRequest(db, request);
   const row = id ? await loadSummaryRow(db, id) : undefined;
   if (!row) return { code: 'summary_not_found', detail: 'The summary for this request was not found, so nothing was sent to the AI.' };
   const user = (await db.query(`SELECT id, email, display_name AS "displayName", role FROM users WHERE id = $1`, [request.requestedBy])).rows[0] as AuthUser | undefined;
-  const ctx = user ? await new ProjectAccess(db as unknown as Pool, () => request.createdAt).load(request.projectId, user, db as PoolClient) : null;
+  const ctx = user ? await new ProjectAccess(db as unknown as Pool, () => at).load(request.projectId, user, db as PoolClient) : null;
+  if (ctx && !allowed(ctx, 'summary.request')) {
+    return { code: 'requester_cannot_request', detail: 'The person who asked can no longer request a summary, so nothing was sent to the AI.' };
+  }
   if (!(await summaryVisible(db, ctx, row))) {
     return { code: 'requester_not_in_audience', detail: 'The person who asked can no longer read the original, so nothing was sent to the AI.' };
   }
@@ -819,7 +839,8 @@ export class SummariesService {
       if (reason === '' || reason.length > MAX_REASON) throw new BadRequestException(REASON_REQUIRED);
       refuseSecrets(reason);
       const original = (await loadOriginal(db, row)) as Original;
-      const gained = (await this.audiences.preview(ctx, original.audience, row.intendedAudience)).gain;
+      const target = await publishedAudience(db, row);
+      const gained = (await this.audiences.preview(ctx, original.audience, target)).gain;
       const at = this.now();
       let sourceId = row.summarySourceId;
       if (!sourceId) {
@@ -857,7 +878,7 @@ export class SummariesService {
           user.id,
           row.id,
           reason,
-          { versionNo: latest.no, versionId: latest.id, sourceId, sourceVersionNo, audience: row.intendedAudience.mode, gained: gained.length },
+          { versionNo: latest.no, versionId: latest.id, sourceId, sourceVersionNo, audience: target.mode, gained: gained.length },
           at,
         ],
       );
@@ -1005,6 +1026,11 @@ export class SummariesService {
     const approvable = mayApprove && current !== null && current.openMarks === 0 && !current.approved;
     const by = (await people([row.createdBy]))[0] ?? { id: row.createdBy, displayName: '' };
     const review = inReview(row.state) && allowed(ctx, 'summary.review');
+    let approval: SummaryView['approval'] = null;
+    if (mayApprove && current !== null && !current.approved) {
+      const target = await publishedAudience(db, row);
+      approval = { versionNo: current.no, audience: target.mode, gainAccess: (await this.audiences.preview(ctx, original.audience, target)).gain };
+    }
     return {
       view: 'full',
       id: row.id,
@@ -1033,10 +1059,7 @@ export class SummariesService {
       canMarkIntended: mayRequest && current !== null && current.openMarks > 0,
       canAskApproval: mayRequest && current !== null && !current.approved,
       canApprove: approvable,
-      approval:
-        mayApprove && current !== null && !current.approved
-          ? { versionNo: current.no, audience: row.intendedAudience.mode, gainAccess: (await this.audiences.preview(ctx, original.audience, row.intendedAudience)).gain }
-          : null,
+      approval,
       reviewLabel: review ? SUMMARY_REVIEW_LABEL : null,
       reviewReason: review ? reviewReasonText(row.reviewReason) : null,
       canReview: review,

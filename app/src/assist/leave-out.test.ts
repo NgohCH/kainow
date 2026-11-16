@@ -37,6 +37,35 @@ describe('leave-out marks', () => {
     assert.deepEqual(findMarks('Penalty clauses apply.', ['penalty clause'], []), []);
   });
 
+  test('Markdown emphasis does not hide a phrase, and the mark covers the original words', () => {
+    const body = 'The **penalty** clause, the *penalty clause*, `penalty` ~~clause~~ and _Acme_ Supplies.';
+    assert.deepEqual(spans(body, findMarks(body, ['penalty clause', 'Acme Supplies'], [])), [
+      ['leave_out', 'penalty clause', 'penalty** clause'],
+      ['leave_out', 'penalty clause', 'penalty clause'],
+      ['leave_out', 'penalty clause', 'penalty` ~~clause'],
+      ['leave_out', 'Acme Supplies', 'Acme_ Supplies'],
+    ]);
+    // Emphasis written into the phrase is ignored as well.
+    assert.deepEqual(spans('Acme Supplies', findMarks('Acme Supplies', ['**Acme** Supplies'], [])), [['leave_out', '**Acme** Supplies', 'Acme Supplies']]);
+  });
+
+  test('hyphens and dashes count as spaces, in the body and in the phrase', () => {
+    const body = 'A penalty-clause, a penalty – clause, a penalty—clause and a penalty clause.';
+    assert.deepEqual(spans(body, findMarks(body, ['penalty clause'], [])), [
+      ['leave_out', 'penalty clause', 'penalty-clause'],
+      ['leave_out', 'penalty clause', 'penalty – clause'],
+      ['leave_out', 'penalty clause', 'penalty—clause'],
+      ['leave_out', 'penalty clause', 'penalty clause'],
+    ]);
+    const plain = 'The penalty clause applies.';
+    assert.deepEqual(spans(plain, findMarks(plain, ['penalty-clause'], [])), [['leave_out', 'penalty-clause', 'penalty clause']]);
+    const named = 'Siti Nur-Aisyah agreed; siti nur aisyah will follow up.';
+    assert.deepEqual(spans(named, findMarks(named, [], ['Siti Nur-Aisyah'])), [
+      ['name', 'Siti Nur-Aisyah', 'Siti Nur-Aisyah'],
+      ['name', 'Siti Nur-Aisyah', 'siti nur aisyah'],
+    ]);
+  });
+
   test('member names are marked', () => {
     const body = 'Ada Lim agreed the plan; ada  lim will tell Ben. Adam Limbo was not there.';
     const marks = findMarks(body, ['plan'], ['Ada Lim', 'Ben Tan', '']);

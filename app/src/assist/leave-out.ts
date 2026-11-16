@@ -3,8 +3,9 @@
  *
  * Every Leave out phrase and every project member's name that appears in a summary version is marked. Matching is
  * case- and accent-insensitive and whole-word: both texts are decomposed (NFKD), combining marks are dropped, letters
- * are lower-cased and every run of white space (line breaks included) counts as one space. Positions are returned in
- * the original text, so a mark can be shown where it is.
+ * are lower-cased, Markdown emphasis characters (`*`, `_`, `~`, backtick) are ignored, hyphens and dashes count as
+ * spaces, and every run of white space (line breaks included) counts as one space. Positions are returned in the
+ * original text, so a mark can be shown where it is.
  */
 
 export type MarkKind = 'leave_out' | 'name';
@@ -28,6 +29,10 @@ export function parseLeaveOut(text: string): string[] {
 
 const WORD = /[\p{L}\p{N}]/u;
 const MARKS = /\p{M}/gu;
+/** Markdown emphasis and code characters: left out of matching, so `**penalty** clause` still matches. */
+const IGNORED = /[*_~`]/u;
+/** Hyphens and dashes: matched as a space, so `penalty-clause` matches `penalty clause`. */
+const SPACE = /[\s\p{Pd}]/u;
 
 interface Folded {
   text: string;
@@ -45,7 +50,8 @@ function fold(original: string): Folded {
   for (const ch of original) {
     const start = i;
     i += ch.length;
-    if (/\s/u.test(ch)) {
+    if (IGNORED.test(ch)) continue;
+    if (SPACE.test(ch)) {
       if (text.endsWith(' ')) {
         to[to.length - 1] = i;
         continue;

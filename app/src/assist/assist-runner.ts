@@ -45,9 +45,10 @@ export interface AssistInput {
 
 /**
  * Builds a kind's prompt from the request and the material still readable at job start (passages already dropped are
- * not given). May refuse, which blocks the request without any AI call or spend.
+ * not given). May refuse, which blocks the request without any AI call or spend. `at` is the runner's time now, for
+ * any access the kind checks again at job start.
  */
-export type InputBuilder = (db: Db, request: AssistRequest, material: RequestMaterial[]) => Promise<AssistInput | Refusal>;
+export type InputBuilder = (db: Db, request: AssistRequest, material: RequestMaterial[], at: Date) => Promise<AssistInput | Refusal>;
 
 /**
  * Saves a kind's validated output. Runs in the transaction that also marks the cited material and sets the request
@@ -282,7 +283,7 @@ export class AssistRunner {
     const kept = live.filter((_, i) => readable[i]);
     await markDropped(pool, request.id, live.filter((_, i) => !readable[i]).map((m) => m.ordinal));
 
-    const input = await build(pool, request, kept);
+    const input = await build(pool, request, kept, this.d.clock());
     if ('code' in input) return this.end(request, 'blocked', input);
     const found = findCredentials(`${input.system}\n${input.user}`);
     if (found.length > 0) {

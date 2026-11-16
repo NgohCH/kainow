@@ -10,6 +10,7 @@ import { SpendSettingsService } from '../spend/spend.settings';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
+import { uuidv7 } from '../common/uuid7';
 import { AssistRunner } from './assist-runner';
 import { findMaterial } from './material';
 
@@ -243,6 +244,26 @@ describe('shareable summaries', { skip: SKIP_NO_DB }, () => {
     assert.equal(Number((await t.pool.query(`SELECT count(*) AS n FROM ai_spend_entries`)).rows[0].n), 0);
   });
 
+  test('a requester whose Deputy role ended while the request waited is blocked before any AI call', async () => {
+    // The Deputy is also a Member and named in the original's audience, so only the request right is lost.
+    await t.pool.query(`INSERT INTO memberships (id, project_id, user_id, role, starts_on) VALUES ($1, $2, $3, 'member', '2026-11-01')`, [uuidv7(), project, ids.dep]);
+    const original = await note('Board note', ORIGINAL);
+    await restrict(original, [ids.ada, ids.dep]);
+    const r = await ask(dep, original);
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    await t.pool.query(
+      `UPDATE memberships SET expires_on = ($3::timestamptz AT TIME ZONE 'Asia/Kuala_Lumpur')::date WHERE project_id = $1 AND user_id = $2 AND role = 'deputy_pm'`,
+      [project, ids.dep, t.clock.now()],
+    );
+    t.clock.advanceMinutes(24 * 60);
+    const model = new SummaryModel();
+    assert.equal(await run(lastRequest(), model), 'blocked');
+    assert.equal(model.calls.length, 0);
+    const req = (await t.pool.query(`SELECT failure_code FROM ai_requests WHERE id = $1`, [lastRequest()])).rows[0];
+    assert.equal(req.failure_code, 'requester_cannot_request');
+    assert.equal(Number((await t.pool.query(`SELECT count(*) AS n FROM ai_spend_entries`)).rows[0].n), 0);
+  });
+
   test('summary of a Project-wide source refused', async () => {
     const open = await note('Open note', ORIGINAL);
     const r = await ask(pm, open);
@@ -378,6 +399,27 @@ describe('shareable summaries', { skip: SKIP_NO_DB }, () => {
     const flag = (c: Client) => c.request('POST', `/projects/${project}/feedback`, { targetKind: 'summary_version', targetId: versionId, category: 'incorrect', note: 'Wrong date.' });
     assert.equal((await flag(ben)).status, 404);
     assert.equal((await flag(ada)).status, 201, 'someone in the original audience may flag the AI version');
+  });
+
+  test('re-approval shows who gains access against the summary source as it is now, not the intended audience', async () => {
+    const { id, sourceId } = await approved();
+    t.clock.advanceSeconds(1);
+    // The PM narrows the published summary to the managers only: Ben no longer reads it.
+    const audienceId = (await t.pool.query(`SELECT audience_id FROM sources WHERE id = $1`, [sourceId])).rows[0].audience_id;
+    const narrowed = await pm.request('PUT', `/audiences/${audienceId}`, { mode: 'restricted', namedUserIds: [], reason: 'Managers only' });
+    assert.equal(narrowed.status, 200, JSON.stringify(narrowed.body));
+    t.clock.advanceSeconds(1);
+    const edited = await dep.request('PUT', `/summaries/${id}`, { body: 'The turbine replacement goes ahead next month.', basedOnVersion: 1 });
+    assert.equal(edited.status, 200, JSON.stringify(edited.body));
+    t.clock.advanceSeconds(1);
+    const v = (await view(pm, id)).body;
+    assert.deepEqual(v.approval.gainAccess, [], 'nobody outside the original reads the summary source now');
+    assert.equal(v.approval.audience, 'restricted');
+    const r = await pm.request('POST', `/summaries/${id}/approve`, { versionNo: v.current.no, reason: 'Updated wording' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body.gainedAccess, []);
+    const event = (await t.pool.query(`SELECT detail FROM ai_assist_events WHERE target_id = $1 AND action = 'summary_approved' ORDER BY at DESC LIMIT 1`, [id])).rows[0];
+    assert.deepEqual([event.detail.audience, event.detail.gained], ['restricted', 0]);
   });
 
   test('original stays 404 to the outsider', async () => {
