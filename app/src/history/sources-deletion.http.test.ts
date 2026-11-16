@@ -484,4 +484,24 @@ describe('deleting and restoring sources', { skip: SKIP_NO_DB }, () => {
     assert.equal(audit[0].subject_id, id);
     assert.ok(!JSON.stringify(audit[0].detail).includes('mistake'));
   });
+  test('a held source is refused delete and restore', async () => {
+    const live = await note('Plant room', PLANT);
+    const gone = await note('Old room', 'Old text.');
+    await deleted(pm, gone);
+    for (const id of [live, gone]) {
+      const caseId = uuidv7();
+      await t.pool.query(
+        `INSERT INTO quarantine_cases (id, project_id, item_kind, item_id, reporter_id, marked_length, reported_at) VALUES ($1, $2, 'source', $3, $4, 12, now())`,
+        [caseId, project, id, ids.pm],
+      );
+      await t.pool.query(`UPDATE sources SET held_case_id = $2 WHERE id = $1`, [id, caseId]);
+    }
+    const held = 'Held — suspected credential, under review. It can be deleted or restored once the case is released.';
+    for (const r of [await del(pm, live), await restore(pm, gone), await pm.request('GET', `/sources/${gone}/restore-preview`)]) {
+      assert.equal(r.status, 409, JSON.stringify(r.body));
+      assert.equal(r.body.message, held);
+    }
+    assert.deepEqual((await t.pool.query(`SELECT status FROM sources WHERE id = ANY($1::uuid[]) ORDER BY id`, [[live, gone].sort()])).rows.map((r) => r.status), [live, gone].sort().map((id) => (id === live ? 'active' : 'deleted')));
+    assert.equal(await count(`SELECT count(*) AS n FROM source_events`), 1, 'only the earlier deletion');
+  });
 });

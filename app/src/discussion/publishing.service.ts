@@ -8,6 +8,7 @@ import { ExtractionService } from '../extraction/extraction.service';
 import { type NewContent, NotesService, type SourceSummary } from '../notes/notes.service';
 import { sha256Hex } from '../notes/text';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
+import { refuseUnliveSource } from '../history/deleted-sql';
 import { effectiveRoles } from '../projects/membership';
 import { RESTRICTED_ROLES, parseAudienceChange } from './audience';
 import { AudienceService } from './audience.service';
@@ -90,8 +91,14 @@ export class PublishingService {
       await this.threads.readable(db, user, t);
       await this.access.authorize(user, 'minutes.publish', t.projectId, db);
       const draft = await this.draftOf(db, t.id, versionNo);
+      // Every version added is checked for credentials (D79), the AI's draft included; only the kind is named.
+      refuseSecrets(draft.body);
       const at = this.now();
-      const existing = (await db.query(`SELECT id, publication FROM sources WHERE thread_id = $1 AND kind = 'minutes' FOR UPDATE`, [t.id])).rows[0] as { id: string; publication: string } | undefined;
+      const existing = (
+        await db.query(`SELECT id, publication, status, held_case_id AS "heldCaseId" FROM sources WHERE thread_id = $1 AND kind = 'minutes' FOR UPDATE`, [t.id])
+      ).rows[0] as { id: string; publication: string; status: string; heldCaseId: string | null } | undefined;
+      // Deleted minutes are not published into (404 until restored); held ones are refused until the case is released.
+      if (existing) refuseUnliveSource(existing);
       let sourceId: string;
       if (existing) {
         sourceId = existing.id;
@@ -174,7 +181,13 @@ export class PublishingService {
       const draft = await this.draftOf(db, t.id, versionNo);
       refuseSecrets(draft.body);
       const at = this.now();
-      const existing = (await db.query(`SELECT id, publication, submitted_by AS "submittedBy" FROM sources WHERE thread_id = $1 AND kind = 'minutes' FOR UPDATE`, [t.id])).rows[0];
+      const existing = (
+        await db.query(
+          `SELECT id, publication, submitted_by AS "submittedBy", status, held_case_id AS "heldCaseId" FROM sources WHERE thread_id = $1 AND kind = 'minutes' FOR UPDATE`,
+          [t.id],
+        )
+      ).rows[0];
+      if (existing) refuseUnliveSource(existing);
       let sourceId: string;
       if (!existing) {
         sourceId = uuidv7(at.getTime());
@@ -211,10 +224,13 @@ export class PublishingService {
     const thread = (await db.query(`SELECT thread_id AS "threadId" FROM sources WHERE id = $1`, [sourceId])).rows[0].threadId as string | null;
     if (thread) await this.threads.threadRow(db, thread, true);
     const { rows } = await db.query(
-      `SELECT id, title, project_id AS "projectId", thread_id AS "threadId", publication, submitted_by AS "submittedBy", intended_mode AS "intendedMode"
+      `SELECT id, title, project_id AS "projectId", thread_id AS "threadId", publication, submitted_by AS "submittedBy", intended_mode AS "intendedMode",
+              status, held_case_id AS "heldCaseId"
          FROM sources WHERE id = $1 FOR UPDATE`,
       [sourceId],
     );
+    // A Deleted submission is neither published nor returned (404); a held one waits for its case (409).
+    refuseUnliveSource(rows[0]);
     return rows[0] as { id: string; title: string; projectId: string; threadId: string | null; publication: string; submittedBy: string | null; intendedMode: string | null };
   }
 

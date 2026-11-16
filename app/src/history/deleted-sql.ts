@@ -1,3 +1,17 @@
+import { ConflictException, NotFoundException } from '@nestjs/common';
+
+/** The refusal for deleting, restoring or changing an item held in an open quarantine case (spec 4.4, 7.2). */
+export const HELD = 'Held — suspected credential, under review. It can be deleted or restored once the case is released.';
+
+/**
+ * For a write that reaches a source directly (a new version, publishing, returning): a Deleted source does not exist
+ * (404) and a held one is refused (409 HELD).
+ */
+export function refuseUnliveSource(row: { status: string; heldCaseId: string | null }): void {
+  if (row.status === 'deleted') throw new NotFoundException();
+  if (row.heldCaseId) throw new ConflictException(HELD);
+}
+
 /**
  * The SQL conditions every read path uses to leave out Deleted and held items (spec 4, 7.2). Each takes the table alias
  * and returns a parenthesised boolean expression; no parameters, so they can be dropped into any WHERE or EXISTS.

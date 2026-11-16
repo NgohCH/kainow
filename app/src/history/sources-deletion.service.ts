@@ -8,11 +8,12 @@ import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { type SourceAccessRow, AudienceService } from '../discussion/audience.service';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
+import { HELD } from './deleted-sql';
 
 export const TRANSCRIPT_NOT_DELETED = 'A discussion transcript is not deleted directly; delete its messages instead.';
 export const ALREADY_DELETED = 'This source is already deleted.';
 export const NOT_DELETED = 'This source is not deleted.';
-export const HELD = 'Held — suspected credential, under review. It can be deleted or restored once the case is released.';
+export { HELD };
 
 interface Locked {
   ctx: ProjectContext;

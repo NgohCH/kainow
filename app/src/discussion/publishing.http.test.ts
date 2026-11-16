@@ -397,4 +397,59 @@ describe('publishing minutes, member submissions and note audiences', { skip: SK
     assert.deepEqual(items.filter((i: any) => i.kind === 'minutes').map((i: any) => i.label), ['Minutes — from meeting']);
     assert.ok(items.some((i: any) => i.kind === 'meeting'));
   });
+  test('deleted or held minutes and submissions are never published into or returned', async () => {
+    const del = (c: Client, id: string) => c.request('POST', `/sources/${id}/delete`, { reason: 'Wrong meeting' });
+    // Published minutes, then deleted: a later draft is not published into them.
+    await saveMinutes(pm, meeting, 'First text.');
+    const first = await publish(pm);
+    assert.equal(first.status, 200, JSON.stringify(first.body));
+    assert.equal((await del(pm, first.body.sourceId)).status, 200);
+    await saveMinutes(pm, meeting, 'Second text.', 1);
+    const runs = await count(`SELECT count(*) AS n FROM extraction_runs`);
+    assert.equal((await publish(pm, meeting, 2)).status, 404);
+    assert.equal(await count(`SELECT count(*) AS n FROM source_versions WHERE source_id = $1`, [first.body.sourceId]), 1);
+    assert.equal(await count(`SELECT count(*) AS n FROM extraction_runs`), runs, 'no automatic extraction');
+    assert.equal((await t.pool.query(`SELECT status FROM sources WHERE id = $1`, [first.body.sourceId])).rows[0].status, 'deleted');
+
+    // A meeting submission, deleted: not submitted again, published or returned.
+    const m2 = await startMeeting(ada, { kind: 'meeting', title: 'Second' });
+    await saveMinutes(ada, m2, 'Minutes by Ada.');
+    const sub = await ada.request('POST', `/threads/${m2}/minutes/1/submit`);
+    assert.equal(sub.status, 201, JSON.stringify(sub.body));
+    assert.equal((await pm.request('POST', `/notes/${sub.body.id}/return`, { reason: 'Add the attendees.' })).status, 200);
+    assert.equal((await del(pm, sub.body.id)).status, 200);
+    assert.equal((await ada.request('POST', `/threads/${m2}/minutes/1/submit`)).status, 404);
+    assert.equal((await pm.request('POST', `/threads/${m2}/minutes/1/publish`)).status, 404);
+    assert.equal((await pm.request('POST', `/notes/${sub.body.id}/publish`)).status, 404);
+    assert.equal((await t.pool.query(`SELECT publication FROM sources WHERE id = $1`, [sub.body.id])).rows[0].publication, 'returned');
+
+    // A plain submission: deleted is 404 for publish and return; held is refused with 409.
+    const gone = (await submitNote(ada)).body.id as string;
+    assert.equal((await del(pm, gone)).status, 200);
+    assert.equal((await pm.request('POST', `/notes/${gone}/publish`, { audience: { mode: 'project' } })).status, 404);
+    assert.equal((await pm.request('POST', `/notes/${gone}/return`, { reason: 'Please add the attendees.' })).status, 404);
+    const held = (await submitNote(ada, { title: 'Held notes' })).body.id as string;
+    const caseId = uuidv7();
+    await t.pool.query(
+      `INSERT INTO quarantine_cases (id, project_id, item_kind, item_id, reporter_id, marked_length, reported_at) VALUES ($1, $2, 'source', $3, $4, 12, now())`,
+      [caseId, project, held, ids.pm],
+    );
+    await t.pool.query(`UPDATE sources SET held_case_id = $2 WHERE id = $1`, [held, caseId]);
+    const refused = await pm.request('POST', `/notes/${held}/publish`, { audience: { mode: 'project' } });
+    assert.equal(refused.status, 409);
+    assert.match(refused.body.message, /^Held — suspected credential, under review/);
+    assert.equal((await pm.request('POST', `/notes/${held}/return`, { reason: 'Please add the attendees.' })).status, 409);
+    assert.equal((await t.pool.query(`SELECT publication FROM sources WHERE id = $1`, [held])).rows[0].publication, 'submitted');
+  });
+
+  test('an AI minutes draft holding a key is not published', async () => {
+    await insertAiDraft(t.pool, meeting, { body: `# Draft
+The portal key is ${KEY}.`, coversThroughNo: 1, analysisRunId: await seedAiRun(meeting) });
+    const r = await publish(pm);
+    assert.equal(r.status, 400, JSON.stringify(r.body));
+    assert.equal(r.body.message, 'Not posted: this looks like it contains API secret key (sk-). Remove it and post again.');
+    assert.ok(!JSON.stringify(r.body).includes(KEY));
+    assert.equal(await count(`SELECT count(*) AS n FROM sources WHERE thread_id = $1`, [meeting]), 0);
+    assert.equal(await count(`SELECT count(*) AS n FROM extraction_runs`), 0);
+  });
 });
