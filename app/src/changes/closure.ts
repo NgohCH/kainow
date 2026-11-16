@@ -2,6 +2,7 @@
  * Closure accounting and delegated closure, as plain functions over a database client so the project lifecycle and
  * membership code can use them inside their own transactions without depending on the changes module (spec §6, §6.1).
  */
+import { liveRecordSql } from '../history/deleted-sql';
 import { ConflictException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
@@ -44,18 +45,18 @@ export async function loadClosure(db: Db, projectId: string) {
   const tasks = (
     await db.query(
       `SELECT id, parent_id AS "parentId", depth, title, status, to_char(due_on, 'YYYY-MM-DD') AS "dueOn"
-         FROM tasks WHERE project_id = $1 ORDER BY authorised_at, id`,
+         FROM tasks t WHERE t.project_id = $1 AND ${liveRecordSql('t')} ORDER BY t.authorised_at, t.id`,
       [projectId],
     )
   ).rows as Array<{ id: string; parentId: string | null; depth: number; title: string; status: string; dueOn: string }>;
-  const questions = (await db.query(`SELECT id, text, status FROM questions WHERE project_id = $1 ORDER BY authorised_at, id`, [projectId])).rows as Array<{
+  const questions = (await db.query(`SELECT q.id, q.text, q.status FROM questions q WHERE q.project_id = $1 AND ${liveRecordSql('q')} ORDER BY q.authorised_at, q.id`, [projectId])).rows as Array<{
     id: string;
     text: string;
     status: string;
   }>;
   const risks = (
     await db.query(
-      `SELECT id, description, severity, status, to_char(review_on, 'YYYY-MM-DD') AS "reviewOn" FROM risks WHERE project_id = $1 ORDER BY authorised_at, id`,
+      `SELECT k.id, k.description, k.severity, k.status, to_char(k.review_on, 'YYYY-MM-DD') AS "reviewOn" FROM risks k WHERE k.project_id = $1 AND ${liveRecordSql('k')} ORDER BY k.authorised_at, k.id`,
       [projectId],
     )
   ).rows as Array<{ id: string; description: string; severity: string; status: string; reviewOn: string | null }>;
@@ -130,6 +131,7 @@ export async function closedSummary(db: Db, projectId: string) {
          LEFT JOIN tasks t ON d.record_kind = 'task' AND t.id = d.record_id
          LEFT JOIN questions q ON d.record_kind = 'question' AND q.id = d.record_id
         WHERE d.project_id = $1 AND d.final AND d.replaced_at IS NULL AND d.disposition IN ('keep', 'unresolved')
+          AND (t.id IS NULL OR ${liveRecordSql('t')}) AND (q.id IS NULL OR ${liveRecordSql('q')})
           AND d.chosen_at <= coalesce((SELECT at FROM closes WHERE n = 1), 'infinity')
           AND d.chosen_at > coalesce((SELECT at FROM closes WHERE n = 2), '-infinity')
         ORDER BY d.chosen_at, d.id`,

@@ -1,3 +1,4 @@
+import { liveRecordRefSql, liveRecordSql } from '../history/deleted-sql';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
@@ -155,7 +156,7 @@ export class ProjectsService {
         ...(await loadArchiveState(this.pool, id, ctx.project.status, ctx.today)),
         myOpenTasks: (
           await this.pool.query(
-            `SELECT count(*)::int AS n FROM tasks WHERE project_id = $1 AND assignee_id = $2 AND status NOT IN ('completed', 'cancelled')`,
+            `SELECT count(*)::int AS n FROM tasks t WHERE t.project_id = $1 AND t.assignee_id = $2 AND t.status NOT IN ('completed', 'cancelled') AND ${liveRecordSql('t')}`,
             [id, user.id],
           )
         ).rows[0].n as number,
@@ -267,7 +268,7 @@ export class ProjectsService {
       })),
       myRoles: ctx.roles,
       isAdmin: ctx.isAdmin,
-      openReviewFlags: Number((await this.pool.query(`SELECT count(*) AS n FROM review_flags WHERE project_id = $1 AND cleared_at IS NULL`, [id])).rows[0].n),
+      openReviewFlags: Number((await this.pool.query(`SELECT count(*) AS n FROM review_flags f WHERE f.project_id = $1 AND f.cleared_at IS NULL AND ${liveRecordRefSql('f.record_kind', 'f.record_id')}`, [id])).rows[0].n),
       missingAccountability: ctx.missingAccountability,
       missingRoles: ctx.missingRoles,
       onHold: managesRoles(ctx) && ctx.onHold,

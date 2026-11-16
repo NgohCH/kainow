@@ -1,3 +1,4 @@
+import { liveRecordSql } from '../history/deleted-sql';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -145,25 +146,28 @@ export async function loadReportRecords(db: Db, projectId: string): Promise<Repo
   const tasks = await db.query(
       `SELECT t.id, t.title, u.display_name AS assignee, to_char(t.due_on, 'YYYY-MM-DD') AS "dueOn", t.status, t.authorised_at AS "authorisedAt",
               (SELECT max(e.at) FROM task_events e WHERE e.task_id = t.id AND e.kind = 'completed') AS "completedAt"
-         FROM tasks t JOIN users u ON u.id = t.assignee_id WHERE t.project_id = $1 ORDER BY t.due_on, t.id`,
+         FROM tasks t JOIN users u ON u.id = t.assignee_id WHERE t.project_id = $1 AND ${liveRecordSql('t')} ORDER BY t.due_on, t.id`,
       [projectId],
     );
-  const decisions = await db.query(`SELECT id, statement, status, authorised_at AS "authorisedAt" FROM decisions WHERE project_id = $1 ORDER BY authorised_at, id`, [projectId]);
+  const decisions = await db.query(
+    `SELECT d.id, d.statement, d.status, d.authorised_at AS "authorisedAt" FROM decisions d WHERE d.project_id = $1 AND ${liveRecordSql('d')} ORDER BY d.authorised_at, d.id`,
+    [projectId],
+  );
   const questions = await db.query(
       `SELECT q.id, q.text, q.status, u.display_name AS "askedBy", q.authorised_at AS "authorisedAt"
-         FROM questions q JOIN users u ON u.id = q.requester_id WHERE q.project_id = $1 ORDER BY q.authorised_at, q.id`,
+         FROM questions q JOIN users u ON u.id = q.requester_id WHERE q.project_id = $1 AND ${liveRecordSql('q')} ORDER BY q.authorised_at, q.id`,
       [projectId],
     );
   const risks = await db.query(
       `SELECT r.id, r.description, r.severity, r.status, u.display_name AS responsible, to_char(r.review_on, 'YYYY-MM-DD') AS "reviewOn",
               r.authorised_at AS "authorisedAt"
-         FROM risks r LEFT JOIN users u ON u.id = r.responsible_id WHERE r.project_id = $1 ORDER BY r.authorised_at, r.id`,
+         FROM risks r LEFT JOIN users u ON u.id = r.responsible_id WHERE r.project_id = $1 AND ${liveRecordSql('r')} ORDER BY r.authorised_at, r.id`,
       [projectId],
     );
   const riskChanges = await db.query(
       `SELECT e.record_id AS "riskId", r.description, e.from_status AS "fromStatus", e.to_status AS "toStatus", e.at
          FROM record_events e JOIN risks r ON r.id = e.record_id
-        WHERE e.record_kind = 'risk' AND r.project_id = $1 AND e.to_status IS NOT NULL AND e.from_status IS DISTINCT FROM e.to_status
+        WHERE e.record_kind = 'risk' AND r.project_id = $1 AND ${liveRecordSql('r')} AND e.to_status IS NOT NULL AND e.from_status IS DISTINCT FROM e.to_status
         ORDER BY e.at, e.id`,
       [projectId],
     );

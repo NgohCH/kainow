@@ -1,3 +1,4 @@
+import { liveRecordSql } from '../history/deleted-sql';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
@@ -53,7 +54,8 @@ async function openWork(c: PoolClient, projectId: string, terms: Record<string, 
   const dropped: Ref[] = refsOf(terms.dropped);
   for (const ref of refsOf(terms.affected)) {
     const { table, open } = TABLE[ref.kind];
-    const row = (await c.query(`SELECT (${open}) AS open FROM ${table} WHERE id = $1 AND project_id = $2`, [ref.id, projectId])).rows[0];
+    // A Deleted (or held) record is not open work (history spec 4.3): dropped like finished work, and never flagged.
+    const row = (await c.query(`SELECT (${open}) AND ${liveRecordSql(table)} AS open FROM ${table} WHERE id = $1 AND project_id = $2`, [ref.id, projectId])).rows[0];
     if (!row) throw new BadRequestException(WRONG_WORK);
     (row.open ? affected : dropped).push(ref);
   }

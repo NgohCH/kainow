@@ -51,8 +51,8 @@ interface TaskView {
   changeWaiting: boolean;
   parentCancelled: boolean;
   deadlineReviewRequired: boolean;
-  follows: { id: string; title: string } | null;
-  followedBy: { id: string; title: string } | null;
+  follows: { id: string | null; title: string } | null;
+  followedBy: { id: string | null; title: string } | null;
   reviewFlags: ReviewFlag[];
 }
 interface QuestionView {
@@ -84,8 +84,8 @@ interface DecisionView {
   status: 'active' | 'superseded' | 'withdrawn' | string;
   authorisedBy: string;
   authorisedAt: string;
-  replaces: { id: string; statement: string } | null;
-  replacedBy: { id: string; statement: string } | null;
+  replaces: { id: string | null; statement: string } | null;
+  replacedBy: { id: string | null; statement: string } | null;
   changeWaiting: boolean;
   mayAct: Array<'supersede' | 'withdraw'>;
 }

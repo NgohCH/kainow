@@ -1,3 +1,4 @@
+import { liveRecordSql } from '../history/deleted-sql';
 import { BadRequestException, ConflictException } from '@nestjs/common';
 import { writeAudit } from '../audit/audit';
 import type { AuthUser } from '../auth/tokens';
@@ -74,7 +75,7 @@ export function deadlineHandlers(): ChangeHandler[] {
       });
       if (refusal) throw new ConflictException(refusal);
       // Parent completion rules still apply: unfinished subtasks block it.
-      const children = (await c.query(`SELECT status FROM tasks WHERE parent_id = $1`, [target.id])).rows.map((r) => r.status as TaskStatus);
+      const children = (await c.query(`SELECT status FROM tasks t WHERE t.parent_id = $1 AND ${liveRecordSql('t')}`, [target.id])).rows.map((r) => r.status as TaskStatus);
       const parentRule = parentMayComplete(children, null, []);
       if (!parentRule.allowed) throw new ConflictException(parentRule.reason);
       return { completedOn, explanation, ...(evidence === '' ? {} : { evidence }) };

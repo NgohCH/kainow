@@ -1,4 +1,5 @@
 // Notification settings: reading the effective values for a project (no Nest), and validating proposed changes.
+import { liveRecordSql } from '../history/deleted-sql';
 import { BadRequestException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import type { Calendar, DayCounting } from './calendar';
@@ -282,7 +283,7 @@ export async function loadTaskSnaps(db: Db, projectId: string): Promise<TaskSnap
                      t.authorised_at) AS "dueSetAt",
             (SELECT count(*)::int FROM task_events e WHERE e.task_id = t.id AND e.kind = 'reopened') AS "reopenCount"
        FROM tasks t
-      WHERE t.project_id = $1 AND t.status NOT IN ('completed', 'cancelled')
+      WHERE t.project_id = $1 AND t.status NOT IN ('completed', 'cancelled') AND ${liveRecordSql('t')}
       ORDER BY t.id`,
     [projectId],
   );
@@ -292,7 +293,7 @@ export async function loadTaskSnaps(db: Db, projectId: string): Promise<TaskSnap
 export async function loadRiskSnaps(db: Db, projectId: string): Promise<RiskSnap[]> {
   const { rows } = await db.query(
     `SELECT id, description, status, responsible_id AS "responsibleId", to_char(review_on, 'YYYY-MM-DD') AS "reviewOn"
-       FROM risks WHERE project_id = $1 AND status <> 'resolved' AND review_on IS NOT NULL ORDER BY id`,
+       FROM risks k WHERE k.project_id = $1 AND k.status <> 'resolved' AND k.review_on IS NOT NULL AND ${liveRecordSql('k')} ORDER BY k.id`,
     [projectId],
   );
   return rows.map((r) => ({ ...r, status: r.status as RiskStatus }));

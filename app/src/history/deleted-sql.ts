@@ -25,3 +25,18 @@ export const liveRecordSql = (alias: string): string => `(${alias}.deleted_at IS
 
 /** A discussion message that is visible (not hidden or deleted) and not held. */
 export const liveMessageSql = (alias: string): string => `(${alias}.state = 'visible' AND ${alias}.held_case_id IS NULL)`;
+
+/** How a link from a live record to a Deleted one reads, without its title (history spec 4.3). */
+export const DELETED_LINK = 'a deleted record';
+
+/**
+ * For rows that point at a record by (kind, id) columns (review flags, change requests, notification triggers): true
+ * when the record is a live task, decision, question or risk, and for any other kind of target.
+ */
+export const liveRecordRefSql = (kindCol: string, idCol: string): string =>
+  `(CASE ${kindCol}
+      WHEN 'task' THEN EXISTS (SELECT 1 FROM tasks lr WHERE lr.id = ${idCol} AND ${liveRecordSql('lr')})
+      WHEN 'decision' THEN EXISTS (SELECT 1 FROM decisions lr WHERE lr.id = ${idCol} AND ${liveRecordSql('lr')})
+      WHEN 'question' THEN EXISTS (SELECT 1 FROM questions lr WHERE lr.id = ${idCol} AND ${liveRecordSql('lr')})
+      WHEN 'risk' THEN EXISTS (SELECT 1 FROM risks lr WHERE lr.id = ${idCol} AND ${liveRecordSql('lr')})
+      ELSE true END)`;

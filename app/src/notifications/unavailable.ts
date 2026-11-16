@@ -1,5 +1,6 @@
 // Unavailable-assignee alerts (spec §5): an open task whose assignee no longer holds an Active role in the project
 // (On Hold, expired, revoked), or whose awaited invitation was declined, revoked or expired. Each cause alerts once.
+import { liveRecordSql } from '../history/deleted-sql';
 import type { Pool } from 'pg';
 import { type MembershipRow, type ProjectRole, membershipState } from '../projects/membership';
 import type { Decided } from './fire';
@@ -62,7 +63,7 @@ export async function unavailableTriggers(
               (SELECT count(*)::int FROM task_events e WHERE e.task_id = t.id AND e.kind = 'reopened') AS "reopenCount",
               t.invitation_id AS "invitationId", i.status AS "invStatus", i.expires_at AS "invExpiresAt"
          FROM tasks t LEFT JOIN invitations i ON i.id = t.invitation_id
-        WHERE t.project_id = $1 AND t.status NOT IN ('completed', 'cancelled') AND NOT t.deadline_review_required
+        WHERE t.project_id = $1 AND t.status NOT IN ('completed', 'cancelled') AND NOT t.deadline_review_required AND ${liveRecordSql('t')}
         ORDER BY t.id`,
       [project.id],
     )

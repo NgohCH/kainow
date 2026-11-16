@@ -1,3 +1,4 @@
+import { liveRecordSql } from '../history/deleted-sql';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
@@ -170,7 +171,7 @@ export class ClosureService {
         const below = (
           await c.query(
             `WITH RECURSIVE below AS (SELECT id, status FROM tasks WHERE parent_id = $1 UNION ALL SELECT t.id, t.status FROM tasks t JOIN below b ON t.parent_id = b.id)
-             SELECT id FROM below WHERE status NOT IN ('completed', 'cancelled')`,
+             SELECT b.id FROM below b JOIN tasks x ON x.id = b.id WHERE b.status NOT IN ('completed', 'cancelled') AND ${liveRecordSql('x')}`,
             [recordId],
           )
         ).rows as Array<{ id: string }>;

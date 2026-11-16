@@ -21,6 +21,7 @@ import { InvitationsService } from '../projects/invitations.service';
 import { GRANT_READ_ONLY } from '../projects/matrix';
 import { checkNewAppointment } from '../projects/memberships.service';
 import { membershipState, todayUtc8 } from '../projects/membership';
+import { DELETED_LINK, liveRecordRefSql, liveRecordSql } from '../history/deleted-sql';
 import { type QuestionAction, type RiskAction, SEVERITIES, type Severity, questionTransition, riskTransition } from './lifecycles';
 import { TASK_ACTIONS, type TaskAction, type TaskStatus, ancestorsToReopen, parentMayComplete, taskIndicators, taskTransition } from './tasks';
 
@@ -383,16 +384,19 @@ export class RecordsService {
   /** Loads a task's project (a participant or grant holder may read it; changes are checked by the rules). */
   private async taskContext(c: PoolClient | Pool, user: AuthUser, taskId: string, lock: boolean) {
     if (!UUID.test(taskId)) throw new NotFoundException();
-    const row = (await c.query(`SELECT project_id FROM tasks WHERE id = $1`, [taskId])).rows[0];
+    // A Deleted (or held) task does not exist for direct requests and changes (history spec 4.3).
+    const row = (await c.query(`SELECT project_id FROM tasks t WHERE t.id = $1 AND ${liveRecordSql('t')}`, [taskId])).rows[0];
     if (!row) throw new NotFoundException();
     const ctx = await this.access.authorize(user, 'project.view', row.project_id, c, lock);
     const task = (
       await c.query(
         `SELECT id, parent_id AS "parentId", depth, assignee_id AS "assigneeId", status, to_char(due_on, 'YYYY-MM-DD') AS "dueOn"
-           FROM tasks WHERE id = $1 ${lock ? 'FOR UPDATE' : ''}`,
+           FROM tasks t WHERE t.id = $1 AND ${liveRecordSql('t')} ${lock ? 'FOR UPDATE' : ''}`,
         [taskId],
       )
-    ).rows[0] as { id: string; parentId: string | null; depth: number; assigneeId: string; status: TaskStatus; dueOn: string };
+    ).rows[0] as { id: string; parentId: string | null; depth: number; assigneeId: string; status: TaskStatus; dueOn: string } | undefined;
+    // Deleted between the two reads (the project lock is taken by then for a change).
+    if (!task) throw new NotFoundException();
     return { ctx, task };
   }
 
@@ -419,7 +423,8 @@ export class RecordsService {
       }
       let override = false;
       if (action === 'complete') {
-        const children = (await c.query(`SELECT status FROM tasks WHERE parent_id = $1`, [task.id])).rows.map((r) => r.status as TaskStatus);
+        // A Deleted subtask counts for nothing (history spec 4.3: out of progress counts).
+        const children = (await c.query(`SELECT status FROM tasks t WHERE t.parent_id = $1 AND ${liveRecordSql('t')}`, [task.id])).rows.map((r) => r.status as TaskStatus);
         const parentRule = parentMayComplete(children, overrideReason, ctx.roles);
         if (!parentRule.allowed) RecordsService.refusal(parentRule.reason);
         override = parentRule.override;
@@ -452,10 +457,11 @@ export class RecordsService {
   /** Loads a question or risk with its project under lock; anyone who may read the project gets this far. */
   private async recordContext(c: PoolClient, user: AuthUser, table: 'questions' | 'risks', id: string) {
     if (!UUID.test(id)) throw new NotFoundException();
-    const row = (await c.query(`SELECT project_id FROM ${table} WHERE id = $1`, [id])).rows[0];
+    const row = (await c.query(`SELECT project_id FROM ${table} x WHERE x.id = $1 AND ${liveRecordSql('x')}`, [id])).rows[0];
     if (!row) throw new NotFoundException();
     const ctx = await this.access.authorize(user, 'project.view', row.project_id, c, true);
-    const rec = (await c.query(`SELECT * FROM ${table} WHERE id = $1 FOR UPDATE`, [id])).rows[0];
+    const rec = (await c.query(`SELECT * FROM ${table} x WHERE x.id = $1 AND ${liveRecordSql('x')} FOR UPDATE`, [id])).rows[0];
+    if (!rec) throw new NotFoundException();
     return { ctx, rec };
   }
 
@@ -575,8 +581,10 @@ export class RecordsService {
                 CASE WHEN i.id IS NULL THEN NULL WHEN i.status = 'invited' AND i.expires_at <= $4 THEN 'expired' ELSE i.status END AS "invitationStatus",
                 x.quote, x.id AS "itemId",
                 COALESCE(${audienceVisibleSql('qa', '$2', '$3')}, true) AS "evidenceVisible", p.status AS "parentStatus",
-                CASE WHEN fo.id IS NULL THEN NULL ELSE json_build_object('id', fo.id, 'title', fo.title) END AS follows,
-                (SELECT json_build_object('id', n.id, 'title', n.title) FROM tasks n WHERE n.follows_task_id = t.id ORDER BY n.authorised_at, n.id LIMIT 1) AS "followedBy",
+                CASE WHEN fo.id IS NULL THEN NULL WHEN NOT ${liveRecordSql('fo')} THEN json_build_object('id', NULL, 'title', '${DELETED_LINK}')
+                     ELSE json_build_object('id', fo.id, 'title', fo.title) END AS follows,
+                (SELECT CASE WHEN ${liveRecordSql('n')} THEN json_build_object('id', n.id, 'title', n.title) ELSE json_build_object('id', NULL, 'title', '${DELETED_LINK}') END
+                   FROM tasks n WHERE n.follows_task_id = t.id ORDER BY n.authorised_at, n.id LIMIT 1) AS "followedBy",
                 EXISTS (SELECT 1 FROM change_requests r WHERE r.target_kind = 'task' AND r.target_id = t.id AND r.status = 'pending') AS "changeWaiting",
                 t.deadline_review_required AS "deadlineReviewRequired"
            FROM tasks t JOIN users u ON u.id = t.assignee_id
@@ -588,7 +596,7 @@ export class RecordsService {
            LEFT JOIN source_versions xv ON xv.id = xr.source_version_id
            LEFT JOIN sources xs ON xs.id = xv.source_id
            LEFT JOIN audiences qa ON qa.id = xs.audience_id
-          WHERE t.project_id = $1
+          WHERE t.project_id = $1 AND ${liveRecordSql('t')}
           ORDER BY t.due_on, t.authorised_at, t.id`,
         [ctx.project.id, user.id, ctx.today, this.now()],
       )
@@ -647,11 +655,13 @@ export class RecordsService {
     const decisions = (
       await this.pool.query(
         `SELECT d.id, d.statement, d.rationale, d.status, u.display_name AS "authorisedBy", d.authorised_at AS "authorisedAt",
-                CASE WHEN o.id IS NULL THEN NULL ELSE json_build_object('id', o.id, 'statement', o.statement) END AS replaces,
-                (SELECT json_build_object('id', n.id, 'statement', n.statement) FROM decisions n WHERE n.replaces_id = d.id ORDER BY n.authorised_at, n.id LIMIT 1) AS "replacedBy",
+                CASE WHEN o.id IS NULL THEN NULL WHEN NOT ${liveRecordSql('o')} THEN json_build_object('id', NULL, 'statement', '${DELETED_LINK}')
+                     ELSE json_build_object('id', o.id, 'statement', o.statement) END AS replaces,
+                (SELECT CASE WHEN ${liveRecordSql('n')} THEN json_build_object('id', n.id, 'statement', n.statement) ELSE json_build_object('id', NULL, 'statement', '${DELETED_LINK}') END
+                   FROM decisions n WHERE n.replaces_id = d.id ORDER BY n.authorised_at, n.id LIMIT 1) AS "replacedBy",
                 EXISTS (SELECT 1 FROM change_requests r WHERE r.target_kind = 'decision' AND r.target_id = d.id AND r.status = 'pending') AS "changeWaiting"
            FROM decisions d JOIN users u ON u.id = d.authorised_by LEFT JOIN decisions o ON o.id = d.replaces_id
-          WHERE d.project_id = $1 ORDER BY d.authorised_at, d.id`,
+          WHERE d.project_id = $1 AND ${liveRecordSql('d')} ORDER BY d.authorised_at, d.id`,
         [ctx.project.id],
       )
     ).rows.map((d) => ({
@@ -664,7 +674,7 @@ export class RecordsService {
         `SELECT q.id, q.text, q.status, json_build_object('id', r.id, 'displayName', r.display_name) AS requester,
                 COALESCE((SELECT json_agg(json_build_object('answer', a.answer, 'author', au.display_name, 'at', a.at) ORDER BY a.at, a.id)
                             FROM question_answers a JOIN users au ON au.id = a.author_id WHERE a.question_id = q.id), '[]') AS answers
-           FROM questions q JOIN users r ON r.id = q.requester_id WHERE q.project_id = $1 ORDER BY q.authorised_at, q.id`,
+           FROM questions q JOIN users r ON r.id = q.requester_id WHERE q.project_id = $1 AND ${liveRecordSql('q')} ORDER BY q.authorised_at, q.id`,
         [ctx.project.id],
       )
     ).rows.map((q) => {
@@ -680,7 +690,7 @@ export class RecordsService {
                   WHERE e.record_kind = 'risk' AND e.record_id = k.id AND e.kind = 'handed_over_from' ORDER BY e.at DESC, e.id DESC LIMIT 1) AS "handedOverFrom",
                 (SELECT json_build_object('projectId', e.detail->>'toProjectId', 'name', e.detail->>'toProjectName') FROM record_events e
                   WHERE e.record_kind = 'risk' AND e.record_id = k.id AND e.kind = 'handed_over_to' ORDER BY e.at DESC, e.id DESC LIMIT 1) AS "handedOverTo"
-           FROM risks k LEFT JOIN users r ON r.id = k.responsible_id WHERE k.project_id = $1 ORDER BY k.authorised_at, k.id`,
+           FROM risks k LEFT JOIN users r ON r.id = k.responsible_id WHERE k.project_id = $1 AND ${liveRecordSql('k')} ORDER BY k.authorised_at, k.id`,
         [ctx.project.id],
       )
     ).rows.map((k) => {
@@ -694,9 +704,10 @@ export class RecordsService {
     const open = (
       await this.pool.query(
         `SELECT f.id, f.record_kind AS kind, f.record_id AS "recordId", f.raised_at AS "raisedAt",
-                json_build_object('id', d.id, 'statement', d.statement, 'status', d.status) AS decision
+                CASE WHEN ${liveRecordSql('d')} THEN json_build_object('id', d.id, 'statement', d.statement, 'status', d.status)
+                     ELSE json_build_object('id', NULL, 'statement', '${DELETED_LINK}', 'status', d.status) END AS decision
            FROM review_flags f JOIN decisions d ON d.id = f.decision_id
-          WHERE f.project_id = $1 AND f.cleared_at IS NULL ORDER BY f.raised_at, f.id`,
+          WHERE f.project_id = $1 AND f.cleared_at IS NULL AND ${liveRecordRefSql('f.record_kind', 'f.record_id')} ORDER BY f.raised_at, f.id`,
         [ctx.project.id],
       )
     ).rows;

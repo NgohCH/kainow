@@ -23,6 +23,8 @@ const CAUSES: Readonly<Record<RemovalReason, string>> = {
   deleted: 'Something it used was deleted.',
   audience_tightened: 'The audience of something it used was narrowed.',
   summary_withdrawn: 'A shareable summary it used was withdrawn or hidden.',
+  record_deleted: 'A record it used was deleted.',
+  quarantined: 'Something it used is held for a suspected credential.',
 };
 const UNKNOWN_CAUSE = 'Something it used can no longer be read by everyone who could see it.';
 

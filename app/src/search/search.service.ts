@@ -5,7 +5,7 @@ import { UUID } from '../common/uuid7';
 import { activeManagerSql, audienceVisibleSql } from '../discussion/audience';
 import { PG_POOL } from '../db/database.module';
 import { summaryShownSql } from '../assist/material';
-import { liveSourceSql } from '../history/deleted-sql';
+import { liveRecordRefSql, liveSourceSql } from '../history/deleted-sql';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { loadArchiveState } from '../projects/archive';
 import type { GrantKind } from '../projects/grants';
@@ -92,6 +92,8 @@ WITH hits AS (
      AND (d.kind NOT IN ('note', 'ai_proposal') OR EXISTS (SELECT 1 FROM sources s WHERE s.id = d.source_id AND ${liveSourceSql('s')} AND (d.kind <> 'note' OR s.kind <> 'discussion')
           AND ${summaryShownSql('s', { user, today: '$3' })}))
      AND (d.kind <> 'person' OR d.ends_on IS NULL OR d.ends_on >= $3::date)
+     -- A Deleted or held record (and a question's answers with it) is not found (history spec 4.3): item_id is the record.
+     AND ${liveRecordRefSql('d.kind', 'd.item_id')}
 ), best AS (
   SELECT DISTINCT ON (project_id, kind, item_id) * FROM hits
    -- Current wording first; among it, the item's own row (no match note) before a title or an answer row; then a
