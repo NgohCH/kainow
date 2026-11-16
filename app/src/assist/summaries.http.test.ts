@@ -306,7 +306,8 @@ describe('shareable summaries', { skip: SKIP_NO_DB }, () => {
     // A tick names the version it was seen on: required, and refused once a newer version exists.
     const leave = v.current.marks.find((m: { kind: string }) => m.kind === 'leave_out');
     assert.equal((await pm.request('POST', `/summaries/${id}/marks/${leave.id}/intended`, {})).status, 400);
-    assert.ok(!/acme|ada|lim/i.test(leave.id), 'mark ids are opaque');
+    // Opaque: 32 hex characters, so no phrase or name can appear in it (a random hex id may still spell "ada").
+    assert.match(leave.id, /^[0-9a-f]{32}$/, 'mark ids are opaque');
     // Editing the phrase away: the new version's marks are found again (the name is marked again, not yet ticked).
     r = await dep.request('PUT', `/summaries/${id}`, { body: 'The turbine replacement goes ahead next month. Ada Lim follows up.', basedOnVersion: 1 });
     assert.equal(r.status, 200, JSON.stringify(r.body));
