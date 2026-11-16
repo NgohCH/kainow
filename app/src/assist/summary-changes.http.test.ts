@@ -344,7 +344,11 @@ describe('shareable summaries when the original changes', { skip: SKIP_NO_DB }, 
     t.clock.advanceSeconds(1);
     const r = await dep.request('POST', `/threads/${thread}/summaries`, { intendedAudience: { mode: 'project' }, leaveOut: '' });
     assert.equal(r.status, 201, JSON.stringify(r.body));
-    assert.equal(await run(lastRequest(), new SummaryModel()), 'succeeded');
+    const model = new SummaryModel();
+    assert.equal(await run(lastRequest(), model), 'succeeded');
+    assert.equal(model.calls.length, 1);
+    assert.ok(!model.calls[0].user.includes('Old remark.'), 'a hidden message is never sent');
+    assert.ok(model.calls[0].user.includes('The supplier was late again.'));
     t.clock.advanceSeconds(1);
     // Hidden after the draft was made, before approval: approving is refused, nothing reaches the wider audience.
     await hide(messages[1]);
@@ -357,6 +361,25 @@ describe('shareable summaries when the original changes', { skip: SKIP_NO_DB }, 
     // A fresh draft, requested after both were hidden, can be approved.
     const again = await approve(() => dep.request('POST', `/threads/${thread}/summaries`, { intendedAudience: { mode: 'project' }, leaveOut: '' }));
     assert.equal((await state(again.id)).state, 'approved');
+  });
+
+  test('hidden and deleted messages never reach the summary prompt, including one hidden while the request waited', async () => {
+    const { thread, messages } = await meeting(['The turbine replacement goes ahead next month.', 'Old remark.', 'Deleted remark.', 'Late remark.']);
+    await hide(messages[1]);
+    assert.equal((await ada.request('POST', `/messages/${messages[2]}/delete`, { reason: 'Posted by mistake' })).status, 200);
+    t.clock.advanceSeconds(1);
+    const r = await dep.request('POST', `/threads/${thread}/summaries`, { intendedAudience: { mode: 'project' }, leaveOut: '' });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    // Hidden while the request was queued: the input is rebuilt at job start, so it is not sent either.
+    t.clock.advanceSeconds(1);
+    await hide(messages[3]);
+    const model = new SummaryModel();
+    assert.equal(await run(lastRequest(), model), 'succeeded');
+    assert.equal(model.calls.length, 1);
+    const sent = model.calls[0].user;
+    assert.ok(sent.includes('The turbine replacement goes ahead next month.'));
+    for (const gone of ['Old remark.', 'Deleted remark.', 'Late remark.']) assert.ok(!sent.includes(gone), `${gone} is not sent`);
+    assert.ok(!model.calls[0].system.includes('remark'), 'nor put in the instructions');
   });
 
   test('a newer version is refused when a message posted before it is hidden before approval', async () => {
