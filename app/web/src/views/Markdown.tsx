@@ -42,7 +42,7 @@ export function Markdown({
         if (b.t === 'table')
           return (
             <div key={i} className="md-table" role="region" aria-label="Table" tabIndex={0}>
-              <table className="table">
+              <table className="md-table-grid">
                 <thead>
                   <tr>{b.head.map((c, j) => <th key={j} scope="col">{inline(c)}</th>)}</tr>
                 </thead>

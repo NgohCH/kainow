@@ -64,7 +64,7 @@ button:disabled { opacity: 0.45; cursor: not-allowed; }
 button.primary, .button { background: var(--teal); color: #fff; }
 button.primary:disabled { background: var(--teal); }
 button.quiet { border-color: transparent; background: none; font-weight: 500; text-decoration: underline; padding: 0.25rem 0.5rem; }
-.tabs { display: flex; gap: 0.25rem; border-bottom: 1px solid var(--rule); }
+.tabs { display: flex; flex-wrap: wrap; gap: 0 0.25rem; border-bottom: 1px solid var(--rule); }
 .tabs button { border: 0; border-bottom: 3px solid transparent; border-radius: 0; background: none; color: var(--muted); }
 .tabs button[aria-selected='true'] { color: var(--ink); border-bottom-color: var(--teal); }
 
@@ -354,6 +354,9 @@ button.marker { padding: 0 0.2rem; font-weight: 700; text-decoration: underline;
 .draft-text { padding: 0.5rem 0.75rem; overflow-wrap: anywhere; }
 .md-table { overflow-x: auto; margin: 0.5rem 0; }
 .md-table:focus-visible { outline: 3px solid var(--teal); outline-offset: 2px; }
+.md-table-grid { width: 100%; border-collapse: collapse; font-size: 0.95rem; margin: 0; }
+.md-table-grid th, .md-table-grid td { text-align: left; padding: 0.45rem 0.5rem; border-bottom: 1px solid var(--rule); vertical-align: top; }
+.md-table-grid th { color: var(--muted); font-weight: 600; font-size: 0.85rem; }
 .footnotes { list-style: none; padding-left: 0; }
 .footnotes li:focus-visible { outline: 3px solid var(--teal); outline-offset: 2px; }
 .diff { white-space: pre-wrap; overflow-wrap: anywhere; font-family: var(--mono, monospace); font-size: 0.9rem; border: 1px solid var(--rule); padding: 0.5rem; margin: 0; }
