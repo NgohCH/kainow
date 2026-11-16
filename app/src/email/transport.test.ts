@@ -151,12 +151,19 @@ test('a token request that hangs is aborted and becomes a temporary failure', as
       init?.signal?.addEventListener('abort', () => reject(new Error('aborted')));
     })) as typeof fetch;
   const source = new M365TokenSource(cfg, hanging, () => new Date(0), 20);
-  await assert.rejects(source.token(), (err: unknown) => {
-    assert.ok(err instanceof TokenError);
-    assert.equal(err.status, 0);
-    assert.equal(classify(err).kind, 'temporary');
-    return true;
-  });
+  // AbortSignal.timeout's timer does not hold the event loop open, and the fake fetch has no socket that would;
+  // without this the test runner (Node 22) sees an idle loop and cancels the test before the abort fires.
+  const keepAlive = setInterval(() => undefined, 1_000);
+  try {
+    await assert.rejects(source.token(), (err: unknown) => {
+      assert.ok(err instanceof TokenError);
+      assert.equal(err.status, 0);
+      assert.equal(classify(err).kind, 'temporary');
+      return true;
+    });
+  } finally {
+    clearInterval(keepAlive);
+  }
 });
 
 test('throttling replies are temporary; other 5xx replies stay permanent; the reply text is never kept', () => {
