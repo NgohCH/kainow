@@ -13,6 +13,7 @@ import { EmailModule, type EmailNudge } from './email/nudge';
 import { ExtractionModule } from './extraction/extraction.module';
 import type { ExtractionQueue } from './extraction/queue';
 import { GoLiveModule } from './golive/golive.module';
+import { HistoryModule } from './history/history.module';
 import { NotesModule } from './notes/notes.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { DigestsModule } from './digests/digests.module';
@@ -77,6 +78,7 @@ export class AppModule {
         SearchModule,
         DiscussionModule.register(options.meetingEndHook, options.automaticAnalysis, options.analysisQueue),
         AssistModule.register(options.assistQueue),
+        HistoryModule,
       ],
       controllers: [HealthController],
     };

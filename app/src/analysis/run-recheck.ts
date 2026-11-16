@@ -1,5 +1,6 @@
 import type { Pool } from 'pg';
 import { type AudienceMode, inAudience } from '../discussion/audience';
+import { SOURCE_DELETED } from '../extraction/runner';
 import type { ProjectAccess } from '../projects/access.service';
 import { type ProjectStatus, decide } from '../projects/matrix';
 
@@ -49,11 +50,23 @@ export async function loadRun(pool: Pool, id: string): Promise<RunRow | undefine
 /**
  * The checks of spec 7.2 and 11, made again at every attempt: thread, project state, kind of thread, and the requester's right and
  * audience. A proposals run needs a discussion, a minutes run a meeting. An automatic run (no requester) has no person to recheck.
+ * The thread's own source must not be Deleted (history spec 4.2): a discussion's stored transcript for an analysis (a retry
+ * reuses it, a first attempt would add a version to it), the meeting's minutes for a minutes draft (it would be published there).
  */
 export async function recheckRun(pool: Pool, access: ProjectAccess, run: RunRow, expect: 'discussion' | 'meeting'): Promise<Refusal | null> {
   const what = expect === 'meeting' ? 'minutes were not drafted' : 'analysis did not run';
   if (!run.threadKind || !run.projectId || !run.projectStatus || !run.audienceId) {
     return { code: 'thread_not_found', detail: expect === 'meeting' ? 'The meeting no longer exists, so the minutes were not drafted.' : 'The discussion no longer exists, so the analysis did not run.' };
+  }
+  const deleted = await pool.query(`SELECT 1 FROM sources WHERE thread_id = $1 AND kind = $2 AND status = 'deleted' LIMIT 1`, [
+    run.threadId,
+    expect === 'meeting' ? 'minutes' : 'discussion',
+  ]);
+  if (deleted.rowCount) {
+    return {
+      code: SOURCE_DELETED,
+      detail: expect === 'meeting' ? "The meeting's minutes were deleted, so the minutes were not drafted." : "The discussion's transcript was deleted, so the analysis did not run.",
+    };
   }
   if (!OPEN_STATES.includes(run.projectStatus)) {
     return {

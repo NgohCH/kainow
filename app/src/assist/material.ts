@@ -1,6 +1,7 @@
 import type { PoolClient } from 'pg';
 import { UUID } from '../common/uuid7';
 import { audienceVisibleSql } from '../discussion/audience';
+import { liveSourceSql } from '../history/deleted-sql';
 import { type ProjectContext, canReadContent } from '../projects/access.service';
 import { hrefFor } from '../search/query';
 
@@ -104,9 +105,9 @@ export function summaryShownSql(s: string, viewer?: { user: string; today: strin
   return `(${s}.kind <> 'summary' OR EXISTS (SELECT 1 FROM summaries sm WHERE sm.id = ${s}.summary_id AND (sm.state IN ('approved', 'review_required')${hidden})))`;
 }
 
-/** A source whose current text may be material: not deleted, published, not a transcript, a summary only while approved. */
+/** A source whose current text may be material: not Deleted or held, published, not a transcript, a summary only while approved. */
 export function sourceOkSql(s: string): string {
-  return `${s}.status <> 'deleted' AND ${s}.publication = 'published' AND ${s}.kind <> 'discussion'
+  return `${liveSourceSql(s)} AND ${s}.publication = 'published' AND ${s}.kind <> 'discussion'
      AND ${summaryShownSql(s)}`;
 }
 
@@ -358,7 +359,7 @@ async function findRecords(db: Db, scope: MaterialScope, projectId: string, word
       JOIN sources s ON s.id = v.source_id
       JOIN audiences au ON au.id = s.audience_id
       CROSS JOIN LATERAL (SELECT coalesce((SELECT e.text FROM extraction_item_edits e WHERE e.item_id = x.id ORDER BY e.edited_at DESC, e.id DESC LIMIT 1), x.text) AS wording) w
-     WHERE x.review_status = 'pending' AND s.project_id = ${proj}::uuid AND s.status <> 'deleted' AND s.publication = 'published'
+     WHERE x.review_status = 'pending' AND s.project_id = ${proj}::uuid AND ${liveSourceSql('s')} AND s.publication = 'published'
        AND ${audienceSql(scope, p, 'au')} AND ${hit('w.wording')}`);
   }
   if (scope.kind === 'personal' && kinds.includes('human_proposal')) {
@@ -463,7 +464,7 @@ export async function readableMaterial(db: Db, scope: MaterialScope, items: Mate
            -- The source's current audience as well as the stored one: publishing a returned note may give it a new row.
            EXISTS (SELECT 1 FROM extraction_items x JOIN source_versions v ON v.id = x.source_version_id JOIN sources s ON s.id = v.source_id
                      JOIN audiences sa ON sa.id = s.audience_id
-                    WHERE x.id = i.record_id AND s.project_id = ${proj}::uuid AND s.status <> 'deleted' AND s.publication = 'published'
+                    WHERE x.id = i.record_id AND s.project_id = ${proj}::uuid AND ${liveSourceSql('s')} AND s.publication = 'published'
                       AND ${audienceSql(scope, p, 'sa')})
            AND EXISTS (SELECT 1 FROM audiences au WHERE au.id = i.record_audience_id AND au.project_id = ${proj}::uuid AND ${audienceSql(scope, p, 'au')})
          WHEN i.record_kind = 'human_proposal' THEN

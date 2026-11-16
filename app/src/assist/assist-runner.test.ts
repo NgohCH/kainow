@@ -140,7 +140,8 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     const hidden = await note('Pump costs', 'The pump service invoice was disputed with the vendor.');
     const id = await ask('pump service');
     assert.equal((await material(id)).length, 2);
-    await t.pool.query(`UPDATE sources SET status = 'deleted' WHERE id = $1`, [hidden]);
+    // Narrowed behind the hook's back (a deleted source now blocks the request outright, history spec 4.2).
+    await t.pool.query(`UPDATE audiences SET mode = 'restricted' WHERE id = (SELECT audience_id FROM sources WHERE id = $1)`, [hidden]);
 
     const model = new FakeModel((req) => {
       const marker = /marker="(P\d)" location="Plant room/.exec(req.user)?.[1] as string;
@@ -148,7 +149,7 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     });
     assert.equal(await runner(model).process(id, 1, false), 'succeeded');
     const user = model.calls[0].req.user;
-    assert.ok(!user.includes('disputed'), 'the deleted note never reaches the AI');
+    assert.ok(!user.includes('disputed'), 'the narrowed note never reaches the AI');
     const rows = await material(id);
     const gone = rows.find((m) => m.location.startsWith('Pump costs'));
     const kept = rows.find((m) => m.location.startsWith('Plant room'));
@@ -159,7 +160,7 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
   test('all material dropped at start blocks without an AI call or spend', async () => {
     const only = await note('Pump costs', 'The pump service invoice was disputed with the vendor.');
     const id = await ask('pump service');
-    await t.pool.query(`UPDATE sources SET status = 'deleted' WHERE id = $1`, [only]);
+    await t.pool.query(`UPDATE audiences SET mode = 'restricted' WHERE id = (SELECT audience_id FROM sources WHERE id = $1)`, [only]);
     const model = new FakeModel();
     assert.equal(await runner(model).process(id, 1, false), 'blocked');
     const r = await request(id);

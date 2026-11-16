@@ -5,6 +5,7 @@ import { UUID } from '../common/uuid7';
 import { activeManagerSql, audienceVisibleSql } from '../discussion/audience';
 import { PG_POOL } from '../db/database.module';
 import { summaryShownSql } from '../assist/material';
+import { liveSourceSql } from '../history/deleted-sql';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { loadArchiveState } from '../projects/archive';
 import type { GrantKind } from '../projects/grants';
@@ -84,10 +85,11 @@ WITH hits AS (
      -- A submission or returned note is seen by its submitter and the managers only, whatever audience is intended.
      AND (d.publication IS NULL OR d.publication = 'published' OR d.submitted_by = ${user}::uuid
           OR ${activeManagerSql('d.project_id', user, '$3')})
-     -- A deleted note's text and proposals are hidden (sub-project 5 quarantine adds its condition here too).
+     -- A Deleted or held note's title, text and proposals are hidden (history spec 4.2, 7.2): every note and ai_proposal
+     -- branch of the view carries its source in source_id, so this one condition covers them all.
      -- An approved shareable summary is found as a note by its own audience; a hidden one only by people also in the
      -- original's audience; a draft or withdrawn one by nobody.
-     AND (d.kind NOT IN ('note', 'ai_proposal') OR EXISTS (SELECT 1 FROM sources s WHERE s.id = d.source_id AND s.status <> 'deleted' AND (d.kind <> 'note' OR s.kind <> 'discussion')
+     AND (d.kind NOT IN ('note', 'ai_proposal') OR EXISTS (SELECT 1 FROM sources s WHERE s.id = d.source_id AND ${liveSourceSql('s')} AND (d.kind <> 'note' OR s.kind <> 'discussion')
           AND ${summaryShownSql('s', { user, today: '$3' })}))
      AND (d.kind <> 'person' OR d.ends_on IS NULL OR d.ends_on >= $3::date)
 ), best AS (

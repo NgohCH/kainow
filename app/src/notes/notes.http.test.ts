@@ -234,4 +234,22 @@ describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
     await assert.rejects(pool.query('DELETE FROM sources'), /never deleted/);
     assert.equal((await json('GET', `/notes/${body.source.id}/versions/1`)).body.version.text, 'original');
   });
+  test('manager import with an sk- key is refused with the kind only', async () => {
+    const key = `sk-${'a1B2c3D4e5'.repeat(3)}`;
+    const refused = (r: { status: number; body: any }) => {
+      assert.equal(r.status, 400, JSON.stringify(r.body));
+      assert.equal(r.body.message, 'Not posted: this looks like it contains API secret key (sk-). Remove it and post again.');
+      assert.ok(!JSON.stringify(r.body).includes(key), 'the key is not repeated');
+    };
+    refused(await json('POST', `/projects/${projectId}/notes`, { title: 'Keys', text: `The portal key is ${key}` }));
+    // An uploaded file is checked on its text after extraction.
+    refused(await upload(`/projects/${projectId}/notes/upload`, 'keys.docx', makeDocx([`The portal key is ${key}`])));
+    assert.equal(Number((await pool.query('SELECT count(*) AS n FROM sources')).rows[0].n), 0);
+    // A new version is checked as well, by paste and by upload.
+    const { body } = await json('POST', `/projects/${projectId}/notes`, { title: 'Plain', text: 'Nothing secret here.' });
+    refused(await json('POST', `/notes/${body.source.id}/versions`, { text: `Now with ${key}` }));
+    refused(await upload(`/notes/${body.source.id}/versions/upload`, 'v2.txt', Buffer.from(`Now with ${key}`)));
+    assert.equal(Number((await pool.query('SELECT count(*) AS n FROM source_versions')).rows[0].n), 1);
+    assert.ok(!JSON.stringify((await pool.query('SELECT detail FROM audit_events')).rows).includes(key));
+  });
 });

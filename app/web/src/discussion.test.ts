@@ -280,6 +280,8 @@ test('record evidence shows restricted text for outsiders', () => {
     href: '#/projects/p1/threads/t1?m=12',
   });
   assert.equal(sourceFlagText('deleted'), 'Source message deleted — review');
+  assert.equal(sourceFlagText('source_deleted'), 'Source deleted — review');
+  assert.deepEqual(evidenceView({ quote: null, quoteMasked: 'source_deleted', sourceFlag: 'source_deleted' }), { kind: 'quote', quote: '[Source deleted]', flag: 'Source deleted — review', from: null, href: null });
 });
 
 test('offsets are never used to mark a discussion source, with or without evidence on the items', () => {

@@ -7,6 +7,7 @@ import { PG_POOL } from '../db/database.module';
 import { type AudienceChange, type AudienceRow, type Person, inAudience, parseAudienceChange } from '../discussion/audience';
 import { AudienceService } from '../discussion/audience.service';
 import { refuseSecrets } from '../discussion/messages';
+import { liveSourceSql } from '../history/deleted-sql';
 import { STALE_EDIT } from '../discussion/threads.service';
 import { FROM_RESTRICTED_LABEL, NotesService, SUMMARY_APPROVED_LABEL, formatDay } from '../notes/notes.service';
 import { NoteTextError, normaliseText, sha256Hex } from '../notes/text';
@@ -170,7 +171,7 @@ async function originalText(db: Db, row: Pick<SummaryRow, 'originalSourceId' | '
   if (row.originalSourceId) {
     const { rows } = await db.query<{ text: string }>(
       `SELECT v.text_content AS text FROM sources s JOIN source_versions v ON v.source_id = s.id
-        WHERE s.id = $1 AND s.status = 'active' ORDER BY v.version_no DESC LIMIT 1`,
+        WHERE s.id = $1 AND ${liveSourceSql('s')} ORDER BY v.version_no DESC LIMIT 1`,
       [row.originalSourceId],
     );
     return rows[0]?.text ?? null;
@@ -553,7 +554,7 @@ export class SummariesService {
       const ctx = await this.access.authorize(user, 'summary.request', seen.project.id, db);
       if (row.kind === 'summary') throw new ConflictException(NOT_A_SUMMARY_SOURCE);
       if (row.publication !== 'published') throw new ConflictException(NOT_PUBLISHED);
-      const active = (await db.query(`SELECT 1 FROM sources WHERE id = $1 AND status = 'active'`, [sourceId])).rowCount;
+      const active = (await db.query(`SELECT 1 FROM sources s WHERE s.id = $1 AND ${liveSourceSql('s')}`, [sourceId])).rowCount;
       if (!active) throw new NotFoundException();
       if (row.audience.mode !== 'restricted') throw new ConflictException(NOT_RESTRICTED);
       return { ctx, original: { originalSourceId: sourceId, originalThreadId: null } };
@@ -835,6 +836,8 @@ export class SummariesService {
       const open = Number((await db.query(`SELECT count(*) AS n FROM summary_marks WHERE version_id = $1 AND intended_by IS NULL`, [latest.id])).rows[0].n);
       if (open > 0) throw new ConflictException(MARKS_OPEN);
       if (row.originalThreadId && (await this.moderatedSince(db, row.originalThreadId, latest.id))) throw new ConflictException(MODERATED_SINCE);
+      // An AI version is not checked when written, so the text approved for sharing is checked here (D79): kind only.
+      refuseSecrets(latest.body);
       const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
       if (reason === '' || reason.length > MAX_REASON) throw new BadRequestException(REASON_REQUIRED);
       refuseSecrets(reason);

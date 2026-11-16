@@ -6,7 +6,7 @@ import { type AudienceMode, inAudience } from '../discussion/audience';
 import { findCredentials } from '../extraction/credentials';
 import { type JsonSchemaModel, ModelBadResponse } from '../extraction/model';
 import { REQUEST_TIMEOUT_MS } from '../extraction/prompt';
-import type { RunOutcome } from '../extraction/runner';
+import { type RunOutcome, SOURCE_DELETED } from '../extraction/runner';
 import { ProjectAccess, canReadContent } from '../projects/access.service';
 import { type ProjectStatus, decide } from '../projects/matrix';
 import type { Usage } from '../spend/cost';
@@ -260,6 +260,10 @@ export class AssistRunner {
 
     const scope = await this.recheck(request);
     if ('code' in scope) return this.end(request, 'blocked', scope);
+    // A source this request used was deleted while it waited (history spec 4.2): no AI call, no charge.
+    if (await this.usedDeletedSource(request.id)) {
+      return this.end(request, 'blocked', { code: SOURCE_DELETED, detail: 'A source this request used was deleted, so the AI request did not run.' });
+    }
 
     const spec = KINDS[request.kind];
     const build = builders.get(request.kind);
@@ -368,6 +372,29 @@ export class AssistRunner {
       return { code: 'requester_not_allowed', detail: 'The person who asked can no longer read this thread, so the AI request did not run.' };
     }
     return { kind: 'thread', ctx, threadAudienceId: thread.id };
+  }
+
+  /**
+   * Whether any material still to be sent comes from a Deleted source: a passage of one of its versions, or a pending
+   * proposal extracted from it. Through the material's primary key, then passages, versions and sources by primary key.
+   */
+  private async usedDeletedSource(requestId: string): Promise<boolean> {
+    const { rowCount } = await this.d.pool.query(
+      `SELECT 1 FROM ai_request_material m
+         JOIN passages p ON p.id = m.passage_id AND p.owner_kind = 'source_version'
+         JOIN source_versions v ON v.id = p.owner_id
+         JOIN sources s ON s.id = v.source_id
+        WHERE m.request_id = $1 AND NOT m.dropped_at_start AND s.status = 'deleted'
+       UNION ALL
+       SELECT 1 FROM ai_request_material m
+         JOIN extraction_items x ON x.id = m.record_id
+         JOIN source_versions v ON v.id = x.source_version_id
+         JOIN sources s ON s.id = v.source_id
+        WHERE m.request_id = $1 AND m.record_kind = 'ai_proposal' AND NOT m.dropped_at_start AND s.status = 'deleted'
+       LIMIT 1`,
+      [requestId],
+    );
+    return (rowCount ?? 0) > 0;
   }
 
   /** Cited flags, the kind's output and the request's success are stored together. False when the request had already ended. */

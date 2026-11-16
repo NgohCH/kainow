@@ -36,6 +36,14 @@ test('the matrix holds exactly the agreed rows', () => {
     'summary.request': ['pm,deputy_pm,owner,sponsor', 'draft,planned,active'],
     'summary.approve': ['pm,owner,sponsor', 'draft,planned,active'],
     'summary.review': ['pm,owner,sponsor', 'draft,planned,active,deferred,closed'],
+    'source.delete': ['pm,owner,sponsor', 'draft,planned,active'],
+    'source.restore': ['pm,owner,sponsor', 'draft,planned,active,deferred,closed'],
+    'record.delete': ['owner,sponsor', 'draft,planned,active'],
+    'record.restore': ['owner,sponsor', 'draft,planned,active,deferred,closed'],
+    'record.delegate_deletion': ['owner,sponsor', 'draft,planned,active,deferred,closed'],
+    'secret.report': ['participant', 'draft,planned,active,deferred,closed'],
+    'quarantine.release': ['pm,owner,sponsor', 'draft,planned,active,deferred,closed'],
+    'quarantine.copies': ['pm,deputy_pm', 'draft,planned,active,deferred,closed'],
   });
   assert.equal(PROJECT_MATRIX['proposal.review'].refusal, 'Only the Owner or a Sponsor can approve or reject proposals, and only while the project is Planned or Active.');
 });
@@ -94,7 +102,7 @@ test('role managers follow the accepted matrix for every target, manager and sta
 
 test('a grant allows reading, and asking the AI privately', async () => {
   const { GRANT_ACTIONS } = await import('./matrix');
-  assert.deepEqual(GRANT_ACTIONS, ['project.view', 'note.view', 'assist.ask']);
+  assert.deepEqual(GRANT_ACTIONS, ['project.view', 'note.view', 'assist.ask', 'secret.report']);
 });
 
 test('AI assist actions: participants ask, share and request reports; leaders review; summaries for accountable roles', () => {

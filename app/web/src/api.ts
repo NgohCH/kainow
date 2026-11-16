@@ -146,9 +146,9 @@ export interface Item {
   alternatives: string[];
   dueReading: DueReading;
   reviewerDue: ReviewerDue | null;
-  /** Null when the quote's message is now hidden or deleted (see quoteMasked). */
+  /** Null when the quote's message is now hidden or deleted, or its source is Deleted (see quoteMasked). */
   quote: string | null;
-  quoteMasked?: 'deleted' | 'hidden' | null;
+  quoteMasked?: 'deleted' | 'hidden' | 'source_deleted' | null;
   quoteStart: number | null;
   quoteEnd: number | null;
   quoteMatches: number;
@@ -161,8 +161,8 @@ export interface Item {
   record: { kind: 'task' | 'decision' | 'question' | 'risk'; id: string } | null;
   /** Approved before records existed: it still needs authorising to become a record. */
   approvedWithoutRecord: boolean;
-  /** Set when the quote lies in a discussion message that is now hidden or deleted. */
-  sourceFlag?: 'deleted' | 'hidden' | null;
+  /** Set when the quote lies in a discussion message that is now hidden or deleted, or the source is Deleted. */
+  sourceFlag?: 'deleted' | 'hidden' | 'source_deleted' | null;
   /** Set when the quote lies in a discussion message: which message, by whom and when. */
   discussionEvidence?: { threadId: string; messageNo: number; authorName: string; at: string } | null;
   /** True when a reviewer has changed the wording. `original` is then what the model said. */
