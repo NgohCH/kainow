@@ -200,10 +200,13 @@ function seedSql(now: Date): string[] {
   return sql;
 }
 
-/** Seeds the realistic data set into an empty, migrated bench database. Returns the instant "now" for the tick. */
-export async function seedBench(pool: Pool, log: (m: string) => void = console.log): Promise<Date> {
+/**
+ * Seeds the realistic data set into an empty, migrated bench database. Returns the instant "now" for the tick.
+ * `guard` checks the connected database's name (the 4b bench passes its own, which also admits `_test`).
+ */
+export async function seedBench(pool: Pool, log: (m: string) => void = console.log, guard: (url: string) => unknown = assertBenchDatabase): Promise<Date> {
   const name = (await pool.query(`SELECT current_database() AS name`)).rows[0].name as string;
-  assertBenchDatabase(`postgres://x/${name}`);
+  guard(`postgres://x/${name}`);
   await pool.query(`CREATE TABLE IF NOT EXISTS bench_meta (key text PRIMARY KEY, value text NOT NULL)`);
   const prior = await pool.query(`SELECT value FROM bench_meta WHERE key = 'seeded_at'`);
   if (prior.rows[0]) {
@@ -285,11 +288,11 @@ async function measureTick(pool: Pool, now: Date): Promise<BenchResult['tick']> 
   return { medianMs: median(allMs), allMs, started, candidates, idleMedianMs: median(idle) };
 }
 
-interface Session {
+export interface Session {
   request(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }>;
 }
 
-async function startApp(databaseUrl: string): Promise<{ app: INestApplication; base: string; signIn: (email: string) => Promise<Session> }> {
+export async function startApp(databaseUrl: string): Promise<{ app: INestApplication; base: string; signIn: (email: string) => Promise<Session> }> {
   const sender = new CaptureSender();
   const config = loadConfig({
     DATABASE_URL: databaseUrl,
