@@ -128,6 +128,16 @@ describe('authorising proposals into records', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual([after.awaitingMembership, after.invitation], [false, null]);
   });
 
+  test("the records list judges an invitation's expiry by the app clock, not the database's", async () => {
+    // Open on the app clock at issue, expired once the app clock passes the 7 days. Using the database's own now()
+    // fails one side or the other whatever the real date is.
+    assert.equal((await authorise(owner, 'action', { inviteEmail: 'late@example.org', dueOn: '2026-11-20' })).status, 201);
+    const status = async () => (await (await t.signIn('pm@example.org')).request('GET', `/projects/${projectId}/records`)).body.tasks[0].invitation;
+    assert.equal(await status(), 'invited');
+    t.clock.advanceMinutes(7 * 24 * 60 + 1);
+    assert.equal(await status(), 'expired');
+  });
+
   test('question, risk and decision', async () => {
     const q = await authorise(owner, 'question');
     assert.equal(q.status, 201);

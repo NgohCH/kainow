@@ -572,7 +572,7 @@ export class RecordsService {
         `SELECT t.id, t.parent_id AS "parentId", t.depth, t.title, t.assignee_id AS "assigneeId", u.display_name AS "assigneeName",
                 t.owner_as_written AS "ownerAsWritten", to_char(t.due_on, 'YYYY-MM-DD') AS "dueOn", t.status,
                 to_char(p.due_on, 'YYYY-MM-DD') AS "parentDueOn",
-                CASE WHEN i.id IS NULL THEN NULL WHEN i.status = 'invited' AND i.expires_at <= now() THEN 'expired' ELSE i.status END AS "invitationStatus",
+                CASE WHEN i.id IS NULL THEN NULL WHEN i.status = 'invited' AND i.expires_at <= $4 THEN 'expired' ELSE i.status END AS "invitationStatus",
                 x.quote, x.id AS "itemId",
                 COALESCE(${audienceVisibleSql('qa', '$2', '$3')}, true) AS "evidenceVisible", p.status AS "parentStatus",
                 CASE WHEN fo.id IS NULL THEN NULL ELSE json_build_object('id', fo.id, 'title', fo.title) END AS follows,
@@ -590,7 +590,7 @@ export class RecordsService {
            LEFT JOIN audiences qa ON qa.id = xs.audience_id
           WHERE t.project_id = $1
           ORDER BY t.due_on, t.authorised_at, t.id`,
-        [ctx.project.id, user.id, ctx.today],
+        [ctx.project.id, user.id, ctx.today, this.now()],
       )
     ).rows;
     const itemIds = tasks.filter((t) => t.itemId).map((t) => t.itemId as string);
