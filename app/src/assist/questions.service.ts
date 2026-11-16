@@ -160,6 +160,7 @@ const REASONS: Readonly<Record<string, string>> = {
   bad_response: 'the AI answer did not match its sources, so it was not kept',
   model_rejected: 'the AI service refused the request',
   model_unavailable: 'the AI service did not answer',
+  stalled: 'it stopped without finishing; ask again',
 };
 
 export function unavailableReason(code: string | null, detail: string | null): string {

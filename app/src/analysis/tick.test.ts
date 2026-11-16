@@ -8,6 +8,7 @@ import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 import type { AnalysisQueue } from './queue';
+import { unavailableReason } from '../assist/questions.service';
 import { AnalysisTick } from './tick';
 
 describe('analysis tick', { skip: SKIP_NO_DB }, () => {
@@ -144,6 +145,47 @@ describe('analysis tick', { skip: SKIP_NO_DB }, () => {
       await tick.run();
       const [after] = await runs();
       assert.deepEqual([after.status, after.failure_code], ['failed', 'stalled']);
+    } finally {
+      await t.pool.query(`DROP SCHEMA pgboss CASCADE`);
+    }
+  });
+
+  test('a stuck AI assist request is failed as stalled and its reservation kept as uncertain; a live job or a fresh request is left alone', async () => {
+    const insertRequest = async (status: 'queued' | 'running') => {
+      const id = uuidv7(t.clock.now().getTime());
+      await t.pool.query(
+        `INSERT INTO ai_requests (id, project_id, kind, requested_by, status, scope, created_at, attempts) VALUES ($1, $2, 'question', $3, $4, 'personal', $5, $6)`,
+        [id, project, ids.ada, status, t.clock.now(), status === 'running' ? 3 : 0],
+      );
+      return id;
+    };
+    const request = async (id: string) =>
+      (await t.pool.query(`SELECT status, failure_code, failure_detail, finished_at FROM ai_requests WHERE id = $1`, [id])).rows[0];
+    const queued = await insertRequest('queued');
+    const running = await insertRequest('running');
+    const withJob = await insertRequest('queued');
+    const spend = new SpendService(t.pool, t.clock.now);
+    const reserved = await spend.reserve({ requestId: running, attemptNo: 3, estimateMicroMyr: 1000n, purpose: 'question_answer', actorUserId: null });
+    assert.equal(reserved.status, 'reserved');
+    await t.pool.query(`CREATE SCHEMA IF NOT EXISTS pgboss`);
+    await t.pool.query(`CREATE TABLE pgboss.job (name text NOT NULL, singleton_key text, state text NOT NULL)`);
+    try {
+      await t.pool.query(`INSERT INTO pgboss.job (name, singleton_key, state) VALUES ('ai', $1, 'active')`, [withJob]);
+      t.clock.advanceMinutes(44);
+      const fresh = await insertRequest('queued');
+      t.clock.advanceMinutes(2);
+      await tick.run();
+      for (const id of [queued, running]) {
+        const r = await request(id);
+        assert.deepEqual([r.status, r.failure_code], ['failed', 'stalled'], `request ${id} is stalled`);
+        assert.ok(r.failure_detail);
+        assert.equal(new Date(r.finished_at).getTime(), t.clock.now().getTime());
+      }
+      assert.equal((await request(withJob)).status, 'queued', 'a live job keeps the request alive');
+      assert.equal((await request(fresh)).status, 'queued', 'a fresh request is left alone');
+      const entry = (await t.pool.query(`SELECT status FROM ai_spend_entries WHERE request_id = $1`, [running])).rows[0];
+      assert.equal(entry.status, 'uncertain', 'the open reservation stays counted as uncertain');
+      assert.equal(unavailableReason('stalled', null), 'it stopped without finishing; ask again');
     } finally {
       await t.pool.query(`DROP SCHEMA pgboss CASCADE`);
     }

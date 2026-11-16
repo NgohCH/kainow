@@ -64,6 +64,7 @@ const SUMMARY_REASONS: Readonly<Record<string, string>> = {
   requester_not_in_audience: 'the person who asked can no longer read the original',
   original_removed: 'the original was deleted',
   queue_unavailable: 'the summary could not be queued; request it again',
+  stalled: 'the summary drafting stopped without finishing; request it again',
 };
 const summaryReason = (code: string | null, detail: string | null) => (code && SUMMARY_REASONS[code]) || unavailableReason(code, detail);
 

@@ -49,7 +49,7 @@ export interface GuardedDeps {
  */
 export async function markStaleReservations(
   pool: Pool,
-  spend: SpendService,
+  spend: Pick<SpendService, 'markUncertain'>,
   requestId: string,
   attemptNo: number,
 ): Promise<void> {

@@ -65,6 +65,7 @@ const REPORT_REASONS: Readonly<Record<string, string>> = {
   draft_not_found: 'the draft for this request was not found',
   draft_too_long: 'the draft would be longer than 100,000 characters, so nothing was kept',
   queue_unavailable: 'the draft could not be queued; request it again',
+  stalled: 'the drafting stopped without finishing; request it again',
 };
 const reportReason = (code: string | null, detail: string | null) => (code && REPORT_REASONS[code]) || unavailableReason(code, detail);
 

@@ -1,5 +1,6 @@
 import type { Pool, PoolClient } from 'pg';
 import type { Clock } from '../auth/tokens';
+import { markStaleReservations } from '../ai/guarded-call';
 import type { SpendService } from '../spend/spend.service';
 import { loadThreadFacts } from './facts';
 import type { AnalysisQueue } from './queue';
@@ -13,6 +14,9 @@ export const THREAD_FAILED = 'An analysis could not be started for one thread; t
 
 export const STALLED_MINUTES = 45;
 export const STALLED_DETAIL = 'This analysis stopped without finishing; ask again.';
+export const ASSIST_STALLED_DETAIL = 'The AI request stopped without finishing.';
+/** Above any real attempt number: every reservation still open on a stalled request is stale. */
+const ALL_ATTEMPTS = 2147483647;
 
 /** Readiness for automatic runs (ruling R5): approved spend settings, and something left of every cap that applies. */
 export async function readiness(spend: Pick<SpendService, 'summary'>): Promise<Readiness> {
@@ -28,7 +32,7 @@ export async function readiness(spend: Pick<SpendService, 'summary'>): Promise<R
  * so two overlapping ticks, or a tick racing a button, can never start a thread twice.
  */
 export class AnalysisTick {
-  constructor(private readonly d: { pool: Pool; clock: Clock; queue: AnalysisQueue; spend: Pick<SpendService, 'summary'>; log?: (message: string) => void }) {}
+  constructor(private readonly d: { pool: Pool; clock: Clock; queue: AnalysisQueue; spend: Pick<SpendService, 'summary' | 'markUncertain'>; log?: (message: string) => void }) {}
 
   async run(): Promise<{ started: number }> {
     const now = this.d.clock();
@@ -56,7 +60,8 @@ export class AnalysisTick {
 
   /**
    * A run that has been queued or running for more than STALLED_MINUTES never finished (a lost job or a dead worker); it is
-   * marked failed so the thread's one active slot is freed, and so is its extraction run if that is still waiting. One set-based pass.
+   * marked failed so the thread's one active slot is freed, and so is its extraction run if that is still waiting. One set-based pass,
+   * then the same for AI assist requests, so the Ask panel and Drafts stop waiting and Re-answer or Regenerate are allowed again.
    */
   private async failStalled(now: Date): Promise<void> {
     // A run that still has a live job (waiting in the queue, retrying or being worked) is never stalled, however old: the queue may
@@ -75,6 +80,20 @@ export class AnalysisTick {
         WHERE status IN ('queued', 'running') AND id IN (SELECT extraction_run_id FROM stalled WHERE extraction_run_id IS NOT NULL)`,
       [now, STALLED_DETAIL, STALLED_MINUTES],
     );
+    // AI assist requests (questions, report drafts, summaries) share the queue and the same rule. A stalled request's open
+    // reservation may have reached the provider, so it stays counted as uncertain.
+    const noLiveAssistJob = hasJobs
+      ? `AND NOT EXISTS (SELECT 1 FROM ${BOSS_SCHEMA}.job j WHERE j.name = '${QUEUES.ai}' AND j.singleton_key = ai_requests.id::text AND j.state IN ('created', 'retry', 'active'))`
+      : '';
+    const stalled = await this.d.pool.query<{ id: string }>(
+      `UPDATE ai_requests SET status = 'failed', failure_code = 'stalled', failure_detail = $2, finished_at = $1
+        WHERE status IN ('queued', 'running') AND created_at < $1::timestamptz - make_interval(mins => $3) ${noLiveAssistJob}
+        RETURNING id`,
+      [now, ASSIST_STALLED_DETAIL, STALLED_MINUTES],
+    );
+    for (const { id } of stalled.rows) {
+      await markStaleReservations(this.d.pool, this.d.spend, id, ALL_ATTEMPTS);
+    }
   }
 
   private async startOne(threadId: string, projectId: string, ready: Readiness, now: Date): Promise<string | null> {
