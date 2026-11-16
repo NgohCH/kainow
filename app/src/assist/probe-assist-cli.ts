@@ -112,7 +112,10 @@ export function selectMaterial(docs: ProbeDoc[], terms: string[]): Passage[] {
   return out;
 }
 
-const MONTH = '(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec|januari|februari|mac|mei|julai|ogos|okt|oktober|dis|disember)[a-z]*';
+/** Month names in English and Malay, full and short, as a closed list ending at a word boundary (so 'marks' or 'decisions' are not months). */
+const MONTH =
+  '(?:january|february|march|april|may|june|july|august|september|october|november|december|jan|feb|mar|apr|jun|jul|aug|sept|sep|oct|nov|dec|' +
+  'januari|februari|mac|mei|julai|ogos|oktober|disember|okt|dis)\\b';
 const DATES = new RegExp(`\\b\\d{1,2}(?:st|nd|rd|th)?\\s+${MONTH}(?:\\s+\\d{4})?\\b|\\b${MONTH}\\s+\\d{1,2}(?:,\\s*\\d{4})?\\b|\\b\\d{4}-\\d{2}-\\d{2}\\b|\\b\\d{1,2}/\\d{1,2}/\\d{2,4}\\b`, 'gi');
 
 /** Dates written in the AI text that do not appear word-for-word in the text it was given (must be none). */
@@ -150,6 +153,9 @@ export interface ProbeOptions {
 /** Runs every request against the model; returns the total usage. Output is counts only unless `show`. */
 export async function probeFolder(model: JsonSchemaModel, modelId: string, docs: ProbeDoc[], opts: ProbeOptions = {}): Promise<Usage> {
   const log = opts.log ?? console.log;
+  if (docs.length < 2) {
+    log(`Warning: only ${docs.length} document${docs.length === 1 ? '' : 's'}: each report kind's second draft (all documents) repeats the first, so its input is a duplicate. Add more .txt files for a fuller check.`);
+  }
   let total = ZERO;
   const call = async (system: string, user: string, schema: object, maxOutputTokens: number): Promise<{ content: unknown; usage: Usage } | null> => {
     const found = findCredentials(`${system}\n${user}`);

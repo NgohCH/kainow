@@ -35,6 +35,18 @@ describe('probe-assist (fake model)', () => {
 
   test('dates not in the input are counted', () => {
     assert.equal(datesNotInInput('On 12 November and 30 December.', 'met on 12 November'), 1);
+    // Month names only at word boundaries, from a closed list: words that merely start like a month are not dates.
+    assert.equal(datesNotInInput('We gave 12 marks, took 3 decisions, saw 2 machines, made 4 junctions and sent 5 octets.', ''), 0);
+    assert.equal(datesNotInInput('Due 3 Mac 2027, Sept 4, 5 Ogos, 6 Dis and 7 Sep.', ''), 5);
+  });
+
+  test('warns when the folder has fewer than two documents (the all-documents reports repeat the first)', async () => {
+    const lines: string[] = [];
+    await probeFolder(fake, 'model-x', [DOC], { questions: [], log: (l) => lines.push(l) });
+    assert.ok(lines.some((l) => /Warning: only 1 document/.test(l)));
+    const two: string[] = [];
+    await probeFolder(fake, 'model-x', [DOC, { ...DOC, name: 'week-2.txt' }], { questions: [], log: (l) => two.push(l) });
+    assert.ok(!two.some((l) => /Warning: only/.test(l)));
   });
 
   test('prints unknown markers, failed citation checks, surviving Leave out phrases and usage, never the AI text by default', async () => {

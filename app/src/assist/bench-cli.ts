@@ -18,7 +18,10 @@ import { buildTerms } from './terms';
  * passage back-fill and reports its time, measures material search (`findMaterial`) over 200 varied questions, and
  * posting a message through the real HTTP app with and without indexing.
  *
- * The tool writes many rows, so it refuses any database whose name does not end in `_test` or `_bench`.
+ * The tool writes many rows, so it refuses any database whose name does not end in `_test` or `_bench`. Use a
+ * `_bench` database: a `_test` name is accepted only for small trials, and running it against the shared test
+ * database (`kainow_test`) pollutes it with the whole seed (about 100,000 messages and 170,000 passages) that the
+ * server tests share.
  */
 
 export function assertAssistBenchDatabase(databaseUrl: string): string {
