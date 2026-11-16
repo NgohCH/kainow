@@ -275,7 +275,9 @@ export class SearchService {
       .map((r) => ({ role: r.role, state: membershipState(r, ctx.today) }))
       .filter((r) => r.state === 'active' || r.state === 'scheduled');
     if (held.length === 0) return null;
-    const roles = [...new Set(held.map((r) => ROLE_LABEL[r.role]))].join(', ');
+    // Fixed role order (Project Manager, Deputy, Owner, Sponsor, Member), not the order the membership rows came back in.
+    const order = Object.keys(ROLE_LABEL);
+    const roles = [...new Set(held.map((r) => r.role))].sort((a, b) => order.indexOf(a) - order.indexOf(b)).map((r) => ROLE_LABEL[r]).join(', ');
     return `${roles} · ${held.some((r) => r.state === 'active') ? 'Active' : 'Scheduled'}`;
   }
 }
