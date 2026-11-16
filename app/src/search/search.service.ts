@@ -232,7 +232,7 @@ export class SearchService {
           name: row.projectName,
           status: ctx.project.status,
           archived,
-          myAccess: { roles: ctx.roles, grant: ctx.roles.length === 0 ? (ctx.grantKinds[0] ?? null) : null },
+          myAccess: { roles: inRoleOrder(ctx.roles), grant: ctx.roles.length === 0 ? (ctx.grantKinds[0] ?? null) : null },
           total: row.total,
           results: [],
         };
@@ -275,9 +275,13 @@ export class SearchService {
       .map((r) => ({ role: r.role, state: membershipState(r, ctx.today) }))
       .filter((r) => r.state === 'active' || r.state === 'scheduled');
     if (held.length === 0) return null;
-    // Fixed role order (Project Manager, Deputy, Owner, Sponsor, Member), not the order the membership rows came back in.
-    const order = Object.keys(ROLE_LABEL);
-    const roles = [...new Set(held.map((r) => r.role))].sort((a, b) => order.indexOf(a) - order.indexOf(b)).map((r) => ROLE_LABEL[r]).join(', ');
+    const roles = inRoleOrder([...new Set(held.map((r) => r.role))]).map((r) => ROLE_LABEL[r]).join(', ');
     return `${roles} · ${held.some((r) => r.state === 'active') ? 'Active' : 'Scheduled'}`;
   }
+}
+
+/** Fixed role order (Project Manager, Deputy, Owner, Sponsor, Member), not the order the membership rows came back in. */
+function inRoleOrder(roles: readonly ProjectRole[]): ProjectRole[] {
+  const order = Object.keys(ROLE_LABEL);
+  return [...roles].sort((a, b) => order.indexOf(a) - order.indexOf(b));
 }
