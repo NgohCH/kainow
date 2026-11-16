@@ -152,6 +152,18 @@ describe('sharing AI answers into threads', { skip: SKIP_NO_DB }, () => {
     assert.equal((await t.pool.query(`SELECT visibility FROM ai_answers WHERE request_id = $1`, [r.body.id])).rows[0].visibility, 'private');
   });
 
+  for (const [status, closure] of [['deferred', null], ['closed', 'abandoned']] as const) {
+    test(`share and re-answer are refused (403) in a ${status} project`, async () => {
+      const a = await answered();
+      await t.pool.query(`UPDATE projects SET status = $2, closure_outcome = $3 WHERE id = $1`, [project, status, closure]);
+      assert.equal((await share(ada, a.id)).status, 403);
+      assert.equal((await reanswer(ada, a.id)).status, 403);
+      assert.equal(await count(`SELECT count(*) AS n FROM ai_requests WHERE scope = 'thread'`), 0, 'no re-answer request');
+      assert.equal((await t.pool.query(`SELECT visibility FROM ai_answers WHERE request_id = $1`, [a.id])).rows[0].visibility, 'private');
+      assert.equal(await count(`SELECT count(*) AS n FROM ai_assist_events WHERE action IN ('shared', 'reanswered')`), 0);
+    });
+  }
+
   test('share is refused when an uncited sent passage is restricted', async () => {
     const restricted = await note('Board notes', 'The pump service contract is under dispute.');
     await restrictNote(restricted, [ids.ada]);

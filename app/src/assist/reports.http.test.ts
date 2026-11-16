@@ -284,6 +284,11 @@ describe('draft reports and specifications', { skip: SKIP_NO_DB }, () => {
     assert.equal(shared.status, 200, JSON.stringify(shared.body));
     assert.equal(shared.body.shared, true);
     assert.equal((await view(ben, id)).status, 404, 'Ben cannot read the vendor terms');
+    assert.equal((await ben.request('GET', `/reports/${id}/versions/1`)).status, 404, 'nor any version of it');
+    assert.equal((await ben.raw('GET', `/reports/${id}/versions/1/markdown`)).status, 404, 'nor its Markdown');
+    const v1 = (await view(ada, id)).body.current.id as string;
+    const flagged = await ben.request('POST', `/projects/${project}/feedback`, { targetKind: 'report_version', targetId: v1, category: 'incorrect', note: 'Wrong.' });
+    assert.equal(flagged.status, 404, 'nor flag it');
     assert.deepEqual(await listed(ben), []);
     assert.equal((await view(dep, id)).status, 200, 'the Deputy may read every passage');
     assert.equal((await view(auditor, id)).status, 404, 'nor can the auditor, who is not named');
