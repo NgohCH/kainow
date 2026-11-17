@@ -258,6 +258,23 @@ Additions only, apart from the narrow trigger and constraint changes listed. Not
 - **Review focus for task reviews and the final whole-branch review:** (1) registry completeness, including JSON columns and copies in other items; (2) every runner's start check; (3) offsets and passages after cleaning; (4) the immutability exception cannot be reached from any other code path; (5) the key never appears in logs, errors or responses, and the marked text never appears in events, notifications or emails; (6) restore restarts nothing; (7) Deleted titles absent from History for ordinary viewers.
 - **Measured aims on the 4b bench data** (50 projects, 100,000 messages, 440 large sources): report-to-cleaned for a secret in one large source (with its passages) plus the project-wide copy search finding three messages, under 2 s at p95 over 50 reports; confirming three copies under 2 s at p95; Deleted-item filtering adds under 10% to passage search p95 (66 ms today). Reported as found; a miss goes to the PO.
 
+### 10.1 Measured aims as found (17 November 2026)
+
+Measured with `npm run bench-history` (`app/src/quarantine/bench-cli.ts`) on a freshly created `kainow_bench` database, with no other process using the database container. Hardware: a Windows 11 machine, PostgreSQL 16 in Docker Desktop, Node, application and database on the same machine over loopback.
+
+| Aim | Result | Verdict |
+|---|---|---|
+| Report-to-cleaned under 2 s at p95 over 50 reports | n=50: p50 9,404 ms, p95 10,462 ms, max 13,208 ms | **Missed** (about 5 times the aim); to the PO |
+| Confirming three copies under 2 s at p95 | n=50: p50 15.8 ms, p95 20.8 ms, max 66.4 ms | Met |
+| Passage search p95 within 10% of 66 ms (under 72.6 ms) with the Deleted and held filters | 200 questions: p95 58.6 ms before any report (p50 47.7, max 73.4); 48.8 ms after the 55 reports (p50 38.9, max 54.0) | Met |
+
+Method:
+- Data: the 4a and 4b seeds (401 users, 50 projects, 2,000 threads, 100,688 messages, 440 notes and minutes sources of 5,000 to 8,000 words, 2,000 records), then the passage back-fill (104,613 versions, 169,757 passages in 93.1 s).
+- Passage search: the 4b bench's `findMaterial` measurement, unchanged (40 questions, three kinds of asker over the 38 Active projects, 10 warm-ups not counted), now with the Deleted and held filters in every branch. Run before the reports and again after them.
+- Reports: 55 rounds over 34 Active projects (projects 3, 13, 23 and 33 left out), the first 5 not counted. In each round a PM imports a new note through the HTTP app: a seeded note's text (the longest first; 7,614 to 8,008 words, 114 to 222 passages) with a secret unknown to the credential check written in twice. A member then posts the same secret in three discussion messages of the project. Timed: a plain member's `POST /projects/:id/secret-reports` through the real HTTP app (Nest on loopback, signed-in session, anti-forgery token). That request holds the note, encrypts and cleans its version and passages, searches the project's registered columns and masks the three messages, all in one transaction. Each round checks that the case is `cleaned` with three masked places. Then the PM's single `POST /quarantine/cases/:id/copies` confirming the three places is timed.
+- The protected key is generated for the run into a temporary file (never printed) and removed afterwards. Percentiles are nearest-rank.
+- Where the time goes: on the bench data, `findPlaces` for one project of about 2,000 messages takes 6.6 to 7.0 s on its own (in a rolled-back transaction, with a string found nowhere). Each registered column's project scan alone takes at most 127 ms (`discussion_events.detail`). So most of the report time is the combined project-wide copy search, not the cleaning. The aim is not tuned or weakened here; the PO decides.
+
 ## 11. Documents updated in this branch
 
 - Consolidated Specification §14: D79–D83.

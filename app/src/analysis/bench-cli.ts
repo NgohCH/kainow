@@ -292,13 +292,15 @@ export interface Session {
   request(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }>;
 }
 
-export async function startApp(databaseUrl: string): Promise<{ app: INestApplication; base: string; signIn: (email: string) => Promise<Session> }> {
+/** `env` adds settings to the app's configuration (the history bench passes KAINOW_PROTECTED_KEY_FILE). */
+export async function startApp(databaseUrl: string, env: Record<string, string> = {}): Promise<{ app: INestApplication; base: string; signIn: (email: string) => Promise<Session> }> {
   const sender = new CaptureSender();
   const config = loadConfig({
     DATABASE_URL: databaseUrl,
     AUTH_SECRET: randomBytes(32).toString('hex'),
     LOG_SIGN_IN_CODES: 'true',
     COOKIE_SECURE: 'false',
+    ...env,
   });
   const app = await createApp(config, {
     codeSender: sender,
