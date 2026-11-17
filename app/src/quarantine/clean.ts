@@ -28,7 +28,7 @@
 import { createHash } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import { uuidv7 } from '../common/uuid7';
-import { type Edit, cleanEdges, cleanJson, cleanText, mapOffset, searchForms } from './clean-text';
+import { type Edit, cleanEdges, cleanJson, cleanText, mapOffset, removedSpans, searchForms } from './clean-text';
 import type { ProtectedKey } from './protected-key';
 import { locateQuote } from '../notes/text';
 import { TEXT_COLUMNS, type ItemKind, type TextColumn } from './registry';
@@ -652,4 +652,55 @@ export async function quoteChangedItems(db: Pool | PoolClient, itemIds: string[]
     [itemIds],
   );
   return new Set(rows.map((r) => r.id));
+}
+
+/** One original text value of an item, as Reveal original shows it (spec 7.6), with the place of each removed span. */
+export interface RevealedValue {
+  table: string;
+  column: string;
+  rowKey: Row;
+  text: string;
+  /** [start, end) of each removed span in `text`; empty when the stored value no longer shows where (changed since). */
+  marks: Array<{ start: number; end: number }>;
+}
+
+/**
+ * The original text values the case's sweeps of one item encrypted (spec 7.6, Reveal original), decrypted in memory
+ * only: nothing is written. Text columns only (JSON, arrays, offsets and withheld uploads are not shown). A value
+ * cleaned by several sweeps (Mark more) is shown as the oldest sweep found it, which is the original. The marks are
+ * found by matching the original against the value stored now. The caller authorises; the result is for Reveal only.
+ */
+export async function readOriginals(c: Db, key: ProtectedKey, caseId: string, scope: { kind: ItemKind; id: string }): Promise<RevealedValue[]> {
+  const { rows } = await c.query<Original>(
+    `SELECT id, table_name, row_key, column_name, sweep, ciphertext, nonce, tag, key_id, cleaned_sha256
+       FROM quarantine_originals
+      WHERE case_id = $1 AND item_kind = $2 AND item_id = $3
+      ORDER BY sweep, table_name, column_name, id`,
+    [caseId, scope.kind, scope.id],
+  );
+  if (rows.some((o) => o.key_id !== key.id)) throw new Error('quarantine: an original was encrypted with another protected key');
+  const seen = new Set<string>();
+  const out: RevealedValue[] = [];
+  for (const o of rows) {
+    if (codecOf(o.table_name, o.column_name) !== 'text') continue;
+    const id = `${o.table_name}|${o.column_name}|${JSON.stringify(o.row_key)}`;
+    if (seen.has(id)) continue;
+    seen.add(id);
+    const text = decode(key.decrypt(o), 'text') as string;
+    const keys = ROW_KEYS.get(o.table_name) as string[];
+    let now: unknown;
+    try {
+      now = (
+        await c.query(
+          `SELECT t.${o.column_name} AS v FROM ${o.table_name} t, jsonb_populate_record(NULL::${o.table_name}, $1::jsonb) k WHERE ${keys.map((k) => `t.${k} = k.${k}`).join(' AND ')}`,
+          [JSON.stringify(o.row_key)],
+        )
+      ).rows[0]?.v;
+    } catch (err) {
+      throw quiet(err, o.table_name);
+    }
+    const marks = typeof now === 'string' ? (removedSpans(text, now) ?? []) : [];
+    out.push({ table: o.table_name, column: o.column_name, rowKey: o.row_key, text, marks });
+  }
+  return out.sort((a, b) => a.table.localeCompare(b.table) || a.column.localeCompare(b.column) || JSON.stringify(a.rowKey).localeCompare(JSON.stringify(b.rowKey)));
 }

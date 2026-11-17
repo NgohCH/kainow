@@ -241,7 +241,8 @@ async function hold(db: Db, kind: ItemKind, id: string, caseId: string): Promise
   return own;
 }
 
-async function unhold(db: Db, kind: ItemKind, id: string, caseId: string): Promise<void> {
+/** Releases the item's rows from case `caseId` (the reverse of holding them). */
+export async function unhold(db: Db, kind: ItemKind, id: string, caseId: string): Promise<void> {
   for (const sql of UNHOLD[kind]) await db.query(sql, [id, caseId]);
 }
 

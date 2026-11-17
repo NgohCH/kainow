@@ -23,8 +23,8 @@ export interface Client {
   request(method: string, path: string, body?: unknown): Promise<Reply>;
   /** Sends raw bytes (a file upload) with the given type. */
   upload(method: string, path: string, body: Buffer, contentType: string): Promise<Reply>;
-  /** A request whose answer is not JSON (a download): status, headers and the text as sent. */
-  raw(method: string, path: string): Promise<{ status: number; headers: Headers; text: string }>;
+  /** A request whose answer is read as sent (a download, or headers to check): status, headers and the text. A body is sent as JSON. */
+  raw(method: string, path: string, body?: unknown): Promise<{ status: number; headers: Headers; text: string }>;
 }
 
 /** A queued email as the tests see it. */
@@ -102,8 +102,12 @@ export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opt
         const text = await res.text();
         return { status: res.status, body: text ? JSON.parse(text) : undefined };
       },
-      raw: async (method, path) => {
-        const res = await fetch(`${base}${path}`, { method, headers: { Cookie: cookie, 'X-CSRF-Token': csrfToken } });
+      raw: async (method, path, body) => {
+        const res = await fetch(`${base}${path}`, {
+          method,
+          headers: { Cookie: cookie, 'X-CSRF-Token': csrfToken, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
+          body: body !== undefined ? JSON.stringify(body) : undefined,
+        });
         return { status: res.status, headers: res.headers, text: await res.text() };
       },
     };

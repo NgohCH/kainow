@@ -115,3 +115,31 @@ export function cleanEdges(text: string, marks: string[]): string {
   }
   return out;
 }
+
+/**
+ * Where the removed text sits in an original, given a cleaned form of it (each removed span became one MARKER):
+ * the [start, end) of every span in `original`. The text between markers is matched in order, each at its first
+ * place after the previous span (a span is never empty). Adjacent markers (two sweeps that touched) give one span.
+ * Null when `cleaned` is not a cleaned form of `original` (changed since, or never cleaned).
+ */
+export function removedSpans(original: string, cleaned: string): Array<{ start: number; end: number }> | null {
+  const parts = cleaned.split(MARKER);
+  if (parts.length === 1) return cleaned === original ? [] : null;
+  const first = parts[0];
+  const last = parts[parts.length - 1];
+  if (!original.startsWith(first)) return null;
+  const tailStart = original.length - last.length;
+  if (tailStart < first.length || !original.endsWith(last)) return null;
+  const spans: Array<{ start: number; end: number }> = [];
+  let start = first.length;
+  for (const part of parts.slice(1, -1)) {
+    if (part === '') continue;
+    const at = original.indexOf(part, start + 1);
+    if (at === -1 || at + part.length > tailStart) return null;
+    spans.push({ start, end: at });
+    start = at + part.length;
+  }
+  if (tailStart <= start) return null;
+  spans.push({ start, end: tailStart });
+  return spans;
+}

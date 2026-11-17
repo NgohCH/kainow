@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { MARKER, cleanEdges, cleanJson, cleanText, mapOffset } from './clean-text';
+import { MARKER, cleanEdges, cleanJson, cleanText, mapOffset, removedSpans } from './clean-text';
 
 const SECRET = 'Xy7!pass';
 
@@ -78,5 +78,23 @@ describe('cleanText (spec 7.4)', () => {
     // Three characters or fewer are left: too short to be the secret.
     assert.equal(cleanEdges('ends Xy7', [SECRET]), 'ends Xy7');
     assert.equal(cleanEdges(`whole ${SECRET} inside`, [SECRET]), `whole ${MARKER} inside`);
+  });
+});
+
+describe('removedSpans (spec 7.6, Reveal original)', () => {
+  test('finds each removed span of the original from its cleaned form', () => {
+    const original = `a ${SECRET} b ${SECRET}, and ${SECRET}`;
+    const cleaned = cleanText(original, [SECRET]).text;
+    const spans = removedSpans(original, cleaned);
+    assert.ok(spans);
+    assert.deepEqual(spans.map((s) => original.slice(s.start, s.end)), [SECRET, SECRET, SECRET]);
+    assert.deepEqual(removedSpans(`${SECRET} only`, `${MARKER} only`), [{ start: 0, end: SECRET.length }]);
+    assert.deepEqual(removedSpans('no secret', 'no secret'), []);
+  });
+
+  test('null when the stored value is not a cleaned form of the original', () => {
+    assert.equal(removedSpans(`a ${SECRET} b`, 'something else entirely'), null);
+    assert.equal(removedSpans(`a ${SECRET} b`, `a ${MARKER} c`), null);
+    assert.equal(removedSpans('a b', `a ${MARKER} b`), null);
   });
 });
