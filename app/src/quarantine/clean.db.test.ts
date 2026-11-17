@@ -410,6 +410,52 @@ describe('cleaning engine (spec 7.4)', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(places.map(key).sort(), want.map(key).sort());
   });
 
+  test('matching semantics: exact and case-sensitive for %, _, backslash, quotes and <&> in text, jsonb, arrays and escaped HTML', async () => {
+    // Pins what "contains" means for the copy search and the sweep (final review I1): any later optimisation must keep it.
+    const MARK = `a%b_c\d'"<&>Q9`;
+    const project = await newProject();
+    const { source, version } = await seedSource(project, `the key ${MARK}`);
+    const thread = await seedThread(project);
+    // A text column.
+    const task = await seedTask(project, `Rotate ${MARK}`);
+    // A jsonb leaf (quotes and the backslash are escaped in jsonb's text form).
+    const { message } = await seedMessage(thread, 1, 'nothing here');
+    await pool.query(`INSERT INTO discussion_events (id, thread_id, message_id, actor_id, action, detail, at) VALUES ($1, $2, $3, $4, 'posted', $5, now())`, [
+      uuidv7(), thread, message, user, JSON.stringify({ note: `see ${MARK}` }),
+    ]);
+    // A text array.
+    const run = uuidv7();
+    await pool.query(`INSERT INTO extraction_runs (id, source_version_id, requested_by, status, created_at) VALUES ($1, $2, $3, 'succeeded', now())`, [run, version, user]);
+    const proposal = uuidv7();
+    await pool.query(
+      `INSERT INTO extraction_items (id, run_id, source_version_id, position, kind, text, quote, quote_start, quote_end, quote_matches, created_at, alternatives)
+       VALUES ($1, $2, $3, 0, 'action', 'Rotate it', 'the key', 0, 7, 1, now(), $4)`,
+      [proposal, run, version, ['first', `or ${MARK}`]],
+    );
+    // Near misses: a case-differing copy, and what % and _ would match as LIKE wildcards.
+    await seedTask(project, `Rotate ${MARK.toUpperCase()}`);
+    await seedTask(project, `Rotate aXbYc\d'"<&>Q9`);
+    await seedTask(project, `Rotate a%b_c\\d'"<&>Q9`);
+    // An email (no item: swept with the project, never a place) holding only the HTML-escaped form.
+    const email = uuidv7();
+    const escaped = `a%b_c\d&#39;&quot;&lt;&amp;&gt;Q9`;
+    await pool.query(
+      `INSERT INTO email_outbox (id, to_address, subject, text_body, html_body, kind, project_id, initiated_by, created_at)
+       VALUES ($1, 'ops@example.org', 'Keys', 'see the item', $2, 'test', $3, 'system', now())`,
+      [email, `<p>${escaped}</p>`, project],
+    );
+
+    const places = await tx((c) => findPlaces(c, project, [MARK], { kind: 'source', id: source }));
+    const key = (p: { kind: string; id: string }) => `${p.kind}:${p.id}`;
+    assert.deepEqual(places.map(key).sort(), [`message:${message}`, `proposal:${proposal}`, `task:${task}`].sort());
+    assert.deepEqual(await tx((c) => findPlaces(c, project, [MARK.toLowerCase()], { kind: 'source', id: source })), [], 'a mark differing only in case is found nowhere');
+
+    // The sweep of the source cleans the project's email in its escaped form.
+    await clean(project, 'source', source, [MARK]);
+    const html = (await pool.query(`SELECT html_body FROM email_outbox WHERE id = $1`, [email])).rows[0].html_body;
+    assert.equal(html, `<p>${MARKER}</p>`);
+  });
+
   test('restoreOriginals skips a value changed since cleaning', async () => {
     const project = await newProject();
     const text = `${'Opening words. '.repeat(20)}\n\nThe key is ${SECRET} here.\n\n${'Closing words. '.repeat(20)}`;

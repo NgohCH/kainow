@@ -106,12 +106,16 @@ const MESSAGE_VERSIONS: Partial<Record<ItemKind, string>> = {
 
 const VERSION_KINDS = Object.keys(VERSIONS) as ItemKind[];
 
-/** Passages (alias a) cut from the item's source versions or message versions. */
+/**
+ * Passages (alias a) cut from the item's source versions or message versions. One row comparison against one list, so
+ * the planner can use the (owner_kind, owner_id, ordinal) index; an OR of two IN lists made it scan every passage
+ * (final review I1).
+ */
 function passageCond(kind: ItemKind, a: string): string | null {
   const parts: string[] = [];
-  if (VERSIONS[kind]) parts.push(`(${a}.owner_kind = 'source_version' AND ${a}.owner_id IN (${VERSIONS[kind]}))`);
-  if (MESSAGE_VERSIONS[kind]) parts.push(`(${a}.owner_kind = 'message_version' AND ${a}.owner_id IN (${MESSAGE_VERSIONS[kind]}))`);
-  return parts.length > 0 ? parts.join(' OR ') : null;
+  if (VERSIONS[kind]) parts.push(`SELECT 'source_version'::text, owned_sv.id FROM (${VERSIONS[kind]}) owned_sv(id)`);
+  if (MESSAGE_VERSIONS[kind]) parts.push(`SELECT 'message_version'::text, owned_mv.id FROM (${MESSAGE_VERSIONS[kind]}) owned_mv(id)`);
+  return parts.length > 0 ? `(${a}.owner_kind, ${a}.owner_id) IN (${parts.join(' UNION ALL ')})` : null;
 }
 
 /** ai_request_material.record_kind of a record snapshot of each item kind. */
