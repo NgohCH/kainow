@@ -6,6 +6,7 @@ import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { cursorTime, parseCursor } from '../common/cursor';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
+import { notDeletedRecordRefSql } from '../history/deleted-sql';
 import { ProjectAccess, canReadContent } from '../projects/access.service';
 import { todayUtc8 } from '../projects/membership';
 import { escalationFlags } from './escalation-flags';
@@ -76,7 +77,7 @@ export class NotificationsController {
               COALESCE((tr.detail->>'minimal')::boolean, false) AS minimal
          FROM notifications n LEFT JOIN projects p ON p.id = n.project_id
          LEFT JOIN notification_triggers tr ON tr.id = n.trigger_id
-        WHERE n.user_id = $1 AND ($2::timestamptz IS NULL OR (n.created_at, n.id) < ($2::timestamptz, $3::uuid))
+        WHERE n.user_id = $1 AND ${notDeletedRecordRefSql('tr.record_kind', 'tr.record_id')} AND ($2::timestamptz IS NULL OR (n.created_at, n.id) < ($2::timestamptz, $3::uuid))
         ORDER BY n.created_at DESC, n.id DESC LIMIT $4`,
       [user.id, cursor?.at ?? null, cursor?.id ?? null, PAGE + 1],
     );
@@ -110,7 +111,8 @@ export class NotificationsController {
   @Get('notifications/unread-count')
   @AnySignedInUser()
   async unread(@Req() req: HttpRequest) {
-    const { rows } = await this.pool.query(`SELECT count(*)::int AS n FROM notifications WHERE user_id = $1 AND read_at IS NULL`, [who(req).id]);
+    const { rows } = await this.pool.query(`SELECT count(*)::int AS n FROM notifications n LEFT JOIN notification_triggers tr ON tr.id = n.trigger_id
+        WHERE n.user_id = $1 AND n.read_at IS NULL AND ${notDeletedRecordRefSql('tr.record_kind', 'tr.record_id')}`, [who(req).id]);
     return { count: rows[0].n as number };
   }
 

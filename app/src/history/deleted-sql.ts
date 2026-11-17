@@ -40,3 +40,15 @@ export const liveRecordRefSql = (kindCol: string, idCol: string): string =>
       WHEN 'question' THEN EXISTS (SELECT 1 FROM questions lr WHERE lr.id = ${idCol} AND ${liveRecordSql('lr')})
       WHEN 'risk' THEN EXISTS (SELECT 1 FROM risks lr WHERE lr.id = ${idCol} AND ${liveRecordSql('lr')})
       ELSE true END)`;
+
+/**
+ * Like `liveRecordRefSql`, but a reference to a record that does not exist at all passes: true unless the record is
+ * there and is Deleted or held (for notices, which may outlive or never had their record).
+ */
+export const notDeletedRecordRefSql = (kindCol: string, idCol: string): string =>
+  `(CASE ${kindCol}
+      WHEN 'task' THEN NOT EXISTS (SELECT 1 FROM tasks lr WHERE lr.id = ${idCol} AND NOT ${liveRecordSql('lr')})
+      WHEN 'decision' THEN NOT EXISTS (SELECT 1 FROM decisions lr WHERE lr.id = ${idCol} AND NOT ${liveRecordSql('lr')})
+      WHEN 'question' THEN NOT EXISTS (SELECT 1 FROM questions lr WHERE lr.id = ${idCol} AND NOT ${liveRecordSql('lr')})
+      WHEN 'risk' THEN NOT EXISTS (SELECT 1 FROM risks lr WHERE lr.id = ${idCol} AND NOT ${liveRecordSql('lr')})
+      ELSE true END)`;
