@@ -18,7 +18,7 @@ import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 import { HELD } from '../history/deleted-sql';
-import { CANCELLED_REASON, POSSIBLE_COPY_TEXT, cleanWaitingCases } from './cases.service';
+import { CANCELLED_REASON, MAX_PLACES, POSSIBLE_COPY_TEXT, TOO_COMMON, cleanWaitingCases } from './cases.service';
 import { MARKER } from './clean-text';
 import { loadProtectedKey } from './protected-key';
 
@@ -246,6 +246,30 @@ describe('reporting, holding and possible copies', { skip: SKIP_NO_DB }, () => {
     assert.equal(res.status, 201, JSON.stringify(res.body));
     const text = (await t.pool.query(`SELECT text_content FROM source_versions WHERE source_id = $1`, [masked])).rows.map((r) => r.text_content).join(' ');
     assert.ok(!text.includes('Rotor42'), text);
+  });
+
+  test('marked text found in exactly 10 other places is still reported and masked (PO I2b)', async () => {
+    assert.equal(MAX_PLACES, 10);
+    const id = await note('Plant room', PLANT);
+    const thread = await startThread(pm, { kind: 'discussion', title: 'Plant' });
+    for (let i = 0; i < MAX_PLACES; i++) await post(ben, thread, `Copy ${i}: ${SECRET} again.`);
+    // Ten other places: still a credential report, every place masked.
+    const ok = await report(ada, { kind: 'source', id, marked: [SECRET], reason: 'Looks like the plant room vault code' });
+    assert.equal(ok.status, 201, JSON.stringify(ok.body));
+    assert.equal(await count(`SELECT count(*) AS n FROM quarantine_possible_copies`), MAX_PLACES);
+  });
+
+  test('a report whose text is in eleven other places is refused, with no hold, case or masking (PO I2b)', async () => {
+    const id = await note('Plant room', PLANT);
+    const thread = await startThread(pm, { kind: 'discussion', title: 'Plant' });
+    for (let i = 0; i <= MAX_PLACES; i++) await post(ben, thread, `Copy ${i}: ${SECRET} again.`);
+    const res = await report(ada, { kind: 'source', id, marked: [SECRET], reason: 'Looks like the plant room vault code' });
+    assert.equal(res.status, 400, JSON.stringify(res.body));
+    assert.equal(res.body.message, TOO_COMMON(MAX_PLACES + 1));
+    assert.ok(!JSON.stringify(res.body).includes(SECRET));
+    assert.equal(await count(`SELECT count(*) AS n FROM quarantine_cases`), 0);
+    assert.equal((await t.pool.query(`SELECT held_case_id FROM sources WHERE id = $1`, [id])).rows[0].held_case_id, null);
+    assert.equal(await count(`SELECT count(*) AS n FROM message_versions WHERE body LIKE $1`, [`%${SECRET}%`]), MAX_PLACES + 1);
   });
 
   test('a private answer built on it disappears, a shared one goes to review', async () => {

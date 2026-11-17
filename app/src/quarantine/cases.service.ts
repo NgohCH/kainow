@@ -59,6 +59,13 @@ export const WAITING_FOR_KEY = 'Waiting for the protected key';
 export const CASE_CLOSED = 'This case is closed.';
 export const ALREADY_DECIDED = 'This place has already been confirmed or dismissed.';
 export const NOT_CLEANED = 'This case cannot be released until its item is cleaned: it is waiting for the protected key.';
+/**
+ * A real credential reaches a handful of places in one project (the item, a quote, minutes, a task drawn from it). Marked
+ * text found in more other places than this is an ordinary word, and the report or Mark more is refused (PO, 18 Nov 2026).
+ */
+export const MAX_PLACES = 10;
+export const TOO_COMMON = (n: number) =>
+  `This text appears in ${n} other places in the project, too common to be a credential. Mark a longer, more exact part.`;
 export const MARKS_MORE_REFUSED = 'Mark further text of at least 4 characters that appears exactly in the cleaned text, outside the removed credentials.';
 const MAX_MARKS = 20;
 /** Kainow's own report marks every match the detector found, so its limit is wider than a person's. */
@@ -568,6 +575,9 @@ export class CasesService {
     // Other places in the project: masked at once (cleaned, not held), or held until the key appears.
     const derived = await quoteOnlyProposals(db, kind, id, marks);
     const places = (await findPlaces(db, projectId, marks, { kind, id })).filter((p) => !(p.kind === 'proposal' && derived.has(p.id)));
+    // A person's mark found in too many places is an ordinary word: refused, and the whole transaction (hold, cleaning)
+    // rolls back. Kainow's own reports are credentials its check recognised, so they are never refused for this.
+    if (reporterId !== null && places.length > MAX_PLACES) throw new BadRequestException(TOO_COMMON(places.length));
     for (const p of places) {
       if (key) cleanedRows += (await cleanItem(db, key, caseId, p.kind, p.id, marks)).rows;
       else await hold(db, p.kind, p.id, caseId);
@@ -994,6 +1004,7 @@ export class CasesService {
       let rows = (await cleanItem(db, key, c.id, c.kind, c.itemId, await ownMarks(db, c.kind, c.itemId, marks))).rows;
       const derived = await quoteOnlyProposals(db, c.kind, c.itemId, marks);
       const places = (await findPlaces(db, projectId, marks, { kind: c.kind, id: c.itemId })).filter((p) => !(p.kind === 'proposal' && derived.has(p.id)));
+      if (places.length > MAX_PLACES) throw new BadRequestException(TOO_COMMON(places.length));
       let added = 0;
       for (const p of places) {
         rows += (await cleanItem(db, key, c.id, p.kind, p.id, marks)).rows;
