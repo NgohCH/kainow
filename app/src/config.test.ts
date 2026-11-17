@@ -131,3 +131,11 @@ test('the worker reads APP_URL with the same default and trimming as the API', (
   assert.equal(loadWorkerConfig({ ...base, APP_URL: 'https://kainow.example.org//' }).appUrl, 'https://kainow.example.org');
   assert.equal(loadWorkerConfig({ ...base, APP_URL: 'https://kainow.example.org' }).appUrl, loadConfig({ ...base, APP_URL: 'https://kainow.example.org' }).appUrl);
 });
+
+test('the protected key file path is optional and trimmed, for the API and the worker', () => {
+  assert.equal(loadConfig(base).protectedKeyFile, null);
+  assert.equal(loadWorkerConfig(base).protectedKeyFile, null);
+  assert.equal(loadConfig({ ...base, KAINOW_PROTECTED_KEY_FILE: '  ' }).protectedKeyFile, null);
+  assert.equal(loadConfig({ ...base, KAINOW_PROTECTED_KEY_FILE: ' /run/keys/p.key ' }).protectedKeyFile, '/run/keys/p.key');
+  assert.equal(loadWorkerConfig({ ...base, KAINOW_PROTECTED_KEY_FILE: '/run/keys/p.key' }).protectedKeyFile, '/run/keys/p.key');
+});

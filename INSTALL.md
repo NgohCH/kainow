@@ -131,6 +131,16 @@ docker compose exec -T db rm /tmp/kainow.dump
 
 This holds everything: notes, original files, proposals, decisions, the audit trail and AI spend records. Keep it somewhere other than this computer. **Restoring from a backup has not been rehearsed** (the full restore drill is deferred to January), so treat the backup as unproven until you have restored one into a spare copy.
 
+## Protected key
+
+When someone reports a pasted password or key, Kainow removes it from every copy in Kainow and keeps the originals encrypted, apart from the database. The encryption key is a 32-byte file that you create once and keep outside the database and its backups.
+
+1. Create it (on Mac or Linux, or inside the app folder): `npm run protected-key -- --create ./secrets/kainow-protected.key`. It refuses to overwrite an existing file and prints only the file path and a short key id, never the key.
+2. Mount it read-only for both `api` and `worker` and set `KAINOW_PROTECTED_KEY_FILE` to its path inside the container: the commented lines in `compose.yaml` show both. Then run `docker compose up -d` again.
+3. **Keep a recovery copy apart from the database backups** (for example on a locked USB drive or in your password manager's secure files). A backup of the database alone cannot give the originals back, and the key alone gives nothing; losing the key means quarantined originals can never be restored. Never email the key or put it in the repository.
+
+Without the key, nothing breaks: a report still opens its case and hides the item at once, but cleaning waits. The case shows "Waiting for the protected key", and the Administrator organisation view shows the same warning until the file is mounted and the services restart; the worker then cleans the waiting cases in the order they were reported.
+
 ## Remove everything
 
 `docker compose down` removes the containers and keeps your data. `docker compose down -v` also **deletes the database volume, and with it all your notes, decisions and the audit trail. It cannot be undone.**

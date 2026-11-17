@@ -6,6 +6,7 @@ import { PG_POOL } from '../db/database.module';
 import { type Box, DEFAULT_NAME, LOGO_SHAPES, type LogoShape, PLACES, type Place, chooseLogo, defaultLogo } from './branding';
 import { loadLetterhead } from '../email/letterhead';
 import { checkLogo } from './image';
+import { PROTECTED_KEY, type ProtectedKey } from '../quarantine/protected-key';
 import { OrganisationState } from './state';
 
 export type LogoMeta = { width: number; height: number; byteSize: number; uploadedAt: Date };
@@ -48,6 +49,8 @@ export function cleanCustodian(body: unknown): { name: string; contact: string }
   return { name, contact };
 }
 
+export const PROTECTED_KEY_WARNING = 'Waiting for the protected key';
+
 /** The organisation this installation serves: its name, its setup, its logos and the branding they make. */
 @Injectable()
 export class OrganisationProfileService {
@@ -55,6 +58,7 @@ export class OrganisationProfileService {
     @Inject(PG_POOL) private readonly pool: Pool,
     @Inject(CLOCK) private readonly now: Clock,
     private readonly state: OrganisationState,
+    @Inject(PROTECTED_KEY) private readonly protectedKey: ProtectedKey | null,
   ) {}
 
   private async tx<T>(work: (c: PoolClient) => Promise<T>): Promise<T> {
@@ -72,6 +76,12 @@ export class OrganisationProfileService {
     }
   }
 
+  /** For the Administrator only: whether the protected key is loaded, how many quarantine cases wait for it, and the warning. Never the key or its id. */
+  async protectedKeyStatus(): Promise<{ loaded: boolean; casesWaiting: number; warning: string | null }> {
+    const casesWaiting = Number((await this.pool.query(`SELECT count(*) AS n FROM quarantine_cases WHERE waiting_for_key`)).rows[0].n);
+    return { loaded: this.protectedKey !== null, casesWaiting, warning: casesWaiting > 0 || this.protectedKey === null ? PROTECTED_KEY_WARNING : null };
+  }
+
   async get() {
     const org = (await this.pool.query(`SELECT name, registered_at FROM organisation WHERE id = 1`)).rows[0];
     const logos = (await this.pool.query(`SELECT shape, width, height, byte_size, uploaded_at FROM organisation_logos`)).rows;
@@ -79,7 +89,12 @@ export class OrganisationProfileService {
       const l = logos.find((r) => r.shape === shape);
       return l ? { width: l.width, height: l.height, byteSize: l.byte_size, uploadedAt: l.uploaded_at } : null;
     };
-    return { registered: !!org?.registered_at, name: (org?.name as string | undefined) ?? null, logos: { wide: meta('wide'), square: meta('square') } };
+    return {
+      registered: !!org?.registered_at,
+      name: (org?.name as string | undefined) ?? null,
+      logos: { wide: meta('wide'), square: meta('square') },
+      protectedKey: await this.protectedKeyStatus(),
+    };
   }
 
   /** Saves the name during onboarding; after setup it is a rename, recorded with the old and new name. */

@@ -30,6 +30,8 @@ export interface AppConfig extends DatabaseConfig {
   email: EmailConfig;
   /** Where people open Kainow; used for links in invitation emails. */
   appUrl: string;
+  /** File holding the protected key (32 bytes); null means quarantine cleaning waits for it. */
+  protectedKeyFile: string | null;
 }
 
 export const DEFAULT_AUTH_SETTINGS: AuthSettings = {
@@ -100,6 +102,10 @@ function appUrlFrom(env: NodeJS.ProcessEnv): string {
   return (env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
 }
 
+function protectedKeyFileFrom(env: NodeJS.ProcessEnv): string | null {
+  return env.KAINOW_PROTECTED_KEY_FILE?.trim() || null;
+}
+
 /** Reads configuration from the environment. Secrets come only from here, never from files in the repo. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const database = loadDatabaseConfig(env);
@@ -126,6 +132,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     cookieSecure: env.COOKIE_SECURE !== 'false',
     appUrl: appUrlFrom(env),
     email,
+    protectedKeyFile: protectedKeyFileFrom(env),
   };
 }
 
@@ -141,8 +148,9 @@ export interface WorkerConfig extends DatabaseConfig {
   email: EmailConfig;
   /** Where people open Kainow; used for links in notification emails. */
   appUrl: string;
+  protectedKeyFile: string | null;
 }
 
 export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
-  return { ...loadDatabaseConfig(env), openAiApiKey: env.OPENAI_API_KEY?.trim() || null, email: loadEmailConfig(env), appUrl: appUrlFrom(env) };
+  return { ...loadDatabaseConfig(env), openAiApiKey: env.OPENAI_API_KEY?.trim() || null, email: loadEmailConfig(env), appUrl: appUrlFrom(env), protectedKeyFile: protectedKeyFileFrom(env) };
 }

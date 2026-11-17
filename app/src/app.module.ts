@@ -22,6 +22,7 @@ import type { AutomaticAnalysis } from './discussion/automatic-analysis';
 import type { MeetingEndHook } from './discussion/meetings.service';
 import { OrganisationModule } from './organisation/organisation.module';
 import { ProjectsModule } from './projects/projects.module';
+import { ProtectedKeyModule } from './quarantine/protected-key.module';
 import { SearchModule } from './search/search.module';
 import { SpendModule } from './spend/spend.module';
 
@@ -64,6 +65,7 @@ export class AppModule {
         ConfigModule.forRoot(config),
         ClockModule.forRoot(options.clock),
         DatabaseModule,
+        ProtectedKeyModule,
         AuthModule.register({ codeSender: options.codeSender }),
         SpendModule,
         OrganisationModule,
