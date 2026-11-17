@@ -338,11 +338,40 @@ describe('deleting and restoring sources', { skip: SKIP_NO_DB }, () => {
     assert.equal(event[0].detail.cause, 'source_deleted');
     assert.ok(!(await listed()).includes(summarySource));
 
-    // Restoring the source does not bring the withdrawn summary back.
+    // Restoring the source brings the summary back as it was (PO, 18 Nov 2026); the preview names its readers.
+    t.clock.advanceSeconds(1);
+    const preview = await pm.request('GET', `/sources/${summarySource}/restore-preview`);
+    assert.equal(preview.status, 200, JSON.stringify(preview.body));
+    assert.ok((preview.body.names as string[]).length > 1, JSON.stringify(preview.body));
+    assert.equal((await t.pool.query(`SELECT state FROM summaries WHERE id = $1`, [asked.body.id])).rows[0].state, 'withdrawn');
+    assert.equal((await restore(pm, summarySource)).status, 200);
+    assert.equal((await t.pool.query(`SELECT state FROM summaries WHERE id = $1`, [asked.body.id])).rows[0].state, 'approved');
+    assert.ok((await listed()).includes(summarySource));
+    const back = (await t.pool.query(`SELECT actor_id, detail FROM ai_assist_events WHERE action = 'summary_restored' AND target_id = $1`, [asked.body.id])).rows;
+    assert.deepEqual(back, [{ actor_id: ids.pm, detail: { to: 'approved', cause: 'source_restored' } }]);
+  });
+
+  test('a summary changed after its source was deleted stays withdrawn when the source is restored', async () => {
+    const original = await note('Board note', 'The turbine replacement goes ahead next month.');
+    await restrict(original, [ids.ada]);
+    const asked = await dep.request('POST', `/sources/${original}/summaries`, { intendedAudience: { mode: 'project' }, leaveOut: '' });
+    const runner = new AssistRunner({ pool: t.pool, spend: spend(), model: new SummaryModel('The turbine is replaced next month.'), clock: t.clock.now });
+    assert.equal(await runner.process(queued[queued.length - 1], 1, false), 'succeeded');
+    t.clock.advanceSeconds(1);
+    const approved = await pm.request('POST', `/summaries/${asked.body.id}/approve`, { versionNo: 1, reason: 'Fine to share' });
+    const summarySource = approved.body.approved.sourceId as string;
+    t.clock.advanceSeconds(1);
+    await deleted(pm, summarySource);
+    // Something else happened to the summary after the deletion withdrew it (here a later withdrawal for another cause).
+    t.clock.advanceSeconds(1);
+    await t.pool.query(
+      `INSERT INTO ai_assist_events (id, project_id, actor_id, action, target_kind, target_id, reason, detail, at) VALUES ($1, $2, $3, 'summary_withdrawn', 'summary', $4, 'Other cause', '{"from":"withdrawn"}', $5)`,
+      [uuidv7(), project, ids.pm, asked.body.id, t.clock.now()],
+    );
     t.clock.advanceSeconds(1);
     assert.equal((await restore(pm, summarySource)).status, 200);
     assert.equal((await t.pool.query(`SELECT state FROM summaries WHERE id = $1`, [asked.body.id])).rows[0].state, 'withdrawn');
-    assert.ok(!(await listed()).includes(summarySource));
+    assert.equal((await t.pool.query(`SELECT 1 FROM ai_assist_events WHERE action = 'summary_restored'`)).rowCount, 0);
   });
 
   test('approving a summary version containing an sk- key is refused', async () => {

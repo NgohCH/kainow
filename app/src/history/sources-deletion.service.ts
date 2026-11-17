@@ -105,8 +105,16 @@ export class SourcesDeletionService {
       const s = await this.locked(db, user, sourceId, 'source.restore');
       if (s.heldCaseId) throw new ConflictException(HELD);
       if (s.status !== 'deleted') throw new ConflictException(NOT_DELETED);
-      // The real row: a restored summary source whose summary stays withdrawn is shown to nobody, and the preview says so.
-      const people = await this.audiences.readersOf(s.ctx, s.row, db);
+      // Restore brings back a summary the deletion withdrew, so the preview reads the row as it will be after the restore
+      // (rolled back at once; nothing here is a quarantine write).
+      const back = s.summaryId ? await this.withdrawnByDeletion(db, s.summaryId) : null;
+      if (back) {
+        await db.query('SAVEPOINT restore_preview');
+        await db.query(`UPDATE summaries SET state = $2 WHERE id = $1`, [s.summaryId, back]);
+      }
+      const row = back ? await this.audiences.sourceAccessRow(sourceId, db) : s.row;
+      const people = await this.audiences.readersOf(s.ctx, row, db);
+      if (back) await db.query('ROLLBACK TO SAVEPOINT restore_preview');
       return { names: people.map((p) => p.displayName).sort((a, b) => a.localeCompare(b)) };
     });
   }
@@ -114,7 +122,8 @@ export class SourcesDeletionService {
   /**
    * Restore (spec 4.4): PM, Owner or Sponsor in any project state, with a reason. The source is active again with its
    * versions and history. Nothing restarts: no extraction, analysis or AI request, no notification or email; answers and
-   * drafts withdrawn or sent to review stay so, and a summary withdrawn or hidden because of the deletion stays so.
+   * drafts withdrawn or sent to review stay so. A summary the deletion withdrew comes back to the state it had (PO,
+   * 18 Nov 2026), unless something else changed it since; answers built on it while it was withdrawn stay withdrawn.
    */
   async restore(user: AuthUser, sourceId: string, body: { reason?: unknown }): Promise<{ id: string; status: 'active' }> {
     await this.inTransaction(async (db) => {
@@ -126,6 +135,7 @@ export class SourcesDeletionService {
       // 'active' is the only other state a source has (0004), so this is exactly its state before the deletion.
       await db.query(`UPDATE sources SET status = 'active', deleted_by = NULL, deleted_at = NULL, delete_reason = NULL WHERE id = $1`, [sourceId]);
       await this.event(db, s, sourceId, 'restored', user, reason, at);
+      if (s.summaryId) await this.restoreSummary(db, s, user, at);
       await writeAudit(db, { at, action: 'source.restored', actorUserId: user.id, subjectType: 'source', subjectId: sourceId, detail: { projectId: s.ctx.project.id, kind: s.row.kind } });
     });
     return { id: sourceId, status: 'active' };
@@ -141,6 +151,34 @@ export class SourcesDeletionService {
       reason,
       at,
     ]);
+  }
+
+  /**
+   * The state a summary had before its source's deletion withdrew it, when that withdrawal is still the last thing that
+   * happened to it; otherwise null (the deletion did not withdraw it, or it changed since).
+   */
+  private async withdrawnByDeletion(db: PoolClient, summaryId: string): Promise<string | null> {
+    const state = (await db.query<{ state: string }>(`SELECT state FROM summaries WHERE id = $1`, [summaryId])).rows[0]?.state;
+    if (state !== 'withdrawn') return null;
+    const last = (
+      await db.query<{ action: string; detail: { from?: string; cause?: string } | null }>(
+        `SELECT action, detail FROM ai_assist_events WHERE target_kind = 'summary' AND target_id = $1 ORDER BY at DESC, id DESC LIMIT 1`,
+        [summaryId],
+      )
+    ).rows[0];
+    if (last?.action !== 'summary_withdrawn' || last.detail?.cause !== 'source_deleted' || !last.detail.from) return null;
+    return last.detail.from;
+  }
+
+  /** Restoring the source brings back the summary its deletion withdrew (PO, 18 Nov 2026), recorded with the cause. */
+  private async restoreSummary(db: PoolClient, s: Locked, user: AuthUser, at: Date): Promise<void> {
+    const back = await this.withdrawnByDeletion(db, s.summaryId!);
+    if (!back) return;
+    await db.query(`UPDATE summaries SET state = $2 WHERE id = $1`, [s.summaryId, back]);
+    await db.query(
+      `INSERT INTO ai_assist_events (id, project_id, actor_id, action, target_kind, target_id, reason, detail, at) VALUES ($1, $2, $3, 'summary_restored', 'summary', $4, $5, $6, $7)`,
+      [uuidv7(at.getTime()), s.ctx.project.id, user.id, s.summaryId, 'source_restored', { to: back, cause: 'source_restored' }, at],
+    );
   }
 
   /** Deleting an approved summary's source withdraws the summary (spec 4.2), recorded like a Withdraw with the cause. */

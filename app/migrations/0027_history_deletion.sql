@@ -455,3 +455,11 @@ CREATE UNIQUE INDEX record_deletion_delegations_one_open ON record_deletion_dele
 
 -- Inspect Deleted Content (O02): a flag on an access grant.
 ALTER TABLE access_grants ADD COLUMN inspect_deleted boolean NOT NULL DEFAULT false;
+
+-- Restoring a summary source brings back the summary its deletion withdrew (PO, 18 Nov 2026): one more assist event.
+ALTER TABLE ai_assist_events DROP CONSTRAINT ai_assist_events_action_check;
+ALTER TABLE ai_assist_events ADD CONSTRAINT ai_assist_events_action_check CHECK (action IN (
+  'asked', 'shared', 'reanswered', 'hidden', 'unhidden', 'review_required', 'cleared', 'withdrawn',
+  'draft_requested', 'draft_edited', 'draft_shared', 'draft_unshared',
+  'summary_requested', 'summary_edited', 'summary_approval_requested', 'summary_approved',
+  'summary_confirmed', 'summary_withdrawn', 'summary_restored'));
