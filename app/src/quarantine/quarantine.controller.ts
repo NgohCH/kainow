@@ -45,6 +45,13 @@ export class QuarantineController {
     return this.cases.heldForReview(who(req), projectId);
   }
 
+  /** → { cases }: open cases with places awaiting a decision; PM and Deputy. */
+  @Get('projects/:id/possible-copies')
+  @AnySignedInUser()
+  copiesAwaiting(@Param('id') projectId: string, @Req() req: HttpRequest) {
+    return this.cases.copiesAwaiting(who(req), projectId);
+  }
+
   /** → the case with the item's cleaned text and the place of each [credential removed]; never the original. */
   @Get('quarantine/cases/:id')
   @AnySignedInUser()

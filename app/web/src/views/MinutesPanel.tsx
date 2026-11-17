@@ -1,4 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { ReportSecret } from './ReportSecret.tsx';
 import { ApiError, type Membership } from '../api.ts';
 import {
   AI_DRAFT_LABEL,
@@ -273,6 +274,7 @@ export function MinutesPanel({
         )}
         {minutes?.canPublish && shown && <button type="button" className="primary" disabled={busy} onClick={() => setConfirming('publish')}>Publish</button>}
         {canSubmit && shown && <button type="button" className="primary" disabled={busy} onClick={() => setConfirming('submit')}>Submit for publication</button>}
+        {shown && mode === 'view' && shown.id && <ReportSecret projectId={projectId} kind="minutes_draft" id={shown.id} label={`version ${shown.versionNo} of the draft minutes`} />}
         {shown && mode === 'view' && canFlagDraft(shown) && shown.id && (
           <FeedbackButton projectId={projectId} targetKind="minutes_draft" targetId={shown.id} label={`Give feedback on version ${shown.versionNo}`} />
         )}

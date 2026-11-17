@@ -107,6 +107,8 @@ export interface SecurityCase {
   disclosuresLabel: string;
   changedSinceCleaning: ChangedValue[];
   /** For a reviewer: whether they hold a current grant naming the case. */
+  /** The reported item and its confirmed copies, each of which Reveal original can open: references only. */
+  items: Array<{ kind: ItemKind; id: string; role: string }>;
   currentGrant?: boolean;
 }
 
@@ -435,6 +437,7 @@ export class SecurityService {
     const { rows } = await this.pool.query(
       `SELECT c.id, c.project_id AS "projectId", p.name AS project, c.item_kind AS kind, c.item_id AS "itemId", u.display_name AS reporter,
               c.state, c.waiting_for_key AS "waitingForKey", c.reported_at AS "reportedAt", c.closed_at AS "closedAt",
+              COALESCE((SELECT json_agg(json_build_object('kind', i.item_kind, 'id', i.item_id, 'role', i.role) ORDER BY i.role DESC, i.item_id) FROM quarantine_items i WHERE i.case_id = c.id), '[]'::json) AS items,
               (SELECT e.detail FROM quarantine_events e WHERE e.case_id = c.id AND e.action = 'reported' ORDER BY e.at, e.id LIMIT 1) AS reported,
               (SELECT e.detail FROM quarantine_events e WHERE e.case_id = c.id AND e.action = 'released_unchanged' ORDER BY e.at, e.id LIMIT 1) AS unchanged
          FROM quarantine_cases c JOIN projects p ON p.id = c.project_id LEFT JOIN users u ON u.id = c.reporter_id
@@ -457,6 +460,7 @@ export class SecurityService {
         closedAt: r.closedAt ? r.closedAt.toISOString() : null,
         disclosures: r.reported?.disclosures ?? { aiRequests: [], emails: [], audienceSize: 0 },
         disclosuresLabel: DISCLOSURES_LABEL,
+        items: r.items,
         changedSinceCleaning: changed.map((c) => ({ table: c.table, rowKey: c.rowKey, label: CHANGED_SINCE_CLEANING })),
         ...(viewer ? { currentGrant: (await this.currentGrant(this.pool, viewer, r.id)) !== null } : {}),
       });

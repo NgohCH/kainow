@@ -257,7 +257,7 @@ export function App() {
   const run = /^#\/runs\/([0-9a-f-]{36})$/i.exec(hash);
   const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work|drafts|review|settings|feedback|closing|deadline-review|deleted)(?:\/([0-9a-f-]{36}))?)?$/i.exec(hash);
   const deletedItem = /^#\/projects\/([0-9a-f-]{36})\/deleted\/([a-z]+)\/([0-9a-f-]{36})$/i.exec(hash);
-  const quarantineCase = /^#\/quarantine\/cases\/([0-9a-f-]{36})$/i.exec(hash);
+  const quarantineCase = /^#\/quarantine\/cases\/([0-9a-f-]{36})(?:\/copies)?$/i.exec(hash);
   const securityPage = /^#\/security\/(cases|grants)$/.test(hash);
   const summary = /^#\/summaries\/([0-9a-f-]{36})$/i.exec(hash);
   const thread = parseThreadHash(hash);

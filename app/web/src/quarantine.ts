@@ -233,6 +233,8 @@ export interface SecurityCase {
   disclosures: Disclosures;
   disclosuresLabel: string;
   changedSinceCleaning: Array<{ table: string; rowKey: Record<string, unknown>; label: string }>;
+  /** The reported item and its confirmed copies, each of which Reveal original can open. */
+  items?: Array<{ kind: ItemKind; id: string; role: string }>;
   currentGrant?: boolean;
 }
 export interface Reviewer {
@@ -274,8 +276,17 @@ export const GRANT_STATUS_TEXT: Record<Grant['status'], string> = {
   current: 'Current',
 };
 
-export const reportSecret = (projectId: string, body: ReturnType<typeof reportBody>) => api.post<{ caseId: string }>(`/projects/${projectId}/secret-reports`, body);
+export const reportSecret = (projectId: string, body: ReturnType<typeof reportBody> & { holderUserId?: string }) => api.post<{ caseId: string }>(`/projects/${projectId}/secret-reports`, body);
 export const listHeld = async (projectId: string) => (await api.get<{ cases: HeldCase[] }>(`/projects/${projectId}/held`)).cases;
+export interface AwaitingCase {
+  caseId: string;
+  kind: ItemKind;
+  reportedAt: string;
+  awaiting: number;
+}
+export const listAwaiting = async (projectId: string) => (await api.get<{ cases: AwaitingCase[] }>(`/projects/${projectId}/possible-copies`)).cases;
+/** `3 places awaiting a check`. */
+export const awaitingText = (n: number): string => `${n} ${n === 1 ? 'place' : 'places'} awaiting a check`;
 export const getCase = (caseId: string) => api.get<CaseView>(`/quarantine/cases/${caseId}`);
 export const markMore = (caseId: string, marked: string[]) => api.post<{ caseId: string; rows: number; places: number }>(`/quarantine/cases/${caseId}/mark-more`, { marked });
 export const releaseCase = (caseId: string, reason: string) => api.post<{ caseId: string; state: 'released'; copies: number }>(`/quarantine/cases/${caseId}/release`, { reason });

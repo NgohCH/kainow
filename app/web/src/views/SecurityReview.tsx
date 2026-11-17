@@ -6,6 +6,7 @@ import {
   DISCLOSURES_HEADING,
   GRANT_STATUS_TEXT,
   type Grant,
+  type ItemKind,
   type ProtectedKeyStatus,
   REVEAL_CONFIRMATION,
   type Revealed,
@@ -134,7 +135,8 @@ function CaseLine({ c }: { c: SecurityCase }) {
  * No copy, download, export, email or AI action is offered. The original lives only in this component's state: it is not
  * written to any storage, and it is dropped when it is hidden, when the page is hidden and when the screen is left.
  */
-function RevealOriginal({ c }: { c: SecurityCase }) {
+function RevealOriginal({ c, item }: { c: SecurityCase; item: { kind: ItemKind; id: string; role: string } }) {
+  const what = `${item.role === 'reported' ? 'the reported' : 'a confirmed copy,'} ${kindNoun(item.kind)}`;
   const uid = useId();
   const [asking, setAsking] = useState(false);
   const [ticked, setTicked] = useState(false);
@@ -176,7 +178,7 @@ function RevealOriginal({ c }: { c: SecurityCase }) {
     setBusy(true);
     setError(null);
     try {
-      setShown(await revealOriginal(c.caseId, c.kind, c.itemId));
+      setShown(await revealOriginal(c.caseId, item.kind, item.id));
       setAsking(false);
     } catch (err) {
       setError(errText(err));
@@ -189,8 +191,8 @@ function RevealOriginal({ c }: { c: SecurityCase }) {
   return (
     <div>
       {!shown && (
-        <button type="button" ref={button} aria-expanded={asking} aria-label={`Reveal original of ${caseName(c)}`} onClick={() => (asking ? hide() : setAsking(true))}>
-          Reveal original
+        <button type="button" ref={button} aria-expanded={asking} aria-label={`Reveal original of ${what} in ${c.project}`} onClick={() => (asking ? hide() : setAsking(true))}>
+          Reveal original{(c.items?.length ?? 0) > 1 ? ` (${what})` : ''}
         </button>
       )}
       {asking && !shown && (
@@ -221,7 +223,7 @@ function RevealOriginal({ c }: { c: SecurityCase }) {
       )}
       {shown && (
         <section className="panel stack" aria-labelledby={`${uid}-r`}>
-          <h4 id={`${uid}-r`} tabIndex={-1} ref={heading}>Original — {caseName(c)}</h4>
+          <h4 id={`${uid}-r`} tabIndex={-1} ref={heading}>Original — {what} in {c.project}</h4>
           <p className="warn" role="note">{shown.notice}</p>
           {lines.length === 0 && <p className="meta">No original text is stored for this item.</p>}
           {lines.map((l, i) => (
@@ -384,7 +386,9 @@ export function SecurityReviewPage() {
                   <Disclosures c={c} />
                   {c.currentGrant ? (
                     <div className="decision">
-                      <RevealOriginal c={c} />
+                      {(c.items && c.items.length > 0 ? c.items : [{ kind: c.kind, id: c.itemId, role: 'reported' }]).map((it) => (
+                        <RevealOriginal key={`${it.kind}:${it.id}`} c={c} item={it} />
+                      ))}
                       {open && (
                         <ReasonButton
                           label="Release unchanged"
@@ -555,6 +559,30 @@ export function QuarantineCasesSection() {
   );
 }
 
+/** Extend: the Administrator chooses the hours (default 24); it is a fresh approval, from now. */
+function ExtendButton({ g, onDone }: { g: Grant; onDone: () => void }) {
+  const id = useId();
+  const [hours, setHours] = useState('24');
+  const n = Number(hours);
+  return (
+    <ReasonButton
+      label="Extend"
+      ariaLabel={`Extend the access of ${g.requester}`}
+      title="Extend this access (a fresh approval)"
+      confirm="Extend"
+      onConfirm={async (r) => {
+        if (!Number.isFinite(n) || n < 1) throw new ApiError('Give at least 1 hour.', 0);
+        await extendGrant(g.id, Math.floor(n), r);
+        onDone();
+      }}
+    >
+      <label htmlFor={`${id}-h`}>Hours from now</label>
+      <input id={`${id}-h`} type="number" min={1} step={1} value={hours} onChange={(e) => setHours(e.target.value)} />
+      <p className="meta">Another Administrator must approve an extension.</p>
+    </ReasonButton>
+  );
+}
+
 /** Requests to open quarantined originals: approve or decline (not your own), extend or revoke. */
 export function GrantRequestsSection({ meId }: { meId: string }) {
   const [grants, setGrants] = useState<Grant[] | null>(null);
@@ -589,9 +617,7 @@ export function GrantRequestsSection({ meId }: { meId: string }) {
                 )}
                 {g.status === 'waiting' && g.requesterId === meId && <span className="meta">Another Administrator must decide your own request.</span>}
                 {(g.status === 'current' || g.status === 'expired') && g.requesterId !== meId && (
-                  <ReasonButton label="Extend" ariaLabel={`Extend the access of ${g.requester}`} title="Extend this access (a fresh approval)" confirm="Extend" onConfirm={async (r) => { await extendGrant(g.id, 24, r); load(); }}>
-                    <p className="meta">Extends by 24 hours from now. Another Administrator must approve an extension.</p>
-                  </ReasonButton>
+                  <ExtendButton g={g} onDone={load} />
                 )}
                 {g.status === 'current' && (
                   <ReasonButton label="Revoke" ariaLabel={`Revoke the access of ${g.requester}`} title="Revoke this access" confirm="Revoke" onConfirm={async (r) => { await revokeGrant(g.id, r); load(); }} />

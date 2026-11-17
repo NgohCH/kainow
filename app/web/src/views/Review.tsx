@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ReportSecret } from './ReportSecret.tsx';
 import { ApiError, api, type Item, type Project, type Run } from '../api.ts';
 import { FeedbackButton } from './Feedback.tsx';
 import { AuthoriseForm, type Person } from './AuthoriseForm.tsx';
@@ -407,6 +408,7 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                   )
                 );
               })()}
+              <ReportSecret projectId={view.projectId} kind="proposal" id={item.id} label="this proposal" />
               {item.quoteMatches === 0 && (
                 <p className="warn">This quote is not in the notes. The model may have made it up, so it cannot be approved.</p>
               )}

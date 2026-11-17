@@ -297,6 +297,14 @@ describe('reporting, holding and possible copies', { skip: SKIP_NO_DB }, () => {
     assert.ok(!JSON.stringify(list.body).includes(SECRET));
     assert.equal((await dep.request('GET', `/quarantine/cases/${caseId}/copies`)).status, 200);
     assert.equal((await ada.request('GET', `/quarantine/cases/${caseId}/copies`)).status, 403);
+    // The project page's list of cases awaiting a decision: PM and Deputy only, references and counts.
+    for (const c of [pm, dep]) {
+      const awaiting = await c.request('GET', `/projects/${project}/possible-copies`);
+      assert.equal(awaiting.status, 200, JSON.stringify(awaiting.body));
+      assert.deepEqual(awaiting.body.cases.map((x: { caseId: string; awaiting: number }) => [x.caseId, x.awaiting]), [[caseId, 1]]);
+      assert.ok(!JSON.stringify(awaiting.body).includes(SECRET));
+    }
+    assert.equal((await ada.request('GET', `/projects/${project}/possible-copies`)).status, 403);
     assert.ok(!(await leakScan()).includes(SECRET));
   });
 

@@ -748,6 +748,19 @@ export class CasesService {
     return c;
   }
 
+  /** The project's open cases with places still awaiting a decision (PM and Deputy): references and counts, never text. */
+  async copiesAwaiting(user: AuthUser, projectId: string): Promise<{ cases: Array<{ caseId: string; kind: ItemKind; reportedAt: string; awaiting: number }> }> {
+    if (!UUID.test(projectId)) throw new NotFoundException();
+    const ctx = await this.access.authorize(user, 'quarantine.copies', projectId);
+    const { rows } = await this.pool.query<{ caseId: string; kind: ItemKind; reportedAt: Date; awaiting: string }>(
+      `SELECT c.id AS "caseId", c.item_kind AS kind, c.reported_at AS "reportedAt", count(*)::text AS awaiting
+         FROM quarantine_cases c JOIN quarantine_possible_copies pc ON pc.case_id = c.id AND pc.decision IS NULL
+        WHERE c.project_id = $1 AND c.state IN ('held', 'cleaned') GROUP BY c.id ORDER BY c.reported_at, c.id`,
+      [ctx.project.id],
+    );
+    return { cases: rows.map((r) => ({ caseId: r.caseId, kind: r.kind, reportedAt: r.reportedAt.toISOString(), awaiting: Number(r.awaiting) })) };
+  }
+
   /** The Possible copies list: kind, reference and date for each place; never the marked text. */
   async copies(user: AuthUser, caseId: string): Promise<{ copies: Array<{ kind: ItemKind; id: string; reference: string | null; foundAt: string; masked: boolean; decision: string | null; decidedAt: string | null; label: string | null }> }> {
     const c = await this.caseFor(this.pool, user, caseId);

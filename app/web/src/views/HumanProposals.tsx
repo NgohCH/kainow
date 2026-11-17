@@ -1,4 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import { ReportSecret } from './ReportSecret.tsx';
 import { ApiError, api, type DueReading } from '../api.ts';
 import { formatWhen } from '../format.ts';
 import { AuthoriseForm, type Person } from './AuthoriseForm.tsx';
@@ -139,6 +140,7 @@ export function HumanProposals({
                 {p.reviewStatus === 'rejected' ? ` · rejected: ${p.rejectReason}` : ''}
                 {p.record ? ' · authorised (see the Work tab)' : ''}
               </span>
+              <ReportSecret projectId={projectId} kind="human_proposal" id={p.id} label="this proposal" onReported={() => void load()} />
               {canReview && p.reviewStatus === 'pending' && authorising !== p.id && rejecting !== p.id && !pendingAuthorisation(requests, p.id) && (
                 <div className="decision">
                   <button className="approve" onClick={() => setAuthorising(p.id)}>Authorise</button>

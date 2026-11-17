@@ -1,5 +1,5 @@
 import { type FormEvent, useEffect, useId, useRef, useState } from 'react';
-import { ApiError } from '../api.ts';
+import { ApiError, type Project, api } from '../api.ts';
 import { type ItemKind, reportBody, reportProblems, reportSecret } from '../quarantine.ts';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
@@ -41,6 +41,8 @@ export function ReportSecret({
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [reported, setReported] = useState(false);
+  const [holder, setHolder] = useState('');
+  const [people, setPeople] = useState<Array<{ userId: string; displayName: string; email: string }>>([]);
   const button = useRef<HTMLButtonElement>(null);
   const markedBox = useRef<HTMLTextAreaElement>(null);
   const reasonBox = useRef<HTMLTextAreaElement>(null);
@@ -58,11 +60,20 @@ export function ReportSecret({
     setMarked(selectedPageText());
     setReported(false);
     setOpen(true);
+    // The project's current people, for naming who holds the credential (optional).
+    api.get<{ project: Project }>(`/projects/${projectId}`).then(
+      (r) =>
+        setPeople([
+          ...new Map(r.project.memberships.filter((m) => m.state === 'active' || m.state === 'scheduled').map((m) => [m.userId, { userId: m.userId, displayName: m.displayName, email: m.email }])).values(),
+        ]),
+      () => setPeople([]),
+    );
   }
   function close() {
     setOpen(false);
     setMarked('');
     setReason('');
+    setHolder('');
     setProblems({ marked: null, reason: null });
     setError(null);
   }
@@ -77,7 +88,7 @@ export function ReportSecret({
     if (p.reason) return reasonBox.current?.focus();
     setBusy(true);
     try {
-      await reportSecret(projectId, reportBody(kind, id, { marked: [marked], reason }));
+      await reportSecret(projectId, { ...reportBody(kind, id, { marked: [marked], reason }), ...(holder ? { holderUserId: holder } : {}) });
       // The marked text is gone from this component the moment the server has it; nothing echoes it back.
       close();
       setReported(true);
@@ -143,6 +154,14 @@ export function ReportSecret({
             onChange={(e) => setReason(e.target.value)}
           />
           {problems.reason && <p id={`${uid}-reason-problem`} role="alert" className="error">{problems.reason}</p>}
+          <label htmlFor={`${uid}-holder`}>Who holds this credential? (optional)</label>
+          <select id={`${uid}-holder`} value={holder} onChange={(e) => setHolder(e.target.value)} aria-describedby={`${uid}-holder-help`}>
+            <option value="">Not named</option>
+            {people.map((p) => (
+              <option key={p.userId} value={p.userId}>{p.displayName} ({p.email})</option>
+            ))}
+          </select>
+          <p id={`${uid}-holder-help`} className="meta">The person named is told at once, so they can revoke or rotate it.</p>
           {error && <p role="alert" className="error">{error}</p>}
           <div className="decision">
             <button className="primary" disabled={busy} aria-disabled={busy}>Report and hold</button>

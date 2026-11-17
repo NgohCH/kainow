@@ -2,16 +2,19 @@ import { type FormEvent, useCallback, useEffect, useId, useRef, useState } from 
 import { ApiError } from '../api.ts';
 import { formatDay } from '../format.ts';
 import {
+  type AwaitingCase,
   type CaseView,
   CASE_STATE_TEXT,
   HELD_LABEL,
   type HeldCase,
   MARKER_EQUIVALENT,
   type PossibleCopy,
+  awaitingText,
   copyLine,
   decideCopies,
   getCase,
   kindNoun,
+  listAwaiting,
   listCopies,
   listHeld,
   markMore,
@@ -67,6 +70,33 @@ export function HeldForReviewList({ projectId }: { projectId: string }) {
                 Reported by {c.reporter}, {formatDay(c.reportedAt)} · {CASE_STATE_TEXT[c.state] ?? c.state}
               </span>
               <span className="warn">{c.label ?? (c.state === 'held' ? HELD_LABEL : 'Credential removed — under review')}</span>
+            </a>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+/** Open cases with places awaiting a decision, for the Project Manager and Deputies; each links to the case's Possible copies. */
+export function CopiesAwaitingList({ projectId }: { projectId: string }) {
+  const [cases, setCases] = useState<AwaitingCase[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    listAwaiting(projectId).then(setCases, (e) => setError(quiet(e) ? null : errText(e)));
+  }, [projectId]);
+  if (error) return <p role="alert" className="error">{error}</p>;
+  if (!cases || cases.length === 0) return null;
+  return (
+    <section aria-labelledby="awaiting-heading">
+      <h2 id="awaiting-heading">Possible copies awaiting check</h2>
+      <p className="meta">The text reported as a suspected credential also appeared in these places. They were masked at once; confirm or dismiss each.</p>
+      <ul className="list">
+        {cases.map((c) => (
+          <li key={c.caseId}>
+            <a href={`#/quarantine/cases/${c.caseId}/copies`}>
+              <strong>{`Reported in a ${kindNoun(c.kind)}, ${formatDay(c.reportedAt)}`}</strong>
+              <span className="meta">{awaitingText(c.awaiting)}</span>
             </a>
           </li>
         ))}
