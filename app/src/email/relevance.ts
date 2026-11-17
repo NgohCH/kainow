@@ -5,7 +5,8 @@ import type { Db } from './letterhead';
 export type Relevance =
   | { kind: 'task'; taskId: string; dueOn: string; reopenCount: number }
   | { kind: 'risk'; riskId: string; reviewOn: string }
-  | { kind: 'project_active'; projectId: string }
+  /** `taskIds`: the tasks a digest lists; it is not delivered once any of them is Deleted or held (history spec 4.3). */
+  | { kind: 'project_active'; projectId: string; taskIds?: string[] }
   /** An invitation email: worth sending only while the invitation is still open (not revoked, replaced or answered) and unexpired. */
   | { kind: 'invitation'; invitationId: string }
   | { kind: 'none' };
@@ -51,7 +52,10 @@ export async function stillRelevant(db: Db, r: Relevance, now: Date = new Date()
     }
     case 'project_active': {
       const p = (await db.query(`SELECT status FROM projects WHERE id = $1`, [r.projectId])).rows[0];
-      return p?.status === 'active';
+      if (p?.status !== 'active') return false;
+      if (!r.taskIds || r.taskIds.length === 0) return true;
+      const gone = await db.query(`SELECT 1 FROM tasks t WHERE t.id = ANY($1::uuid[]) AND NOT ${liveRecordSql('t')} LIMIT 1`, [r.taskIds]);
+      return gone.rows.length === 0;
     }
     case 'invitation': {
       const i = (await db.query(`SELECT 1 FROM invitations WHERE id = $1 AND status = 'invited' AND expires_at > $2`, [r.invitationId, now])).rows[0];

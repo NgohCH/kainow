@@ -80,7 +80,7 @@ export async function buildDigest(
   recipientId: string,
   asAt: Date,
   appUrl = '',
-): Promise<{ subject: string; body: string; openCount: number }> {
+): Promise<{ subject: string; body: string; openCount: number; taskIds: string[] }> {
   const name = (await db.query(`SELECT name FROM projects WHERE id = $1`, [projectId])).rows[0].name as string;
   const today = todayUtc8(asAt);
   const tasks = await openTasks(db, projectId);
@@ -107,7 +107,7 @@ export async function buildDigest(
   const parts = [name, asAtLine(asAt), '', 'Your open tasks', own.length ? own.map(line).join('\n') : 'None', '', 'Other open tasks in this project'];
   if (others.length === 0) parts.push('None');
   for (const g of others) parts.push(g.assignee, ...g.list.sort(byDue).map(line));
-  return { subject: `Action items: ${name}`, body: parts.join('\n'), openCount: tasks.length };
+  return { subject: `Action items: ${name}`, body: parts.join('\n'), openCount: tasks.length, taskIds: tasks.map((x) => x.id) };
 }
 
 export interface DigestRecipient { userId: string; email: string }
@@ -127,7 +127,7 @@ export async function digestRecipients(db: Db, projectId: string, today: string)
   return r.rows;
 }
 
-export const digestRelevance = (projectId: string): EmailRelevance => ({ kind: 'project_active', projectId, scope: 'project' });
+export const digestRelevance = (projectId: string, taskIds: string[] = []): EmailRelevance => ({ kind: 'project_active', projectId, ...(taskIds.length > 0 ? { taskIds } : {}), scope: 'project' });
 
 /** Queues one digest email per recipient in the caller's transaction and records the run. Returns the run id. */
 export async function queueDigestRun(
@@ -144,7 +144,7 @@ export async function queueDigestRun(
     await writeOutbox(c, {
       toUserId: r.userId, toAddress: r.email, subject: d.subject, body: d.body, kind: 'digest', projectId: o.projectId,
       initiatedBy: 'digest', ...(o.initiatedBy ? { initiatedByUser: o.initiatedBy } : {}), digestRunId: runId,
-      relevance: digestRelevance(o.projectId), now: o.asAt,
+      relevance: digestRelevance(o.projectId, d.taskIds), now: o.asAt,
     });
   }
   return runId;
