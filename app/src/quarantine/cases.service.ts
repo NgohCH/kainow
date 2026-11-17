@@ -289,6 +289,19 @@ function markerSpans(text: string): Array<{ start: number; end: number }> {
   return out;
 }
 
+/**
+ * Whether a mark cannot be cleaned as a whole: it is part of the marker, or one of its occurrences runs into a marker
+ * already in the text (cleaning skips such occurrences, so the secret would stay; M1, NB1).
+ */
+function crossesMarker(text: string, mark: string): boolean {
+  if (MARKER.includes(mark)) return true;
+  const spans = markerSpans(text);
+  for (let at = text.indexOf(mark); at !== -1; at = text.indexOf(mark, at + 1)) {
+    if (spans.some((s) => at < s.end && at + mark.length > s.start)) return true;
+  }
+  return false;
+}
+
 async function event(
   db: Db,
   e: { caseId: string; projectId: string; actorId: string | null; action: string; kind?: ItemKind | null; itemId?: string | null; reason?: string | null; detail?: Record<string, unknown> | null; at: Date },
@@ -474,8 +487,9 @@ export class CasesService {
       // The marks: distinct strings of 4+ characters, each exactly in the item's current text.
       const marks = this.readMarks(input.marked, user === 'kainow');
       const text = await markableText(db, input.kind, input.id, user === 'kainow');
-      // A mark inside the marker ("credential", "removed") would rewrite markers already there (M1).
-      if (text === null || marks.some((m) => !text.includes(m) || MARKER.includes(m))) throw new BadRequestException(MARKS_REFUSED);
+      // A mark inside the marker ("credential", "removed") would rewrite markers already there (M1); one running into a
+      // marker already in the text would be skipped by cleaning and stay (NB1).
+      if (text === null || marks.some((m) => !text.includes(m) || crossesMarker(text, m))) throw new BadRequestException(MARKS_REFUSED);
       let reason: string | null = null;
       if (user !== 'kainow' || input.reason !== null) {
         reason = readReason(input.reason);
@@ -973,13 +987,7 @@ export class CasesService {
       const key = this.key;
       const marks = this.readMarks(marked);
       const text = (await currentText(db, c.kind, c.itemId)) ?? '';
-      const spans = markerSpans(text);
-      for (const m of marks) {
-        if (MARKER.includes(m) || !text.includes(m)) throw new BadRequestException(MARKS_MORE_REFUSED);
-        for (let at = text.indexOf(m); at !== -1; at = text.indexOf(m, at + 1)) {
-          if (spans.some((s) => at < s.end && at + m.length > s.start)) throw new BadRequestException(MARKS_MORE_REFUSED);
-        }
-      }
+      if (marks.some((m) => !text.includes(m) || crossesMarker(text, m))) throw new BadRequestException(MARKS_MORE_REFUSED);
       const at = this.now();
       const projectId = c.projectId;
       const cancelled = await cancelQueuedHolding(db, marks, { kind: c.kind, id: c.itemId });

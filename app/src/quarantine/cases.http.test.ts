@@ -217,6 +217,12 @@ describe('reporting, holding and possible copies', { skip: SKIP_NO_DB }, () => {
       const res = await report(ada, { kind: 'source', id: words, reason: 'Looks like a code', marked: [m] });
       assert.equal(res.status, 400, m);
     }
+    // A mark that runs into a marker already in the item is refused: cleaning would skip it and leave the secret (NB1).
+    const masked = await note('Masked', 'Login [credential removed]-Rotor42 for the panel.');
+    for (const m of ['removed]-Rotor42', 'Login [credential', 'n [credential removed]-R']) {
+      const res = await report(ada, { kind: 'source', id: masked, reason: 'Looks like a code', marked: [m] });
+      assert.equal(res.status, 400, m);
+    }
     // A reason is required, and it may not repeat the marked text.
     assert.equal((await report(ada, { kind: 'source', id, marked: [SECRET], reason: '' })).status, 400);
     const repeated = await report(ada, { kind: 'source', id, marked: [SECRET], reason: `the code ${SECRET}` });
@@ -232,6 +238,14 @@ describe('reporting, holding and possible copies', { skip: SKIP_NO_DB }, () => {
     assert.equal((await report(ada, { kind: 'spaceship', id, marked: [SECRET], reason: 'x code' })).status, 400);
     assert.equal(await count(`SELECT count(*) AS n FROM quarantine_cases`), 0);
     assert.equal((await t.pool.query(`SELECT held_case_id FROM sources WHERE id = $1`, [id])).rows[0].held_case_id, null);
+  });
+
+  test('text beside a marker already in the item is reported and cleaned (NB1)', async () => {
+    const masked = await note('Masked', 'Login [credential removed]-Rotor42 for the panel.');
+    const res = await report(ada, { kind: 'source', id: masked, reason: 'Looks like a code', marked: ['-Rotor42'] });
+    assert.equal(res.status, 201, JSON.stringify(res.body));
+    const text = (await t.pool.query(`SELECT text_content FROM source_versions WHERE source_id = $1`, [masked])).rows.map((r) => r.text_content).join(' ');
+    assert.ok(!text.includes('Rotor42'), text);
   });
 
   test('a private answer built on it disappears, a shared one goes to review', async () => {
