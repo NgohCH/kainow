@@ -609,3 +609,30 @@ test('a digest listing a task held in a cleaned case is not sent (I4: strict for
   await holdIn('tasks', listed, 'cleaned');
   assert.equal(await stillRelevant(pool, { kind: 'project_active', projectId, taskIds: [listed] }), false);
 });
+
+test('a digest listing a task held since goes again without that task (PO, 18 Nov 2026)', { skip: SKIP_NO_DB }, async () => {
+  await pool.query(`UPDATE projects SET status = 'active' WHERE id = $1`, [projectId]);
+  const listed = await makeTask('Listed vault task');
+  const other = await makeTask('Other open task');
+  const id = await queue({
+    kind: 'digest', initiatedBy: 'digest', subject: 'Action items', body: 'Listed vault task\nOther open task',
+    relevance: { kind: 'project_active', projectId, taskIds: [listed, other], appUrl: 'https://kainow.example.org', scope: 'account' },
+  });
+  await holdIn('tasks', listed, 'cleaned');
+  await dispatcher(new ScriptedTransport([])).dispatchDue();
+  assert.equal((await row(id)).status, 'cancelled');
+  const next = (await pool.query(`SELECT * FROM email_outbox WHERE replaces = $1`, [id])).rows;
+  assert.equal(next.length, 1);
+  assert.notEqual(next[0].status, 'cancelled'); // queued, or already sent by the same pass
+  assert.ok(next[0].text_body.includes('Other open task'), next[0].text_body);
+  assert.ok(!next[0].text_body.includes('Listed vault task'), next[0].text_body);
+  assert.ok(next[0].text_body.includes(`https://kainow.example.org/#/projects/${projectId}/work/${other}`));
+  assert.deepEqual(next[0].relevance, { kind: 'project_active', projectId, taskIds: [other], appUrl: 'https://kainow.example.org', scope: 'project' });
+
+  // A digest whose project is no longer Active is only cancelled.
+  const later = await queue({ kind: 'digest', initiatedBy: 'digest', relevance: { kind: 'project_active', projectId, taskIds: [other], scope: 'account' } });
+  await pool.query(`UPDATE projects SET status = 'deferred' WHERE id = $1`, [projectId]);
+  await dispatcher(new ScriptedTransport([])).dispatchDue();
+  assert.equal((await row(later)).status, 'cancelled');
+  assert.equal((await pool.query(`SELECT 1 FROM email_outbox WHERE replaces = $1`, [later])).rowCount, 0);
+});

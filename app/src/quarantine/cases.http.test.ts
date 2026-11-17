@@ -386,6 +386,26 @@ describe('reporting, holding and possible copies', { skip: SKIP_NO_DB }, () => {
     assert.equal((await decide(dep, [{ kind: 'message', id: m1, decision: 'dismissed' }])).status, 409);
   });
 
+  test('a digest cancelled by a report goes again, rebuilt without the reported text (PO, 18 Nov 2026)', async () => {
+    const id = await note('Plant room', PLANT);
+    const taskId = uuidv7();
+    await t.pool.query(
+      `INSERT INTO tasks (id, project_id, depth, title, assignee_id, due_on, status, authorised_by, authorised_at) VALUES ($1, $2, 0, 'Service the kestrel pump', $3, '2026-12-20', 'in_progress', $4, now())`,
+      [taskId, project, ids.ben, ids.pm],
+    );
+    const digest = await writeOutbox(t.pool, {
+      toUserId: ids.ben, toAddress: 'ben@example.org', subject: 'Action items', body: `Service the kestrel pump. Code ${SECRET}.`, kind: 'digest', projectId: project,
+      initiatedBy: 'digest', now: t.clock.now(), relevance: { kind: 'project_active', projectId: project, taskIds: [taskId], scope: 'project' },
+    });
+    await reported(ada, 'source', id);
+    assert.equal((await t.pool.query(`SELECT status FROM email_outbox WHERE id = $1`, [digest])).rows[0].status, 'cancelled');
+    const next = (await t.pool.query(`SELECT status, text_body, html_body, subject FROM email_outbox WHERE replaces = $1`, [digest])).rows;
+    assert.equal(next.length, 1);
+    assert.equal(next[0].status, 'queued');
+    assert.ok(next[0].text_body.includes('Service the kestrel pump'), next[0].text_body);
+    assert.ok(!JSON.stringify(next[0]).includes(SECRET));
+  });
+
   test('a queued digest email containing it is cancelled', async () => {
     const id = await note('Plant room', PLANT);
     const mail = async (body: string, status = 'queued') => {

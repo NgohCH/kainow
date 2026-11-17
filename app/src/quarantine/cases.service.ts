@@ -36,6 +36,7 @@ import { EMAIL_NUDGE, type EmailNudge } from '../email/nudge';
 import { writeOutbox } from '../email/outbox';
 import { findCredentialMatches, findCredentials } from '../extraction/credentials';
 import { HELD, liveRecordSql } from '../history/deleted-sql';
+import { requeueDigest } from '../digests/digest';
 import { HELD_EMAIL_REASON, cancelQueuedHolding, sentHolding } from '../notifications/mailing';
 import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { grantGivesAccess } from '../projects/grants';
@@ -568,7 +569,7 @@ export class CasesService {
     await event(db, { caseId, projectId, actorId: reporterId, action: 'held', kind, itemId: id, detail: heldDetail, at });
 
     // Emails still queued that hold the text never go; then the sweep cleans every stored copy.
-    const cancelled = await cancelQueuedHolding(db, marks, { kind, id });
+    const { cancelled, digests } = await cancelQueuedHolding(db, marks, { kind, id });
     let cleanedRows = 0;
     if (key) cleanedRows = (await cleanItem(db, key, caseId, kind, id, await ownMarks(db, kind, id, marks))).rows;
 
@@ -588,6 +589,8 @@ export class CasesService {
     }
     if (key) await markCleaned(db, caseId, projectId, at, { rows: cleanedRows, places: places.length });
     if (places.length > 0) await event(db, { caseId, projectId, actorId: null, action: 'copies_found', detail: { count: places.length, masked: key !== null }, at });
+    // Digests cancelled above go again, rebuilt now that the item is held and its copies masked or held (PO).
+    for (const d of digests) await requeueDigest(db, d, at);
 
     // Notices (spec 7.4, 7.7): never the text.
     const projectName = (await db.query<{ name: string }>(`SELECT name FROM projects WHERE id = $1`, [projectId])).rows[0].name;
@@ -1000,7 +1003,7 @@ export class CasesService {
       if (marks.some((m) => !text.includes(m) || crossesMarker(text, m))) throw new BadRequestException(MARKS_MORE_REFUSED);
       const at = this.now();
       const projectId = c.projectId;
-      const cancelled = await cancelQueuedHolding(db, marks, { kind: c.kind, id: c.itemId });
+      const { cancelled, digests } = await cancelQueuedHolding(db, marks, { kind: c.kind, id: c.itemId });
       let rows = (await cleanItem(db, key, c.id, c.kind, c.itemId, await ownMarks(db, c.kind, c.itemId, marks))).rows;
       const derived = await quoteOnlyProposals(db, c.kind, c.itemId, marks);
       const places = (await findPlaces(db, projectId, marks, { kind: c.kind, id: c.itemId })).filter((p) => !(p.kind === 'proposal' && derived.has(p.id)));
@@ -1019,6 +1022,7 @@ export class CasesService {
         );
         added += ins.rowCount ?? 0;
       }
+      for (const d of digests) await requeueDigest(db, d, at);
       await db.query(`UPDATE quarantine_cases SET marked_length = marked_length + $2 WHERE id = $1`, [c.id, marks.reduce((n, m) => n + m.length, 0)]);
       await event(db, { caseId: c.id, projectId, actorId: user.id, action: 'marked_more', kind: c.kind, itemId: c.itemId, detail: { marks: marks.length, rows, places: places.length, emailsCancelled: cancelled }, at });
       if (added > 0) {

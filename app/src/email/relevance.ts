@@ -5,8 +5,11 @@ import type { Db } from './letterhead';
 export type Relevance =
   | { kind: 'task'; taskId: string; dueOn: string; reopenCount: number }
   | { kind: 'risk'; riskId: string; reviewOn: string }
-  /** `taskIds`: the tasks a digest lists; it is not delivered once any of them is Deleted or held (history spec 4.3). */
-  | { kind: 'project_active'; projectId: string; taskIds?: string[] }
+  /**
+   * `taskIds`: the tasks a digest lists; once any of them is Deleted or held this digest is not delivered, and the
+   * dispatcher queues it again rebuilt without them (PO, 18 Nov 2026). `appUrl`: the link base it was built with.
+   */
+  | { kind: 'project_active'; projectId: string; taskIds?: string[]; appUrl?: string }
   /** An invitation email: worth sending only while the invitation is still open (not revoked, replaced or answered) and unexpired. */
   | { kind: 'invitation'; invitationId: string }
   | { kind: 'none' };

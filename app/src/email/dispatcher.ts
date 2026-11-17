@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
 import type { Clock } from '../auth/tokens';
 import { isEligible } from '../notifications/recipients';
+import { requeueDigest } from '../digests/digest';
 import { todayUtc8 } from '../projects/membership';
 import type { Db } from './letterhead';
 import { noticeEmail } from './notice';
@@ -206,6 +207,8 @@ export class EmailDispatcher {
           }
         } else if (rel && !(await stillRelevant(db, rel, now))) {
           await cancel(r.id, REASON_NOT_RELEVANT);
+          // A digest listing a task now held or Deleted goes again without it (nothing when the project is not Active).
+          if (r.kind === 'digest') await requeueDigest(db, r.id, now);
           continue;
         }
         const attemptNo = r.attempts + 1;

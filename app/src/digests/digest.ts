@@ -127,7 +127,39 @@ export async function digestRecipients(db: Db, projectId: string, today: string)
   return r.rows;
 }
 
-export const digestRelevance = (projectId: string, taskIds: string[] = []): EmailRelevance => ({ kind: 'project_active', projectId, ...(taskIds.length > 0 ? { taskIds } : {}), scope: 'project' });
+export const digestRelevance = (projectId: string, taskIds: string[] = [], appUrl = ''): EmailRelevance => ({
+  kind: 'project_active',
+  projectId,
+  ...(taskIds.length > 0 ? { taskIds } : {}),
+  ...(appUrl ? { appUrl } : {}),
+  scope: 'project',
+});
+
+/**
+ * A digest cancelled because a task it lists was held or Deleted, or because it held reported text, is queued again
+ * rebuilt as at `now` without what is no longer shown (PO, 18 Nov 2026: the held item drops out, the digest still goes).
+ * Nothing is queued when the project is no longer Active or no open task is left. Returns whether one was queued.
+ */
+export async function requeueDigest(db: Db, outboxId: string, now: Date): Promise<boolean> {
+  const r = (
+    await db.query(
+      `SELECT o.to_user_id, o.to_address, o.project_id, o.initiated_by_user, o.digest_run_id, o.relevance, p.status AS project_status
+         FROM email_outbox o JOIN projects p ON p.id = o.project_id
+        WHERE o.id = $1 AND o.kind = 'digest' AND o.status = 'cancelled' AND o.to_user_id IS NOT NULL`,
+      [outboxId],
+    )
+  ).rows[0];
+  if (!r || r.project_status !== 'active') return false;
+  const appUrl: string = r.relevance?.appUrl ?? '';
+  const d = await buildDigest(db, r.project_id, r.to_user_id, now, appUrl);
+  if (d.openCount === 0) return false;
+  await writeOutbox(db, {
+    toUserId: r.to_user_id, toAddress: r.to_address, subject: d.subject, body: d.body, kind: 'digest', projectId: r.project_id,
+    initiatedBy: 'digest', ...(r.initiated_by_user ? { initiatedByUser: r.initiated_by_user } : {}), digestRunId: r.digest_run_id ?? undefined,
+    relevance: digestRelevance(r.project_id, d.taskIds, appUrl), replaces: outboxId, now,
+  });
+  return true;
+}
 
 /** Queues one digest email per recipient in the caller's transaction and records the run. Returns the run id. */
 export async function queueDigestRun(
@@ -144,7 +176,7 @@ export async function queueDigestRun(
     await writeOutbox(c, {
       toUserId: r.userId, toAddress: r.email, subject: d.subject, body: d.body, kind: 'digest', projectId: o.projectId,
       initiatedBy: 'digest', ...(o.initiatedBy ? { initiatedByUser: o.initiatedBy } : {}), digestRunId: runId,
-      relevance: digestRelevance(o.projectId, d.taskIds), now: o.asAt,
+      relevance: digestRelevance(o.projectId, d.taskIds, o.appUrl), now: o.asAt,
     });
   }
   return runId;

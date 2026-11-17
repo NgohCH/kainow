@@ -188,15 +188,20 @@ function itemScope(kind: ItemKind): string {
  * HTML holds a marked string (spec 7.2): the only content check on emails. Runs in the report's transaction, before the
  * sweep cleans the stored copies. The reason names no text. Returns how many were cancelled.
  */
-export async function cancelQueuedHolding(db: Pick<Pool, 'query'>, marks: string[], item: { kind: ItemKind; id: string }): Promise<number> {
+export async function cancelQueuedHolding(
+  db: Pick<Pool, 'query'>,
+  marks: string[],
+  item: { kind: ItemKind; id: string },
+): Promise<{ cancelled: number; digests: string[] }> {
   const forms = searchForms(marks);
-  if (forms.length === 0) return 0;
-  const r = await db.query(
+  if (forms.length === 0) return { cancelled: 0, digests: [] };
+  const r = await db.query<{ id: string; kind: string }>(
     `UPDATE email_outbox o SET status = 'cancelled', next_attempt_at = NULL, last_reason = $4
-      WHERE o.status IN ('queued', 'retry_wait') AND ${HOLDS_MARK} AND ${itemScope(item.kind)}`,
+      WHERE o.status IN ('queued', 'retry_wait') AND ${HOLDS_MARK} AND ${itemScope(item.kind)}
+      RETURNING o.id, o.kind`,
     [item.id, forms, searchForms(marks, true), HELD_EMAIL_REASON],
   );
-  return r.rowCount ?? 0;
+  return { cancelled: r.rows.length, digests: r.rows.filter((x) => x.kind === 'digest').map((x) => x.id) };
 }
 
 /**
