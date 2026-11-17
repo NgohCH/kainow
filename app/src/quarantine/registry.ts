@@ -805,6 +805,7 @@ export const NO_USER_TEXT: Readonly<Record<string, string>> = {
   'quarantine_originals.ciphertext': 'the encrypted original itself: the one place the marked text is kept (spec 7.3)',
   'quarantine_originals.cleaned_sha256': HASH,
   'quarantine_originals.column_name': 'a registered column name',
+  'quarantine_originals.item_kind': ENUM,
   'quarantine_originals.key_id': 'the protected key id, a hash prefix',
   'quarantine_originals.nonce': 'the AES-GCM nonce, random bytes',
   'quarantine_originals.row_key': 'the cleaned row key (ids; for summary_marks the cleaned phrase), never the original',

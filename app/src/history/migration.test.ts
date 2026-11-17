@@ -220,8 +220,8 @@ describe('migration 0027 (history, deletion, quarantine)', { skip: SKIP_NO_DB },
     const held = await quarantineCase('held');
     const id = uuidv7();
     await pool.query(
-      `INSERT INTO quarantine_originals (id, case_id, table_name, row_key, column_name, ciphertext, nonce, tag, key_id, cleaned_sha256)
-       VALUES ($1, $2, 'tasks', '{"id":"x"}', 'title', $3, $4, $5, 'k', 'sha')`,
+      `INSERT INTO quarantine_originals (id, case_id, table_name, row_key, column_name, item_kind, item_id, sweep, ciphertext, nonce, tag, key_id, cleaned_sha256)
+       VALUES ($1, $2, 'tasks', '{"id":"x"}', 'title', 'task', $1, 1, $3, $4, $5, 'k', 'sha')`,
       [id, held, Buffer.from('c'), Buffer.alloc(12), Buffer.alloc(16)],
     );
     assert.equal(await sqlState(pool, `UPDATE quarantine_originals SET ciphertext = $2 WHERE id = $1`, [id, Buffer.from('d')]), '23001');

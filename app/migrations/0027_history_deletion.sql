@@ -60,12 +60,20 @@ CREATE TABLE quarantine_possible_copies (
 );
 
 -- The original values, encrypted (AES-256-GCM) with the protected key. Only restored_at ever changes.
+-- Each sweep (one cleaning of one item) takes the next sweep number; restoring unwinds sweeps newest first, so a
+-- value cleaned twice (Mark more) comes back through both, and a row whose key column was cleaned is found again.
+CREATE SEQUENCE quarantine_sweep_seq;
 CREATE TABLE quarantine_originals (
   id              uuid PRIMARY KEY,
   case_id         uuid  NOT NULL REFERENCES quarantine_cases (id),
   table_name      text  NOT NULL,
   row_key         jsonb NOT NULL,
   column_name     text  NOT NULL,
+  -- The item whose sweep wrote this row (the reported item or a copy), so dismissing one copy restores exactly
+  -- what its own sweep cleaned, including item-less rows (reasons) it reached.
+  item_kind       text  NOT NULL,
+  item_id         uuid  NOT NULL,
+  sweep           bigint NOT NULL,
   ciphertext      bytea NOT NULL,
   nonce           bytea NOT NULL CHECK (octet_length(nonce) = 12),
   tag             bytea NOT NULL CHECK (octet_length(tag) = 16),
@@ -74,7 +82,7 @@ CREATE TABLE quarantine_originals (
   cleaned_sha256  text  NOT NULL,
   restored_at     timestamptz
 );
-CREATE INDEX quarantine_originals_case_idx ON quarantine_originals (case_id);
+CREATE INDEX quarantine_originals_case_idx ON quarantine_originals (case_id, item_kind, item_id);
 
 CREATE TABLE quarantine_events (
   id          uuid PRIMARY KEY,
