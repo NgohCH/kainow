@@ -539,6 +539,88 @@ describe('cleaning engine (spec 7.4)', { skip: SKIP_NO_DB }, () => {
     assert.equal(mbody.body_sha256, sha(mbody.body));
   });
 
+  test('a long message and a full-length thread title can still be cleaned', async () => {
+    const project = await newProject();
+    const thread = await seedThread(project);
+    // 9,995 characters with an 8-character secret: the cleaned body is 10,007, over the 10,000 input limit.
+    const body = `${'x'.repeat(9995 - SECRET.length - 1)} ${SECRET}`;
+    assert.equal(body.length, 9995);
+    const { message, mv } = await seedMessage(thread, 1, body);
+    await clean(project, 'message', message);
+    const cleaned = (await pool.query(`SELECT body FROM message_versions WHERE id = $1`, [mv])).rows[0].body;
+    assert.equal(cleaned.length, 10007);
+    assert.ok(cleaned.endsWith(` ${MARKER}`));
+    // A 200-character title holding the secret.
+    const title = `${'T'.repeat(200 - SECRET.length - 1)} ${SECRET}`;
+    await pool.query(`UPDATE discussion_threads SET title = $2 WHERE id = $1`, [thread, title]);
+    await clean(project, 'thread', thread);
+    const t = (await pool.query(`SELECT title FROM discussion_threads WHERE id = $1`, [thread])).rows[0].title;
+    assert.equal(t.length, 212);
+    assert.ok(t.endsWith(MARKER));
+    // Without the marker the limits still hold.
+    await assert.rejects(pool.query(`UPDATE discussion_threads SET title = $2 WHERE id = $1`, [thread, 'y'.repeat(201)]), (e: { code?: string }) => e.code === '23514');
+  });
+
+  test('the exception is closed again when cleanItem and restoreOriginals return', async () => {
+    const project = await newProject();
+    const { source, version } = await seedSource(project, `text ${SECRET}`);
+    const other = await seedSource(project, 'unrelated text');
+    const caseId = await openCase(project, 'source', source);
+    const refused = async (c: PoolClient, sql: string, params: unknown[]) => {
+      await c.query('SAVEPOINT s');
+      let code: string | undefined;
+      try {
+        await c.query(sql, params);
+      } catch (err) {
+        code = (err as { code?: string }).code;
+      }
+      await c.query('ROLLBACK TO SAVEPOINT s');
+      return code;
+    };
+    await tx(async (c) => {
+      const { rows } = await cleanItem(c, key, caseId, 'source', source, [SECRET]);
+      assert.ok(rows > 0);
+      assert.equal(await refused(c, `UPDATE source_versions SET text_content = 'x' WHERE id = $1`, [other.version]), '23001');
+      assert.equal(await refused(c, `UPDATE source_events SET reason = 'x' WHERE source_id = $1`, [source]), undefined, 'no rows: nothing to refuse');
+      await c.query(`INSERT INTO source_events (id, source_id, project_id, kind, actor_id, reason, at) VALUES ($1, $2, $3, 'deleted', $4, 'r', now())`, [uuidv7(), source, project, user]);
+      assert.equal(await refused(c, `UPDATE source_events SET reason = 'x' WHERE source_id = $1`, [source]), '23001');
+      const r = await restoreOriginals(c, key, caseId);
+      assert.ok(r.restored > 0);
+      assert.equal(await refused(c, `UPDATE source_versions SET text_content = 'x' WHERE id = $1`, [version]), '23001');
+    });
+  });
+
+  test('quote places, matches and chosen occurrence follow the cleaned text', async () => {
+    const project = await newProject();
+    const OTHER = 'Qq1#word';
+    const text = `pw ${SECRET}; later pw ${OTHER}; again pw ${SECRET}.`;
+    const { source, version } = await seedSource(project, text);
+    const run = uuidv7();
+    await pool.query(`INSERT INTO extraction_runs (id, source_version_id, requested_by, status, created_at) VALUES ($1, $2, $3, 'succeeded', now())`, [run, version, user]);
+    const quote = `pw ${SECRET}`;
+    const item = uuidv7();
+    // Approved against the second of two places.
+    await pool.query(
+      `INSERT INTO extraction_items (id, run_id, source_version_id, position, kind, text, quote, quote_start, quote_end, quote_matches, chosen_occurrence,
+                                     review_status, reviewed_by, reviewed_at, created_at)
+       VALUES ($1, $2, $3, 0, 'action', 'Rotate it', $4, $5, $6, 2, 1, 'approved', $7, now(), now())`,
+      [item, run, version, quote, text.indexOf(quote), text.indexOf(quote) + quote.length, user],
+    );
+    const before = (await pool.query(`SELECT quote, quote_start, quote_end, quote_matches, chosen_occurrence FROM extraction_items WHERE id = $1`, [item])).rows[0];
+    const { caseId } = await clean(project, 'source', source, [SECRET, OTHER]);
+    const cleaned = await versionText(version);
+    const r = (await pool.query(`SELECT quote, quote_start, quote_end, quote_matches, chosen_occurrence FROM extraction_items WHERE id = $1`, [item])).rows[0];
+    assert.equal(r.quote, `pw ${MARKER}`);
+    assert.equal(r.quote_matches, 3, 'the other secret cleaned to the same text is a third place');
+    assert.equal(r.quote_start, 0);
+    assert.equal(cleaned.slice(r.quote_start, r.quote_end), r.quote);
+    const places: number[] = [];
+    for (let at = cleaned.indexOf(r.quote); at !== -1; at = cleaned.indexOf(r.quote, at + 1)) places.push(at);
+    assert.equal(places[r.chosen_occurrence], cleaned.lastIndexOf(r.quote), 'the chosen place is still the second original place');
+    await tx((c) => restoreOriginals(c, key, caseId));
+    assert.deepEqual((await pool.query(`SELECT quote, quote_start, quote_end, quote_matches, chosen_occurrence FROM extraction_items WHERE id = $1`, [item])).rows[0], before);
+  });
+
   test('without the setting the same UPDATE is refused', async () => {
     const project = await newProject();
     const { source, version } = await seedSource(project, `text ${SECRET}`);

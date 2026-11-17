@@ -118,7 +118,7 @@ CREATE INDEX security_reviewer_events_user_idx ON security_reviewer_events (user
 CREATE TABLE quarantine_grants (
   id               uuid PRIMARY KEY,
   requester_id     uuid        NOT NULL REFERENCES users (id),
-  purpose          text        NOT NULL CHECK (char_length(btrim(purpose)) BETWEEN 1 AND 1000),
+  purpose          text        NOT NULL CHECK (char_length(btrim(purpose)) >= 1 AND (char_length(btrim(purpose)) <= 1000 OR strpos(purpose, '[credential removed]') > 0)),
   hours            integer     NOT NULL CHECK (hours > 0),
   requested_at     timestamptz NOT NULL,
   decision         text        CHECK (decision IN ('approved', 'declined')),
@@ -287,6 +287,22 @@ BEGIN
 END;
 $$ LANGUAGE plpgsql;
 
+-- Upper length limits on registered text columns (spec 7.4): the marker is longer than most secrets, so a cleaned
+-- value may exceed the limit the application enforces on input. Each limit still holds for any value without the
+-- marker; the application's own limits are unchanged.
+ALTER TABLE discussion_threads DROP CONSTRAINT discussion_threads_title_check;
+ALTER TABLE discussion_threads ADD CONSTRAINT discussion_threads_title_check CHECK (
+  char_length(title) >= 1 AND (char_length(title) <= 200 OR strpos(title, '[credential removed]') > 0) AND btrim(title) <> '');
+ALTER TABLE message_versions DROP CONSTRAINT message_versions_body_check;
+ALTER TABLE message_versions ADD CONSTRAINT message_versions_body_check CHECK (
+  char_length(body) >= 1 AND (char_length(body) <= 10000 OR strpos(body, '[credential removed]') > 0));
+ALTER TABLE minutes_drafts DROP CONSTRAINT minutes_drafts_body_check;
+ALTER TABLE minutes_drafts ADD CONSTRAINT minutes_drafts_body_check CHECK (
+  char_length(body) >= 1 AND (char_length(body) <= 100000 OR strpos(body, '[credential removed]') > 0));
+ALTER TABLE ai_feedback DROP CONSTRAINT ai_feedback_note_check;
+ALTER TABLE ai_feedback ADD CONSTRAINT ai_feedback_note_check CHECK (
+  char_length(note) >= 1 AND (char_length(note) <= 2000 OR strpos(note, '[credential removed]') > 0));
+
 -- Events of this migration: append-only, with the same exception.
 CREATE TRIGGER quarantine_events_append_only BEFORE UPDATE OR DELETE ON quarantine_events
   FOR EACH ROW EXECUTE FUNCTION kainow_append_only();
@@ -326,7 +342,8 @@ ALTER TABLE sources
   ADD COLUMN held_case_id   uuid REFERENCES quarantine_cases (id);
 ALTER TABLE sources ADD CONSTRAINT sources_deleted_together CHECK (
   (deleted_by IS NULL AND deleted_at IS NULL AND delete_reason IS NULL)
-  OR (deleted_by IS NOT NULL AND deleted_at IS NOT NULL AND delete_reason IS NOT NULL AND char_length(btrim(delete_reason)) BETWEEN 1 AND 1000)
+  OR (deleted_by IS NOT NULL AND deleted_at IS NOT NULL AND delete_reason IS NOT NULL AND char_length(btrim(delete_reason)) >= 1
+       AND (char_length(btrim(delete_reason)) <= 1000 OR strpos(delete_reason, '[credential removed]') > 0))
 );
 
 CREATE TABLE source_events (
@@ -335,7 +352,7 @@ CREATE TABLE source_events (
   project_id  uuid        NOT NULL REFERENCES projects (id),
   kind        text        NOT NULL CHECK (kind IN ('deleted', 'restored')),
   actor_id    uuid        NOT NULL REFERENCES users (id),
-  reason      text        NOT NULL CHECK (char_length(btrim(reason)) BETWEEN 1 AND 1000),
+  reason      text        NOT NULL CHECK (char_length(btrim(reason)) >= 1 AND (char_length(btrim(reason)) <= 1000 OR strpos(reason, '[credential removed]') > 0)),
   at          timestamptz NOT NULL
 );
 CREATE INDEX source_events_source_idx ON source_events (source_id, at);
@@ -366,7 +383,8 @@ ALTER TABLE tasks
   ADD COLUMN deleted_with   uuid REFERENCES tasks (id);
 ALTER TABLE tasks ADD CONSTRAINT tasks_deleted_together CHECK (
   (deleted_by IS NULL AND deleted_at IS NULL AND delete_reason IS NULL)
-  OR (deleted_by IS NOT NULL AND deleted_at IS NOT NULL AND delete_reason IS NOT NULL AND char_length(btrim(delete_reason)) BETWEEN 1 AND 1000)
+  OR (deleted_by IS NOT NULL AND deleted_at IS NOT NULL AND delete_reason IS NOT NULL AND char_length(btrim(delete_reason)) >= 1
+       AND (char_length(btrim(delete_reason)) <= 1000 OR strpos(delete_reason, '[credential removed]') > 0))
 );
 ALTER TABLE tasks ADD CONSTRAINT tasks_deleted_with_is_deleted CHECK (deleted_with IS NULL OR deleted_at IS NOT NULL);
 CREATE INDEX tasks_deleted_with_idx ON tasks (deleted_with) WHERE deleted_with IS NOT NULL;
@@ -376,7 +394,8 @@ ALTER TABLE decisions
   ADD COLUMN held_case_id uuid REFERENCES quarantine_cases (id);
 ALTER TABLE decisions ADD CONSTRAINT decisions_deleted_together CHECK (
   (deleted_by IS NULL AND deleted_at IS NULL AND delete_reason IS NULL)
-  OR (deleted_by IS NOT NULL AND deleted_at IS NOT NULL AND delete_reason IS NOT NULL AND char_length(btrim(delete_reason)) BETWEEN 1 AND 1000)
+  OR (deleted_by IS NOT NULL AND deleted_at IS NOT NULL AND delete_reason IS NOT NULL AND char_length(btrim(delete_reason)) >= 1
+       AND (char_length(btrim(delete_reason)) <= 1000 OR strpos(delete_reason, '[credential removed]') > 0))
 );
 
 ALTER TABLE questions
@@ -384,7 +403,8 @@ ALTER TABLE questions
   ADD COLUMN held_case_id uuid REFERENCES quarantine_cases (id);
 ALTER TABLE questions ADD CONSTRAINT questions_deleted_together CHECK (
   (deleted_by IS NULL AND deleted_at IS NULL AND delete_reason IS NULL)
-  OR (deleted_by IS NOT NULL AND deleted_at IS NOT NULL AND delete_reason IS NOT NULL AND char_length(btrim(delete_reason)) BETWEEN 1 AND 1000)
+  OR (deleted_by IS NOT NULL AND deleted_at IS NOT NULL AND delete_reason IS NOT NULL AND char_length(btrim(delete_reason)) >= 1
+       AND (char_length(btrim(delete_reason)) <= 1000 OR strpos(delete_reason, '[credential removed]') > 0))
 );
 
 ALTER TABLE risks
@@ -392,7 +412,8 @@ ALTER TABLE risks
   ADD COLUMN held_case_id uuid REFERENCES quarantine_cases (id);
 ALTER TABLE risks ADD CONSTRAINT risks_deleted_together CHECK (
   (deleted_by IS NULL AND deleted_at IS NULL AND delete_reason IS NULL)
-  OR (deleted_by IS NOT NULL AND deleted_at IS NOT NULL AND delete_reason IS NOT NULL AND char_length(btrim(delete_reason)) BETWEEN 1 AND 1000)
+  OR (deleted_by IS NOT NULL AND deleted_at IS NOT NULL AND delete_reason IS NOT NULL AND char_length(btrim(delete_reason)) >= 1
+       AND (char_length(btrim(delete_reason)) <= 1000 OR strpos(delete_reason, '[credential removed]') > 0))
 );
 
 -- task_events gains 'deleted' and 'restored'. record_events.kind has no CHECK constraint (0014), so any kind

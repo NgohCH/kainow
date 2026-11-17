@@ -30,9 +30,12 @@ import type { Pool, PoolClient } from 'pg';
 import { uuidv7 } from '../common/uuid7';
 import { type Edit, cleanEdges, cleanJson, cleanText, mapOffset, searchForms } from './clean-text';
 import type { ProtectedKey } from './protected-key';
+import { locateQuote } from '../notes/text';
 import { TEXT_COLUMNS, type ItemKind, type TextColumn } from './registry';
 
 export const QUOTE_CHANGED_TEXT = 'Quote changed: credential removed — review';
+/** Shown on a source version whose uploaded original is withheld (source_versions.quarantined_at is set). */
+export const WITHHELD_TEXT = 'Original file withheld — credential removed from text';
 
 type Db = Pick<PoolClient, 'query'>;
 type Row = Record<string, unknown>;
@@ -44,7 +47,8 @@ const REGISTERED = new Map(TEXT_COLUMNS.map((c) => [`${c.table}.${c.column}`, c]
 const OFFSET_COLUMNS: Record<string, string[]> = {
   passages: ['start_offset', 'end_offset'],
   transcript_spans: ['header_start', 'body_start', 'body_end'],
-  extraction_items: ['quote_start', 'quote_end'],
+  // quote_matches and chosen_occurrence follow the quote's places in the cleaned text.
+  extraction_items: ['quote_start', 'quote_end', 'quote_matches', 'chosen_occurrence'],
 };
 
 /** Row keys of the tables the engine writes (the registry's, plus transcript_spans which holds offsets only). */
@@ -76,7 +80,12 @@ function encode(value: unknown, codec: Codec): Buffer {
 function decode(plain: Buffer, codec: Codec): unknown {
   if (codec === 'bytes') return plain;
   const s = plain.toString('utf8');
-  return codec === 'json' ? JSON.parse(s) : s;
+  if (codec !== 'json') return s;
+  try {
+    return JSON.parse(s);
+  } catch {
+    throw new Error('quarantine: a decrypted original is not valid JSON');
+  }
 }
 
 const sha256 = (b: Buffer | string) => createHash('sha256').update(b).digest('hex');
@@ -104,6 +113,15 @@ function quiet(err: unknown, table: string): Error {
 
 async function openWrite(c: Db, caseId: string): Promise<void> {
   await c.query(`SELECT set_config('kainow.quarantine_write', $1, true)`, [caseId]);
+}
+
+/**
+ * Closes the exception again before an entry point returns or throws, so nothing else in the caller's transaction
+ * can write an immutable row (Review Focus 3). On a failed (aborted) transaction the reset cannot run, and nothing
+ * more can run in it either, so that error is ignored.
+ */
+async function closeWrite(c: Db): Promise<void> {
+  await c.query(`SELECT set_config('kainow.quarantine_write', '', true)`).catch(() => undefined);
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -263,8 +281,6 @@ function cleanValue(col: TextColumn, value: unknown, marks: string[]): unknown {
   return cleanText(value as string, marks, col.table === 'email_outbox' && col.column === 'html_body').text;
 }
 
-const normaliseQuote = (q: string) => q.replace(/\r\n?/g, '\n').normalize('NFC');
-
 /**
  * The rows derived from cleaned versions, recomputed: passages re-sliced between mapped offsets, transcript spans
  * mapped, proposal quotes re-sliced (or, unplaced, cleaned with their cut-off edges), uploads withheld.
@@ -301,24 +317,65 @@ async function planDerived(
     plan.set('transcript_spans', key, 'header_start', s.header_start, mapOffset(edits, s.header_start, 'start'));
   }
 
-  const items = await c.query(`SELECT id, source_version_id, quote, quote_start, quote_end FROM extraction_items WHERE source_version_id = ANY($1::uuid[])`, [ids]);
+  const items = await c.query(
+    `SELECT id, source_version_id, quote, quote_start, quote_end, quote_matches, chosen_occurrence, review_status
+       FROM extraction_items WHERE source_version_id = ANY($1::uuid[])`,
+    [ids],
+  );
   for (const i of items.rows) {
     const v = versions.get(i.source_version_id) as { before: string; after: string; edits: Edit[] };
-    const key = { id: i.id };
-    if (i.quote_start === null) {
-      plan.set('extraction_items', key, 'quote', i.quote, cleanEdges(i.quote, marks));
-      continue;
-    }
-    const start = mapOffset(v.edits, i.quote_start, 'start');
-    const end = mapOffset(v.edits, i.quote_end, 'end');
-    const placed = normaliseQuote(i.quote) === v.before.slice(i.quote_start, i.quote_end);
-    plan.set('extraction_items', key, 'quote_start', i.quote_start, start);
-    plan.set('extraction_items', key, 'quote_end', i.quote_end, end);
-    plan.set('extraction_items', key, 'quote', i.quote, placed ? v.after.slice(start, end) : cleanEdges(i.quote, marks));
+    planQuote(plan, i, v, marks);
   }
 
   const uploads = await c.query(`SELECT id, original_bytes FROM source_versions WHERE id = ANY($1::uuid[]) AND original_bytes IS NOT NULL`, [ids]);
   for (const u of uploads.rows) plan.set('source_versions', { id: u.id }, 'original_bytes', u.original_bytes, null);
+}
+
+/**
+ * A proposal's quote in a cleaned version. Unplaced: cleaned with its cut-off edges, nothing else. Placed: its places
+ * are mapped. The quote text is rewritten only when a replaced span overlaps one of its places (then it is the cleaned
+ * slice, so it shows QUOTE_CHANGED_TEXT); quote_start/quote_end become its first place in the cleaned text,
+ * quote_matches the count of places there, and an approved proposal's chosen_occurrence the index of the place the
+ * reviewer chose, mapped (spec 7.4; migration 0008's numbering, as locateQuote).
+ */
+function planQuote(plan: Plan, i: Row, v: { before: string; after: string; edits: Edit[] }, marks: string[]): void {
+  const key = { id: i.id };
+  const quote = i.quote as string;
+  if (i.quote_start === null) {
+    plan.set('extraction_items', key, 'quote', quote, cleanEdges(quote, marks));
+    return;
+  }
+  const qs = i.quote_start as number;
+  const qe = i.quote_end as number;
+  const before = locateQuote(v.before, quote);
+  const placed = before.length > 0 && before.some((p) => p.start === qs && p.end === qe);
+  const chosen = i.chosen_occurrence === null ? null : (i.chosen_occurrence as number);
+  const intended = chosen !== null && before[chosen] ? before[chosen] : { start: qs, end: qe };
+  const touched = (p: { start: number; end: number }) => v.edits.some((e) => e.from < p.end && e.to > p.start);
+  const overlaps = placed ? before.some(touched) : touched({ start: qs, end: qe });
+  let newQuote = quote;
+  if (overlaps) {
+    newQuote = placed
+      ? v.after.slice(mapOffset(v.edits, intended.start, 'start'), mapOffset(v.edits, intended.end, 'end'))
+      : cleanEdges(quote, marks);
+  }
+  const intendedStart = mapOffset(v.edits, intended.start, 'start');
+  const after = locateQuote(v.after, newQuote);
+  let start = mapOffset(v.edits, qs, 'start');
+  let end = mapOffset(v.edits, qe, 'end');
+  let matches = i.quote_matches as number;
+  let chosenAfter = chosen;
+  if (placed && after.length > 0) {
+    ({ start, end } = after[0]);
+    matches = after.length;
+    const at = after.findIndex((p) => p.start === intendedStart);
+    chosenAfter = i.review_status === 'approved' && matches > 1 ? Math.max(at, 0) : null;
+  }
+  plan.set('extraction_items', key, 'quote_start', qs, start);
+  plan.set('extraction_items', key, 'quote_end', qe, end);
+  plan.set('extraction_items', key, 'quote_matches', i.quote_matches, matches);
+  plan.set('extraction_items', key, 'chosen_occurrence', chosen, chosenAfter);
+  plan.set('extraction_items', key, 'quote', quote, newQuote);
 }
 
 /** Unique phrases for cleaned summary marks (the phrase is in the primary key). */
@@ -383,7 +440,15 @@ export async function cleanItem(
   if (plan.rows.size === 0) return { rows: 0 };
 
   // 3. Originals first (encrypted, keyed by the cleaned row key), then the cleaned values.
-  await openWrite(c, caseId);
+  try {
+    await openWrite(c, caseId);
+    return await writePlan(c, key, caseId, kind, itemId, plan);
+  } finally {
+    await closeWrite(c);
+  }
+}
+
+async function writePlan(c: Db, key: ProtectedKey, caseId: string, kind: ItemKind, itemId: string, plan: Plan): Promise<{ rows: number }> {
   const originals: unknown[] = [];
   const writes: RowWrite[] = [];
   for (const row of plan.rows.values()) {
@@ -563,9 +628,13 @@ export async function restoreOriginals(
     for (const w of moved) work.set(rowId(w.table, keyOf(w.table, w.values)), w);
   }
 
-  await openWrite(c, caseId);
   const writes = [...new Set(work.values())].filter((w) => Object.keys(w.set).length > 0);
-  await writeRows(c, writes.map((w) => ({ table: w.table, key: w.loadKey, set: w.set })));
+  try {
+    await openWrite(c, caseId);
+    await writeRows(c, writes.map((w) => ({ table: w.table, key: w.loadKey, set: w.set })));
+  } finally {
+    await closeWrite(c);
+  }
   if (restored.length > 0) await c.query(`UPDATE quarantine_originals SET restored_at = now() WHERE id = ANY($1::uuid[])`, [restored]);
   return { restored: restored.length, changed: [...changed.values()] };
 }
