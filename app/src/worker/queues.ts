@@ -7,6 +7,8 @@ export const QUEUES = {
   document: 'document',
   sweep: 'sweep',
   analysis: 'analysis',
+  /** Cleans quarantine cases reported while the protected key was missing (history spec 7.3). */
+  quarantine: 'quarantine.clean-waiting',
 } as const;
 
 export const BOSS_SCHEMA = 'pgboss';
@@ -28,7 +30,7 @@ export async function startQueues(
     // 'stately' (one queued and one active job per key) keeps duplicate ticks from piling up on a new queue. It is
     // only applied when the queue is first created: pg-boss cannot change the policy of an existing queue, so this
     // is not what prevents overlapping runs (see registerSchedules).
-    if (name === QUEUES.sweep || name === QUEUES.email) await boss.createQueue(name, { policy: 'stately' });
+    if (name === QUEUES.sweep || name === QUEUES.email || name === QUEUES.quarantine) await boss.createQueue(name, { policy: 'stately' });
     else await boss.createQueue(name);
   }
   return boss;

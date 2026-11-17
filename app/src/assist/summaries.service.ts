@@ -91,12 +91,15 @@ export interface SummaryRow {
   reviewReason: string | null;
   createdBy: string;
   createdAt: Date;
+  /** Held in an open quarantine case (history spec 7.2): hidden from everyone, whatever its state. */
+  heldCaseId: string | null;
 }
 
 const SUMMARY_ROW = `sm.id, sm.project_id AS "projectId", sm.original_source_id AS "originalSourceId", sm.original_thread_id AS "originalThreadId",
   sm.intended_audience AS "intendedAudience", sm.leave_out AS "leaveOut", sm.state, sm.summary_source_id AS "summarySourceId",
   sm.approved_version_id AS "approvedVersionId", sm.approved_by AS "approvedBy", sm.approved_at AS "approvedAt",
-  sm.review_reason AS "reviewReason", sm.created_by AS "createdBy", sm.created_at AS "createdAt"`;
+  sm.review_reason AS "reviewReason", sm.created_by AS "createdBy", sm.created_at AS "createdAt",
+  sm.held_case_id AS "heldCaseId"`;
 
 export async function loadSummaryRow(db: Db, id: string, lock = false): Promise<SummaryRow | undefined> {
   if (!UUID.test(id)) return undefined;
@@ -154,7 +157,7 @@ async function publishedAudience(db: Db, row: Pick<SummaryRow, 'summarySourceId'
  * the original's audience (spec 7.2). The wider audience reads only the approved `summary` source (notes, search).
  */
 export async function summaryVisible(db: Db, ctx: ProjectContext | null, row: SummaryRow): Promise<boolean> {
-  if (!canReadContent(ctx) || ctx.project.id !== row.projectId) return false;
+  if (!canReadContent(ctx) || ctx.project.id !== row.projectId || row.heldCaseId) return false;
   const original = await loadOriginal(db, row);
   return original !== undefined && inAudience(ctx, original.audience);
 }
@@ -654,7 +657,7 @@ export class SummariesService {
    * (AudienceService.assertSourceReadable, the rule every source route uses) lets read it.
    */
   private async sharedView(user: AuthUser, row: SummaryRow): Promise<SharedSummaryView | undefined> {
-    if ((row.state !== 'approved' && row.state !== 'review_required') || !row.summarySourceId || !row.approvedVersionId || !row.approvedAt) return undefined;
+    if (row.heldCaseId || (row.state !== 'approved' && row.state !== 'review_required') || !row.summarySourceId || !row.approvedVersionId || !row.approvedAt) return undefined;
     try {
       await this.audiences.assertSourceReadable(user, row.summarySourceId);
     } catch (err) {

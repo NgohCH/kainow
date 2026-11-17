@@ -66,7 +66,7 @@ const ID = '$1::uuid';
 const ID_TEXT = '$1::text';
 
 /** The project of item $1. */
-const ITEM_PROJECT: Record<ItemKind, string> = {
+export const ITEM_PROJECT: Record<ItemKind, string> = {
   message: `SELECT th.project_id FROM discussion_messages m JOIN discussion_threads th ON th.id = m.thread_id WHERE m.id = ${ID}`,
   source: `SELECT project_id FROM sources WHERE id = ${ID}`,
   task: `SELECT project_id FROM tasks WHERE id = ${ID}`,

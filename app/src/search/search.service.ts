@@ -94,6 +94,8 @@ WITH hits AS (
      AND (d.kind <> 'person' OR d.ends_on IS NULL OR d.ends_on >= $3::date)
      -- A Deleted or held record (and a question's answers with it) is not found (history spec 4.3): item_id is the record.
      AND ${liveRecordRefSql('d.kind', 'd.item_id')}
+     -- A held message is not found (history spec 7.2); the view already leaves out hidden and deleted ones.
+     AND (d.kind <> 'message' OR EXISTS (SELECT 1 FROM discussion_messages hm WHERE hm.id = d.item_id AND hm.held_case_id IS NULL))
 ), best AS (
   SELECT DISTINCT ON (project_id, kind, item_id) * FROM hits
    -- Current wording first; among it, the item's own row (no match note) before a title or an answer row; then a

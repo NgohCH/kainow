@@ -70,10 +70,10 @@ async function send(base: string, method: string, path: string, body: unknown, h
  * The organisation is already set up unless `organisation: false` (for onboarding tests).
  */
 /** Ending a meeting does nothing unless a test gives a hook, or an analysis queue (then the real hook requests the final draft). */
-export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opts: { organisation?: boolean; emailNudge?: { nudge(): Promise<void> }; meetingEndHook?: MeetingEndHook; automaticAnalysis?: AutomaticAnalysis; analysisQueue?: AnalysisQueue; assistQueue?: AssistQueue } = {}): Promise<TestApp> {
+export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opts: { organisation?: boolean; emailNudge?: { nudge(): Promise<void> }; meetingEndHook?: MeetingEndHook; automaticAnalysis?: AutomaticAnalysis; analysisQueue?: AnalysisQueue; assistQueue?: AssistQueue; protectedKeyFile?: string } = {}): Promise<TestApp> {
   const sender = new CaptureSender();
   const clock = new FakeClock(startAt);
-  const config = loadConfig(testEnv(testDatabaseUrl() as string));
+  const config = loadConfig({ ...testEnv(testDatabaseUrl() as string), ...(opts.protectedKeyFile ? { KAINOW_PROTECTED_KEY_FILE: opts.protectedKeyFile } : {}) });
   const pool = new Pool({ connectionString: config.databaseUrl });
   await resetPublicSchema(pool);
   await runMigrations(pool, config.migrationsDir);

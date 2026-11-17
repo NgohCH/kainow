@@ -23,6 +23,7 @@ import type { MeetingEndHook } from './discussion/meetings.service';
 import { OrganisationModule } from './organisation/organisation.module';
 import { ProjectsModule } from './projects/projects.module';
 import { ProtectedKeyModule } from './quarantine/protected-key.module';
+import { QuarantineModule } from './quarantine/quarantine.module';
 import { SearchModule } from './search/search.module';
 import { SpendModule } from './spend/spend.module';
 
@@ -81,6 +82,7 @@ export class AppModule {
         DiscussionModule.register(options.meetingEndHook, options.automaticAnalysis, options.analysisQueue),
         AssistModule.register(options.assistQueue),
         HistoryModule,
+        QuarantineModule,
       ],
       controllers: [HealthController],
     };

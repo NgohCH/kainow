@@ -9,6 +9,7 @@ import { type Calendar, isWorkingDay, nextSlot, slotOn } from './calendar';
 import { inTransaction } from './fire';
 import { loadEffective } from './settings';
 import { emailLine } from './summaries';
+import { searchForms } from '../quarantine/clean-text';
 
 export type EmailChoice = 'daily_urgent_immediate' | 'immediate' | 'daily' | 'off';
 
@@ -161,4 +162,40 @@ export async function mailDue(pool: Pool, now: Date, appUrl: string): Promise<nu
     });
   }
   return written;
+}
+
+/** The reason stored on a queued email cancelled because it holds text reported as a suspected credential (history spec 7.2). */
+export const HELD_EMAIL_REASON = 'held: suspected credential';
+
+/** The outbox condition: the subject, text or HTML (also in its escaped form) holds one of the strings. $1 plain forms, $2 HTML forms. */
+const HOLDS_MARK = `(EXISTS (SELECT 1 FROM unnest($1::text[]) m WHERE strpos(o.subject, m) > 0 OR strpos(o.text_body, m) > 0)
+  OR EXISTS (SELECT 1 FROM unnest($2::text[]) m WHERE strpos(COALESCE(o.html_body, ''), m) > 0))`;
+
+/**
+ * Cancels every queued or waiting email whose subject, text or HTML holds a marked string (spec 7.2): the only content
+ * check on emails. Runs in the report's transaction, before the sweep cleans the stored copies. The reason names no text.
+ * Returns how many were cancelled.
+ */
+export async function cancelQueuedHolding(db: Pick<Pool, 'query'>, marks: string[]): Promise<number> {
+  const forms = searchForms(marks);
+  if (forms.length === 0) return 0;
+  const r = await db.query(
+    `UPDATE email_outbox o SET status = 'cancelled', next_attempt_at = NULL, last_reason = $3
+      WHERE o.status IN ('queued', 'retry_wait') AND ${HOLDS_MARK}`,
+    [forms, searchForms(marks, true), HELD_EMAIL_REASON],
+  );
+  return r.rowCount ?? 0;
+}
+
+/** Emails already sent (or possibly sent) holding a marked string: when, and to how many, by send minute. Never the text. */
+export async function sentHolding(db: Pick<Pool, 'query'>, marks: string[]): Promise<Array<{ at: string; recipients: number }>> {
+  const forms = searchForms(marks);
+  if (forms.length === 0) return [];
+  const { rows } = await db.query<{ at: Date; recipients: number }>(
+    `SELECT date_trunc('minute', COALESCE(o.sent_at, o.created_at)) AS at, count(*)::int AS recipients FROM email_outbox o
+      WHERE o.status IN ('sent', 'uncertain') AND ${HOLDS_MARK}
+      GROUP BY 1 ORDER BY 1`,
+    [forms, searchForms(marks, true)],
+  );
+  return rows.map((r) => ({ at: r.at.toISOString(), recipients: r.recipients }));
 }

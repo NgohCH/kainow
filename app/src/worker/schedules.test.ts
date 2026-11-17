@@ -106,3 +106,28 @@ test('the analysis tick is scheduled every minute, and a failing tick is logged 
     await boss.stop({ graceful: true, timeout: 5000 });
   }
 });
+
+test('with the protected key, the quarantine.clean-waiting job runs at start and every minute; a failure is logged with a fixed message', { skip: SKIP_NO_DB }, async () => {
+  const logs: string[] = [];
+  let calls = 0;
+  const quarantine = {
+    cleanWaiting: async () => {
+      calls++;
+      if (calls === 1) throw new Error('quarantine failed near Kp9vault-Rotor42');
+      return 0;
+    },
+  };
+  const boss = await startQueues(testDatabaseUrl() as string, SCHEMA, { schedule: true });
+  await registerSchedules(boss, { sweep: { runIfDue: async () => true } as unknown as Sweep, dispatcher: { dispatchDue: async () => ({}) } as unknown as EmailDispatcher, quarantine, log: (m) => logs.push(m) });
+  try {
+    const s = (await boss.getSchedules()).find((x) => x.name === QUEUES.quarantine);
+    assert.equal(s?.cron, '* * * * *');
+    // The start job runs without waiting for the first tick.
+    await until(() => calls >= 1 && logs.length >= 1);
+    assert.deepEqual(logs, ['Cleaning the quarantine cases waiting for the protected key failed; it will run again on the next tick.']);
+    assert.ok(!logs.join(' ').includes('Kp9vault'));
+  } finally {
+    await boss.unschedule(QUEUES.quarantine, 'tick');
+    await boss.stop({ graceful: true, timeout: 5000 });
+  }
+});

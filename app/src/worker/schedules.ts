@@ -9,6 +9,8 @@ export interface ScheduleDeps {
   dispatcher: Pick<EmailDispatcher, 'dispatchDue'>;
   /** The per-minute analysis decision (spec 7.2). */
   analysis?: Pick<AnalysisTick, 'run'>;
+  /** Cleans quarantine cases waiting for the protected key; only when the worker has the key (history spec 7.3). */
+  quarantine?: { cleanWaiting(): Promise<number> };
   /** Fixed messages only; never an error object or message. */
   log?: (message: string) => void;
 }
@@ -17,6 +19,7 @@ const EVERY_MINUTE = '* * * * *';
 export const SWEEP_FAILED = 'The notification sweep failed; it will run again on the next tick.';
 export const ANALYSIS_FAILED = 'The analysis tick failed; it will run again on the next tick.';
 export const DISPATCH_FAILED = 'The email dispatch failed; it will run again on the next tick.';
+export const QUARANTINE_FAILED = 'Cleaning the quarantine cases waiting for the protected key failed; it will run again on the next tick.';
 
 /**
  * Schedules a tick every minute for the sweep, the email dispatch and the analysis decision, and processes jobs on both queues.
@@ -48,6 +51,19 @@ export async function registerSchedules(boss: PgBoss, deps: ScheduleDeps): Promi
       log(DISPATCH_FAILED);
     }
   });
+  const quarantine = deps.quarantine;
+  if (quarantine) {
+    // Every minute, and once at start, so cases reported without the key are cleaned as soon as the key is there.
+    await boss.schedule(QUEUES.quarantine, EVERY_MINUTE, null, { key: 'tick', singletonKey: 'tick' });
+    await boss.work(QUEUES.quarantine, { localConcurrency: 1 }, async () => {
+      try {
+        await quarantine.cleanWaiting();
+      } catch {
+        log(QUARANTINE_FAILED);
+      }
+    });
+    await boss.send(QUEUES.quarantine, { start: true }, { singletonKey: 'start' });
+  }
   const analysis = deps.analysis;
   if (analysis) {
     // Overlapping ticks are harmless: a thread already queued or running is skipped by the partial unique index.

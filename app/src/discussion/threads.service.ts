@@ -16,6 +16,7 @@ import { type AudienceChange, type AudienceMode, type AudienceRow, type Person, 
 import { MINUTES_LABEL } from '../notes/notes.service';
 import { AudienceService } from './audience.service';
 import { type MessageState, cleanBody, displayBody, refuseSecrets, replyQuote } from './messages';
+import { HELD_TEXT, POSSIBLE_COPY_TEXT, possibleCopies } from '../quarantine/labels';
 
 type Db = Pool | PoolClient;
 
@@ -37,6 +38,8 @@ export interface MessageView {
   deletedBy?: string;
   deletedAt?: Date;
   deleteReason?: string;
+  /** "Possible credential removed — awaiting check" on a place masked at once for a quarantine case (history spec 7.4). */
+  quarantineLabel: string | null;
 }
 
 export interface MessageVersionView {
@@ -188,7 +191,7 @@ export class ThreadsService {
       `SELECT m.id, m.message_no AS no, m.author_id AS "authorId", au.display_name AS "authorName", m.created_at AS "createdAt",
               m.state, m.state_reason AS "stateReason", sb.display_name AS "stateByName", m.state_at AS "stateAt",
               m.held_case_id IS NOT NULL AS held, v.version_no AS version, v.body,
-              r.id AS "replyId", r.message_no AS "replyNo", r.state AS "replyState", rv.body AS "replyBody"
+              r.id AS "replyId", r.message_no AS "replyNo", r.state AS "replyState", r.held_case_id IS NOT NULL AS "replyHeld", rv.body AS "replyBody"
          FROM discussion_messages m
          JOIN users au ON au.id = m.author_id
          JOIN LATERAL (SELECT version_no, body FROM message_versions WHERE message_id = m.id ORDER BY version_no DESC LIMIT 1) v ON true
@@ -198,8 +201,12 @@ export class ThreadsService {
         WHERE ${where} ORDER BY m.message_no`,
       params,
     );
+    const possible = await possibleCopies(db, 'message', rows.map((r) => r.id));
     return rows.map((r) => {
-      const shown = displayBody({ state: r.state, body: r.body, stateBy: r.stateByName, stateReason: r.stateReason }, r.authorId === viewerId);
+      // A held message shows no text to anyone, only the label (history spec 7.2).
+      const shown = r.held
+        ? { text: null, notice: HELD_TEXT }
+        : displayBody({ state: r.state, body: r.body, stateBy: r.stateByName, stateReason: r.stateReason }, r.authorId === viewerId);
       const inspected = inspectDeleted && r.state === 'deleted' && !r.held;
       return {
         id: r.id,
@@ -211,12 +218,13 @@ export class ThreadsService {
         state: r.state,
         text: shown.text,
         notice: shown.notice,
+        quarantineLabel: possible.has(r.id) ? POSSIBLE_COPY_TEXT : null,
         replyTo: r.replyId
           ? {
               id: r.replyId,
               no: r.replyNo,
-              quote: r.replyState === 'visible' ? replyQuote(r.replyBody) : null,
-              notice: r.replyState === 'visible' ? null : `Reply to a ${r.replyState} message`,
+              quote: r.replyState === 'visible' && !r.replyHeld ? replyQuote(r.replyBody) : null,
+              notice: r.replyHeld ? `Reply to a held message` : r.replyState === 'visible' ? null : `Reply to a ${r.replyState} message`,
             }
           : null,
         ...(inspected ? { text: r.body as string, deletedBy: r.stateByName as string, deletedAt: r.stateAt as Date, deleteReason: r.stateReason as string } : {}),

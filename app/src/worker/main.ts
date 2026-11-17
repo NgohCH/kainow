@@ -16,6 +16,9 @@ import { EmailDispatcher } from '../email/dispatcher';
 import { createTransport } from '../email/transport';
 import type { EmailNudge } from '../email/nudge';
 import { Sweep } from '../notifications/sweep';
+import { Logger } from '@nestjs/common';
+import { cleanWaitingCases } from '../quarantine/cases.service';
+import { loadProtectedKey } from '../quarantine/protected-key';
 import { QUEUES, startQueues } from './queues';
 import { registerSchedules } from './schedules';
 
@@ -62,7 +65,12 @@ async function main(): Promise<void> {
     log,
   });
   const analysis = new AnalysisTick({ pool, clock, queue: bossAnalysisQueue(boss), spend: new SpendService(pool, clock) });
-  await registerSchedules(boss, { sweep, dispatcher, analysis });
+  // The protected key (history spec 7.3): held in memory only; without it, waiting quarantine cases stay waiting.
+  const keyLog = new Logger('ProtectedKey');
+  const key = loadProtectedKey(config.protectedKeyFile, (m) => keyLog.warn(m));
+  const quarantineLog = new Logger('Quarantine');
+  const quarantine = key ? { cleanWaiting: () => cleanWaitingCases(pool, key, clock(), (m) => quarantineLog.warn(m)) } : undefined;
+  await registerSchedules(boss, { sweep, dispatcher, analysis, quarantine });
   console.log(`kainow worker started (AI requests at once: ${AI_CONCURRENCY})`);
 
   const stop = async (): Promise<void> => {
