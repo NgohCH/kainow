@@ -1,4 +1,5 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { readReason } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
 import { onMaterialRemoved } from '../assist/removal';
 import { writeAudit } from '../audit/audit';
@@ -233,7 +234,7 @@ export class AudienceService {
       const ctx = await this.access.authorize(user, 'audience.change', current.projectId, client, true);
       const locked = await this.row(client, 'WHERE a.id = $1', audienceId, true);
       const text = typeof reason === 'string' ? reason.trim() : '';
-      if (text === '' || text.length > 500) throw new BadRequestException(REASON_REQUIRED);
+      readReason(text, 'a reason', { max: 500, refusal: REASON_REQUIRED });
       const talk = await client.query(
         `SELECT 1 FROM discussion_threads WHERE audience_id = $1 AND kind = 'discussion'
          UNION ALL SELECT 1 FROM sources WHERE audience_id = $1 AND kind = 'discussion' LIMIT 1`,

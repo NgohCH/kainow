@@ -1,5 +1,6 @@
 import { liveRecordRefSql, liveRecordSql } from '../history/deleted-sql';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable } from '@nestjs/common';
+import { readReason, refuseSecretsIn } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -65,6 +66,7 @@ export class ProjectsService {
     const purpose = 'purpose' in input || !current ? text(input.purpose) : current.purpose;
     if (purpose === '') throw new BadRequestException("Describe the project's purpose.");
     if (purpose.length > 4000) throw new BadRequestException('The purpose can be at most 4000 characters.');
+    refuseSecretsIn(purpose);
     const owning = 'owningDepartmentId' in input || !current ? input.owningDepartmentId : current.owningDepartmentId;
     const contributing = 'contributingDepartmentIds' in input || !current ? (input.contributingDepartmentIds ?? []) : current.contributingDepartmentIds;
     if (!Array.isArray(contributing) || !contributing.every((d) => typeof d === 'string')) {
@@ -294,7 +296,7 @@ export class ProjectsService {
       await client.query('BEGIN');
       const ctx = await this.access.authorize(user, 'project.archive', id, client, true);
       const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
-      if (reason === '') throw new BadRequestException('A reason is required.');
+      readReason(reason, 'a reason', { refusal: 'A reason is required.' });
       const current = await loadArchiveState(client, id, ctx.project.status, ctx.today);
       if (kind === 'archived' && current.archived) throw new ConflictException('This project is already archived.');
       if (kind === 'unarchived' && !current.archived) throw new ConflictException('This project is not archived.');
@@ -321,7 +323,7 @@ export class ProjectsService {
       const ctx = await this.access.context(user, id, client, true);
       if (!ctx.isAdmin) throw new ForbiddenException('Only an Enterprise Administrator can move a project to another owning department.');
       const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
-      if (reason === '') throw new BadRequestException('A reason is required.');
+      readReason(reason, 'a reason', { refusal: 'A reason is required.' });
       const to = input.departmentId;
       if (typeof to !== 'string' || !UUID.test(to)) throw new BadRequestException('Choose an active department.');
       const dept = (await client.query(`SELECT id FROM departments WHERE id = $1 AND status = 'active'`, [to])).rows[0];
@@ -416,6 +418,7 @@ export class ProjectsService {
     const outcome = (input.outcome ?? null) as ClosureOutcome | null;
     if (outcome !== null && !OUTCOMES.includes(outcome)) throw new BadRequestException('Choose a closure outcome.');
     const reason = optionalText(input.reason);
+    refuseSecretsIn(reason);
     const stage = optionalText(input.stage);
     const objectivesMet = input.objectivesMet === true;
     const at = this.now();
@@ -524,6 +527,7 @@ export class ProjectsService {
     try {
       await client.query('BEGIN');
       await this.access.authorize(user, 'project.stage', id, client, true);
+      refuseSecretsIn(input.reason);
       await this.startStage(client, id, stage, substage, optionalText(input.reason), user.id, at);
       await writeAudit(client, { at, action: 'project.stage', actorUserId: user.id, subjectType: 'project', subjectId: id, detail: { stage, substage } });
       await client.query('COMMIT');

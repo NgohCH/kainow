@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { readReason } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID, uuidv7 } from '../common/uuid7';
@@ -135,8 +136,7 @@ export class ReviewService {
     try {
       await client.query('BEGIN');
       const t = await this.target(client, user, kind, id);
-      const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
-      if (reason === '' || reason.length > 500) throw new BadRequestException(REASON_REQUIRED);
+      const reason = readReason(body.reason, 'a reason', { max: 500, refusal: REASON_REQUIRED });
       if (t.state !== 'review_required') throw new ConflictException(NOT_IN_REVIEW);
       const at = this.now();
       await client.query(

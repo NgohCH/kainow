@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { readReason } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -440,8 +441,7 @@ export class ThreadsService {
       // Deleting one's own message needs only the right to post; every other move needs the moderator's (or restorer's) action.
       if (action === 'delete' && m.authorId === user.id) await this.access.authorize(user, 'discussion.post', m.t.projectId, db);
       else await this.access.authorize(user, MODERATION[action].matrix, m.t.projectId, db);
-      const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
-      if (reason === '' || reason.length > 500) throw new BadRequestException(REASON_REQUIRED);
+      const reason = readReason(body.reason, 'a reason', { max: 500, refusal: REASON_REQUIRED });
       const rule = MODERATION[action];
       if (!rule.from.includes(m.state)) throw new ConflictException(rule.refusal(m.state));
       const at = this.now();

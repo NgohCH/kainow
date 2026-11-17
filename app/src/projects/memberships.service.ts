@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { readReason } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -246,7 +247,7 @@ export class MembershipsService {
 
   async revoke(user: AuthUser, membershipId: string, input: Record<string, unknown>) {
     const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
-    if (reason === '') throw new BadRequestException('A reason is required.');
+    readReason(reason, 'a reason', { refusal: 'A reason is required.' });
     const at = this.now();
     return this.tx(async (c) => {
       const { ctx, row } = await this.loadForChange(c, user, membershipId);

@@ -1,4 +1,5 @@
 import { BadRequestException, Body, Controller, Delete, ForbiddenException, Get, HttpCode, Inject, NotFoundException, Param, Post, Put, Query, Req } from '@nestjs/common';
+import { refuseSecretsIn } from '../common/reason';
 import type { Pool } from 'pg';
 import { AnySignedInUser } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
@@ -196,6 +197,7 @@ export class NotificationsController {
       if (typeof input.note !== 'string') throw new BadRequestException('The note must be text.');
       note = input.note.trim() === '' ? null : input.note.trim();
       if (note !== null && [...note].length > NOTE_MAX) throw new BadRequestException(`The note can be at most ${NOTE_MAX} characters.`);
+      refuseSecretsIn(note);
     }
     const id = uuidv7();
     await this.pool.query(`INSERT INTO away_periods (id, user_id, starts_on, ends_on, note, created_at) VALUES ($1, $2, $3, $4, $5, $6)`, [id, user.id, startsOn, endsOn, note, this.now()]);

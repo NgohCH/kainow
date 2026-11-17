@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { refuseSecretsIn } from '../common/reason';
 import type { Pool } from 'pg';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
@@ -68,6 +69,7 @@ export class GoLiveService {
     if (typeof n !== 'string') throw new BadRequestException(MSG.noteLong);
     const t = n.trim();
     if (t.length > 200) throw new BadRequestException(MSG.noteLong);
+    refuseSecretsIn(t);
     return t === '' ? null : t;
   }
 

@@ -37,6 +37,36 @@ export class QuarantineController {
     });
   }
 
+  /** → { cases }: the Held for review list; PM, Owner and Sponsor, each seeing the cases whose item they can read. */
+  @Get('projects/:id/held')
+  @AnySignedInUser()
+  held(@Param('id') projectId: string, @Req() req: HttpRequest) {
+    return this.cases.heldForReview(who(req), projectId);
+  }
+
+  /** → the case with the item's cleaned text and the place of each [credential removed]; never the original. */
+  @Get('quarantine/cases/:id')
+  @AnySignedInUser()
+  view(@Param('id') id: string, @Req() req: HttpRequest) {
+    return this.cases.cleanedView(who(req), id);
+  }
+
+  /** { marked: string[] } → { caseId, rows, places }: further text cleaned into the same case. */
+  @Post('quarantine/cases/:id/mark-more')
+  @AnySignedInUser()
+  @HttpCode(200)
+  markMore(@Param('id') id: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    return this.cases.markMore(who(req), id, field(body, 'marked'));
+  }
+
+  /** { reason } → { caseId, state: 'released', copies }. */
+  @Post('quarantine/cases/:id/release')
+  @AnySignedInUser()
+  @HttpCode(200)
+  release(@Param('id') id: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    return this.cases.release(who(req), id, { reason: field(body, 'reason') });
+  }
+
   /** → { copies }: the places found holding the same text; PM and Deputy only. */
   @Get('quarantine/cases/:id/copies')
   @AnySignedInUser()

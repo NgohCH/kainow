@@ -7,6 +7,7 @@ import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { RESTRICTED_ROLES, audienceVisibleSql } from '../discussion/audience';
 import { refuseSecrets } from '../discussion/messages';
+import { WITHHELD_TEXT } from '../quarantine/clean';
 import { effectiveRoles } from '../projects/membership';
 import { ProjectAccess } from '../projects/access.service';
 import { summaryShownSql } from '../assist/material';
@@ -79,10 +80,15 @@ export interface VersionSummary {
   textSha256: string;
   originalSha256: string | null;
   createdAt: Date;
+  /** WITHHELD_TEXT when the uploaded original is withheld because a credential was removed from the text (history spec 7.4). */
+  originalWithheld: string | null;
 }
 
 const VERSION_COLUMNS = `id, source_id AS "sourceId", version_no AS "versionNo", origin, filename, media_type AS "mediaType",
-  char_count AS "charCount", text_sha256 AS "textSha256", original_sha256 AS "originalSha256", created_at AS "createdAt"`;
+  char_count AS "charCount", text_sha256 AS "textSha256", original_sha256 AS "originalSha256", created_at AS "createdAt", quarantined_at AS "originalWithheld"`;
+
+/** A version as shown: the withheld label in place of the time it was withheld. */
+const shownVersion = <T extends VersionSummary>(v: T): T => ({ ...v, originalWithheld: v.originalWithheld ? WITHHELD_TEXT : null });
 
 /** Browsers send multipart filenames as Latin-1 bytes of the UTF-8 name; undo that, then strip anything unsafe. */
 export function cleanFilename(raw: string): string {
@@ -376,7 +382,7 @@ export class NotesService {
         summary: s.kind === 'summary' ? await this.summaryLabels(sourceId) : null,
         mayExtract: s.kind !== 'summary',
       },
-      versions: rows,
+      versions: rows.map(shownVersion),
     };
   }
 
@@ -444,14 +450,14 @@ export class NotesService {
     );
     if (!rows[0]) throw new NotFoundException();
     // A discussion transcript keeps its stored text, but messages hidden or deleted since are masked when shown.
-    return { ...rows[0], text: await maskedVersionText(this.pool, rows[0].id, rows[0].text), provenance: await this.provenance(rows[0].id) };
+    return { ...shownVersion(rows[0]), text: await maskedVersionText(this.pool, rows[0].id, rows[0].text), provenance: await this.provenance(rows[0].id) };
   }
 
   async getOriginal(sourceId: string, versionNo: number): Promise<{ filename: string; mediaType: string; bytes: Buffer }> {
     const { rows } = await this.pool.query<{ filename: string; media_type: string; original_bytes: Buffer }>(
       `SELECT v.filename, v.media_type, v.original_bytes
          FROM source_versions v JOIN sources s ON s.id = v.source_id
-        WHERE v.source_id = $1 AND v.version_no = $2 AND ${liveSourceSql('s')} AND v.origin = 'upload'`,
+        WHERE v.source_id = $1 AND v.version_no = $2 AND ${liveSourceSql('s')} AND v.origin = 'upload' AND v.original_bytes IS NOT NULL`,
       [sourceId, versionNo],
     );
     if (!rows[0]) throw new NotFoundException();

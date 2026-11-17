@@ -3,6 +3,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Inject, Inj
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
+import { readOptionalReason, readReason, refuseSecretsIn } from '../common/reason';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { activeManagerSql, audienceVisibleSql } from '../discussion/audience';
@@ -253,6 +254,8 @@ export class ChangesService {
     const handler = this.handler(input.kind);
     if (!handler || !(handler.targetKinds ?? [handler.targetKind]).includes(input.targetKind)) throw new BadRequestException('This kind of change cannot be proposed here.');
     const terms = clientTerms(objectOf(input.terms) ?? {});
+    refuseSecretsIn(terms);
+    const reason = readOptionalReason(input.reason);
     const at = this.now();
     const ctx = await this.actor(c, user, projectId);
     const target = await this.lockTarget(c, input.targetKind, input.targetId, projectId);
@@ -274,7 +277,7 @@ export class ChangesService {
       [id, projectId, input.kind, input.targetKind, target.id, input.batchId ?? null, required, user.id, at],
     );
     await c.query(`INSERT INTO change_request_versions (request_id, version, terms, reason, author_id, at) VALUES ($1, 1, $2, $3, $4, $5)`, [
-      id, JSON.stringify(normalised), text(input.reason) || null, user.id, at,
+      id, JSON.stringify(normalised), reason, user.id, at,
     ]);
     const request = await this.lockRequest(c, id);
     await this.audit(c, at, 'submitted', user.id, request, { kind: input.kind, targetKind: input.targetKind, targetId: target.id, required });
@@ -340,6 +343,7 @@ export class ChangesService {
   private async reviseOnApproval(c: PoolClient, ctx: ProjectContext, request: RequestRow, target: Row, handler: ChangeHandler, user: AuthUser, supplied: unknown, at: Date): Promise<RequestRow> {
     const given = objectOf(supplied);
     if (!given) throw new BadRequestException('Write the revised terms.');
+    refuseSecretsIn(given);
     const before = await this.termsOf(c, request.id, request.version);
     const normalised = await handler.validate(c, ctx, target, { ...before, ...given }, user, at);
     if (sameTerms(normalised, before)) return request;
@@ -387,8 +391,7 @@ export class ChangesService {
 
   /** { reason } by an Owner or Sponsor: ends the request. */
   async reject(user: AuthUser, requestId: string, input: { reason?: unknown }) {
-    const reason = text(input.reason);
-    if (reason === '') throw new BadRequestException('A reason is required.');
+    const reason = readReason(input.reason, 'a reason', { refusal: 'A reason is required.' });
     const at = this.now();
     return this.tx(async (c) => {
       const { ctx, request } = await this.load(c, user, requestId, false);
@@ -402,8 +405,7 @@ export class ChangesService {
 
   /** { reason } by the submitter or the project's PM while pending. */
   async withdraw(user: AuthUser, requestId: string, input: { reason?: unknown }) {
-    const reason = text(input.reason);
-    if (reason === '') throw new BadRequestException('A reason is required.');
+    const reason = readReason(input.reason, 'a reason', { refusal: 'A reason is required.' });
     const at = this.now();
     return this.tx(async (c) => {
       const { ctx, request } = await this.load(c, user, requestId, true);
@@ -423,8 +425,8 @@ export class ChangesService {
     const given = objectOf(input.terms);
     if (!given) throw new BadRequestException('Write the revised terms.');
     const terms = clientTerms(given);
-    const reason = text(input.reason);
-    if (reason === '') throw new BadRequestException('Write a reason for the change.');
+    const reason = readReason(input.reason, 'a reason', { refusal: 'Write a reason for the change.' });
+    refuseSecretsIn(terms);
     const at = this.now();
     return this.tx(async (c) => {
       const { ctx, request } = await this.load(c, user, requestId, true);

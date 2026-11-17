@@ -1,5 +1,6 @@
 import { liveRecordSql } from '../history/deleted-sql';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { readReason } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -132,7 +133,7 @@ export class ClosureService {
     const recordId = typeof input.recordId === 'string' ? input.recordId : '';
     if (!UUID.test(recordId)) throw new NotFoundException();
     const reason = text(input.reason);
-    if (reason === '') throw new BadRequestException('A reason is required.');
+    readReason(reason, 'a reason', { refusal: 'A reason is required.' });
     const affectsDelivery = disposition === 'unresolved' && input.affectsDelivery === true;
     const at = this.now();
     const deliveries: Deliver[] = [];
@@ -238,7 +239,7 @@ export class ClosureService {
     await this.tx(async (c) => {
       const ctx = await this.actor(c, user, projectId);
       if (!isOwnerOrSponsor(ctx)) throw new ForbiddenException(DELEGATE_OS);
-      if (reason === '') throw new BadRequestException('A reason is required.');
+      readReason(reason, 'a reason', { refusal: 'A reason is required.' });
       if (!CLOSABLE.includes(ctx.project.status)) throw new ConflictException(NOT_CLOSABLE);
       const pm = ctx.rows.find((m) => m.role === 'pm' && membershipState(m, ctx.today) === 'active');
       if (!pm) throw new ConflictException('The project has no active Project Manager.');

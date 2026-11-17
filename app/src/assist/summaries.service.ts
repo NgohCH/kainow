@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { readReason } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
 import { headerOf } from '../analysis/transcript';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -848,9 +849,7 @@ export class SummariesService {
       if (row.originalThreadId && (await this.moderatedSince(db, row.originalThreadId, latest.id))) throw new ConflictException(MODERATED_SINCE);
       // An AI version is not checked when written, so the text approved for sharing is checked here (D79): kind only.
       refuseSecrets(latest.body);
-      const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
-      if (reason === '' || reason.length > MAX_REASON) throw new BadRequestException(REASON_REQUIRED);
-      refuseSecrets(reason);
+      const reason = readReason(body.reason, 'a reason', { max: MAX_REASON, refusal: REASON_REQUIRED });
       const original = (await loadOriginal(db, row)) as Original;
       const target = await publishedAudience(db, row);
       const gained = (await this.audiences.preview(ctx, original.audience, target)).gain;
@@ -912,9 +911,7 @@ export class SummariesService {
     refuseHeld(row);
     const ctx = await this.access.authorize(user, 'summary.review', row.projectId, db);
     if (!inReview(row.state)) throw new ConflictException(NOT_IN_REVIEW);
-    const reason = typeof rawReason === 'string' ? rawReason.trim() : '';
-    if (reason === '' || reason.length > MAX_REASON) throw new BadRequestException(REASON_REQUIRED);
-    refuseSecrets(reason);
+    const reason = readReason(rawReason, 'a reason', { max: MAX_REASON, refusal: REASON_REQUIRED });
     return { row, ctx, reason };
   }
 

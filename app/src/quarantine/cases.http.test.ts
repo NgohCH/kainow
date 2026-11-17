@@ -432,7 +432,7 @@ describe('reporting, holding and possible copies', { skip: SKIP_NO_DB }, () => {
   });
 
   test('report and release work while Closed', async () => {
-    // The release half is in Task 13's tests (release.http.test.ts): reporting is protective in every state.
+    // The release half is in Task 13's test of the same name (review.http.test.ts): reporting is protective in every state.
     const id = await note('Plant room', PLANT);
     const other = 'Zq7harbor-Lantern9';
     const second = await note('Second room', `Second vault: ${other}.`);
@@ -492,7 +492,10 @@ describe('reporting, holding and possible copies', { skip: SKIP_NO_DB }, () => {
     assert.equal(hide.body.message, HELD);
   });
 
-  test('reporting a task holds it: gone from the records list, its page, search and Ask', async () => {
+  test('reporting a task holds it: until cleaned it is gone from the records list, its page, search and Ask; cleaned, it is back labelled', async () => {
+    // With the key a reported record is cleaned at once and stays in view (spec 7.5, Task 13); without it, it is hidden.
+    await t.close();
+    await boot(false);
     const task = uuidv7();
     await t.pool.query(
       `INSERT INTO tasks (id, project_id, depth, title, assignee_id, due_on, status, authorised_by, authorised_at)
@@ -510,6 +513,12 @@ describe('reporting, holding and possible copies', { skip: SKIP_NO_DB }, () => {
       assert.deepEqual(await found(c, 'osprey vault'), []);
     }
     assert.equal((await ask(ids.ada, ['osprey'])).length, 0);
+    // Cleaned once the key appears: in view again, labelled, with the cleaned title.
+    const key = loadProtectedKey(keyFile, () => undefined);
+    assert.ok(key);
+    assert.equal(await cleanWaitingCases(t.pool, key, t.clock.now()), 1);
+    const shown = (await pm.request('GET', `/projects/${project}/records`)).body.tasks as Array<{ id: string; title: string; quarantineLabel: string | null }>;
+    assert.deepEqual(shown.map((x) => [x.id, x.title, x.quarantineLabel]), [[task, `Rotate the osprey vault code ${MARKER}`, 'Credential removed — under review']]);
   });
 
   test('reporting an AI answer holds it: gone for its requester, and a queued request runs no AI and charges nothing', async () => {

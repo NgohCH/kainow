@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { readReason } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -274,8 +275,7 @@ export class PublishingService {
     return this.threads.inTransaction(async (db) => {
       const src = await this.lockedSubmission(db, user, sourceId);
       await this.access.authorize(user, 'minutes.publish', src.projectId, db);
-      const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
-      if (reason === '' || reason.length > 500) throw new BadRequestException(REASON_REQUIRED);
+      const reason = readReason(body.reason, 'a reason', { max: 500, refusal: REASON_REQUIRED });
       if (src.publication !== 'submitted') throw new ConflictException('Only a submission waiting for review can be returned.');
       const at = this.now();
       await db.query(`UPDATE sources SET publication = 'returned', returned_reason = $2 WHERE id = $1`, [sourceId, reason]);

@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { readReason } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID, uuidv7 } from '../common/uuid7';
@@ -563,8 +564,7 @@ export class QuestionsService {
       if ((await answerAccess(db, await this.access.load(row.projectId, user, db), { ...row, heldCaseId: null })) === 'none') throw new NotFoundException();
       refuseHeld(row);
       const ctx = await this.access.authorize(user, 'message.moderate', row.projectId, db);
-      const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
-      if (reason === '' || reason.length > 500) throw new BadRequestException(REASON_REQUIRED);
+      const reason = readReason(body.reason, 'a reason', { max: 500, refusal: REASON_REQUIRED });
       if (row.hidden === hide) throw new ConflictException(hide ? 'This answer is already hidden.' : 'This answer is not hidden.');
       const at = this.now();
       await db.query(

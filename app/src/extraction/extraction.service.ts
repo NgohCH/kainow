@@ -8,6 +8,7 @@ import { uuidv7 } from '../common/uuid7';
 import { PROPOSAL_REJECTED_REASON, lockPendingAuthorisation, rejectPendingAuthorisation } from '../changes/end-pending';
 import { PG_POOL } from '../db/database.module';
 import { notHeldSql, refuseHeld } from '../history/deleted-sql';
+import { QUOTE_CHANGED_TEXT, quoteChangedItems } from '../quarantine/clean';
 import { locateQuote } from '../notes/text';
 import { type DueReading, type ReviewerDue, isCalendarDate, readDue } from './due';
 import { EXTRACTION_QUEUE, type ExtractionQueue } from './queue';
@@ -251,8 +252,9 @@ export class ExtractionService {
       return item.edited ? { ...withDue, original: { text: originalText, owner: originalOwner, due: originalDue } } : withDue;
     });
     const itemIds = shaped.map((i) => i.id);
-    const [flags, evidence] = await Promise.all([itemSourceFlags(this.pool, itemIds), itemDiscussionEvidence(this.pool, itemIds)]);
-    const flagged = shaped.map((i) => ({ ...i, sourceFlag: flags.get(i.id) ?? null, discussionEvidence: evidence.get(i.id) ?? null }));
+    const [flags, evidence, quoteChanged] = await Promise.all([itemSourceFlags(this.pool, itemIds), itemDiscussionEvidence(this.pool, itemIds), quoteChangedItems(this.pool, itemIds)]);
+    // A quote that overlapped a removed credential was rewritten (history spec 7.4): the reviewer is told.
+    const flagged = shaped.map((i) => ({ ...i, sourceFlag: flags.get(i.id) ?? null, discussionEvidence: evidence.get(i.id) ?? null, quoteChanged: quoteChanged.has(i.id) ? QUOTE_CHANGED_TEXT : null }));
     Object.assign(run.rows[0], meeting);
     const src = await this.pool.query(
       `SELECT s.id AS "sourceId", s.title, s.kind AS "sourceKind", v.version_no AS "versionNo"

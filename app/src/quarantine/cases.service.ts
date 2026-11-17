@@ -34,14 +34,14 @@ import { RESTRICTED_ROLES, inAudience } from '../discussion/audience';
 import { AudienceService } from '../discussion/audience.service';
 import { EMAIL_NUDGE, type EmailNudge } from '../email/nudge';
 import { writeOutbox } from '../email/outbox';
-import { findCredentials } from '../extraction/credentials';
+import { findCredentialMatches, findCredentials } from '../extraction/credentials';
 import { HELD, liveRecordSql } from '../history/deleted-sql';
 import { HELD_EMAIL_REASON, cancelQueuedHolding, sentHolding } from '../notifications/mailing';
 import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { grantGivesAccess } from '../projects/grants';
 import { effectiveRoles } from '../projects/membership';
 import { cleanItem, findPlaces, restoreOriginals } from './clean';
-import { searchForms } from './clean-text';
+import { MARKER, searchForms } from './clean-text';
 import { POSSIBLE_COPY_TEXT } from './labels';
 import { MAX_MARK_CHARS, MIN_MARK } from './mark-limits';
 import { PROTECTED_KEY, type ProtectedKey } from './protected-key';
@@ -57,6 +57,8 @@ export const KIND_REFUSED = 'Choose the kind of item the suspected secret is in.
 export const WAITING_FOR_KEY = 'Waiting for the protected key';
 export const CASE_CLOSED = 'This case is closed.';
 export const ALREADY_DECIDED = 'This place has already been confirmed or dismissed.';
+export const NOT_CLEANED = 'This case cannot be released until its item is cleaned: it is waiting for the protected key.';
+export const MARKS_MORE_REFUSED = 'Mark further text of at least 4 characters that appears exactly in the cleaned text, outside the removed credentials.';
 const MAX_MARKS = 20;
 /** Kainow's own report marks every match the detector found, so its limit is wider than a person's. */
 const MAX_KAINOW_MARKS = 500;
@@ -78,6 +80,39 @@ export interface Disclosures {
   aiRequests: Array<{ at: string; provider: string; model: string }>;
   emails: Array<{ at: string; recipients: number }>;
   audienceSize: number;
+}
+
+/** A case as a reviewer reads it (spec 7.5): references and counts, never the marked text. */
+interface ReviewRow {
+  id: string;
+  projectId: string;
+  kind: ItemKind;
+  itemId: string;
+  state: 'held' | 'cleaned' | 'released' | 'released_unchanged';
+  waitingForKey: boolean;
+  reporterId: string | null;
+  reporterName: string | null;
+  reason: string | null;
+  reportedAt: Date;
+  cleanedAt: Date | null;
+}
+const REVIEW_COLUMNS = `c.id, c.project_id AS "projectId", c.item_kind AS kind, c.item_id AS "itemId", c.state, c.waiting_for_key AS "waitingForKey",
+  c.reporter_id AS "reporterId", u.display_name AS "reporterName", c.reason, c.reported_at AS "reportedAt", c.cleaned_at AS "cleanedAt"`;
+
+export interface HeldCase {
+  caseId: string;
+  kind: ItemKind;
+  itemId: string;
+  state: string;
+  /** "Waiting for the protected key" while the item is held uncleaned. */
+  label: string | null;
+  /** The item's title or reference, once cleaned (never while it still holds the marked text). */
+  reference: string | null;
+  /** The reporter's name, or "Kainow". */
+  reporter: string;
+  reason: string | null;
+  reportedAt: string;
+  cleanedAt: string | null;
 }
 
 /** The only AI provider Kainow sends to (spec 7.7: "provider" in the known disclosures). */
@@ -235,13 +270,30 @@ async function markableText(db: Db, kind: ItemKind, id: string, anyVersion: bool
 ${all}` : current;
 }
 
+/**
+ * The marks the reported item itself is cleaned with (spec 7.4: "for the reported item itself, every credential-check
+ * match"): the marked text plus whatever the credential check finds in any stored version of the item. Only the item
+ * itself: other places are searched for the marked text alone (PO decision).
+ */
+async function ownMarks(db: Db, kind: ItemKind, id: string, marks: string[]): Promise<string[]> {
+  const text = await markableText(db, kind, id, true);
+  return [...new Set([...marks, ...(text ? findCredentialMatches(text) : [])])];
+}
+
+/** Every [start, end) of the marker in a cleaned text. */
+function markerSpans(text: string): Array<{ start: number; end: number }> {
+  const out: Array<{ start: number; end: number }> = [];
+  for (let at = text.indexOf(MARKER); at !== -1; at = text.indexOf(MARKER, at + MARKER.length)) out.push({ start: at, end: at + MARKER.length });
+  return out;
+}
+
 async function event(
   db: Db,
-  e: { caseId: string; projectId: string; actorId: string | null; action: string; kind?: ItemKind | null; itemId?: string | null; detail?: Record<string, unknown> | null; at: Date },
+  e: { caseId: string; projectId: string; actorId: string | null; action: string; kind?: ItemKind | null; itemId?: string | null; reason?: string | null; detail?: Record<string, unknown> | null; at: Date },
 ): Promise<void> {
   await db.query(
-    `INSERT INTO quarantine_events (id, case_id, project_id, actor_id, action, item_kind, item_id, reason, detail, at) VALUES ($1, $2, $3, $4, $5, $6, $7, NULL, $8, $9)`,
-    [uuidv7(e.at.getTime()), e.caseId, e.projectId, e.actorId, e.action, e.kind ?? null, e.itemId ?? null, e.detail ? JSON.stringify(e.detail) : null, e.at],
+    `INSERT INTO quarantine_events (id, case_id, project_id, actor_id, action, item_kind, item_id, reason, detail, at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
+    [uuidv7(e.at.getTime()), e.caseId, e.projectId, e.actorId, e.action, e.kind ?? null, e.itemId ?? null, e.reason ?? null, e.detail ? JSON.stringify(e.detail) : null, e.at],
   );
 }
 
@@ -328,7 +380,7 @@ export async function cleanWaitingCases(pool: Pool, key: ProtectedKey, now: Date
         }
         const marks = [...new Set(held.marks.map((m) => text.slice(m.start, m.end)))];
         const at = now;
-        const item = await cleanItem(db, key, id, c.kind, c.itemId, marks);
+        const item = await cleanItem(db, key, id, c.kind, c.itemId, await ownMarks(db, c.kind, c.itemId, marks));
         const places = (
           await db.query<{ kind: ItemKind; id: string }>(
             `SELECT item_kind AS kind, item_id AS id FROM quarantine_possible_copies
@@ -476,7 +528,7 @@ export class CasesService {
     // Emails still queued that hold the text never go; then the sweep cleans every stored copy.
     const cancelled = await cancelQueuedHolding(db, marks);
     let cleanedRows = 0;
-    if (key) cleanedRows = (await cleanItem(db, key, caseId, kind, id, marks)).rows;
+    if (key) cleanedRows = (await cleanItem(db, key, caseId, kind, id, await ownMarks(db, kind, id, marks))).rows;
 
     // Other places in the project: masked at once (cleaned, not held), or held until the key appears.
     const derived = await quoteOnlyProposals(db, kind, id, marks);
@@ -604,18 +656,21 @@ export class CasesService {
 
   /**
    * Whether this person can read the item now by its audience (spec 7.1: "anyone who can currently read the item"). A
-   * held or Deleted item, or a discussion transcript (not an item), is readable by nobody here.
+   * held or Deleted item, or a discussion transcript (not an item), is readable by nobody here, except that a hold by
+   * `reviewing` (the case under review, spec 7.5) is looked through: its reviewers are the item's audience as if it
+   * were not held.
    */
-  private async readable(db: Db, ctx: ProjectContext, user: AuthUser, kind: ItemKind, id: string): Promise<boolean> {
+  private async readable(db: Db, ctx: ProjectContext, user: AuthUser, kind: ItemKind, id: string, reviewing: string | null = null): Promise<boolean> {
     if (!canReadContent(ctx)) return false;
+    const held = (caseId: string | null | undefined): boolean => !!caseId && caseId !== reviewing;
     const thread = async (threadId: string): Promise<boolean> => {
-      const t = (await db.query<{ held: boolean }>(`SELECT held_case_id IS NOT NULL AS held FROM discussion_threads WHERE id = $1`, [threadId])).rows[0];
-      if (!t || t.held) return false;
+      const t = (await db.query<{ held: string | null }>(`SELECT held_case_id AS held FROM discussion_threads WHERE id = $1`, [threadId])).rows[0];
+      if (!t || held(t.held)) return false;
       return inAudience(ctx, await this.audiences.forThread(threadId, db));
     };
     const source = async (sourceId: string): Promise<boolean> => {
-      const s = (await db.query<{ status: string; held: boolean; kind: string }>(`SELECT status, held_case_id IS NOT NULL AS held, kind FROM sources WHERE id = $1`, [sourceId])).rows[0];
-      if (!s || s.status === 'deleted' || s.held || s.kind === 'discussion') return false;
+      const s = (await db.query<{ status: string; held: string | null; kind: string }>(`SELECT status, held_case_id AS held, kind FROM sources WHERE id = $1`, [sourceId])).rows[0];
+      if (!s || s.status === 'deleted' || held(s.held) || s.kind === 'discussion') return false;
       return this.audiences.canSeeSource(ctx, user, await this.audiences.sourceAccessRow(sourceId, db));
     };
     const one = async (sql: string): Promise<Record<string, any> | undefined> => (await db.query(sql, [id])).rows[0];
@@ -624,7 +679,7 @@ export class CasesService {
         return source(id);
       case 'message': {
         const m = await one(`SELECT thread_id, state, held_case_id FROM discussion_messages WHERE id = $1`);
-        return !!m && m.state === 'visible' && m.held_case_id === null && thread(m.thread_id);
+        return !!m && m.state === 'visible' && !held(m.held_case_id) && thread(m.thread_id);
       }
       case 'thread':
         return thread(id);
@@ -636,40 +691,45 @@ export class CasesService {
       case 'decision':
       case 'question':
       case 'risk': {
+        // Every participant reads the project's records (Task 3's ruling); a cleaned record under review is in view.
         const table = { task: 'tasks', decision: 'decisions', question: 'questions', risk: 'risks' }[kind];
-        return !!(await one(`SELECT 1 FROM ${table} x WHERE x.id = $1 AND ${liveRecordSql('x')}`));
+        const r = await one(`SELECT (${liveRecordSql('x')}) AS live, x.deleted_at IS NULL AS present, x.held_case_id FROM ${table} x WHERE x.id = $1`);
+        return !!r && (r.live || (r.present && !held(r.held_case_id)));
       }
       case 'proposal': {
         const p = await one(`SELECT v.source_id, i.held_case_id FROM extraction_items i JOIN source_versions v ON v.id = i.source_version_id WHERE i.id = $1`);
-        if (!p || p.held_case_id !== null) return false;
+        if (!p || held(p.held_case_id)) return false;
         // A proposal from a discussion transcript is read with its thread.
         const s = (await db.query<{ kind: string; threadId: string | null }>(`SELECT kind, thread_id AS "threadId" FROM sources WHERE id = $1`, [p.source_id])).rows[0];
         if (s?.kind === 'discussion' && s.threadId) return thread(s.threadId);
         return source(p.source_id);
       }
-      case 'human_proposal':
-        return !!(await one(`SELECT 1 FROM human_proposals WHERE id = $1 AND held_case_id IS NULL`));
+      case 'human_proposal': {
+        const h = await one(`SELECT held_case_id FROM human_proposals WHERE id = $1`);
+        return !!h && !held(h.held_case_id);
+      }
       case 'answer': {
         const a = await one(
           `SELECT a.visibility, a.shared_thread_id, a.review_state, a.held_case_id, r.requested_by FROM ai_answers a JOIN ai_requests r ON r.id = a.request_id WHERE a.request_id = $1`,
         );
-        if (!a || a.held_case_id !== null || a.review_state === 'withdrawn') return false;
+        if (!a || held(a.held_case_id) || a.review_state === 'withdrawn') return false;
         if (a.requested_by === user.id) return true;
         return a.visibility === 'shared' && !!a.shared_thread_id && thread(a.shared_thread_id);
       }
       case 'report_draft': {
         const d = await one(`SELECT created_by, shared, review_state, held_case_id FROM report_drafts WHERE id = $1`);
-        return !!d && d.held_case_id === null && d.review_state !== 'withdrawn' && (d.created_by === user.id || d.shared === true);
+        return !!d && !held(d.held_case_id) && d.review_state !== 'withdrawn' && (d.created_by === user.id || d.shared === true);
       }
       case 'summary': {
         const row = await loadSummaryRow(db, id);
-        if (!row || row.heldCaseId) return false;
-        if (await summaryVisible(db, ctx, row)) return true;
+        if (!row || held(row.heldCaseId)) return false;
+        const seen = { ...row, heldCaseId: null };
+        if (await summaryVisible(db, ctx, seen)) return true;
         return (row.state === 'approved' || row.state === 'review_required') && !!row.summarySourceId && source(row.summarySourceId);
       }
       case 'feedback': {
         const f = await one(`SELECT reporter_id, held_case_id FROM ai_feedback WHERE id = $1`);
-        return !!f && f.held_case_id === null && (f.reporter_id === user.id || ctx.roles.some((r) => RESTRICTED_ROLES.includes(r)));
+        return !!f && !held(f.held_case_id) && (f.reporter_id === user.id || ctx.roles.some((r) => RESTRICTED_ROLES.includes(r)));
       }
     }
   }
@@ -788,6 +848,173 @@ export class CasesService {
       seen.add(k);
       return { kind: x.kind as ItemKind, id: x.id, decision: x.decision };
     });
+  }
+
+  // -------------------------------------------------------------------------------------------------------------
+  // Review, mark more, release (spec 7.5)
+  // -------------------------------------------------------------------------------------------------------------
+
+  /**
+   * The case, for a reviewer: PM, Owner or Sponsor of its project (`quarantine.release`, any project state) who can read
+   * the item under its audience rules, the case's own hold looked through. 404 for anyone outside the project or the
+   * item's audience (even with the role), 403 for other roles of the project.
+   */
+  private async reviewCase(db: Db, user: AuthUser, caseId: string, lock = false): Promise<ReviewRow & { ctx: ProjectContext }> {
+    if (!UUID.test(caseId)) throw new NotFoundException();
+    const c = (await db.query<ReviewRow>(`SELECT ${REVIEW_COLUMNS} FROM quarantine_cases c LEFT JOIN users u ON u.id = c.reporter_id WHERE c.id = $1 ${lock ? 'FOR UPDATE OF c' : ''}`, [caseId])).rows[0];
+    if (!c) throw new NotFoundException();
+    const ctx = await this.access.authorize(user, 'quarantine.release', c.projectId, db);
+    if (!(await this.readable(db, ctx, user, c.kind, c.itemId, c.id))) throw new NotFoundException();
+    return { ...c, ctx };
+  }
+
+  /** One line of the Held for review list or the head of the cleaned view: references, never the item's original. */
+  private async summaryOf(db: Db, c: ReviewRow): Promise<HeldCase> {
+    const cleaned = c.state === 'cleaned' || c.state === 'released';
+    let reference: string | null = null;
+    if (cleaned) {
+      const ref = (await db.query<{ ref: string | null }>(REFERENCE[c.kind], [c.itemId])).rows[0]?.ref ?? null;
+      reference = ref && ref.length > 80 ? `${ref.slice(0, 79)}…` : ref;
+    }
+    return {
+      caseId: c.id,
+      kind: c.kind,
+      itemId: c.itemId,
+      state: c.state,
+      label: c.waitingForKey ? WAITING_FOR_KEY : null,
+      reference,
+      reporter: c.reporterName ?? 'Kainow',
+      reason: c.reason,
+      reportedAt: c.reportedAt.toISOString(),
+      cleanedAt: c.cleanedAt ? c.cleanedAt.toISOString() : null,
+    };
+  }
+
+  /** The Held for review list (spec 7.5): the project's open cases whose item this PM, Owner or Sponsor can read. */
+  async heldForReview(user: AuthUser, projectId: string): Promise<{ cases: HeldCase[] }> {
+    if (!UUID.test(projectId)) throw new NotFoundException();
+    const ctx = await this.access.authorize(user, 'quarantine.release', projectId);
+    const { rows } = await this.pool.query<ReviewRow>(
+      `SELECT ${REVIEW_COLUMNS} FROM quarantine_cases c LEFT JOIN users u ON u.id = c.reporter_id
+        WHERE c.project_id = $1 AND c.state IN ('held', 'cleaned') ORDER BY c.reported_at, c.id`,
+      [ctx.project.id],
+    );
+    const out: HeldCase[] = [];
+    for (const c of rows) if (await this.readable(this.pool, ctx, user, c.kind, c.itemId, c.id)) out.push(await this.summaryOf(this.pool, c));
+    return { cases: out };
+  }
+
+  /**
+   * The cleaned view (spec 7.5): the item's current text, cleaned, with the place of each [credential removed]. While
+   * the case waits for the protected key, or once it was released unchanged, the text holds the secret and is not shown.
+   */
+  async cleanedView(user: AuthUser, caseId: string): Promise<HeldCase & { text: string | null; markers: Array<{ start: number; end: number }> }> {
+    const c = await this.reviewCase(this.pool, user, caseId);
+    const head = await this.summaryOf(this.pool, c);
+    const shown = c.state === 'cleaned' || c.state === 'released';
+    const text = shown ? await currentText(this.pool, c.kind, c.itemId) : null;
+    return { ...head, text, markers: text ? markerSpans(text) : [] };
+  }
+
+  /**
+   * Mark more (spec 7.5): further text the reviewer selects in the cleaned text is swept and cleaned as at the report
+   * (spec 7.4), its originals encrypted into the same case; other places holding it are masked and alerted as then.
+   */
+  async markMore(user: AuthUser, caseId: string, marked: unknown): Promise<{ caseId: string; rows: number; places: number }> {
+    const out = await inTransaction(this.pool, async (db) => {
+      const c = await this.reviewCase(db, user, caseId, true);
+      if (c.state === 'released' || c.state === 'released_unchanged') throw new ConflictException(CASE_CLOSED);
+      if (c.state !== 'cleaned' || !this.key) throw new ConflictException(WAITING_FOR_KEY);
+      const key = this.key;
+      const marks = this.readMarks(marked);
+      const text = (await currentText(db, c.kind, c.itemId)) ?? '';
+      const spans = markerSpans(text);
+      for (const m of marks) {
+        if (MARKER.includes(m) || !text.includes(m)) throw new BadRequestException(MARKS_MORE_REFUSED);
+        for (let at = text.indexOf(m); at !== -1; at = text.indexOf(m, at + 1)) {
+          if (spans.some((s) => at < s.end && at + m.length > s.start)) throw new BadRequestException(MARKS_MORE_REFUSED);
+        }
+      }
+      const at = this.now();
+      const projectId = c.projectId;
+      const cancelled = await cancelQueuedHolding(db, marks);
+      let rows = (await cleanItem(db, key, c.id, c.kind, c.itemId, await ownMarks(db, c.kind, c.itemId, marks))).rows;
+      const derived = await quoteOnlyProposals(db, c.kind, c.itemId, marks);
+      const places = (await findPlaces(db, projectId, marks, { kind: c.kind, id: c.itemId })).filter((p) => !(p.kind === 'proposal' && derived.has(p.id)));
+      let added = 0;
+      for (const p of places) {
+        rows += (await cleanItem(db, key, c.id, p.kind, p.id, marks)).rows;
+        const ins = await db.query(
+          `INSERT INTO quarantine_possible_copies (case_id, item_kind, item_id, found_at, masked) VALUES ($1, $2, $3, $4, true) ON CONFLICT DO NOTHING`,
+          [c.id, p.kind, p.id, at],
+        );
+        added += ins.rowCount ?? 0;
+      }
+      await db.query(`UPDATE quarantine_cases SET marked_length = marked_length + $2 WHERE id = $1`, [c.id, marks.reduce((n, m) => n + m.length, 0)]);
+      await event(db, { caseId: c.id, projectId, actorId: user.id, action: 'marked_more', kind: c.kind, itemId: c.itemId, detail: { marks: marks.length, rows, places: places.length, emailsCancelled: cancelled }, at });
+      if (added > 0) {
+        const projectName = (await db.query<{ name: string }>(`SELECT name FROM projects WHERE id = $1`, [projectId])).rows[0].name;
+        await this.alertCopies(db, c.ctx, { caseId: c.id, projectId, projectName, words: await this.wordsFor(db, c.kind, c.itemId), count: added, masked: true, at });
+      }
+      await writeAudit(db, { at, action: 'quarantine.marked_more', actorUserId: user.id, subjectType: 'quarantine_case', subjectId: c.id, detail: { projectId, itemKind: c.kind } });
+      return { caseId: c.id, rows, places: places.length };
+    });
+    await this.nudge.nudge().catch(() => undefined);
+    return out;
+  }
+
+  /**
+   * Release (spec 7.5), by a reviewer with a reason, in any project state: the cleaned item and the confirmed copies
+   * return to their audience and the case closes as `released`. Nothing that was withdrawn comes back: AI answers
+   * stay withdrawn and a hidden summary stays hidden until confirmed (4b). The reporter (a person) and the PM are told
+   * in-app. One top-level transaction; nothing is decrypted, so no quarantine write follows the case-row update.
+   */
+  async release(user: AuthUser, caseId: string, body: { reason: unknown }): Promise<{ caseId: string; state: 'released'; copies: number }> {
+    return inTransaction(this.pool, async (db) => {
+      const c = await this.reviewCase(db, user, caseId, true);
+      if (c.state === 'released' || c.state === 'released_unchanged') throw new ConflictException(CASE_CLOSED);
+      if (c.state !== 'cleaned') throw new ConflictException(NOT_CLEANED);
+      const reason = readReason(body.reason);
+      const at = this.now();
+      await db.query(`UPDATE quarantine_cases SET state = 'released', closed_at = $2, closed_by = $3, close_reason = $4 WHERE id = $1`, [c.id, at, user.id, reason]);
+      await unhold(db, c.kind, c.itemId, c.id);
+      const copies = (await db.query<{ kind: ItemKind; id: string }>(`SELECT item_kind AS kind, item_id AS id FROM quarantine_items WHERE case_id = $1 AND role = 'copy' ORDER BY item_kind, item_id`, [c.id])).rows;
+      for (const p of copies) await unhold(db, p.kind, p.id, c.id);
+      await event(db, { caseId: c.id, projectId: c.projectId, actorId: user.id, action: 'released', kind: c.kind, itemId: c.itemId, reason, detail: { copies: copies.length }, at });
+      const told = await this.notifyReleased(db, c, at);
+      await event(db, { caseId: c.id, projectId: c.projectId, actorId: null, action: 'notified', detail: { released: told }, at });
+      await writeAudit(db, { at, action: 'quarantine.released', actorUserId: user.id, subjectType: 'quarantine_case', subjectId: c.id, detail: { projectId: c.projectId, itemKind: c.kind } });
+      return { caseId: c.id, state: 'released' as const, copies: copies.length };
+    });
+  }
+
+  private async wordsFor(db: Db, kind: ItemKind, id: string): Promise<string> {
+    if (kind !== 'source') return KIND_WORDS[kind];
+    const k = (await db.query<{ kind: string }>(`SELECT kind FROM sources WHERE id = $1`, [id])).rows[0]?.kind ?? 'notes';
+    return SOURCE_WORDS[k] ?? KIND_WORDS.source;
+  }
+
+  /** In-app notice to the reporter (a person) and the project's PM that the case was released (spec 7.5); never the text. */
+  private async notifyReleased(db: Db, c: ReviewRow & { ctx: ProjectContext }, at: Date): Promise<number> {
+    const projectName = (await db.query<{ name: string }>(`SELECT name FROM projects WHERE id = $1`, [c.projectId])).rows[0].name;
+    const summary = `The item held for a suspected credential in ${projectName} (${await this.wordsFor(db, c.kind, c.itemId)}) was released after review, with the credential removed.`;
+    const link =
+      c.kind === 'source'
+        ? `#/notes/${c.itemId}`
+        : c.kind === 'summary'
+          ? `#/summaries/${c.itemId}`
+          : c.kind === 'task'
+            ? `#/projects/${c.projectId}/work/${c.itemId}`
+            : `#/projects/${c.projectId}`;
+    const pms = [...new Set(c.ctx.rows.map((r) => r.userId))].filter((u) => effectiveRoles(c.ctx.rows, u, c.ctx.today).includes('pm'));
+    const people = [...new Set([...(c.reporterId ? [c.reporterId] : []), ...pms])].sort();
+    for (const userId of people) {
+      await db.query(
+        `INSERT INTO notifications (id, user_id, project_id, kind, urgent, summary, link, created_at, email_off) VALUES ($1, $2, $3, 'quarantine_released', false, $4, $5, $6, true)`,
+        [uuidv7(at.getTime()), userId, c.projectId, summary, link, at],
+      );
+    }
+    return people.length;
   }
 
   /**

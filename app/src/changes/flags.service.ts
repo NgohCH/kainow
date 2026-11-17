@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { readReason } from '../common/reason';
 import type { Pool } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -35,7 +36,7 @@ export class FlagsService {
       if (ctx.roles.length === 0) throw new ForbiddenException(GRANT_READ_ONLY);
       if (!ctx.roles.some((r) => r === 'pm' || r === 'deputy_pm')) throw new ForbiddenException(CANNOT_CLEAR);
       if (ctx.project.status !== 'active') throw new ConflictException(NOT_ACTIVE);
-      if (text === '') throw new BadRequestException(NOTE_NEEDED);
+      readReason(text, 'a note', { refusal: NOTE_NEEDED });
       const flag = (await client.query(`SELECT id, cleared_at, record_kind, record_id FROM review_flags WHERE id = $1 FOR UPDATE`, [flagId])).rows[0];
       if (flag.cleared_at) throw new ConflictException(FLAG_CLEARED);
       await client.query(`UPDATE review_flags SET cleared_by = $2, cleared_at = $3, note = $4 WHERE id = $1`, [flagId, user.id, at, text]);

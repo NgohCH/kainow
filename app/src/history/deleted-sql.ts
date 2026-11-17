@@ -20,8 +20,14 @@ export function refuseUnliveSource(row: { status: string; heldCaseId: string | n
 /** A source that is neither Deleted nor held in an open quarantine case. */
 export const liveSourceSql = (alias: string): string => `(${alias}.status <> 'deleted' AND ${alias}.held_case_id IS NULL)`;
 
-/** A task, decision, question or risk that is neither Deleted nor held. */
-export const liveRecordSql = (alias: string): string => `(${alias}.deleted_at IS NULL AND ${alias}.held_case_id IS NULL)`;
+/**
+ * A task, decision, question or risk that is not Deleted and is in view: not held, or held in a case whose cleaning is
+ * done (history spec 7.5: a cleaned record stays visible during review, labelled "Credential removed — under review",
+ * so reminders and work continue; while it waits for the protected key it is hidden). Deleting and restoring still
+ * refuse any held record (409 HELD, they read held_case_id themselves), and Inspect Deleted Content never shows one.
+ */
+export const liveRecordSql = (alias: string): string =>
+  `(${alias}.deleted_at IS NULL AND (${alias}.held_case_id IS NULL OR EXISTS (SELECT 1 FROM quarantine_cases lrq WHERE lrq.id = ${alias}.held_case_id AND lrq.state = 'cleaned')))`;
 
 /** A discussion message that is visible (not hidden or deleted) and not held. */
 export const liveMessageSql = (alias: string): string => `(${alias}.state = 'visible' AND ${alias}.held_case_id IS NULL)`;

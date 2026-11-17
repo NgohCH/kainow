@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Inject, Inj
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
+import { readOptionalReason, readReason } from '../common/reason';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { isCalendarDate } from '../extraction/due';
@@ -66,10 +67,8 @@ export class GrantsService {
   async request(user: AuthUser, projectId: string, input: Record<string, unknown>) {
     const kind = input.kind as GrantKind;
     if (!GRANT_KINDS.includes(kind)) throw new BadRequestException('Choose audit or oversight.');
-    const purpose = text(input.purpose);
-    const scope = text(input.scope);
-    if (purpose === '' || purpose.length > 2000) throw new BadRequestException('Give the purpose (up to 2000 characters).');
-    if (scope === '' || scope.length > 2000) throw new BadRequestException('Give the requested scope (up to 2000 characters).');
+    const purpose = readReason(input.purpose, 'the purpose', { max: 2000, refusal: 'Give the purpose (up to 2000 characters).' });
+    const scope = readReason(input.scope, 'the requested scope', { max: 2000, refusal: 'Give the requested scope (up to 2000 characters).' });
     if (!isCalendarDate(input.startsOn)) throw new BadRequestException('Dates must be in the form YYYY-MM-DD.');
     const startsOn = input.startsOn as string;
     const expiresOn = input.expiresOn === undefined || input.expiresOn === null || input.expiresOn === '' ? defaultGrantEnd(startsOn) : input.expiresOn;
@@ -119,14 +118,13 @@ export class GrantsService {
   }
 
   private reasonOf(input: Record<string, unknown>): string {
-    const reason = text(input.reason);
-    if (reason === '') throw new BadRequestException('A reason is required.');
+    const reason = readReason(input.reason, 'a reason', { refusal: 'A reason is required.' });
     return reason;
   }
 
   async decide(user: AuthUser, grantId: string, decision: 'approved' | 'declined', input: Record<string, unknown>) {
     refuseScopeChange(input);
-    const reason = decision === 'declined' ? this.reasonOf(input) : text(input.reason) || null;
+    const reason = decision === 'declined' ? this.reasonOf(input) : readOptionalReason(input.reason);
     const at = this.now();
     return this.tx(async (c) => {
       const { g, ctx } = await this.load(c, user, grantId);

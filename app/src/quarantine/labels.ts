@@ -4,6 +4,9 @@ import type { ItemKind } from './registry';
 /** Shown on a place where reported text was masked at once, until a PM or Deputy confirms or dismisses it (spec 7.4). */
 export const POSSIBLE_COPY_TEXT = 'Possible credential removed — awaiting check';
 
+/** Shown on an authorised record held in an open case once it is cleaned: it stays in view and work (spec 7.5). */
+export const UNDER_REVIEW_TEXT = 'Credential removed — under review';
+
 /** Shown instead of the text of an item held in an open case and not yet open to review (spec 7.2). */
 export const HELD_TEXT = 'Held — suspected credential, under review';
 

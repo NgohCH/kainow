@@ -1,4 +1,5 @@
 import { BadRequestException, ForbiddenException, Inject, Injectable } from '@nestjs/common';
+import { refuseSecretsIn } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -104,6 +105,7 @@ export class PolicyService {
 
   private static reason(v: unknown): string {
     if (typeof v !== 'string' || v.trim() === '') throw new BadRequestException('Write a reason for the change.');
+    refuseSecretsIn(v.trim());
     return v.trim();
   }
 
