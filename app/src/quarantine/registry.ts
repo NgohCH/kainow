@@ -138,6 +138,17 @@ const KIND_LIST = ITEM_KINDS.map((k) => `'${k}'`).join(', ');
 const sourceOfVersion = (v: string) => `(SELECT source_id FROM source_versions WHERE id = ${v})`;
 const messageOfVersion = (v: string) => `(SELECT message_id FROM message_versions WHERE id = ${v})`;
 
+/**
+ * A discussion transcript (sources.kind = 'discussion') is built from message text and is never an item itself
+ * (spec 4.1, 7.1): its source row, versions, passages and runs name no owning item (NULL), so findPlaces reports
+ * the message's own message_versions row instead. They stay in the message's itemSql (through transcript_spans),
+ * so cleaning a message cleans its transcript text. Task 12 maps a runner's hit in a transcript passage to the
+ * message through transcript_spans.
+ */
+const NOT_TRANSCRIPT = (sourceKind: string) => `CASE WHEN ${sourceKind} = 'discussion' THEN NULL ELSE 'source' END`;
+const sourceKindOfVersion = (v: string) =>
+  `(SELECT s.kind FROM source_versions sv JOIN sources s ON s.id = sv.source_id WHERE sv.id = ${v})`;
+
 // ---------------------------------------------------------------------------------------------------------------
 // Tables. `from` names the table `t`; `project` and every `items` entry are WHERE conditions.
 // ---------------------------------------------------------------------------------------------------------------
@@ -165,7 +176,7 @@ const TABLES: TableDef[] = [
   {
     table: 'sources',
     project: `t.project_id ${P}`,
-    owner: { kind: `'source'`, id: 't.id' },
+    owner: { kind: NOT_TRANSCRIPT('t.kind'), id: 't.id' },
     text: ['title', 'delete_reason', 'returned_reason'],
     items: {
       source: `t.id ${P}`,
@@ -178,7 +189,7 @@ const TABLES: TableDef[] = [
     table: 'source_versions',
     from: 'source_versions t JOIN sources s ON s.id = t.source_id',
     project: `s.project_id ${P}`,
-    owner: { kind: `'source'`, id: 't.source_id' },
+    owner: { kind: NOT_TRANSCRIPT('s.kind'), id: 't.source_id' },
     text: ['text_content', 'filename'],
     binary: ['original_bytes'],
     items: each(VERSION_KINDS, (k) => `t.id IN (${VERSIONS[k]})`),
@@ -194,7 +205,7 @@ const TABLES: TableDef[] = [
     table: 'passages',
     project: `t.project_id ${P}`,
     owner: {
-      kind: `CASE t.owner_kind WHEN 'source_version' THEN 'source' WHEN 'message_version' THEN 'message' END`,
+      kind: `CASE t.owner_kind WHEN 'source_version' THEN ${NOT_TRANSCRIPT(sourceKindOfVersion('t.owner_id'))} WHEN 'message_version' THEN 'message' END`,
       id: `CASE t.owner_kind WHEN 'source_version' THEN ${sourceOfVersion('t.owner_id')} ELSE ${messageOfVersion('t.owner_id')} END`,
     },
     // location repeats the nearest heading of the text, so it can hold the secret too.
@@ -205,7 +216,7 @@ const TABLES: TableDef[] = [
     table: 'extraction_runs',
     from: 'extraction_runs t JOIN source_versions v ON v.id = t.source_version_id JOIN sources s ON s.id = v.source_id',
     project: `s.project_id ${P}`,
-    owner: { kind: `'source'`, id: 'v.source_id' },
+    owner: { kind: NOT_TRANSCRIPT('s.kind'), id: 'v.source_id' },
     text: ['failure_detail'],
     items: each(VERSION_KINDS, (k) => `t.source_version_id IN (${VERSIONS[k]})`),
   },
@@ -405,7 +416,7 @@ const TABLES: TableDef[] = [
     project: `r.project_id ${P}`,
     owner: {
       kind: `CASE WHEN t.record_kind = 'ai_proposal' THEN 'proposal' WHEN t.record_kind IS NOT NULL THEN t.record_kind
-                  WHEN p.owner_kind = 'source_version' THEN 'source' WHEN p.owner_kind = 'message_version' THEN 'message' END`,
+                  WHEN p.owner_kind = 'source_version' THEN ${NOT_TRANSCRIPT(sourceKindOfVersion('p.owner_id'))} WHEN p.owner_kind = 'message_version' THEN 'message' END`,
       id: `COALESCE(t.record_id, CASE p.owner_kind WHEN 'source_version' THEN ${sourceOfVersion('p.owner_id')} ELSE ${messageOfVersion('p.owner_id')} END)`,
     },
     // location repeats a passage's heading or names the record.
@@ -452,6 +463,8 @@ const TABLES: TableDef[] = [
     project: `sm.project_id ${P}`,
     owner: { kind: `'summary'`, id: 't.summary_id' },
     text: ['body'],
+    // Category names written by the model (assist/prompts.ts), so free text that can echo the source or leave-out.
+    array: ['omitted_categories'],
     items: { summary: `t.summary_id ${P}` },
   },
   {
@@ -551,7 +564,7 @@ const TABLES: TableDef[] = [
     text: ['purpose', 'decision_reason', 'revoke_reason'],
   },
 
-  // ---- Project-level reasons and text (no item) --------------------------------------------------------------
+  // ---- Project-level reasons and text (no item; itemSql = the item's whole project, see projectWide) --------------------------------------------------------------
   { table: 'projects', project: `t.id ${P}`, text: ['name', 'purpose'] },
   { table: 'project_transitions', project: `t.project_id ${P}`, text: ['reason'] },
   { table: 'project_archive_events', project: `t.project_id ${P}`, text: ['reason'] },
@@ -560,6 +573,8 @@ const TABLES: TableDef[] = [
   { table: 'holidays', project: `t.project_id ${P}`, text: ['name'] },
   { table: 'closure_delegations', project: `t.project_id ${P}`, text: ['reason'] },
   { table: 'record_deletion_delegations', project: `t.project_id ${P}`, text: ['reason', 'revoke_reason'] },
+  // In the three *_settings_changes tables a row with project_id NULL is an organisation-level change: no project
+  // scope, so out of the sweep (spec 7.4); its reason box runs the credential check.
   { table: 'analysis_settings_changes', project: `t.project_id ${P}`, text: ['reason'] },
   { table: 'approval_policy_changes', project: `t.project_id ${P}`, text: ['reason'] },
   { table: 'notification_settings_changes', project: `t.project_id ${P}`, text: ['reason'] },
@@ -595,6 +610,16 @@ const TABLES: TableDef[] = [
   },
 ];
 
+/**
+ * itemSql for a table whose rows belong to no item (project-level reasons, memberships, grants, spend notes): the
+ * item's whole project, as for notices. Over-inclusion is safe; the sweep rewrites only values holding the marked
+ * text, and without this cleanItem could never reach these rows.
+ */
+function projectWide(d: TableDef): Partial<Record<ItemKind, string>> {
+  const where = d.project.split(ID).join('ip.project_id');
+  return each(ITEM_KINDS, (k) => `EXISTS (SELECT 1 FROM (${ITEM_PROJECT[k]}) AS ip (project_id) WHERE ${where})`);
+}
+
 function select(d: TableDef, column: string, where: string): string {
   const key = (d.rowKey ?? ['id']).map((k) => `t.${k}`).join(', ');
   let kind = 'NULL::text';
@@ -618,7 +643,7 @@ function columnsOf(d: TableDef): TextColumn[] {
   for (const [cols, flags] of kinds) {
     for (const column of cols ?? []) {
       const itemSql: Partial<Record<ItemKind, string>> = {};
-      for (const [k, where] of Object.entries(d.items ?? {}) as Array<[ItemKind, string]>) {
+      for (const [k, where] of Object.entries(d.items ?? projectWide(d)) as Array<[ItemKind, string]>) {
         const only = d.itemColumns?.[k];
         if (only && !only.includes(column)) continue;
         itemSql[k] = select(d, column, where);
@@ -822,7 +847,6 @@ export const NO_USER_TEXT: Readonly<Record<string, string>> = {
   'summaries.intended_audience': 'the intended audience as a mode and user ids',
   'summaries.state': ENUM,
   'summary_marks.kind': ENUM,
-  'summary_versions.omitted_categories': 'names of the leave-out categories applied, a fixed list',
   'summary_versions.origin': ENUM,
   'task_events.from_status': ENUM,
   'task_events.kind': ENUM,

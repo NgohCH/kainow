@@ -105,6 +105,9 @@ describe('text registry (spec 7.4)', { skip: SKIP_NO_DB }, () => {
       }
     }
     assert.ok(count > 0);
+    // cleanItem can reach every registered column from some item.
+    const unreachable = TEXT_COLUMNS.filter((c) => Object.keys(c.itemSql ?? {}).length === 0).map(name);
+    assert.deepEqual(unreachable, [], 'registered columns no itemSql reaches');
     // Every item kind finds at least its own text somewhere.
     for (const kind of ITEM_KINDS) {
       assert.ok(TEXT_COLUMNS.some((c) => c.itemSql?.[kind]), `${kind} has rows`);
@@ -200,6 +203,69 @@ describe('text registry (spec 7.4)', { skip: SKIP_NO_DB }, () => {
         [`source:${source}`, `source:${other}`].sort(),
         'a passage belongs to its source',
       );
+    });
+
+    test('a transcript names no owner and is cleaned with its message', async () => {
+      const audience = uuidv7();
+      await pool.query(`INSERT INTO audiences (id, project_id, mode, created_at) VALUES ($1, $2, 'project', now())`, [audience, project]);
+      const thread = uuidv7();
+      await pool.query(
+        `INSERT INTO discussion_threads (id, project_id, kind, title, audience_id, created_by, created_at) VALUES ($1, $2, 'discussion', 'Keys', $3, $4, now())`,
+        [thread, project, audience, user],
+      );
+      const message = uuidv7();
+      await pool.query(`INSERT INTO discussion_messages (id, thread_id, message_no, author_id, created_at) VALUES ($1, $2, 1, $3, now())`, [message, thread, user]);
+      const mv = uuidv7();
+      await pool.query(`INSERT INTO message_versions (id, message_id, version_no, body, body_sha256, created_at) VALUES ($1, $2, 1, 'pw Xy7!pass', 'h', now())`, [mv, message]);
+      const transcript = uuidv7();
+      await pool.query(
+        `INSERT INTO sources (id, title, created_at, project_id, kind, audience_id, thread_id, publication) VALUES ($1, 'Keys', now(), $2, 'discussion', $3, $4, 'published')`,
+        [transcript, project, audience, thread],
+      );
+      const text = 'Ada: pw Xy7!pass';
+      const tv = uuidv7();
+      await pool.query(
+        `INSERT INTO source_versions (id, source_id, version_no, origin, text_content, text_sha256, char_count, created_at) VALUES ($1, $2, 1, 'discussion', $3, 'h', $4, now())`,
+        [tv, transcript, text, text.length],
+      );
+      await pool.query(
+        `INSERT INTO transcript_spans (source_version_id, message_no, message_version_id, author_id, header_start, body_start, body_end) VALUES ($1, 1, $2, $3, 0, 5, $4)`,
+        [tv, mv, user, text.length],
+      );
+      await pool.query(
+        `INSERT INTO passages (id, project_id, owner_kind, owner_id, ordinal, location, start_offset, end_offset, body) VALUES ($1, $2, 'source_version', $3, 0, 'Paragraph 1', 0, $4, $5)`,
+        [uuidv7(), project, tv, text.length, text],
+      );
+
+      const owners = async (column: string) =>
+        (await pool.query(TEXT_COLUMNS.find((c) => name(c) === column)!.projectSql, [project])).rows.filter((r) => r.value === text || r.id === tv);
+      const versions = await owners('source_versions.text_content');
+      assert.equal(versions.length, 1);
+      assert.equal(versions[0].item_kind, null, 'a transcript version names no item');
+      assert.equal(versions[0].item_id, null);
+      const passages = await owners('passages.body');
+      assert.equal(passages.length, 1);
+      assert.equal(passages[0].item_kind, null, 'a transcript passage names no item');
+      const source = (await pool.query(TEXT_COLUMNS.find((c) => name(c) === 'sources.title')!.projectSql, [project])).rows.find((r) => r.id === transcript);
+      assert.equal(source.item_kind, null, 'a transcript source is not an item');
+      const own = (await pool.query(TEXT_COLUMNS.find((c) => name(c) === 'message_versions.body')!.projectSql, [project])).rows.find((r) => r.id === mv);
+      assert.equal(`${own.item_kind}:${own.item_id}`, `message:${message}`, 'the message version is the place reported');
+
+      assert.deepEqual(await itemRows('source_versions', 'text_content', 'message', message), [text]);
+      assert.deepEqual(await itemRows('passages', 'body', 'message', message), [text]);
+      assert.deepEqual(await itemRows('message_versions', 'body', 'message', message), ['pw Xy7!pass']);
+    });
+
+    test('a project-level reason is reached from any item of the project', async () => {
+      const task = uuidv7();
+      await pool.query(
+        `INSERT INTO tasks (id, project_id, depth, title, assignee_id, due_on, status, authorised_by, authorised_at)
+         VALUES ($1, $2, 0, 'Another', $3, '2026-11-20', 'in_progress', $3, now())`,
+        [task, project, user],
+      );
+      await pool.query(`UPDATE memberships SET hold_reason = 'held: pw Xy7!pass', held_at = now(), held_by = $2 WHERE project_id = $1`, [project, user]);
+      assert.deepEqual(await itemRows('memberships', 'hold_reason', 'task', task), ['held: pw Xy7!pass']);
+      assert.deepEqual(await itemRows('memberships', 'hold_reason', 'task', uuidv7()), []);
     });
 
     test("a task's events and snapshots", async () => {
