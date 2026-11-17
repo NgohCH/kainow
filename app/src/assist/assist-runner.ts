@@ -12,6 +12,7 @@ import { type ProjectStatus, decide } from '../projects/matrix';
 import type { Usage } from '../spend/cost';
 import type { SpendService } from '../spend/spend.service';
 import { type KainowReporter, type OwnedText, reportOwned } from '../quarantine/kainow-report';
+import { HELD_DURING_RUN, sweepMarkSql, sweptSince } from '../quarantine/sweep-lock';
 import type { ItemKind } from '../quarantine/registry';
 import { normalizeMarker, validateCitations } from './citations';
 import { type MaterialScope, readableMaterial } from './material';
@@ -251,8 +252,10 @@ export class AssistRunner {
 
   async process(requestId: string, attemptNo: number, isLastAttempt: boolean): Promise<RunOutcome> {
     const { pool } = this.d;
+    // The project's sweep marker, read before the request's material or any other text it sends or saves (C1).
+    const mark = (await pool.query<{ mark: string }>(`SELECT ${sweepMarkSql('r.project_id')} AS mark FROM ai_requests r WHERE r.id = $1`, [requestId])).rows[0]?.mark;
     const request = await loadRequest(pool, requestId);
-    if (!request || (request.status !== 'queued' && request.status !== 'running')) return 'skipped';
+    if (!request || mark === undefined || (request.status !== 'queued' && request.status !== 'running')) return 'skipped';
     // A request already ended is left alone (a late retry must not revive it).
     const claimed = await pool.query(
       `UPDATE ai_requests SET status = 'running', attempts = $2, started_at = COALESCE(started_at, $3) WHERE id = $1 AND status IN ('queued', 'running')`,
@@ -333,7 +336,12 @@ export class AssistRunner {
     if (outcome.kind === 'retry') return this.requeue(request);
     if (outcome.kind !== 'ok') return this.end(request, outcome.kind, outcome);
     try {
-      const saved = await this.save(request, complete, outcome.value.output, outcome.value.cited, outcome.modelId);
+      const saved = await this.save(request, complete, outcome.value.output, outcome.value.cited, outcome.modelId, mark);
+      if (saved === 'swept') {
+        // A report swept or held something in the project while the AI call ran: nothing saved (C1). Asked again, the
+        // request reads its material as it is now (or finds it held and blocks); on its last attempt it ends blocked.
+        return isLastAttempt ? this.end(request, 'blocked', HELD_DURING_RUN) : this.requeue(request);
+      }
       // The request ended (for example stalled) while the AI call ran: nothing saved. The spend stays settled.
       return saved ? 'succeeded' : 'skipped';
     } catch (err) {
@@ -405,11 +413,18 @@ export class AssistRunner {
     return (rowCount ?? 0) > 0;
   }
 
-  /** Cited flags, the kind's output and the request's success are stored together. False when the request had already ended. */
-  private async save(request: AssistRequest, complete: Completion, output: unknown, cited: string[], modelId: string): Promise<boolean> {
+  /**
+   * Cited flags, the kind's output and the request's success are stored together. False when the request had already
+   * ended; 'swept' when the project's sweep marker moved since `mark` (checked first, under the sweep lock shared).
+   */
+  private async save(request: AssistRequest, complete: Completion, output: unknown, cited: string[], modelId: string, mark: string): Promise<boolean | 'swept'> {
     const client = await this.d.pool.connect();
     try {
       await client.query('BEGIN');
+      if (await sweptSince(client, request.projectId, mark)) {
+        await client.query('ROLLBACK');
+        return 'swept';
+      }
       const live = await client.query(`SELECT 1 FROM ai_requests WHERE id = $1 AND status IN ('queued', 'running') FOR UPDATE`, [request.id]);
       if (live.rowCount === 0) {
         await client.query('ROLLBACK');

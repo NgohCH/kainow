@@ -14,7 +14,7 @@ import { seedProject } from '../testing/projects';
 import { ModelBadResponse, ModelCallError, type ModelClient, type ModelRequest, type ModelResult, type RawItem } from './model';
 import { ExtractionRunner } from './runner';
 import { reportOwned } from '../quarantine/kainow-report';
-import { standaloneCases } from '../testing/quarantine';
+import { projectHolding, standaloneCases } from '../testing/quarantine';
 
 const NOTES = 'Weekly sync.\nWe agreed to ship on Friday.\nAli will email Sam by Monday.\nok. ok.\nRisk: the vendor may be late.';
 const USAGE = { inputTokens: 10_000, cachedInputTokens: 0, outputTokens: 2_000 };
@@ -225,6 +225,40 @@ describe('extraction runner', { skip: SKIP_NO_DB }, () => {
     assert.equal(await reportOwned(reporter, projectId, [{ kind: 'source', id: source, text: 'AKIAABCDEFGHIJKLMNOP' }]), 0);
     assert.equal((await cases()).length, 1);
     assert.equal(model.calls.length, 0);
+  });
+
+  // C1: a report filed while the AI call is out. The model stub files it, then answers with the marked text.
+  const RACE_SECRET = 'Zq7vault-Hinge88';
+  async function raceRun(isLast: boolean): Promise<{ id: string; outcome: string; source: string }> {
+    const vId = await addVersion(`Weekly sync.\nThe vault code is ${RACE_SECRET} for now.\nWe agreed to ship on Friday.`);
+    const source = (await pool.query('SELECT source_id FROM source_versions WHERE id = $1', [vId])).rows[0].source_id;
+    const reporter = standaloneCases(pool, clock.now);
+    const id = await newRun(vId);
+    const model = new FakeModel(async () => {
+      await reporter.report('kainow', { projectId, kind: 'source', id: source, marked: [RACE_SECRET], reason: null });
+      return answer([{ kind: 'action', text: `Rotate ${RACE_SECRET}`, owner: null, due: null, source_quote: `The vault code is ${RACE_SECRET} for now.` }]);
+    });
+    return { id, source, outcome: await runner(model).process(id, 1, isLast) };
+  }
+
+  test('a report filed while the AI call runs: nothing is saved, no registered column holds the text, the retry blocks (C1)', async () => {
+    const { id, outcome } = await raceRun(false);
+    assert.equal(outcome, 'retry');
+    assert.deepEqual(await projectHolding(pool, projectId, RACE_SECRET), []);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM extraction_items WHERE run_id = $1', [id])).rows[0].n, 0);
+    assert.equal((await run(id)).status, 'queued');
+    const model = new FakeModel(() => answer([]));
+    assert.equal(await runner(model).process(id, 2, false), 'blocked');
+    assert.equal((await run(id)).failure_code, 'held');
+    assert.equal(model.calls.length, 0, 'the retry finds the source held and sends nothing');
+  });
+
+  test('a report filed during the last attempt ends the run blocked with code held and saves nothing (C1)', async () => {
+    const { id, outcome } = await raceRun(true);
+    assert.equal(outcome, 'blocked');
+    const r = await run(id);
+    assert.deepEqual([r.status, r.failure_code], ['blocked', 'held']);
+    assert.deepEqual(await projectHolding(pool, projectId, RACE_SECRET), []);
   });
 
   test('a note with a credential is never sent and costs nothing', async () => {

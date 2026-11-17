@@ -11,6 +11,7 @@ import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 import { CasesService } from '../quarantine/cases.service';
+import { projectHolding, standaloneCases } from '../testing/quarantine';
 import { AnalysisRunner } from './analysis-runner';
 import { insertRun } from './runs';
 
@@ -89,6 +90,27 @@ describe('analysis runner (discussion proposals)', { skip: SKIP_NO_DB }, () => {
   });
   afterEach(async () => {
     await t.close();
+  });
+
+  test('a report filed while the AI call runs saves no proposal, leaves no copy of the marked text, and the retry stops (C1)', async () => {
+    const secret = 'Zq7vault-Hinge88';
+    const message = await post(ada, `The vault code is ${secret} for now.`);
+    await post(ada, 'We decided to ship on Friday.');
+    const reporter = standaloneCases(t.pool, t.clock.now);
+    const model = new FakeModel(async () => {
+      await reporter.report('kainow', { projectId: project, kind: 'message', id: message, marked: [secret], reason: null });
+      return answer([item(`The vault code is ${secret} for now.`, `Rotate ${secret}`, 'action')]);
+    });
+    const id = await queueRun();
+    assert.equal(await runner(model).process(id, 1, false), 'retry');
+    const run = await analysisRun(id);
+    assert.equal(run.status, 'queued');
+    assert.deepEqual(await itemsOf(run.extraction_run_id), []);
+    assert.deepEqual(await projectHolding(t.pool, project, secret), []);
+    // The retry reuses the stored transcript (now cleaned), but its message is held: it stops without a call.
+    assert.equal(await runner(model).process(id, 2, false), 'blocked');
+    assert.equal((await analysisRun(id)).failure_code, 'source_changed');
+    assert.equal(model.calls.length, 1);
   });
 
   test('proposals quote new messages with offsets and spans', async () => {

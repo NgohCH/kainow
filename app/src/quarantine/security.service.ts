@@ -38,6 +38,7 @@ import { PG_POOL } from '../db/database.module';
 import { CASE_CLOSED, type Disclosures, WAITING_FOR_KEY, unhold } from './cases.service';
 import { type RevealedValue, readOriginals, restoreOriginals } from './clean';
 import { PROTECTED_KEY, type ProtectedKey } from './protected-key';
+import { lockSweeps } from './sweep-lock';
 import { ITEM_KINDS, type ItemKind } from './registry';
 
 type Db = Pool | PoolClient;
@@ -529,6 +530,11 @@ export class SecurityService {
     body: { reason: unknown },
   ): Promise<{ caseId: string; state: 'released_unchanged'; restored: number; changed: ChangedValue[] }> {
     return inTransaction(this.pool, async (db) => {
+      // The project's sweep lock first (C1), before the case row is locked or closed.
+      if (UUID.test(caseId)) {
+        const p = (await db.query<{ projectId: string }>(`SELECT project_id AS "projectId" FROM quarantine_cases WHERE id = $1`, [caseId])).rows[0];
+        if (p) await lockSweeps(db, p.projectId);
+      }
       const { me, grantId } = await this.holder(db, user, caseId);
       const c = (
         await db.query<{ id: string; projectId: string; kind: ItemKind; itemId: string; state: string }>(

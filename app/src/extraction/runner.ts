@@ -12,6 +12,7 @@ import type { ModelClient, ModelAnswer } from './model';
 import { DISCUSSION_PREAMBLE, EXTRACTION_SYSTEM_PROMPT, MAX_OUTPUT_TOKENS, REQUEST_TIMEOUT_MS } from './prompt';
 import { type Span, placeItem } from '../analysis/transcript';
 import { type KainowReporter, type OwnedText, messagesOfVersions, reportOwned } from '../quarantine/kainow-report';
+import { HELD_DURING_RUN, sweepMarkSql, sweptSince } from '../quarantine/sweep-lock';
 
 const OPEN_STATES: ProjectStatus[] = ['draft', 'planned', 'active'];
 
@@ -49,6 +50,8 @@ interface RunRow {
   user_status: string;
   user_role: string;
   text: string;
+  /** The project's sweep marker, read in the same statement as `text` (history spec 7.4; final review C1). */
+  sweep_mark: string;
 }
 
 /**
@@ -90,7 +93,7 @@ export class ExtractionRunner {
     const { rows } = await pool.query<RunRow>(
       `SELECT r.id, r.status, r.source_version_id, s.id AS source_id, s.project_id, r.requested_by, r.trigger, s.kind AS source_kind, s.status AS source_status, s.held_case_id IS NOT NULL AS source_held,
               u.status AS user_status, u.role AS user_role,
-              v.text_content AS text
+              v.text_content AS text, ${sweepMarkSql('s.project_id')} AS sweep_mark
          FROM extraction_runs r
          JOIN source_versions v ON v.id = r.source_version_id
          JOIN sources s ON s.id = v.source_id
@@ -171,7 +174,12 @@ export class ExtractionRunner {
     if (outcome.kind === 'retry') return this.requeue(run);
     if (outcome.kind !== 'ok') return this.finish(run, outcome.kind, outcome.code, outcome.detail);
     try {
-      return await this.saveItems(run, outcome.modelId, outcome.value);
+      const saved = await this.saveItems(run, outcome.modelId, outcome.value);
+      if (saved !== 'swept') return saved;
+      // A report swept this project while the AI call ran: nothing was saved. Asked again, the run reads the cleaned
+      // text (or finds its source held and blocks); on its last attempt it ends blocked (C1).
+      if (!isLastAttempt) return this.requeue(run);
+      return this.finish(run, 'blocked', HELD_DURING_RUN.code, HELD_DURING_RUN.detail);
     } catch (err) {
       // The cost is already settled; saving failed, so the run is retried or ends as an internal error.
       this.d.log?.(`extraction ${run.id}: unexpected error: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
@@ -200,12 +208,20 @@ export class ExtractionRunner {
     return 'retry';
   }
 
-  private async saveItems(run: RunRow, modelId: string, answer: ModelAnswer): Promise<RunOutcome> {
+  /**
+   * 'swept' when a report swept or held something in the project since the text was read: nothing is saved, since the
+   * answer may repeat text the sweep has since cleaned (C1). Checked first, under the project's sweep lock (shared).
+   */
+  private async saveItems(run: RunRow, modelId: string, answer: ModelAnswer): Promise<RunOutcome | 'swept'> {
     const { items, meetingDate } = answer;
     const at = this.d.clock();
     const client = await this.d.pool.connect();
     try {
       await client.query('BEGIN');
+      if (run.project_id && (await sweptSince(client, run.project_id, run.sweep_mark))) {
+        await client.query('ROLLBACK');
+        return 'swept';
+      }
       // Items are saved only while the run is still waiting or running (a late save after a stall inserts nothing; spend stays settled).
       const live = await client.query(`SELECT 1 FROM extraction_runs WHERE id = $1 AND status IN ('queued', 'running') FOR UPDATE`, [run.id]);
       if (live.rowCount === 0) {

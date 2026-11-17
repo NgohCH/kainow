@@ -9,6 +9,7 @@ import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 import { CasesService } from '../quarantine/cases.service';
+import { projectHolding, standaloneCases } from '../testing/quarantine';
 import { AnalysisRunner } from './analysis-runner';
 import { MinutesRunner } from './minutes-runner';
 import type { MinutesAnswer } from './minutes';
@@ -111,6 +112,27 @@ describe('minutes runner', { skip: SKIP_NO_DB }, () => {
     assert.equal((await entries()).length, 1, 'the call was made: its spend is recorded');
     assert.equal(await runner(model).process(id, 2, false), 'skipped');
     assert.equal(model.calls.length, 1, 'a late retry makes no second call');
+  });
+
+  test('a report filed while the AI call runs saves no draft and leaves no copy of the marked text (C1)', async () => {
+    const secret = 'Zq7vault-Hinge88';
+    const message = await post(ada, `The vault code is ${secret} for now.`);
+    await post(ada, 'Shall we ship on Friday?');
+    const reporter = standaloneCases(t.pool, t.clock.now);
+    for (const isLast of [false, true]) {
+      const id = await queueRun();
+      const model = new FakeModel(async () => {
+        if (!isLast) await reporter.report('kainow', { projectId: project, kind: 'message', id: message, marked: [secret], reason: null });
+        else await post(ada, `Again: ${secret}`).then((m) => reporter.report('kainow', { projectId: project, kind: 'message', id: m, marked: [secret], reason: null }));
+        return { ...ANSWER, decisions: [`Rotate ${secret}`], usage: USAGE };
+      });
+      assert.equal(await runner(model).process(id, 1, isLast), isLast ? 'blocked' : 'retry');
+      assert.deepEqual(await drafts(), []);
+      assert.deepEqual(await projectHolding(t.pool, project, secret), []);
+      const r = await run(id);
+      assert.deepEqual([r.status, r.failure_code], isLast ? ['blocked', 'held'] : ['queued', null]);
+      await retire(id);
+    }
   });
 
   test('button draft saves an ai version covering the newest message', async () => {

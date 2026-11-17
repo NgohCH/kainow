@@ -45,6 +45,7 @@ import { MARKER, searchForms } from './clean-text';
 import { POSSIBLE_COPY_TEXT } from './labels';
 import { MAX_MARK_CHARS, MIN_MARK } from './mark-limits';
 import { PROTECTED_KEY, type ProtectedKey } from './protected-key';
+import { lockSweeps } from './sweep-lock';
 import { ITEM_KINDS, ITEM_PROJECT, type ItemKind, TEXT_COLUMNS } from './registry';
 
 export { POSSIBLE_COPY_TEXT, MIN_MARK, MAX_MARK_CHARS };
@@ -362,6 +363,10 @@ export async function cleanWaitingCases(pool: Pool, key: ProtectedKey, now: Date
     let done = false;
     try {
       done = await inTransaction(pool, async (db) => {
+        // The project's sweep lock first, before any row lock (C1).
+        const project = (await db.query<{ projectId: string }>(`SELECT project_id AS "projectId" FROM quarantine_cases WHERE id = $1`, [id])).rows[0];
+        if (!project) return false;
+        await lockSweeps(db, project.projectId);
         const c = (
           await db.query<{ projectId: string; kind: ItemKind; itemId: string; kainow: boolean }>(
             `SELECT project_id AS "projectId", item_kind AS kind, item_id AS "itemId", reporter_id IS NULL AS kainow FROM quarantine_cases
@@ -444,6 +449,10 @@ export class CasesService {
     if (!ITEM_KINDS.includes(input.kind)) throw new BadRequestException(KIND_REFUSED);
     if (!UUID.test(input.id) || !UUID.test(input.projectId)) throw new NotFoundException();
     const caseId = await inTransaction(this.pool, async (db) => {
+      // Whether the item was held already (a plain read; no row is locked before the sweep lock).
+      const heldBefore = await this.heldCase(db, input.kind, input.id);
+      // The project's sweep lock first (C1): runners saving output read from this project wait, and later saves discard.
+      await lockSweeps(db, input.projectId);
       const ctx =
         user === 'kainow'
           ? await this.access.load(input.projectId, KAINOW_VIEWER, db)
@@ -454,6 +463,11 @@ export class CasesService {
       if (user === 'kainow') {
         if (await this.isHeld(db, input.kind, input.id)) throw new ConflictException('This item is already held for a suspected credential.');
       } else if (!(await this.readable(db, ctx, user, input.kind, input.id))) {
+        // A report racing another one on the same item (a double submit) waited on the sweep lock and now finds the item
+        // held by it: 409 for someone who could read the item but for that hold. An item held before is simply not
+        // there (404), as before.
+        const heldBy = heldBefore ? null : await this.heldCase(db, input.kind, input.id);
+        if (heldBy && (await this.readable(db, ctx, user, input.kind, input.id, heldBy))) throw new ConflictException(HELD);
         throw new NotFoundException();
       }
 
@@ -484,11 +498,16 @@ export class CasesService {
   }
 
   private async isHeld(db: Db, kind: ItemKind, id: string): Promise<boolean> {
+    return (await this.heldCase(db, kind, id)) !== null;
+  }
+
+  /** The case holding the item's own row, or null. */
+  private async heldCase(db: Db, kind: ItemKind, id: string): Promise<string | null> {
     // Any of the item's own hold statements would leave it unchanged when it is held already.
     const table = HOLD[kind][0].match(/^UPDATE (\w+) SET held_case_id = \$2 WHERE (.+) AND held_case_id IS NULL$/);
-    if (!table) return false;
-    const { rows } = await db.query(`SELECT 1 FROM ${table[1]} WHERE ${table[2]} AND held_case_id IS NOT NULL`, [id]);
-    return rows.length > 0;
+    if (!table) return null;
+    const { rows } = await db.query<{ held: string }>(`SELECT held_case_id AS held FROM ${table[1]} WHERE ${table[2]} AND held_case_id IS NOT NULL`, [id]);
+    return rows[0]?.held ?? null;
   }
 
   /** The case itself: everything after the checks, in the report's transaction. */
@@ -742,10 +761,20 @@ export class CasesService {
   /** The case, for the PM or a Deputy of its project: 404 for anyone outside it, 403 for other roles. */
   private async caseFor(db: Db, user: AuthUser, caseId: string, lock = false): Promise<{ id: string; projectId: string; state: string }> {
     if (!UUID.test(caseId)) throw new NotFoundException();
+    if (lock) await this.lockCaseProject(db, caseId);
     const c = (await db.query(`SELECT id, project_id AS "projectId", state FROM quarantine_cases WHERE id = $1 ${lock ? 'FOR UPDATE' : ''}`, [caseId])).rows[0];
     if (!c) throw new NotFoundException();
     await this.access.authorize(user, 'quarantine.copies', c.projectId, db);
     return c;
+  }
+
+  /**
+   * The sweep lock of the case's project (C1), taken first in a transaction that sweeps or restores: before the case
+   * row is locked or updated. The project of a case never changes, so it is read without a lock.
+   */
+  private async lockCaseProject(db: Db, caseId: string): Promise<void> {
+    const p = (await db.query<{ projectId: string }>(`SELECT project_id AS "projectId" FROM quarantine_cases WHERE id = $1`, [caseId])).rows[0];
+    if (p) await lockSweeps(db, p.projectId);
   }
 
   /** The project's open cases with places still awaiting a decision (PM and Deputy): references and counts, never text. */
@@ -875,6 +904,7 @@ export class CasesService {
    */
   private async reviewCase(db: Db, user: AuthUser, caseId: string, lock = false): Promise<ReviewRow & { ctx: ProjectContext }> {
     if (!UUID.test(caseId)) throw new NotFoundException();
+    if (lock) await this.lockCaseProject(db, caseId);
     const c = (await db.query<ReviewRow>(`SELECT ${REVIEW_COLUMNS} FROM quarantine_cases c LEFT JOIN users u ON u.id = c.reporter_id WHERE c.id = $1 ${lock ? 'FOR UPDATE OF c' : ''}`, [caseId])).rows[0];
     if (!c) throw new NotFoundException();
     const ctx = await this.access.authorize(user, 'quarantine.release', c.projectId, db);

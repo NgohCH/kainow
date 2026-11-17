@@ -11,6 +11,7 @@ import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 import { CasesService } from '../quarantine/cases.service';
+import { projectHolding, standaloneCases } from '../testing/quarantine';
 import { AssistRunner, registerCompletion, registerInputBuilder, unregisterKind } from './assist-runner';
 import { type MaterialItem, findMaterial } from './material';
 import { QUESTION_SYSTEM, SUMMARY_SYSTEM } from './prompts';
@@ -115,6 +116,31 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     // A finished request is left alone.
     assert.equal(await runner(model).process(id, 2, false), 'skipped');
     assert.equal(model.calls.length, 1);
+  });
+
+  test('a report filed while the AI call runs saves no answer and leaves no copy of the marked text (C1)', async () => {
+    const secret = 'Zq7vault-Hinge88';
+    const source = await note('Plant room', `The pump service is booked for Thursday morning. The panel code is ${secret}.`);
+    const reporter = standaloneCases(t.pool, t.clock.now);
+    for (const isLast of [false, true]) {
+      // The last attempt: the first note is held now, so the question finds a second one; the report is on a third.
+      if (isLast) await note('Pump room', 'The pump service is booked for Thursday morning.');
+      const id = await ask('When is the pump service?');
+      const model = new FakeModel(async () => {
+        if (!isLast) await reporter.report('kainow', { projectId: project, kind: 'source', id: source, marked: [secret], reason: null });
+        else {
+          const other = await note('Boiler room', `The boiler code is ${secret}.`);
+          await reporter.report('kainow', { projectId: project, kind: 'source', id: other, marked: [secret], reason: null });
+        }
+        return { answer_markdown: `Booked for Thursday; the code is ${secret} [P1].`, not_found: false, cited: ['P1'] };
+      });
+      assert.equal(await runner(model).process(id, 1, isLast), isLast ? 'blocked' : 'retry');
+      const r = await request(id);
+      assert.deepEqual([r.status, r.failure_code], isLast ? ['blocked', 'held'] : ['queued', null]);
+      assert.equal((await answer(id)).answer_markdown, null);
+      assert.ok((await material(id)).every((m) => !m.cited));
+      assert.deepEqual(await projectHolding(t.pool, project, secret), []);
+    }
   });
 
   test('bad citation fails as bad_response, charged, nothing saved', async () => {
