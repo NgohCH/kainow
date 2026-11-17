@@ -1,4 +1,4 @@
-import { liveRecordSql } from '../history/deleted-sql';
+import { unheldRecordSql } from '../history/deleted-sql';
 import type { Db } from './letterhead';
 
 /** What must still be true for a queued email to be worth delivering (checked by the dispatcher before every attempt). */
@@ -40,21 +40,21 @@ export async function stillRelevant(db: Db, r: Relevance, now: Date = new Date()
         await db.query(
           `SELECT status, to_char(due_on, 'YYYY-MM-DD') AS due_on, deadline_review_required,
                   (SELECT count(*)::int FROM task_events e WHERE e.task_id = tasks.id AND e.kind = 'reopened') AS reopened
-             FROM tasks WHERE id = $1 AND ${liveRecordSql('tasks')}`,
+             FROM tasks WHERE id = $1 AND ${unheldRecordSql('tasks')}`,
           [r.taskId],
         )
       ).rows[0];
       return !!t && t.status !== 'completed' && t.status !== 'cancelled' && t.due_on === r.dueOn && !t.deadline_review_required && t.reopened === r.reopenCount;
     }
     case 'risk': {
-      const k = (await db.query(`SELECT status, to_char(review_on, 'YYYY-MM-DD') AS review_on FROM risks k WHERE k.id = $1 AND ${liveRecordSql('k')}`, [r.riskId])).rows[0];
+      const k = (await db.query(`SELECT status, to_char(review_on, 'YYYY-MM-DD') AS review_on FROM risks k WHERE k.id = $1 AND ${unheldRecordSql('k')}`, [r.riskId])).rows[0];
       return !!k && k.status !== 'resolved' && k.review_on === r.reviewOn;
     }
     case 'project_active': {
       const p = (await db.query(`SELECT status FROM projects WHERE id = $1`, [r.projectId])).rows[0];
       if (p?.status !== 'active') return false;
       if (!r.taskIds || r.taskIds.length === 0) return true;
-      const gone = await db.query(`SELECT 1 FROM tasks t WHERE t.id = ANY($1::uuid[]) AND NOT ${liveRecordSql('t')} LIMIT 1`, [r.taskIds]);
+      const gone = await db.query(`SELECT 1 FROM tasks t WHERE t.id = ANY($1::uuid[]) AND NOT ${unheldRecordSql('t')} LIMIT 1`, [r.taskIds]);
       return gone.rows.length === 0;
     }
     case 'invitation': {

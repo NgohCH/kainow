@@ -4,6 +4,7 @@ import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { normaliseEmail } from '../auth/auth.service';
 import { CODE_SENDER, type CodeSender, type SetupKind } from '../auth/tokens';
+import { refuseSecretsIn } from '../common/reason';
 import { uuidv7 } from '../common/uuid7';
 import { APP_CONFIG, type AppConfig } from '../config';
 import { PG_POOL } from '../db/database.module';
@@ -91,6 +92,7 @@ export class SetupService {
   ): Promise<{ link: string; email: string; expiresAt: Date; disabled: DisabledAdministrator[]; queued: number }> {
     const email = normaliseEmail(input.email);
     if (!email) throw new BadRequestException('A valid email address is required');
+    refuseSecretsIn(input.reason);
     const given = input.displayName === undefined ? null : cleanDisplayName(input.displayName);
     if (input.displayName !== undefined && given === null) throw new BadRequestException(DISPLAY_NAME_REQUIRED);
     const appUrl = this.config.appUrl;

@@ -5,7 +5,7 @@ import { UUID } from '../common/uuid7';
 import { activeManagerSql, audienceVisibleSql } from '../discussion/audience';
 import { PG_POOL } from '../db/database.module';
 import { summaryShownSql } from '../assist/material';
-import { liveRecordRefSql, liveSourceSql } from '../history/deleted-sql';
+import { liveSourceSql, unheldRecordRefSql } from '../history/deleted-sql';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { loadArchiveState } from '../projects/archive';
 import type { GrantKind } from '../projects/grants';
@@ -93,7 +93,7 @@ WITH hits AS (
           AND ${summaryShownSql('s', { user, today: '$3' })}))
      AND (d.kind <> 'person' OR d.ends_on IS NULL OR d.ends_on >= $3::date)
      -- A Deleted or held record (and a question's answers with it) is not found (history spec 4.3): item_id is the record.
-     AND ${liveRecordRefSql('d.kind', 'd.item_id')}
+     AND ${unheldRecordRefSql('d.kind', 'd.item_id')}
      -- A held message, a message of a held thread, and a held proposal are not found (history spec 7.2); the view
      -- already leaves out hidden and deleted messages.
      AND (d.kind <> 'message' OR EXISTS (SELECT 1 FROM discussion_messages hm JOIN discussion_threads ht ON ht.id = hm.thread_id

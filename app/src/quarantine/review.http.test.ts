@@ -5,6 +5,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import { AssistRunner } from '../assist/assist-runner';
+import { findMaterial } from '../assist/material';
+import { buildDigest } from '../digests/digest';
+import { ProjectAccess } from '../projects/access.service';
 import { uuidv7 } from '../common/uuid7';
 import type { JsonSchemaModel, ModelRequest } from '../extraction/model';
 import { HELD } from '../history/deleted-sql';
@@ -18,7 +21,7 @@ import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 import { QUOTE_CHANGED_TEXT, WITHHELD_TEXT } from './clean';
 import { MARKER } from './clean-text';
-import { UNDER_REVIEW_TEXT } from './labels';
+import { POSSIBLE_COPY_TEXT, UNDER_REVIEW_TEXT } from './labels';
 
 const USAGE: Usage = { inputTokens: 2_000, cachedInputTokens: 0, outputTokens: 300 };
 /** A secret the credential check does not know: only a person can mark it. */
@@ -193,7 +196,7 @@ describe('review, mark more and release', { skip: SKIP_NO_DB }, () => {
     assert.ok(!(await leakScan()).includes(SECRET));
   });
 
-  test('a PM outside a Restricted source\'s audience gets 404', async () => {
+  test('a PM of another project, and a PM outside a private answer\'s audience, get 404', async () => {
     const id = await note('Plant room', PLANT);
     await restrict(id, [ids.ada]);
     const caseId = await reported(ada, 'source', id);
@@ -341,6 +344,73 @@ describe('review, mark more and release', { skip: SKIP_NO_DB }, () => {
     await ok(release(pm, caseId));
     const after = (await ok(ben.request('GET', `/projects/${project}/records`))).tasks.find((x: { id: string }) => x.id === task);
     assert.equal(after.quarantineLabel, null);
+  });
+
+  test('a cleaned record under review is kept out of Ask material, search and digests, and stays in the work list labelled', async () => {
+    const task = uuidv7();
+    await t.pool.query(
+      `INSERT INTO tasks (id, project_id, depth, title, assignee_id, due_on, status, authorised_by, authorised_at)
+       VALUES ($1, $2, 0, $3, $4, '2026-11-16', 'not_started', $5, $6)`,
+      [task, project, `Rotate the osprey vault code ${SECRET}`, ids.ben, ids.own, t.clock.now()],
+    );
+    const material = async () => {
+      const ctx = (await t.app.get(ProjectAccess).load(project, { id: ids.ben, email: 'ben@example.org', displayName: 'ben', role: 'member' }))!;
+      return findMaterial(t.pool, { kind: 'personal', ctx }, ['osprey']);
+    };
+    const searched = async () => {
+      const r = await ok(ben.request('GET', `/search?q=${encodeURIComponent('osprey vault')}`));
+      return (r.projects as Array<{ results: Array<{ kind: string; id: string }> }>).flatMap((x) => x.results.map((y) => `${y.kind}:${y.id}`));
+    };
+    const digest = async () => (await buildDigest(t.pool, project, ids.ben, t.clock.now(), 'https://kainow.example.org')).body.toLowerCase();
+    // Before the report it is everywhere.
+    assert.ok((await material()).length > 0);
+    assert.deepEqual(await searched(), [`task:${task}`]);
+    assert.ok((await digest()).includes('osprey'));
+    await reported(ada, 'task', task);
+    // Cleaned and under review: out of Ask material (the input of any new AI request), search and the digest ...
+    assert.equal((await material()).length, 0);
+    assert.deepEqual(await searched(), []);
+    assert.ok(!(await digest()).includes('osprey'));
+    // ... but in the work list, labelled.
+    const listed = (await ok(ben.request('GET', `/projects/${project}/records`))).tasks.find((x: { id: string }) => x.id === task);
+    assert.equal(listed?.quarantineLabel, UNDER_REVIEW_TEXT);
+  });
+
+  test('mark more finds a dismissed place again: it is masked, undecided, labelled and alerted afresh', async () => {
+    const id = await note('Plant room', `${PLANT} The harbour gate opens with ${MORE}.`);
+    const th = await thread();
+    const msg = await post(ben, th, `Vault ${SECRET} and gate ${MORE}.`);
+    const caseId = await reported(ada, 'source', id);
+    await ok(pm.request('POST', `/quarantine/cases/${caseId}/copies`, { decisions: [{ kind: 'message', id: msg, decision: 'dismissed' }] }));
+    const label = async () => (await ok(ben.request('GET', `/threads/${th}`))).messages.find((m: { id: string }) => m.id === msg).quarantineLabel ?? null;
+    assert.equal(await label(), null);
+    const alerts = () => count(`SELECT count(*) AS n FROM notifications WHERE kind = 'quarantine_copies'`);
+    const before = await alerts();
+    await ok(pm.request('POST', `/quarantine/cases/${caseId}/mark-more`, { marked: [MORE] }));
+    const row = (await t.pool.query(`SELECT masked, decision, decided_by, decided_at FROM quarantine_possible_copies WHERE case_id = $1 AND item_id = $2`, [caseId, msg])).rows[0];
+    assert.deepEqual(row, { masked: true, decision: null, decided_by: null, decided_at: null });
+    assert.equal(await label(), POSSIBLE_COPY_TEXT);
+    assert.ok((await alerts()) > before, 'the PM and Deputy are alerted again');
+    const body = (await t.pool.query(`SELECT body FROM message_versions WHERE message_id = $1 ORDER BY version_no DESC LIMIT 1`, [msg])).rows[0].body as string;
+    assert.ok(!body.includes(MORE));
+    // It can be decided again.
+    await ok(pm.request('POST', `/quarantine/cases/${caseId}/copies`, { decisions: [{ kind: 'message', id: msg, decision: 'confirmed' }] }));
+  });
+
+  test('release confirms every place still undecided, keeping it masked', async () => {
+    const id = await note('Plant room', PLANT);
+    const th = await thread();
+    const msg = await post(ben, th, `Use ${SECRET} for the vault.`);
+    const caseId = await reported(ada, 'source', id);
+    await ok(release(own, caseId));
+    const row = (await t.pool.query(`SELECT masked, decision, decided_by FROM quarantine_possible_copies WHERE case_id = $1 AND item_id = $2`, [caseId, msg])).rows[0];
+    assert.deepEqual(row, { masked: true, decision: 'confirmed', decided_by: ids.own });
+    assert.equal((await t.pool.query(`SELECT role FROM quarantine_items WHERE case_id = $1 AND item_id = $2`, [caseId, msg])).rows[0].role, 'copy');
+    const ev = (await t.pool.query(`SELECT actor_id, detail FROM quarantine_events WHERE case_id = $1 AND action = 'copy_confirmed'`, [caseId])).rows;
+    assert.deepEqual(ev, [{ actor_id: ids.own, detail: { auto: true } }]);
+    const shown = (await ok(ben.request('GET', `/threads/${th}`))).messages.find((m: { id: string }) => m.id === msg);
+    assert.equal(shown.text, `Use ${MARKER} for the vault.`);
+    assert.equal(shown.quarantineLabel ?? null, null);
   });
 
   test('an uncleaned held task stays hidden until the key cleans it', async () => {

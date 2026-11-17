@@ -1,5 +1,5 @@
 // Action-item digests (spec §8): the content built per recipient, the schedule rule, and the scheduled send.
-import { liveRecordSql } from '../history/deleted-sql';
+import { unheldRecordSql } from '../history/deleted-sql';
 import type { Pool, PoolClient } from 'pg';
 import { uuidv7 } from '../common/uuid7';
 import type { EmailRelevance } from '../email/relevance';
@@ -53,7 +53,7 @@ async function openTasks(db: Db, projectId: string): Promise<OpenTask[]> {
     `SELECT t.id, t.title, t.assignee_id AS "assigneeId", u.display_name AS name, u.email,
             to_char(t.due_on, 'YYYY-MM-DD') AS "dueOn", t.status, t.deadline_review_required AS review
        FROM tasks t JOIN users u ON u.id = t.assignee_id
-      WHERE t.project_id = $1 AND t.status IN ('not_started', 'in_progress', 'blocked') AND ${liveRecordSql('t')}`,
+      WHERE t.project_id = $1 AND t.status IN ('not_started', 'in_progress', 'blocked') AND ${unheldRecordSql('t')}`,
     [projectId],
   );
   return r.rows.map((x) => ({
@@ -65,7 +65,7 @@ async function openTasks(db: Db, projectId: string): Promise<OpenTask[]> {
 /** The number of open tasks in the project (not per recipient). */
 export async function countOpen(db: Db, projectId: string): Promise<number> {
   const r = await db.query(
-    `SELECT count(*)::int AS n FROM tasks t WHERE t.project_id = $1 AND t.status IN ('not_started', 'in_progress', 'blocked') AND ${liveRecordSql('t')}`,
+    `SELECT count(*)::int AS n FROM tasks t WHERE t.project_id = $1 AND t.status IN ('not_started', 'in_progress', 'blocked') AND ${unheldRecordSql('t')}`,
     [projectId],
   );
   return r.rows[0].n;

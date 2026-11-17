@@ -23,11 +23,20 @@ export const liveSourceSql = (alias: string): string => `(${alias}.status <> 'de
 /**
  * A task, decision, question or risk that is not Deleted and is in view: not held, or held in a case whose cleaning is
  * done (history spec 7.5: a cleaned record stays visible during review, labelled "Credential removed — under review",
- * so reminders and work continue; while it waits for the protected key it is hidden). Deleting and restoring still
+ * so reminders and work continue; while it waits for the protected key it is hidden). For record views, work lists,
+ * dashboards, counts, reminders and escalations only: anything that carries record text elsewhere uses unheldRecordSql.
+ * Deleting and restoring still
  * refuse any held record (409 HELD, they read held_case_id themselves), and Inspect Deleted Content never shows one.
  */
 export const liveRecordSql = (alias: string): string =>
   `(${alias}.deleted_at IS NULL AND (${alias}.held_case_id IS NULL OR EXISTS (SELECT 1 FROM quarantine_cases lrq WHERE lrq.id = ${alias}.held_case_id AND lrq.state = 'cleaned')))`;
+
+/**
+ * The strict form, for everything that carries record text out of the record views: AI material (Ask, report drafts,
+ * new AI request input), search, digests and email relevance. A held record is left out whether or not it is cleaned
+ * (spec 1 goals, D80, the spec 10 leak list); only work views and reminders see a cleaned record under review.
+ */
+export const unheldRecordSql = (alias: string): string => `(${alias}.deleted_at IS NULL AND ${alias}.held_case_id IS NULL)`;
 
 /** A discussion message that is visible (not hidden or deleted) and not held. */
 export const liveMessageSql = (alias: string): string => `(${alias}.state = 'visible' AND ${alias}.held_case_id IS NULL)`;
@@ -45,6 +54,15 @@ export const liveRecordRefSql = (kindCol: string, idCol: string): string =>
       WHEN 'decision' THEN EXISTS (SELECT 1 FROM decisions lr WHERE lr.id = ${idCol} AND ${liveRecordSql('lr')})
       WHEN 'question' THEN EXISTS (SELECT 1 FROM questions lr WHERE lr.id = ${idCol} AND ${liveRecordSql('lr')})
       WHEN 'risk' THEN EXISTS (SELECT 1 FROM risks lr WHERE lr.id = ${idCol} AND ${liveRecordSql('lr')})
+      ELSE true END)`;
+
+/** The strict form of `liveRecordRefSql` (see `unheldRecordSql`): for search. */
+export const unheldRecordRefSql = (kindCol: string, idCol: string): string =>
+  `(CASE ${kindCol}
+      WHEN 'task' THEN EXISTS (SELECT 1 FROM tasks lr WHERE lr.id = ${idCol} AND ${unheldRecordSql('lr')})
+      WHEN 'decision' THEN EXISTS (SELECT 1 FROM decisions lr WHERE lr.id = ${idCol} AND ${unheldRecordSql('lr')})
+      WHEN 'question' THEN EXISTS (SELECT 1 FROM questions lr WHERE lr.id = ${idCol} AND ${unheldRecordSql('lr')})
+      WHEN 'risk' THEN EXISTS (SELECT 1 FROM risks lr WHERE lr.id = ${idCol} AND ${unheldRecordSql('lr')})
       ELSE true END)`;
 
 /**

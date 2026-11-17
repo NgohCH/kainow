@@ -3,6 +3,7 @@ import { normaliseEmail } from '../auth/auth.service';
 import type { CodeSender } from '../auth/tokens';
 import type { AppConfig } from '../config';
 import type { EmailNudge } from '../email/nudge';
+import { refuseSecrets } from '../discussion/messages';
 import { type DisabledAdministrator, SetupService, cleanDisplayName } from '../organisation/setup.service';
 
 /** The exact words of every answer the recovery command gives. */
@@ -93,6 +94,8 @@ export async function recoverAdmin(
 ): Promise<string[]> {
   const reason = typeof opts.reason === 'string' ? opts.reason.trim() : '';
   if (reason === '') throw new Error(RECOVERY.noReason);
+  // The reason is written to the recovery notice and history: refused like every reason box when it looks like a credential (D75 wording).
+  refuseSecrets(reason);
   if (!(await registered(pool))) throw new Error(RECOVERY.notSetUp);
   const active = await activeAdministrators(pool);
   if (active.length > 0 && !opts.disableActive && !opts.dryRun) throw new Error(RECOVERY.adminActive);

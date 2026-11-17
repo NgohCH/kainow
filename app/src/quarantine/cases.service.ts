@@ -944,8 +944,13 @@ export class CasesService {
       let added = 0;
       for (const p of places) {
         rows += (await cleanItem(db, key, c.id, p.kind, p.id, marks)).rows;
+        // A new place, or one already listed and still undecided or dismissed (dismissed for the earlier marks, it now
+        // holds the new ones): masked, undecided and labelled again, so the PM or a Deputy decides it afresh. A place
+        // already confirmed stays confirmed (it is part of the case; its new cleaning is released with it).
         const ins = await db.query(
-          `INSERT INTO quarantine_possible_copies (case_id, item_kind, item_id, found_at, masked) VALUES ($1, $2, $3, $4, true) ON CONFLICT DO NOTHING`,
+          `INSERT INTO quarantine_possible_copies (case_id, item_kind, item_id, found_at, masked) VALUES ($1, $2, $3, $4, true)
+           ON CONFLICT (case_id, item_kind, item_id) DO UPDATE SET masked = true, decision = NULL, decided_by = NULL, decided_at = NULL, found_at = EXCLUDED.found_at
+            WHERE quarantine_possible_copies.decision IS DISTINCT FROM 'confirmed'`,
           [c.id, p.kind, p.id, at],
         );
         added += ins.rowCount ?? 0;
@@ -965,7 +970,8 @@ export class CasesService {
 
   /**
    * Release (spec 7.5), by a reviewer with a reason, in any project state: the cleaned item and the confirmed copies
-   * return to their audience and the case closes as `released`. Nothing that was withdrawn comes back: AI answers
+   * return to their audience and the case closes as `released`; places still undecided are confirmed by the release
+   * (copy_confirmed, detail { auto: true }), so they stay masked. Nothing that was withdrawn comes back: AI answers
    * stay withdrawn and a hidden summary stays hidden until confirmed (4b). The reporter (a person) and the PM are told
    * in-app. One top-level transaction; nothing is decrypted, so no quarantine write follows the case-row update.
    */
@@ -978,7 +984,22 @@ export class CasesService {
       const at = this.now();
       await db.query(`UPDATE quarantine_cases SET state = 'released', closed_at = $2, closed_by = $3, close_reason = $4 WHERE id = $1`, [c.id, at, user.id, reason]);
       await unhold(db, c.kind, c.itemId, c.id);
-      const copies = (await db.query<{ kind: ItemKind; id: string }>(`SELECT item_kind AS kind, item_id AS id FROM quarantine_items WHERE case_id = $1 AND role = 'copy' ORDER BY item_kind, item_id`, [c.id])).rows;
+      // Places still undecided are confirmed by the release (their masking stays; nothing is left undecidable once closed).
+      const undecided = (
+        await db.query<{ kind: ItemKind; id: string }>(
+          `SELECT item_kind AS kind, item_id AS id FROM quarantine_possible_copies WHERE case_id = $1 AND decision IS NULL ORDER BY found_at, item_kind, item_id FOR UPDATE`,
+          [c.id],
+        )
+      ).rows;
+      for (const p of undecided) {
+        await db.query(`INSERT INTO quarantine_items (case_id, item_kind, item_id, role) VALUES ($1, $2, $3, 'copy') ON CONFLICT DO NOTHING`, [c.id, p.kind, p.id]);
+        await db.query(
+          `UPDATE quarantine_possible_copies SET decision = 'confirmed', decided_by = $4, decided_at = $5 WHERE case_id = $1 AND item_kind = $2 AND item_id = $3`,
+          [c.id, p.kind, p.id, user.id, at],
+        );
+        await event(db, { caseId: c.id, projectId: c.projectId, actorId: user.id, action: 'copy_confirmed', kind: p.kind, itemId: p.id, detail: { auto: true }, at });
+      }
+      const copies =(await db.query<{ kind: ItemKind; id: string }>(`SELECT item_kind AS kind, item_id AS id FROM quarantine_items WHERE case_id = $1 AND role = 'copy' ORDER BY item_kind, item_id`, [c.id])).rows;
       for (const p of copies) await unhold(db, p.kind, p.id, c.id);
       await event(db, { caseId: c.id, projectId: c.projectId, actorId: user.id, action: 'released', kind: c.kind, itemId: c.itemId, reason, detail: { copies: copies.length }, at });
       const told = await this.notifyReleased(db, c, at);

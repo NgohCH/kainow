@@ -1,7 +1,7 @@
 import type { PoolClient } from 'pg';
 import { UUID } from '../common/uuid7';
 import { audienceVisibleSql } from '../discussion/audience';
-import { liveMessageSql, liveRecordSql, liveSourceSql, notHeldSql } from '../history/deleted-sql';
+import { liveMessageSql, liveSourceSql, notHeldSql, unheldRecordSql } from '../history/deleted-sql';
 import { type ProjectContext, canReadContent } from '../projects/access.service';
 import { hrefFor } from '../search/query';
 
@@ -335,20 +335,20 @@ async function findRecords(db: Db, scope: MaterialScope, projectId: string, word
   const branches: string[] = [];
   if (kinds.includes('task')) {
     branches.push(`SELECT 'task' AS kind, t.id, NULL::uuid AS audience_id, t.authorised_at AS at, ${score('t.title')} AS r
-      FROM tasks t WHERE t.project_id = ${proj}::uuid AND ${liveRecordSql('t')} AND ${hit('t.title')}`);
+      FROM tasks t WHERE t.project_id = ${proj}::uuid AND ${unheldRecordSql('t')} AND ${hit('t.title')}`);
   }
   if (kinds.includes('decision')) {
     const e = `d.statement || ' ' || coalesce(d.rationale, '')`;
-    branches.push(`SELECT 'decision', d.id, NULL::uuid, d.authorised_at, ${score(e)} FROM decisions d WHERE d.project_id = ${proj}::uuid AND ${liveRecordSql('d')} AND ${hit(e)}`);
+    branches.push(`SELECT 'decision', d.id, NULL::uuid, d.authorised_at, ${score(e)} FROM decisions d WHERE d.project_id = ${proj}::uuid AND ${unheldRecordSql('d')} AND ${hit(e)}`);
   }
   if (kinds.includes('question')) {
-    branches.push(`SELECT 'question', q.id, NULL::uuid, q.authorised_at, ${score('q.text')} FROM questions q WHERE q.project_id = ${proj}::uuid AND ${liveRecordSql('q')} AND ${hit('q.text')}`);
+    branches.push(`SELECT 'question', q.id, NULL::uuid, q.authorised_at, ${score('q.text')} FROM questions q WHERE q.project_id = ${proj}::uuid AND ${unheldRecordSql('q')} AND ${hit('q.text')}`);
     branches.push(`SELECT 'question', q.id, NULL::uuid, a.at, ${score('a.answer')}
-      FROM question_answers a JOIN questions q ON q.id = a.question_id WHERE q.project_id = ${proj}::uuid AND ${liveRecordSql('q')} AND ${hit('a.answer')}`);
+      FROM question_answers a JOIN questions q ON q.id = a.question_id WHERE q.project_id = ${proj}::uuid AND ${unheldRecordSql('q')} AND ${hit('a.answer')}`);
   }
   if (kinds.includes('risk')) {
     const e = `r.description || ' ' || coalesce(r.mitigation, '')`;
-    branches.push(`SELECT 'risk', r.id, NULL::uuid, r.authorised_at, ${score(e)} FROM risks r WHERE r.project_id = ${proj}::uuid AND ${liveRecordSql('r')} AND ${hit(e)}`);
+    branches.push(`SELECT 'risk', r.id, NULL::uuid, r.authorised_at, ${score(e)} FROM risks r WHERE r.project_id = ${proj}::uuid AND ${unheldRecordSql('r')} AND ${hit(e)}`);
   }
   // Pending proposals: personal scope only (the caller has removed them for thread scope), following their source's
   // audience as global search does. Matched on the wording in force, never on the quote.
@@ -459,7 +459,7 @@ export async function readableMaterial(db: Db, scope: MaterialScope, items: Mate
   const d = p.add(items.map((i) => i.recordAudienceId));
   // A Deleted or held record is no longer readable (history spec 4.3): dropped at start, and an answer built on it is not shown.
   const record = (table: string) =>
-    `EXISTS (SELECT 1 FROM ${table} r WHERE r.id = i.record_id AND r.project_id = ${proj}::uuid${table === 'human_proposals' ? ` AND ${notHeldSql('r')}` : ` AND ${liveRecordSql('r')}`})`;
+    `EXISTS (SELECT 1 FROM ${table} r WHERE r.id = i.record_id AND r.project_id = ${proj}::uuid${table === 'human_proposals' ? ` AND ${notHeldSql('r')}` : ` AND ${unheldRecordSql('r')}`})`;
   const proposals =
     scope.kind === 'personal'
       ? `WHEN i.record_kind = 'ai_proposal' THEN
