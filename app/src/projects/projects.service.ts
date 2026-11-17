@@ -279,6 +279,8 @@ export class ProjectsService {
       missingRoles: ctx.missingRoles,
       onHold: managesRoles(ctx) && ctx.onHold,
       access: ctx.roles.length === 0 && ctx.grantKinds.length > 0 ? ctx.grantKinds[0] : null,
+      // The viewer's own Active grant includes Inspect Deleted Content: the project page shows its Deleted items list.
+      inspectDeleted: ctx.inspectDeleted === true,
       grants: await this.grantsFor(ctx),
       recordDeletionDelegation: await this.recordDelegation(id),
       ...(await loadArchiveState(this.pool, id, ctx.project.status, ctx.today)),
@@ -353,7 +355,7 @@ export class ProjectsService {
       `SELECT g.id, g.kind, g.purpose, g.scope, to_char(g.starts_on, 'YYYY-MM-DD') AS "startsOn", to_char(g.expires_on, 'YYYY-MM-DD') AS "expiresOn",
               json_build_object('id', u.id, 'displayName', u.display_name, 'email', u.email) AS "user",
               r.display_name AS "requestedBy", g.requested_by AS "requestedById", d.display_name AS "decidedBy", g.decision_reason AS "decisionReason",
-              g.suspend_reason AS "suspendReason", g.revoke_reason AS "revokeReason"
+              g.suspend_reason AS "suspendReason", g.revoke_reason AS "revokeReason", g.inspect_deleted AS "inspectDeleted"
          FROM access_grants g JOIN users u ON u.id = g.user_id JOIN users r ON r.id = g.requested_by LEFT JOIN users d ON d.id = g.decided_by
         WHERE g.project_id = $1 ORDER BY g.requested_at, g.id`,
       [ctx.project.id],

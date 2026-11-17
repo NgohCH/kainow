@@ -1,5 +1,6 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
+import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
@@ -29,6 +30,13 @@ export interface MessageView {
   text: string | null;
   notice: string | null;
   replyTo: { id: string; no: number; quote: string | null; notice: string | null } | null;
+  /**
+   * Only for a holder of Inspect Deleted Content reading a Deleted message (history spec 4.7): `text` then holds the
+   * message, read-only, and these say who deleted it, when and why, for the label "Deleted — <name>, <d Mon yyyy>: <reason>".
+   */
+  deletedBy?: string;
+  deletedAt?: Date;
+  deleteReason?: string;
 }
 
 export interface MessageVersionView {
@@ -171,10 +179,15 @@ export class ThreadsService {
     return rows as Person[];
   }
 
-  private async messageViews(db: Db, viewerId: string, where: string, params: unknown[]): Promise<MessageView[]> {
+  /**
+   * `inspectDeleted`: the viewer holds Inspect Deleted Content in this project, so a Deleted message that is not held in
+   * a quarantine case shows its (stored, cleaned) text with who deleted it, when and why. Nobody else sees that text.
+   */
+  private async messageViews(db: Db, viewerId: string, where: string, params: unknown[], inspectDeleted = false): Promise<MessageView[]> {
     const { rows } = await db.query(
       `SELECT m.id, m.message_no AS no, m.author_id AS "authorId", au.display_name AS "authorName", m.created_at AS "createdAt",
-              m.state, m.state_reason AS "stateReason", sb.display_name AS "stateByName", v.version_no AS version, v.body,
+              m.state, m.state_reason AS "stateReason", sb.display_name AS "stateByName", m.state_at AS "stateAt",
+              m.held_case_id IS NOT NULL AS held, v.version_no AS version, v.body,
               r.id AS "replyId", r.message_no AS "replyNo", r.state AS "replyState", rv.body AS "replyBody"
          FROM discussion_messages m
          JOIN users au ON au.id = m.author_id
@@ -187,6 +200,7 @@ export class ThreadsService {
     );
     return rows.map((r) => {
       const shown = displayBody({ state: r.state, body: r.body, stateBy: r.stateByName, stateReason: r.stateReason }, r.authorId === viewerId);
+      const inspected = inspectDeleted && r.state === 'deleted' && !r.held;
       return {
         id: r.id,
         no: r.no,
@@ -205,6 +219,7 @@ export class ThreadsService {
               notice: r.replyState === 'visible' ? null : `Reply to a ${r.replyState} message`,
             }
           : null,
+        ...(inspected ? { text: r.body as string, deletedBy: r.stateByName as string, deletedAt: r.stateAt as Date, deleteReason: r.stateReason as string } : {}),
       } satisfies MessageView;
     });
   }
@@ -272,6 +287,13 @@ export class ThreadsService {
   async get(user: AuthUser, threadId: string, afterNo = 0): Promise<ThreadView> {
     const t = await this.threadRow(this.pool, threadId);
     const { ctx, audience } = await this.readable(this.pool, user, t);
+    const messages = await this.messageViews(this.pool, user.id, 'm.thread_id = $1 AND m.message_no > $2', [t.id, afterNo], ctx.inspectDeleted === true);
+    // Each Deleted message shown to a holder of Inspect Deleted Content is an opening, recorded by kind and id only.
+    const at = this.now();
+    for (const m of messages) {
+      if (m.deletedBy === undefined) continue;
+      await writeAudit(this.pool, { at, action: 'deleted.inspected', actorUserId: user.id, subjectType: 'message', subjectId: m.id, detail: { projectId: t.projectId } });
+    }
     return {
       id: t.id,
       projectId: t.projectId,
@@ -280,7 +302,7 @@ export class ThreadsService {
       audience: { id: audience.id, mode: audience.mode, namedUsers: await this.people(this.pool, audience.namedUserIds), changedAt: await this.audiences.changedAt(audience.id, this.pool) },
       meetingDate: t.meetingDate,
       state: t.state,
-      messages: await this.messageViews(this.pool, user.id, 'm.thread_id = $1 AND m.message_no > $2', [t.id, afterNo]),
+      messages,
       aiAnswers: await threadAnswers(this.pool, ctx, t.id),
       present: await this.people(
         this.pool,

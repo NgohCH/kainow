@@ -3,6 +3,7 @@ import { AnySignedInUser } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
 import { RecordDelegationService } from './delegation.service';
+import { HistoryService } from './history.service';
 import { RecordsDeletionService } from './records-deletion.service';
 import { SourcesDeletionService } from './sources-deletion.service';
 
@@ -21,7 +22,29 @@ export class HistoryController {
     private readonly sources: SourcesDeletionService,
     private readonly records: RecordsDeletionService,
     private readonly delegation: RecordDelegationService,
+    private readonly history: HistoryService,
   ) {}
+
+  /** → { lines }: the project's deletions, restorations and credential reports, newest first (spec 4.6). */
+  @Get('projects/:id/history/deletions')
+  @AnySignedInUser()
+  async deletions(@Param('id') id: string, @Req() req: HttpRequest) {
+    return { lines: await this.history.deletions(who(req), id) };
+  }
+
+  /** → { items }: Deleted items, for holders of Inspect Deleted Content only (404 otherwise) (spec 4.7). */
+  @Get('projects/:id/deleted-items')
+  @AnySignedInUser()
+  async deletedItems(@Param('id') id: string, @Req() req: HttpRequest) {
+    return { items: await this.history.deletedItems(who(req), id) };
+  }
+
+  /** One Deleted item, read-only; each opening is recorded (deleted.inspected). :kind is message, note, minutes, summary, task, decision, question or risk. */
+  @Get('projects/:id/deleted-items/:kind/:itemId')
+  @AnySignedInUser()
+  deletedItem(@Param('id') id: string, @Param('kind') kind: string, @Param('itemId') itemId: string, @Req() req: HttpRequest) {
+    return this.history.deletedItem(who(req), id, kind, itemId);
+  }
 
   /** { reason } → { id, status: 'deleted' }. */
   @Post('sources/:id/delete')

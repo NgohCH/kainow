@@ -34,6 +34,11 @@ export interface ProjectContext {
   grantKinds: GrantKind[];
   /** Who is asking. */
   viewerId: string;
+  /**
+   * This person holds a grant giving access right now that includes Inspect Deleted Content (history spec 4.7). Roles
+   * never give it: only the grant does. Absent where a context is built by hand, which means false.
+   */
+  inspectDeleted?: boolean;
 }
 
 /**
@@ -91,7 +96,8 @@ export class ProjectAccess {
     const grants = (
       await db.query(
         `SELECT id, user_id AS "userId", kind, to_char(starts_on, 'YYYY-MM-DD') AS "startsOn", to_char(expires_on, 'YYYY-MM-DD') AS "expiresOn",
-                requested_by AS "requestedBy", decision, suspended_at AS "suspendedAt", revoked_at AS "revokedAt"
+                requested_by AS "requestedBy", decision, suspended_at AS "suspendedAt", revoked_at AS "revokedAt",
+                inspect_deleted AS "inspectDeleted"
            FROM access_grants WHERE project_id = $1 ORDER BY requested_at, id`,
         [projectId],
       )
@@ -100,6 +106,7 @@ export class ProjectAccess {
     const status = p.rows[0].status as ProjectStatus;
     const required = requiredRolesCheck(rows, today, 'active');
     const missing = status === 'active' && !required.ok;
+    const mine = grants.filter((g) => g.userId === user.id && grantGivesAccess(g, today, rows));
     return {
       project: { id: p.rows[0].id, status, createdOn: p.rows[0].createdOn },
       roles: effectiveRoles(rows, user.id, today),
@@ -111,7 +118,8 @@ export class ProjectAccess {
       onHold: rows.some((r) => membershipState(r, today) === 'on_hold'),
       grants,
       viewerId: user.id,
-      grantKinds: [...new Set(grants.filter((g) => g.userId === user.id && grantGivesAccess(g, today, rows)).map((g) => g.kind))],
+      grantKinds: [...new Set(mine.map((g) => g.kind))],
+      inspectDeleted: mine.some((g) => g.inspectDeleted === true),
     };
   }
 

@@ -16,7 +16,7 @@ const who = (req: HttpRequest): AuthUser => {
 export class GrantsController {
   constructor(private readonly grants: GrantsService) {}
 
-  /** { userId, kind: 'audit' | 'oversight', purpose, scope, startsOn, expiresOn? } */
+  /** { userId, kind: 'audit' | 'oversight', purpose, scope, startsOn, expiresOn?, inspectDeleted? (default false; fixed once requested) } */
   @Post('projects/:id/grants')
   @AnySignedInUser()
   @HttpCode(201)

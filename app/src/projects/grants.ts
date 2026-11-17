@@ -17,6 +17,8 @@ export interface GrantRow {
   decision: 'approved' | 'declined' | null;
   suspendedAt: Date | null;
   revokedAt: Date | null;
+  /** Includes Inspect Deleted Content (history spec 4.7): chosen on the request, never changed after. */
+  inspectDeleted?: boolean;
 }
 
 export type GrantState = 'requested' | 'declined' | 'scheduled' | 'active' | 'suspended' | 'expired' | 'revoked';
