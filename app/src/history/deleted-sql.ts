@@ -52,3 +52,14 @@ export const notDeletedRecordRefSql = (kindCol: string, idCol: string): string =
       WHEN 'question' THEN NOT EXISTS (SELECT 1 FROM questions lr WHERE lr.id = ${idCol} AND NOT ${liveRecordSql('lr')})
       WHEN 'risk' THEN NOT EXISTS (SELECT 1 FROM risks lr WHERE lr.id = ${idCol} AND NOT ${liveRecordSql('lr')})
       ELSE true END)`;
+
+/**
+ * A row of a holdable table (proposal, human proposal, AI answer, report draft, summary, feedback note, thread) that is
+ * not held in an open quarantine case (history spec 7.2). Minutes drafts are held through their meeting thread.
+ */
+export const notHeldSql = (alias: string): string => `(${alias}.held_case_id IS NULL)`;
+
+/** For a write that reaches a held row directly: refused with HELD (409), as for sources. */
+export function refuseHeld(row: { heldCaseId?: string | null; held_case_id?: string | null } | undefined): void {
+  if (row && (row.heldCaseId || row.held_case_id)) throw new ConflictException(HELD);
+}

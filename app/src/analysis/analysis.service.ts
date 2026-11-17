@@ -92,7 +92,7 @@ export class AnalysisService implements MeetingEndHook {
       }
       const ids = [...new Set(raw as string[])];
       const { rows } = await db.query(
-        `SELECT message_no AS no FROM discussion_messages WHERE thread_id = $1 AND state = 'visible' AND id = ANY($2::uuid[])`,
+        `SELECT message_no AS no FROM discussion_messages WHERE thread_id = $1 AND state = 'visible' AND held_case_id IS NULL AND id = ANY($2::uuid[])`,
         [t.id, ids],
       );
       if (rows.length !== ids.length) throw new BadRequestException(BAD_SELECTION);
@@ -142,7 +142,7 @@ export class AnalysisService implements MeetingEndHook {
   }
 
   private async requireMessages(db: PoolClient, threadId: string): Promise<void> {
-    const found = await db.query(`SELECT 1 FROM discussion_messages WHERE thread_id = $1 AND state = 'visible' LIMIT 1`, [threadId]);
+    const found = await db.query(`SELECT 1 FROM discussion_messages WHERE thread_id = $1 AND state = 'visible' AND held_case_id IS NULL LIMIT 1`, [threadId]);
     if (found.rowCount === 0) throw new ConflictException(NO_MESSAGES);
   }
 
@@ -159,7 +159,7 @@ export class AnalysisService implements MeetingEndHook {
     const at = this.now();
     const id = await this.threads.inTransaction(async (db) => {
       const t = await this.threads.threadRow(db, threadId, true);
-      await this.threads.readable(db, user, t);
+      await this.threads.readable(db, user, t, true);
       await this.access.authorize(user, action(t), t.projectId, db);
       // The active-run answer comes before planning, so a second click never reads "nothing new" instead.
       const active = await db.query(`SELECT 1 FROM analysis_runs WHERE thread_id = $1 AND status IN ('queued', 'running')`, [t.id]);

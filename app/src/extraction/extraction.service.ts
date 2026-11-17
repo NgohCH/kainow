@@ -7,6 +7,7 @@ import { CLOCK, type Clock } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
 import { PROPOSAL_REJECTED_REASON, lockPendingAuthorisation, rejectPendingAuthorisation } from '../changes/end-pending';
 import { PG_POOL } from '../db/database.module';
+import { notHeldSql, refuseHeld } from '../history/deleted-sql';
 import { locateQuote } from '../notes/text';
 import { type DueReading, type ReviewerDue, isCalendarDate, readDue } from './due';
 import { EXTRACTION_QUEUE, type ExtractionQueue } from './queue';
@@ -241,7 +242,7 @@ export class ExtractionService {
                  UNION ALL SELECT 'risk', id FROM risks WHERE origin_item_id = i.id) x LIMIT 1) AS record
          FROM extraction_items i
          ${LATEST_EDIT}
-        WHERE i.run_id = $1 ORDER BY i.position`,
+        WHERE i.run_id = $1 AND ${notHeldSql('i')} ORDER BY i.position`,
       [runId],
     );
     const shaped = items.rows.map(({ originalText, originalOwner, originalDue, reviewerEarliest, reviewerLatest, reviewerEvent, reviewerIgnoreEvent, ...item }) => {
@@ -416,13 +417,14 @@ export class ExtractionService {
       throw new BadRequestException('sourceVersionId is required: the version the reviewer was looking at');
     }
     const found = await client.query(
-      `SELECT i.id, i.source_version_id, i.quote_matches, i.review_status, i.kind, r.status AS run_status
+      `SELECT i.id, i.source_version_id, i.quote_matches, i.review_status, i.kind, r.status AS run_status, i.held_case_id
          FROM extraction_items i JOIN extraction_runs r ON r.id = i.run_id
         WHERE i.id = $1 AND i.run_id = $2 FOR UPDATE OF i`,
       [itemId, runId],
     );
     const item = found.rows[0];
     if (!item) throw new NotFoundException();
+    refuseHeld(item);
     if (item.run_status !== 'succeeded') throw new ConflictException('The extraction has not finished');
     if (item.source_version_id !== sourceVersionId) {
       throw new ConflictException('This proposal is for a different version of the notes than the one you reviewed');
@@ -531,13 +533,15 @@ export class ExtractionService {
         [itemId],
       );
       const found = await client.query(
-        `SELECT i.id, i.source_version_id, i.review_status, r.status AS run_status
+        `SELECT i.id, i.source_version_id, i.review_status, r.status AS run_status, i.held_case_id
            FROM extraction_items i
            JOIN extraction_runs r ON r.id = i.run_id
           WHERE i.id = $1 AND i.run_id = $2 FOR UPDATE OF i`,
         [itemId, runId],
       );
       if (!found.rows[0]) throw new NotFoundException();
+      refuseHeld(found.rows[0]);
+      delete found.rows[0].held_case_id;
       // Checked after the item lock, so an authorise that committed while we waited is seen.
       await this.refuseIfAuthorised(client, itemId);
       // The wording in force is read after the lock, in its own statement, so a concurrent edit is seen.

@@ -25,6 +25,8 @@ export interface RunRow {
   projectId: string | null;
   projectStatus: ProjectStatus | null;
   audienceId: string | null;
+  /** The thread is held in a quarantine case (history spec 7.2). */
+  threadHeld: boolean;
 }
 
 export interface Refusal {
@@ -37,7 +39,8 @@ export async function loadRun(pool: Pool, id: string): Promise<RunRow | undefine
     `SELECT r.id, r.status, r.kind, r.trigger, r.thread_id AS "threadId", r.requested_by AS "requestedBy", r.covers_from_no AS "coversFromNo",
             r.selected_message_ids AS "selectedMessageIds", r.source_version_id AS "sourceVersionId", r.extraction_run_id AS "extractionRunId",
             t.kind AS "threadKind", t.state AS "threadState", t.title AS "threadTitle", to_char(t.meeting_date, 'YYYY-MM-DD') AS "meetingDate",
-            t.project_id AS "projectId", p.status AS "projectStatus", t.audience_id AS "audienceId"
+            t.project_id AS "projectId", p.status AS "projectStatus", t.audience_id AS "audienceId",
+            COALESCE(t.held_case_id IS NOT NULL, false) AS "threadHeld"
        FROM analysis_runs r
        LEFT JOIN discussion_threads t ON t.id = r.thread_id
        LEFT JOIN projects p ON p.id = t.project_id
@@ -57,6 +60,17 @@ export async function recheckRun(pool: Pool, access: ProjectAccess, run: RunRow,
   const what = expect === 'meeting' ? 'minutes were not drafted' : 'analysis did not run';
   if (!run.threadKind || !run.projectId || !run.projectStatus || !run.audienceId) {
     return { code: 'thread_not_found', detail: expect === 'meeting' ? 'The meeting no longer exists, so the minutes were not drafted.' : 'The discussion no longer exists, so the analysis did not run.' };
+  }
+  // A thread held in a quarantine case, or its minutes held, is not sent to the AI (history spec 7.2): nothing is charged.
+  const held = await pool.query(`SELECT 1 FROM sources WHERE thread_id = $1 AND kind = $2 AND held_case_id IS NOT NULL LIMIT 1`, [
+    run.threadId,
+    expect === 'meeting' ? 'minutes' : 'discussion',
+  ]);
+  if (run.threadHeld || held.rowCount) {
+    return {
+      code: 'held',
+      detail: expect === 'meeting' ? 'The meeting is held for a suspected credential, so the minutes were not drafted.' : 'The discussion is held for a suspected credential, so the analysis did not run.',
+    };
   }
   const deleted = await pool.query(`SELECT 1 FROM sources WHERE thread_id = $1 AND kind = $2 AND status = 'deleted' LIMIT 1`, [
     run.threadId,

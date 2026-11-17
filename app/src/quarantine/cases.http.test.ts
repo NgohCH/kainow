@@ -17,6 +17,7 @@ import { SpendSettingsService } from '../spend/spend.settings';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
+import { HELD } from '../history/deleted-sql';
 import { CANCELLED_REASON, POSSIBLE_COPY_TEXT, cleanWaitingCases } from './cases.service';
 import { MARKER } from './clean-text';
 import { loadProtectedKey } from './protected-key';
@@ -457,6 +458,174 @@ describe('reporting, holding and possible copies', { skip: SKIP_NO_DB }, () => {
     const { caseId } = await t.app.get(CasesService).report('kainow', { projectId: project, kind: 'source', id, marked: [SECRET], reason: null });
     const row = (await t.pool.query(`SELECT reporter_id, reason, state FROM quarantine_cases WHERE id = $1`, [caseId])).rows[0];
     assert.deepEqual(row, { reporter_id: null, reason: null, state: 'cleaned' });
+  });
+
+  /** Global search for a phrase: the kinds and ids found. */
+  const found = async (c: Client, phrase: string) => {
+    const r = await c.request('GET', `/search?q=${encodeURIComponent(phrase)}`);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    return (r.body.projects as Array<{ results: Array<{ kind: string; id: string }> }>).flatMap((x) => x.results.map((y) => `${y.kind}:${y.id}`));
+  };
+  const ask = async (userId: string, words: string[]) => {
+    const ctx = (await t.app.get(ProjectAccess).load(project, { id: userId, email: 'x@example.org', displayName: 'x', role: 'member' }))!;
+    return findMaterial(t.pool, { kind: 'personal', ctx }, words);
+  };
+
+  test('reporting a message holds it: no text in the thread, no versions, not found by search or Ask', async () => {
+    const thread = await startThread(pm, { kind: 'discussion', title: 'Plant' });
+    const msg = await post(ben, thread, `The heron gate code is ${SECRET} today.`);
+    assert.deepEqual(await found(ada, 'heron gate'), [`message:${msg}`]);
+    assert.ok((await ask(ids.ada, ['heron'])).length > 0);
+    const caseId = await reported(ada, 'message', msg);
+    assert.equal((await t.pool.query(`SELECT held_case_id FROM discussion_messages WHERE id = $1`, [msg])).rows[0].held_case_id, caseId);
+    for (const c of [ada, ben, pm]) {
+      const m = (await threadMessages(c, thread)).find((x) => x.id === msg)!;
+      assert.equal(m.text, null);
+      assert.equal(m.notice, 'Held — suspected credential, under review');
+      assert.equal((await c.request('GET', `/messages/${msg}/versions`)).status, 404);
+      assert.deepEqual(await found(c, 'heron gate'), []);
+    }
+    assert.equal((await ask(ids.ada, ['heron'])).length, 0);
+    // A moderator may not hide it while it is held.
+    const hide = await pm.request('POST', `/messages/${msg}/hide`, { reason: 'tidy' });
+    assert.equal(hide.status, 409, JSON.stringify(hide.body));
+    assert.equal(hide.body.message, HELD);
+  });
+
+  test('reporting a task holds it: gone from the records list, its page, search and Ask', async () => {
+    const task = uuidv7();
+    await t.pool.query(
+      `INSERT INTO tasks (id, project_id, depth, title, assignee_id, due_on, status, authorised_by, authorised_at)
+       VALUES ($1, $2, 0, $3, $4, '2026-11-20', 'not_started', $5, now())`,
+      [task, project, `Rotate the osprey vault code ${SECRET}`, ids.ada, ids.own],
+    );
+    const listed = async (c: Client) => ((await c.request('GET', `/projects/${project}/records`)).body.tasks as Array<{ id: string }>).map((x) => x.id);
+    assert.deepEqual(await listed(ada), [task]);
+    assert.deepEqual(await found(ada, 'osprey vault'), [`task:${task}`]);
+    const caseId = await reported(ada, 'task', task);
+    assert.equal((await t.pool.query(`SELECT held_case_id FROM tasks WHERE id = $1`, [task])).rows[0].held_case_id, caseId);
+    for (const c of [ada, pm, auditor]) {
+      assert.deepEqual(await listed(c), []);
+      assert.equal((await c.request('GET', `/records/tasks/${task}`)).status, 404);
+      assert.deepEqual(await found(c, 'osprey vault'), []);
+    }
+    assert.equal((await ask(ids.ada, ['osprey'])).length, 0);
+  });
+
+  test('reporting an AI answer holds it: gone for its requester, and a queued request runs no AI and charges nothing', async () => {
+    await note('Plant room', 'The kestrel pump service is booked for Thursday morning.');
+    const done = await answered(ada);
+    // The question itself holds the secret (the credential check does not know it).
+    const asked = await ada.request('POST', `/projects/${project}/questions`, { question: `Is ${SECRET} still the kestrel pump code?` });
+    assert.equal(asked.status, 201, JSON.stringify(asked.body));
+    const held = asked.body.id as string;
+    assert.equal((await ada.request('GET', `/questions/${done}`)).status, 200);
+    const caseId = await reported(ada, 'answer', held);
+    assert.equal((await t.pool.query(`SELECT held_case_id FROM ai_answers WHERE request_id = $1`, [held])).rows[0].held_case_id, caseId);
+    assert.equal((await ada.request('GET', `/questions/${held}`)).status, 404);
+    assert.equal((await ada.request('GET', `/questions/${done}`)).status, 200);
+    // The queued request is not run: no AI call, no charge.
+    const before = await count(`SELECT count(*) AS n FROM ai_spend_entries`);
+    let calls = 0;
+    const model: JsonSchemaModel = {
+      callJson: async () => {
+        calls++;
+        throw new Error('the AI must not be called');
+      },
+    };
+    assert.equal(await new AssistRunner({ pool: t.pool, spend: spend(), model, clock: t.clock.now }).process(held, 1, false), 'blocked');
+    assert.equal(calls, 0);
+    assert.equal(await count(`SELECT count(*) AS n FROM ai_spend_entries`), before);
+    // Sharing it is refused as held.
+    const thread = await startThread(pm, { kind: 'discussion', title: 'Plant' });
+    const share = await ada.request('POST', `/questions/${held}/share`, { threadId: thread });
+    assert.equal(share.status, 409, JSON.stringify(share.body));
+    assert.equal(share.body.message, HELD);
+  });
+
+  test('reporting a minutes draft holds the meeting and its minutes source', async () => {
+    const meeting = await startThread(pm, { kind: 'meeting', title: 'Weekly check-in' });
+    await post(pm, meeting, 'We agreed the plover gate.');
+    const saved = await pm.request('POST', `/threads/${meeting}/minutes`, { body: `## Decisions\nThe plover gate code is ${SECRET}.`, basedOnVersion: 0 });
+    assert.equal(saved.status, 201, JSON.stringify(saved.body));
+    const published = await pm.request('POST', `/threads/${meeting}/minutes/1/publish`);
+    assert.equal(published.status, 200, JSON.stringify(published.body));
+    const draft = (await t.pool.query(`SELECT id FROM minutes_drafts WHERE thread_id = $1`, [meeting])).rows[0].id as string;
+    const minutesSource = (await t.pool.query(`SELECT id FROM sources WHERE thread_id = $1 AND kind = 'minutes'`, [meeting])).rows[0].id as string;
+    assert.equal((await ada.request('GET', `/notes/${minutesSource}`)).status, 200);
+    assert.ok((await ask(ids.ada, ['plover'])).length > 0);
+    const caseId = await reported(ada, 'minutes_draft', draft);
+    assert.equal((await t.pool.query(`SELECT held_case_id FROM discussion_threads WHERE id = $1`, [meeting])).rows[0].held_case_id, caseId);
+    assert.equal((await t.pool.query(`SELECT held_case_id FROM sources WHERE id = $1`, [minutesSource])).rows[0].held_case_id, caseId);
+    for (const c of [ada, pm]) {
+      assert.equal((await c.request('GET', `/threads/${meeting}`)).status, 404);
+      assert.equal((await c.request('GET', `/threads/${meeting}/minutes`)).status, 404);
+      assert.equal((await c.request('GET', `/notes/${minutesSource}`)).status, 404);
+      const listed = JSON.stringify((await c.request('GET', `/projects/${project}/discussion`)).body);
+      assert.ok(!listed.includes(meeting) && !listed.includes(minutesSource), listed);
+      assert.deepEqual(await found(c, 'plover gate'), []);
+    }
+    assert.equal((await ask(ids.ada, ['plover'])).length, 0);
+    const again = await pm.request('POST', `/threads/${meeting}/minutes`, { body: 'Rewritten minutes.', basedOnVersion: 1 });
+    assert.equal(again.status, 409, JSON.stringify(again.body));
+    assert.equal(again.body.message, HELD);
+    const more = await pm.request('POST', `/threads/${meeting}/messages`, { body: 'More' });
+    assert.equal(more.status, 409, JSON.stringify(more.body));
+  });
+
+  test('reporting an approved summary holds it and its summary source', async () => {
+    const original = await note('Board note', 'The turbine replacement goes ahead next month.');
+    await restrict(original, [ids.ada]);
+    const asked = await dep.request('POST', `/sources/${original}/summaries`, { intendedAudience: { mode: 'project' }, leaveOut: '' });
+    assert.equal(asked.status, 201, JSON.stringify(asked.body));
+    const runner = new AssistRunner({ pool: t.pool, spend: spend(), model: new SummaryModel(`The turbine is replaced next month; portal ${SECRET}.`), clock: t.clock.now });
+    assert.equal(await runner.process(queued[queued.length - 1], 1, false), 'succeeded');
+    t.clock.advanceSeconds(1);
+    const approved = await pm.request('POST', `/summaries/${asked.body.id}/approve`, { versionNo: 1, reason: 'Fine to share' });
+    assert.equal(approved.status, 200, JSON.stringify(approved.body));
+    const summarySource = approved.body.approved.sourceId as string;
+    assert.equal((await ben.request('GET', `/notes/${summarySource}`)).status, 200);
+    const caseId = await reported(ada, 'summary', asked.body.id);
+    assert.equal((await t.pool.query(`SELECT held_case_id FROM summaries WHERE id = $1`, [asked.body.id])).rows[0].held_case_id, caseId);
+    assert.equal((await t.pool.query(`SELECT held_case_id FROM sources WHERE id = $1`, [summarySource])).rows[0].held_case_id, caseId);
+    for (const c of [ada, ben, pm]) {
+      assert.equal((await c.request('GET', `/summaries/${asked.body.id}`)).status, 404);
+      assert.equal((await c.request('GET', `/notes/${summarySource}`)).status, 404);
+      assert.deepEqual(await found(c, 'turbine is replaced'), []);
+    }
+    assert.equal((await ask(ids.ben, ['turbine'])).filter((m) => m.text.includes('replaced next month')).length, 0);
+  });
+
+  test('two reports of the same item at once make one case: the second is refused as held', async () => {
+    const id = await note('Plant room', PLANT);
+    const body = { kind: 'source', id, marked: [SECRET], reason: 'Looks like the vault code' };
+    const [a, b] = await Promise.all([report(ada, body), report(ben, body)]);
+    assert.deepEqual([a.status, b.status].sort(), [201, 409], JSON.stringify([a.body, b.body]));
+    const refused = a.status === 409 ? a : b;
+    assert.equal(refused.body.message, HELD);
+    assert.equal(await count(`SELECT count(*) AS n FROM quarantine_cases`), 1);
+    assert.equal(await count(`SELECT count(*) AS n FROM notifications WHERE kind = 'credential_reported'`), 3, 'one round of notices: two Administrators and the author');
+  });
+
+  test('a waiting case that fails is logged by id and the others are still cleaned', async () => {
+    await t.close();
+    await boot(false);
+    const id = await note('Plant room', PLANT);
+    // A broken case reported first: its item kind is unknown, so cleaning it throws.
+    const broken = uuidv7(Date.UTC(2026, 10, 1));
+    await t.pool.query(
+      `INSERT INTO quarantine_cases (id, project_id, item_kind, item_id, reporter_id, marked_length, waiting_for_key, reported_at) VALUES ($1, $2, 'spaceship', $3, $4, 12, true, '2026-11-01')`,
+      [broken, project, uuidv7(), ids.pm],
+    );
+    const caseId = await reported(ada, 'source', id);
+    const key = loadProtectedKey(keyFile, () => undefined);
+    assert.ok(key);
+    const logs: string[] = [];
+    assert.equal(await cleanWaitingCases(t.pool, key, t.clock.now(), (m) => logs.push(m)), 1);
+    assert.equal((await t.pool.query(`SELECT state FROM quarantine_cases WHERE id = $1`, [caseId])).rows[0].state, 'cleaned');
+    assert.equal((await t.pool.query(`SELECT waiting_for_key FROM quarantine_cases WHERE id = $1`, [broken])).rows[0].waiting_for_key, true);
+    assert.equal(logs.length, 1);
+    assert.ok(logs[0].includes(broken) && !logs[0].includes(SECRET), logs[0]);
   });
 
   test('no event, notification or email row contains the marked text', async () => {

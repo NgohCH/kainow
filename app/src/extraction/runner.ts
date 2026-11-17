@@ -37,6 +37,8 @@ interface RunRow {
   source_kind: string;
   /** 'deleted' once the source was deleted while the run waited (history spec 4.2). */
   source_status: string;
+  /** The source is held in a quarantine case (history spec 7.2). */
+  source_held: boolean;
   /** 'discussion' only for a run made by the analysis runner, which has already rechecked the requester. */
   trigger: string;
   user_status: string;
@@ -81,7 +83,7 @@ export class ExtractionRunner {
   async process(runId: string, attemptNo: number, isLastAttempt: boolean): Promise<RunOutcome> {
     const { pool, spend } = this.d;
     const { rows } = await pool.query<RunRow>(
-      `SELECT r.id, r.status, r.source_version_id, r.requested_by, r.trigger, s.kind AS source_kind, s.status AS source_status,
+      `SELECT r.id, r.status, r.source_version_id, r.requested_by, r.trigger, s.kind AS source_kind, s.status AS source_status, s.held_case_id IS NOT NULL AS source_held,
               u.status AS user_status, u.role AS user_role,
               v.text_content AS text
          FROM extraction_runs r
@@ -107,6 +109,10 @@ export class ExtractionRunner {
     // A source deleted while the run waited is never sent (history spec 4.2): no AI call, no charge.
     if (run.source_status === 'deleted') {
       return this.finish(run, 'blocked', SOURCE_DELETED, 'The source was deleted, so the extraction did not run.');
+    }
+    // Nor is a source held for a suspected credential (history spec 7.2).
+    if (run.source_held) {
+      return this.finish(run, 'blocked', 'held', 'The source is held for a suspected credential, so the extraction did not run.');
     }
     // The person may have been disabled, or lost the right in the note's project, since they asked (A11).
     // Automatic runs (no requester) recheck the project state only.

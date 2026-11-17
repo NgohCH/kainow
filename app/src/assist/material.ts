@@ -1,7 +1,7 @@
 import type { PoolClient } from 'pg';
 import { UUID } from '../common/uuid7';
 import { audienceVisibleSql } from '../discussion/audience';
-import { liveRecordSql, liveSourceSql } from '../history/deleted-sql';
+import { liveMessageSql, liveRecordSql, liveSourceSql, notHeldSql } from '../history/deleted-sql';
 import { type ProjectContext, canReadContent } from '../projects/access.service';
 import { hrefFor } from '../search/query';
 
@@ -309,7 +309,7 @@ WITH c AS (
     JOIN discussion_threads th ON th.id = m.thread_id
     JOIN audiences au ON au.id = th.audience_id
    WHERE p.owner_kind = 'message_version' AND p.project_id = ${proj}::uuid AND th.project_id = ${proj}::uuid
-     AND m.state = 'visible'
+     AND ${liveMessageSql('m')} AND ${notHeldSql('th')}
      AND ${audienceSql(scope, p, 'au')}
      AND NOT EXISTS (SELECT 1 FROM message_versions v2 WHERE v2.message_id = mv.message_id AND v2.version_no > mv.version_no)
      AND ${match} ${messageOwner} ${within('mv.created_at')}
@@ -359,12 +359,12 @@ async function findRecords(db: Db, scope: MaterialScope, projectId: string, word
       JOIN sources s ON s.id = v.source_id
       JOIN audiences au ON au.id = s.audience_id
       CROSS JOIN LATERAL (SELECT coalesce((SELECT e.text FROM extraction_item_edits e WHERE e.item_id = x.id ORDER BY e.edited_at DESC, e.id DESC LIMIT 1), x.text) AS wording) w
-     WHERE x.review_status = 'pending' AND s.project_id = ${proj}::uuid AND ${liveSourceSql('s')} AND s.publication = 'published'
+     WHERE x.review_status = 'pending' AND ${notHeldSql('x')} AND s.project_id = ${proj}::uuid AND ${liveSourceSql('s')} AND s.publication = 'published'
        AND ${audienceSql(scope, p, 'au')} AND ${hit('w.wording')}`);
   }
   if (scope.kind === 'personal' && kinds.includes('human_proposal')) {
     branches.push(`SELECT 'human_proposal', h.id, NULL::uuid, h.proposed_at, ${score('h.text')}
-      FROM human_proposals h WHERE h.review_status = 'pending' AND h.project_id = ${proj}::uuid AND ${hit('h.text')}`);
+      FROM human_proposals h WHERE h.review_status = 'pending' AND ${notHeldSql('h')} AND h.project_id = ${proj}::uuid AND ${hit('h.text')}`);
   }
   if (branches.length === 0) return [];
   const text = `
@@ -459,14 +459,14 @@ export async function readableMaterial(db: Db, scope: MaterialScope, items: Mate
   const d = p.add(items.map((i) => i.recordAudienceId));
   // A Deleted or held record is no longer readable (history spec 4.3): dropped at start, and an answer built on it is not shown.
   const record = (table: string) =>
-    `EXISTS (SELECT 1 FROM ${table} r WHERE r.id = i.record_id AND r.project_id = ${proj}::uuid${table === 'human_proposals' ? '' : ` AND ${liveRecordSql('r')}`})`;
+    `EXISTS (SELECT 1 FROM ${table} r WHERE r.id = i.record_id AND r.project_id = ${proj}::uuid${table === 'human_proposals' ? ` AND ${notHeldSql('r')}` : ` AND ${liveRecordSql('r')}`})`;
   const proposals =
     scope.kind === 'personal'
       ? `WHEN i.record_kind = 'ai_proposal' THEN
            -- The source's current audience as well as the stored one: publishing a returned note may give it a new row.
            EXISTS (SELECT 1 FROM extraction_items x JOIN source_versions v ON v.id = x.source_version_id JOIN sources s ON s.id = v.source_id
                      JOIN audiences sa ON sa.id = s.audience_id
-                    WHERE x.id = i.record_id AND s.project_id = ${proj}::uuid AND ${liveSourceSql('s')} AND s.publication = 'published'
+                    WHERE x.id = i.record_id AND ${notHeldSql('x')} AND s.project_id = ${proj}::uuid AND ${liveSourceSql('s')} AND s.publication = 'published'
                       AND ${audienceSql(scope, p, 'sa')})
            AND EXISTS (SELECT 1 FROM audiences au WHERE au.id = i.record_audience_id AND au.project_id = ${proj}::uuid AND ${audienceSql(scope, p, 'au')})
          WHEN i.record_kind = 'human_proposal' THEN
@@ -491,7 +491,7 @@ SELECT CASE
                         JOIN audiences au ON au.id = th.audience_id
                        WHERE p.id = i.passage_id AND p.owner_kind = 'message_version'
                          AND p.project_id = ${proj}::uuid AND th.project_id = ${proj}::uuid
-                         AND m.state = 'visible' AND ${audienceSql(scope, p, 'au')})
+                         AND ${liveMessageSql('m')} AND ${notHeldSql('th')} AND ${audienceSql(scope, p, 'au')})
          WHEN i.record_kind = 'task' THEN ${record('tasks')}
          WHEN i.record_kind = 'decision' THEN ${record('decisions')}
          WHEN i.record_kind = 'question' THEN ${record('questions')}

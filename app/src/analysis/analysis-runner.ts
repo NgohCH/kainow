@@ -131,7 +131,7 @@ export class AnalysisRunner {
                       FROM discussion_messages m
                       JOIN LATERAL (SELECT id, body FROM message_versions WHERE message_id = m.id ORDER BY version_no DESC LIMIT 1) v ON true
                       JOIN users u ON u.id = m.author_id
-                     WHERE m.thread_id = $1 AND m.state = 'visible'`;
+                     WHERE m.thread_id = $1 AND m.state = 'visible' AND m.held_case_id IS NULL`;
     const shape = (rows: any[], isContext: boolean): TranscriptMessage[] => rows.map((r) => ({ ...r, isContext }));
     const selected = run.selectedMessageIds;
     const fresh = shape(

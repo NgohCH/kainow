@@ -46,10 +46,16 @@ export function quoteSourceFlag(quoteStart: number | null, quoteEnd: number | nu
 
 type Db = Pool | PoolClient;
 
+/**
+ * A message's state as transcripts show it: a message held in a quarantine case (history spec 7.2) is masked like a
+ * hidden one, so neither its text nor a quote from it is shown.
+ */
+const SHOWN_STATE = `CASE WHEN m.held_case_id IS NOT NULL AND m.state = 'visible' THEN 'hidden' ELSE m.state END AS state`;
+
 /** The spans of one stored transcript with each message's current state. Empty for a source that is not a discussion transcript. */
 export async function loadSpanStates(db: Db, sourceVersionId: string): Promise<SpanState[]> {
   const { rows } = await db.query(
-    `SELECT sp.header_start AS "headerStart", sp.body_start AS "bodyStart", sp.body_end AS "bodyEnd", m.state
+    `SELECT sp.header_start AS "headerStart", sp.body_start AS "bodyStart", sp.body_end AS "bodyEnd", ${SHOWN_STATE}
        FROM transcript_spans sp
        JOIN source_versions v ON v.id = sp.source_version_id
        JOIN sources s ON s.id = v.source_id AND s.kind = 'discussion'
@@ -158,7 +164,7 @@ export async function itemDiscussionEvidence(db: Db, itemIds: string[]): Promise
            FROM transcript_spans sp
            JOIN source_versions v ON v.id = sp.source_version_id
            JOIN sources s ON s.id = v.source_id AND s.kind = 'discussion'
-           JOIN discussion_messages m ON m.thread_id = s.thread_id AND m.message_no = sp.message_no AND m.state = 'visible'
+           JOIN discussion_messages m ON m.thread_id = s.thread_id AND m.message_no = sp.message_no AND m.state = 'visible' AND m.held_case_id IS NULL
            JOIN users u ON u.id = sp.author_id
           WHERE sp.source_version_id = $1 ORDER BY sp.header_start`,
         [place.versionId],
@@ -181,7 +187,7 @@ const LABEL_TIME = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kuala_Lump
 export async function occurrenceLabels(db: Db, sourceVersionId: string, places: Array<{ start: number }>): Promise<Array<string | null>> {
   const { rows } = await db.query(
     `SELECT sp.message_no AS "no", sp.header_start AS "headerStart", sp.body_start AS "bodyStart", sp.body_end AS "bodyEnd", sp.is_context AS "ctx",
-            m.state, m.created_at AS "at", u.display_name AS "name"
+            ${SHOWN_STATE}, m.created_at AS "at", u.display_name AS "name"
        FROM transcript_spans sp
        JOIN source_versions v ON v.id = sp.source_version_id
        JOIN sources s ON s.id = v.source_id AND s.kind = 'discussion'

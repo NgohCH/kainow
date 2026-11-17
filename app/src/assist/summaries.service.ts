@@ -7,7 +7,7 @@ import { PG_POOL } from '../db/database.module';
 import { type AudienceChange, type AudienceRow, type Person, inAudience, parseAudienceChange } from '../discussion/audience';
 import { AudienceService } from '../discussion/audience.service';
 import { refuseSecrets } from '../discussion/messages';
-import { liveSourceSql } from '../history/deleted-sql';
+import { liveMessageSql, liveSourceSql, refuseHeld } from '../history/deleted-sql';
 import { STALE_EDIT } from '../discussion/threads.service';
 import { FROM_RESTRICTED_LABEL, NotesService, SUMMARY_APPROVED_LABEL, formatDay } from '../notes/notes.service';
 import { NoteTextError, normaliseText, sha256Hex } from '../notes/text';
@@ -117,13 +117,16 @@ export interface Original {
 
 const NAMED = (a: string) => `COALESCE((SELECT array_agg(am.user_id ORDER BY am.user_id) FROM audience_members am WHERE am.audience_id = ${a}.id), ARRAY[]::uuid[])`;
 
+/** Shown instead of the title of an original held in a quarantine case (history spec 7.2). */
+const HELD_TITLE = '(held for a suspected credential)';
+
 export async function loadOriginal(db: Db, row: Pick<SummaryRow, 'originalSourceId' | 'originalThreadId'>): Promise<Original | undefined> {
   const source = row.originalSourceId !== null;
   const { rows } = await db.query(
     source
-      ? `SELECT s.id, s.title, a.id AS "audienceId", a.project_id AS "projectId", a.mode, ${NAMED('a')} AS "namedUserIds"
+      ? `SELECT s.id, CASE WHEN s.held_case_id IS NULL THEN s.title ELSE '${HELD_TITLE}' END AS title, a.id AS "audienceId", a.project_id AS "projectId", a.mode, ${NAMED('a')} AS "namedUserIds"
            FROM sources s JOIN audiences a ON a.id = s.audience_id WHERE s.id = $1`
-      : `SELECT t.id, t.title, a.id AS "audienceId", a.project_id AS "projectId", a.mode, ${NAMED('a')} AS "namedUserIds"
+      : `SELECT t.id, CASE WHEN t.held_case_id IS NULL THEN t.title ELSE '${HELD_TITLE}' END AS title, a.id AS "audienceId", a.project_id AS "projectId", a.mode, ${NAMED('a')} AS "namedUserIds"
            FROM discussion_threads t JOIN audiences a ON a.id = t.audience_id WHERE t.id = $1`,
     [source ? row.originalSourceId : row.originalThreadId],
   );
@@ -184,7 +187,8 @@ async function originalText(db: Db, row: Pick<SummaryRow, 'originalSourceId' | '
        FROM discussion_messages m
        JOIN LATERAL (SELECT body FROM message_versions WHERE message_id = m.id ORDER BY version_no DESC LIMIT 1) v ON true
        JOIN users u ON u.id = m.author_id
-      WHERE m.thread_id = $1 AND m.state = 'visible'
+      WHERE m.thread_id = $1 AND ${liveMessageSql('m')}
+        AND NOT EXISTS (SELECT 1 FROM discussion_threads th WHERE th.id = m.thread_id AND th.held_case_id IS NOT NULL)
       ORDER BY m.message_no`,
     [row.originalThreadId],
   );
@@ -262,7 +266,7 @@ export async function completeSummary(db: PoolClient, request: AssistRequest, ou
   const id = await summaryOfRequest(db, request);
   if (!id) throw new Error(`assist ${request.id}: no summary for this request`);
   const row = (await loadSummaryRow(db, id, true)) as SummaryRow;
-  if (row.state === 'withdrawn' || row.state === 'hidden') return;
+  if (row.state === 'withdrawn' || row.state === 'hidden' || row.heldCaseId) return;
   const o = output as SummaryOutput;
   const body = o.summary_markdown.trim();
   if (body.length > MAX_SUMMARY_BODY) {
@@ -282,8 +286,9 @@ export async function completeSummary(db: PoolClient, request: AssistRequest, ou
 export async function summaryRemoved(db: Db, request: AssistRequest): Promise<boolean> {
   const id = await summaryOfRequest(db, request);
   if (!id) return false;
-  const state = (await db.query<{ state: SummaryState }>(`SELECT state FROM summaries WHERE id = $1`, [id])).rows[0]?.state;
-  return state === 'withdrawn' || state === 'hidden';
+  const row = (await db.query<{ state: SummaryState; held: boolean }>(`SELECT state, held_case_id IS NOT NULL AS held FROM summaries WHERE id = $1`, [id])).rows[0];
+  // Held in a quarantine case (history spec 7.2): not run either.
+  return !!row && (row.state === 'withdrawn' || row.state === 'hidden' || row.held);
 }
 
 registerInputBuilder('summary', summaryInput);
@@ -569,8 +574,8 @@ export class SummariesService {
     return this.request(user, body, async (db) => {
       if (!UUID.test(threadId)) throw new NotFoundException();
       const t = (
-        await db.query<{ projectId: string; audienceId: string; kind: string }>(
-          `SELECT project_id AS "projectId", audience_id AS "audienceId", kind FROM discussion_threads WHERE id = $1`,
+        await db.query<{ projectId: string; audienceId: string; kind: string; heldCaseId: string | null }>(
+          `SELECT project_id AS "projectId", audience_id AS "audienceId", kind, held_case_id AS "heldCaseId" FROM discussion_threads WHERE id = $1`,
           [threadId],
         )
       ).rows[0];
@@ -579,6 +584,7 @@ export class SummariesService {
       const seen = await this.access.load(t.projectId, user, db);
       if (!seen || !inAudience(seen, audience)) throw new NotFoundException();
       const ctx = await this.access.authorize(user, 'summary.request', t.projectId, db);
+      refuseHeld(t);
       if (t.kind !== 'meeting') throw new ConflictException(NOT_A_MEETING);
       if (audience.mode !== 'restricted') throw new ConflictException(NOT_RESTRICTED);
       return { ctx, original: { originalSourceId: null, originalThreadId: threadId } };
@@ -702,7 +708,8 @@ export class SummariesService {
   private async changeable(db: PoolClient, user: AuthUser, id: string, action: 'summary.request' | 'summary.approve'): Promise<{ row: SummaryRow; ctx: ProjectContext }> {
     const row = await loadSummaryRow(db, id, true);
     if (!row) throw new NotFoundException();
-    if (!(await summaryVisible(db, await this.access.load(row.projectId, user, db), row))) throw new NotFoundException();
+    if (!(await summaryVisible(db, await this.access.load(row.projectId, user, db), { ...row, heldCaseId: null }))) throw new NotFoundException();
+    refuseHeld(row);
     const ctx = await this.access.authorize(user, action, row.projectId, db);
     if (!changeableState(row.state)) throw new ConflictException(NOT_OPEN);
     return { row, ctx };
@@ -901,7 +908,8 @@ export class SummariesService {
   private async reviewing(db: PoolClient, user: AuthUser, id: string, rawReason: unknown): Promise<{ row: SummaryRow; ctx: ProjectContext; reason: string }> {
     const row = await loadSummaryRow(db, id, true);
     if (!row) throw new NotFoundException();
-    if (!(await summaryVisible(db, await this.access.load(row.projectId, user, db), row))) throw new NotFoundException();
+    if (!(await summaryVisible(db, await this.access.load(row.projectId, user, db), { ...row, heldCaseId: null }))) throw new NotFoundException();
+    refuseHeld(row);
     const ctx = await this.access.authorize(user, 'summary.review', row.projectId, db);
     if (!inReview(row.state)) throw new ConflictException(NOT_IN_REVIEW);
     const reason = typeof rawReason === 'string' ? rawReason.trim() : '';
@@ -959,7 +967,7 @@ export class SummariesService {
       `SELECT ${SUMMARY_ROW}, u.display_name AS "byName",
               (SELECT max(v.version_no) FROM summary_versions v WHERE v.summary_id = sm.id) AS "latestNo"
          FROM summaries sm JOIN users u ON u.id = sm.created_by
-        WHERE sm.project_id = $1 AND sm.state IN ('draft', 'review_required', 'hidden')
+        WHERE sm.project_id = $1 AND sm.state IN ('draft', 'review_required', 'hidden') AND sm.held_case_id IS NULL
         ORDER BY sm.created_at DESC, sm.id DESC LIMIT 200`,
       [projectId],
     );

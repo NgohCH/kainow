@@ -35,7 +35,7 @@ import { AudienceService } from '../discussion/audience.service';
 import { EMAIL_NUDGE, type EmailNudge } from '../email/nudge';
 import { writeOutbox } from '../email/outbox';
 import { findCredentials } from '../extraction/credentials';
-import { liveRecordSql } from '../history/deleted-sql';
+import { HELD, liveRecordSql } from '../history/deleted-sql';
 import { HELD_EMAIL_REASON, cancelQueuedHolding, sentHolding } from '../notifications/mailing';
 import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { grantGivesAccess } from '../projects/grants';
@@ -191,8 +191,17 @@ const columnOf = (table: string, column: string) => TEXT_COLUMNS.find((c) => c.t
 // Helpers shared by the report and the worker job
 // ---------------------------------------------------------------------------------------------------------------
 
-async function hold(db: Db, kind: ItemKind, id: string, caseId: string): Promise<void> {
-  for (const sql of HOLD[kind]) await db.query(sql, [id, caseId]);
+/**
+ * Holds the item's rows. Returns false when the item's own row was already held (by another case, e.g. a second
+ * report racing this one: the UPDATE waits for the other transaction and then finds the row held).
+ */
+async function hold(db: Db, kind: ItemKind, id: string, caseId: string): Promise<boolean> {
+  let own = true;
+  for (const [i, sql] of HOLD[kind].entries()) {
+    const r = await db.query(sql, [id, caseId]);
+    if (i === 0 && !r.rowCount) own = false;
+  }
+  return own;
 }
 
 async function unhold(db: Db, kind: ItemKind, id: string, caseId: string): Promise<void> {
@@ -274,43 +283,50 @@ export async function cleanWaitingCases(pool: Pool, key: ProtectedKey, now: Date
   const waiting = (await pool.query<{ id: string }>(`SELECT id FROM quarantine_cases WHERE waiting_for_key AND state = 'held' ORDER BY reported_at, id`)).rows;
   let cleaned = 0;
   for (const { id } of waiting) {
-    const done = await inTransaction(pool, async (db) => {
-      const c = (
-        await db.query<{ projectId: string; kind: ItemKind; itemId: string }>(
-          `SELECT project_id AS "projectId", item_kind AS kind, item_id AS "itemId" FROM quarantine_cases
-            WHERE id = $1 AND waiting_for_key AND state = 'held' FOR UPDATE SKIP LOCKED`,
+    // One case that fails must not stop the others: logged by case id and SQLSTATE only (never a value), then the next.
+    let done = false;
+    try {
+      done = await inTransaction(pool, async (db) => {
+        const c = (
+          await db.query<{ projectId: string; kind: ItemKind; itemId: string }>(
+            `SELECT project_id AS "projectId", item_kind AS kind, item_id AS "itemId" FROM quarantine_cases
+              WHERE id = $1 AND waiting_for_key AND state = 'held' FOR UPDATE SKIP LOCKED`,
+            [id],
+          )
+        ).rows[0];
+        if (!c) return false;
+        const held = (await db.query<{ detail: { textLength?: number; marks?: Array<{ start: number; end: number }> } }>(
+          `SELECT detail FROM quarantine_events WHERE case_id = $1 AND action = 'held' ORDER BY at, id LIMIT 1`,
           [id],
-        )
-      ).rows[0];
-      if (!c) return false;
-      const held = (await db.query<{ detail: { textLength?: number; marks?: Array<{ start: number; end: number }> } }>(
-        `SELECT detail FROM quarantine_events WHERE case_id = $1 AND action = 'held' ORDER BY at, id LIMIT 1`,
-        [id],
-      )).rows[0]?.detail;
-      const text = await currentText(db, c.kind, c.itemId);
-      if (!held?.marks || text === null || text.length !== held.textLength) {
-        log('A case waiting for the protected key could not be cleaned: its held item is not as it was reported.');
-        return false;
-      }
-      const marks = [...new Set(held.marks.map((m) => text.slice(m.start, m.end)))];
-      const at = now;
-      const item = await cleanItem(db, key, id, c.kind, c.itemId, marks);
-      const places = (
-        await db.query<{ kind: ItemKind; id: string }>(
-          `SELECT item_kind AS kind, item_id AS id FROM quarantine_possible_copies
-            WHERE case_id = $1 AND NOT masked AND decision IS DISTINCT FROM 'dismissed' ORDER BY found_at, item_kind, item_id FOR UPDATE`,
-          [id],
-        )
-      ).rows;
-      let rows = item.rows;
-      for (const p of places) {
-        rows += (await cleanItem(db, key, id, p.kind, p.id, marks)).rows;
-        await unhold(db, p.kind, p.id, id);
-        await db.query(`UPDATE quarantine_possible_copies SET masked = true WHERE case_id = $1 AND item_kind = $2 AND item_id = $3`, [id, p.kind, p.id]);
-      }
-      await markCleaned(db, id, c.projectId, at, { rows, places: places.length });
-      return true;
-    });
+        )).rows[0]?.detail;
+        const text = await currentText(db, c.kind, c.itemId);
+        if (!held?.marks || text === null || text.length !== held.textLength) {
+          log('A case waiting for the protected key could not be cleaned: its held item is not as it was reported.');
+          return false;
+        }
+        const marks = [...new Set(held.marks.map((m) => text.slice(m.start, m.end)))];
+        const at = now;
+        const item = await cleanItem(db, key, id, c.kind, c.itemId, marks);
+        const places = (
+          await db.query<{ kind: ItemKind; id: string }>(
+            `SELECT item_kind AS kind, item_id AS id FROM quarantine_possible_copies
+              WHERE case_id = $1 AND NOT masked AND decision IS DISTINCT FROM 'dismissed' ORDER BY found_at, item_kind, item_id FOR UPDATE`,
+            [id],
+          )
+        ).rows;
+        let rows = item.rows;
+        for (const p of places) {
+          rows += (await cleanItem(db, key, id, p.kind, p.id, marks)).rows;
+          await unhold(db, p.kind, p.id, id);
+          await db.query(`UPDATE quarantine_possible_copies SET masked = true WHERE case_id = $1 AND item_kind = $2 AND item_id = $3`, [id, p.kind, p.id]);
+        }
+        await markCleaned(db, id, c.projectId, at, { rows, places: places.length });
+        return true;
+      });
+    } catch (err) {
+      const code = (err as { code?: unknown }).code;
+      log(`A case waiting for the protected key could not be cleaned (case ${id}${typeof code === 'string' && /^[0-9A-Z]{5}$/.test(code) ? `, SQLSTATE ${code}` : ''}); it stays waiting.`);
+    }
     if (done) cleaned++;
   }
   return cleaned;
@@ -427,7 +443,8 @@ export class CasesService {
     await event(db, { caseId, projectId, actorId: reporterId, action: 'reported', kind, itemId: id, detail: { disclosures }, at });
 
     // Held at once: hidden everywhere; outputs built on it withdrawn or sent to review; summaries of it hidden.
-    await hold(db, kind, id, caseId);
+    // Already held (a double submit): no second case, no second round of notices.
+    if (!(await hold(db, kind, id, caseId))) throw new ConflictException(HELD);
     const removed = await this.removedMaterial(db, kind, id);
     if (removed) await onMaterialRemoved(db, removed, 'quarantined', at);
     // Without the key the marks are kept only as offsets into the held text (numbers, no text).
@@ -751,7 +768,11 @@ export class CasesService {
     });
   }
 
-  /** Known disclosures (spec 7.7), as worked out at report time. Dates, provider, model and counts only. */
+  /**
+   * Known disclosures (spec 7.7), as worked out at report time. Dates, provider, model and counts only.
+   * Internal: no permission check here. Any endpoint exposing it must authorise first (Administrators and security
+   * reviewers only; Task 14 adds the Administrators' case view).
+   */
   async disclosures(caseId: string): Promise<Disclosures> {
     if (!UUID.test(caseId)) throw new NotFoundException();
     const row = (await this.pool.query<{ detail: { disclosures?: Disclosures } | null }>(

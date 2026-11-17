@@ -403,7 +403,9 @@ export class NotesService {
    */
   async provenance(versionId: string): Promise<string | null> {
     const found = await this.pool.query(
-      `SELECT t.title, d.id AS "draftId", e.at AS "at", u.display_name AS "publisher"
+      // A held meeting's title (history spec 7.2) is not repeated here.
+      `SELECT CASE WHEN t.held_case_id IS NULL THEN t.title ELSE '(held for a suspected credential)' END AS title,
+              d.id AS "draftId", e.at AS "at", u.display_name AS "publisher"
          FROM source_versions v
          JOIN minutes_drafts d ON d.id = v.minutes_draft_id
          JOIN discussion_threads t ON t.id = d.thread_id

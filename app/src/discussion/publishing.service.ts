@@ -88,7 +88,7 @@ export class PublishingService {
     const done = await this.threads.inTransaction(async (db) => {
       // Thread row first, as every write path does; then the meeting's minutes source.
       const t = await this.meeting(db, threadId);
-      await this.threads.readable(db, user, t);
+      await this.threads.readable(db, user, t, true);
       await this.access.authorize(user, 'minutes.publish', t.projectId, db);
       const draft = await this.draftOf(db, t.id, versionNo);
       // Every version added is checked for credentials (D79), the AI's draft included; only the kind is named.
@@ -174,7 +174,7 @@ export class PublishingService {
   async submitDraft(user: AuthUser, threadId: string, versionNo: number): Promise<SourceSummary> {
     return this.threads.inTransaction(async (db) => {
       const t = await this.meeting(db, threadId);
-      const { ctx } = await this.threads.readable(db, user, t);
+      const { ctx } = await this.threads.readable(db, user, t, true);
       await this.access.authorize(user, 'notes.submit', t.projectId, db);
       const starter = (await db.query(`SELECT created_by FROM discussion_threads WHERE id = $1`, [t.id])).rows[0].created_by;
       if (starter !== user.id) throw new ForbiddenException('Only the person who started the meeting can submit its minutes.');

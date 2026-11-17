@@ -3,6 +3,7 @@ import type { Pool, PoolClient } from 'pg';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
+import { refuseHeld } from '../history/deleted-sql';
 import type { Person } from '../discussion/audience';
 import { ProjectAccess, canReadContent } from '../projects/access.service';
 import { decide } from '../projects/matrix';
@@ -73,12 +74,12 @@ export class ReviewService {
               u.id AS "byId", u.display_name AS "byName", a.shared_thread_id AS "sharedThreadId", a.shared_at AS "sharedAt",
               ${flagged('answer', 'a.request_id')} AS "flaggedAt"
          FROM ai_answers a JOIN ai_requests r ON r.id = a.request_id JOIN users u ON u.id = r.requested_by
-        WHERE a.project_id = $1 AND r.kind = 'question' AND a.visibility = 'shared' AND a.review_state = 'review_required'
+        WHERE a.project_id = $1 AND r.kind = 'question' AND a.visibility = 'shared' AND a.review_state = 'review_required' AND a.held_case_id IS NULL
        UNION ALL
        SELECT 'draft', d.id, d.title, d.review_reason, ${cause('report_draft', 'd.id')},
               u.id, u.display_name, NULL::uuid, d.shared_at, ${flagged('report_draft', 'd.id')}
          FROM report_drafts d JOIN users u ON u.id = d.created_by
-        WHERE d.project_id = $1 AND d.shared AND d.review_state = 'review_required'
+        WHERE d.project_id = $1 AND d.shared AND d.review_state = 'review_required' AND d.held_case_id IS NULL
         ORDER BY "flaggedAt" NULLS LAST, id`,
       [projectId],
     );
@@ -108,8 +109,9 @@ export class ReviewService {
       const ctx = await this.access.load(row.projectId, user, db);
       // A reviewer can see it while it is in review; a Member cannot, and finds nothing (404, so it is not revealed).
       // Withdrawn answers are seen by nobody.
-      if ((await answerAccess(db, ctx, row)) === 'none') throw new NotFoundException();
+      if ((await answerAccess(db, ctx, { ...row, heldCaseId: null })) === 'none') throw new NotFoundException();
       await this.access.authorize(user, 'assist.review', row.projectId, db);
+      refuseHeld(row);
       return { projectId: row.projectId, state: row.reviewState };
     }
     const d = await loadDraftRow(db, id, true);
@@ -121,8 +123,9 @@ export class ReviewService {
     // nothing (404); a Member who can see it is refused by the matrix (403).
     const reviewer = canReadContent(ctx) && decide({ action: 'assist.review', roles: ctx.roles, status: ctx.project.status }).allowed;
     // A reviewer who cannot read a draft that is not in review finds nothing either (no 409 that would reveal it).
-    if ((!reviewer || d.reviewState !== 'review_required') && (await draftAccess(db, ctx, d)) === 'none') throw new NotFoundException();
+    if ((!reviewer || d.reviewState !== 'review_required') && (await draftAccess(db, ctx, { ...d, heldCaseId: null })) === 'none') throw new NotFoundException();
     await this.access.authorize(user, 'assist.review', d.projectId, db);
+    refuseHeld(d);
     return { projectId: d.projectId, state: d.reviewState };
   }
 

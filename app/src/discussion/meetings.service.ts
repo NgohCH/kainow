@@ -146,7 +146,7 @@ export class MeetingsService {
   async setPresent(user: AuthUser, threadId: string, body: { userIds: unknown }): Promise<Person[]> {
     await this.threads.inTransaction(async (db) => {
       const t = await this.meeting(db, threadId, true);
-      const { ctx, audience } = await this.threads.readable(db, user, t);
+      const { ctx, audience } = await this.threads.readable(db, user, t, true);
       await this.access.authorize(user, 'discussion.post', t.projectId, db);
       if (t.state === 'ended') throw new ConflictException(MEETING_ENDED);
       const raw = body.userIds;
@@ -183,7 +183,7 @@ export class MeetingsService {
   async end(user: AuthUser, threadId: string): Promise<ThreadView> {
     await this.threads.inTransaction(async (db) => {
       const t = await this.meeting(db, threadId, true);
-      await this.threads.readable(db, user, t);
+      await this.threads.readable(db, user, t, true);
       await this.authorizeMinutesManager(db, user, t);
       if (t.state === 'ended') throw new ConflictException(MEETING_ENDED);
       const at = this.now();
@@ -234,7 +234,7 @@ export class MeetingsService {
     const versionNo = await this.threads.inTransaction(async (db) => {
       // Thread row first (the order every write path uses); then the newest draft is compared with the version the editor opened.
       const t = await this.meeting(db, threadId, true);
-      await this.threads.readable(db, user, t);
+      await this.threads.readable(db, user, t, true);
       await this.authorizeMinutesManager(db, user, t);
       const based = body.basedOnVersion;
       if (typeof based !== 'number' || !Number.isInteger(based) || based < 0) throw new BadRequestException('Say which version you are editing (0 when there is no draft yet).');

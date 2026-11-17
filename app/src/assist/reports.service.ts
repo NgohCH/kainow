@@ -1,4 +1,4 @@
-import { liveRecordSql } from '../history/deleted-sql';
+import { liveRecordSql, notHeldSql, refuseHeld } from '../history/deleted-sql';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -90,11 +90,13 @@ export interface DraftRow {
   shared: boolean;
   sharedAt: Date | null;
   reviewState: ReviewState;
+  /** Held in an open quarantine case (history spec 7.2): seen by nobody; a change is refused with HELD. */
+  heldCaseId: string | null;
 }
 
 const DRAFT_ROW = `d.id, d.project_id AS "projectId", d.kind, d.title, to_char(d.period_from, 'YYYY-MM-DD') AS "periodFrom",
   to_char(d.period_to, 'YYYY-MM-DD') AS "periodTo", d.brief, d.chosen, d.created_by AS "createdBy", d.created_at AS "createdAt",
-  d.shared, d.shared_at AS "sharedAt", d.review_state AS "reviewState"`;
+  d.shared, d.shared_at AS "sharedAt", d.review_state AS "reviewState", d.held_case_id AS "heldCaseId"`;
 
 /** A draft row, or undefined. With `lock`, the row is locked for the transaction. */
 export async function loadDraftRow(db: Db, id: string, lock = false): Promise<DraftRow | undefined> {
@@ -126,7 +128,7 @@ async function everyAiVersionReadable(db: Db, ctx: ProjectContext, draftId: stri
  */
 export async function draftAccess(db: Db, ctx: ProjectContext | null, row: DraftRow): Promise<DraftAccess> {
   if (!canReadContent(ctx) || ctx.project.id !== row.projectId) return 'none';
-  if (row.reviewState === 'withdrawn') return 'none';
+  if (row.reviewState === 'withdrawn' || row.heldCaseId) return 'none';
   const requester = row.createdBy === ctx.viewerId;
   const reviewer = mayReview(ctx);
   const inReview = row.reviewState === 'review_required';
@@ -313,7 +315,7 @@ export async function completeReport(db: PoolClient, request: AssistRequest, out
   const draftId = await draftOfRequest(db, request);
   if (!draftId) throw new Error(`assist ${request.id}: no draft for this report request`);
   const draft = (await loadDraftRow(db, draftId, true)) as DraftRow;
-  if (draft.reviewState === 'withdrawn' || draft.reviewState === 'review_required') return;
+  if (draft.reviewState === 'withdrawn' || draft.reviewState === 'review_required' || draft.heldCaseId) return;
   const requester = (await db.query<{ name: string }>(`SELECT display_name AS name FROM users WHERE id = $1`, [request.requestedBy])).rows[0]?.name ?? 'someone';
   const period = periodOf(draft);
   const facts = period ? renderFacts(draft.kind, await loadReportRecords(db, draft.projectId), period) : {};
@@ -339,8 +341,9 @@ export async function completeReport(db: PoolClient, request: AssistRequest, out
 export async function reportRemoved(db: Db, request: AssistRequest): Promise<boolean> {
   const draftId = await draftOfRequest(db, request);
   if (!draftId) return false;
-  const state = (await db.query<{ state: ReviewState }>(`SELECT review_state AS state FROM report_drafts WHERE id = $1`, [draftId])).rows[0]?.state;
-  return state === 'withdrawn' || state === 'review_required';
+  const row = (await db.query<{ state: ReviewState; held: boolean }>(`SELECT review_state AS state, held_case_id IS NOT NULL AS held FROM report_drafts WHERE id = $1`, [draftId])).rows[0];
+  // A draft held in a quarantine case (history spec 7.2) does not run either.
+  return !!row && (row.state === 'withdrawn' || row.state === 'review_required' || row.held);
 }
 
 registerInputBuilder('report', reportInput);
@@ -487,7 +490,7 @@ async function readableChosen(db: Db, ctx: ProjectContext, chosen: { sourceIds: 
     threadIds: await keep(
       chosen.threadIds,
       `SELECT th.id FROM discussion_threads th JOIN audiences au ON au.id = th.audience_id
-        WHERE th.id = ANY($1::uuid[]) AND th.project_id = $2 AND ${audienceVisibleSql('au', '$3', '$4')}`,
+        WHERE th.id = ANY($1::uuid[]) AND th.project_id = $2 AND ${notHeldSql('th')} AND ${audienceVisibleSql('au', '$3', '$4')}`,
     ),
   };
 }
@@ -657,7 +660,7 @@ export class ReportsService {
               (SELECT count(*) FROM report_draft_versions v WHERE v.draft_id = d.id)::int AS "versionCount",
               coalesce((SELECT max(v.created_at) FROM report_draft_versions v WHERE v.draft_id = d.id), d.created_at) AS "updatedAt"
          FROM report_drafts d JOIN users u ON u.id = d.created_by
-        WHERE d.project_id = $1 AND d.review_state <> 'withdrawn' AND (d.created_by = $2 OR d.shared)
+        WHERE d.project_id = $1 AND d.review_state <> 'withdrawn' AND d.held_case_id IS NULL AND (d.created_by = $2 OR d.shared)
         ORDER BY d.created_at DESC, d.id DESC LIMIT 200`,
       [projectId, user.id],
     );
@@ -723,8 +726,9 @@ export class ReportsService {
   private async changeable(db: PoolClient, user: AuthUser, id: string, requesterOnly = false): Promise<{ row: DraftRow; ctx: ProjectContext }> {
     const row = await loadDraftRow(db, id, true);
     if (!row) throw new NotFoundException();
-    const seen = await draftAccess(db, await this.access.load(row.projectId, user, db), row);
+    const seen = await draftAccess(db, await this.access.load(row.projectId, user, db), { ...row, heldCaseId: null });
     if (seen === 'none') throw new NotFoundException();
+    refuseHeld(row);
     const own = row.createdBy === user.id;
     if (requesterOnly && !own) throw new ForbiddenException('Only the person who requested this draft can regenerate it.');
     const ctx = await this.access.authorize(user, own ? 'report.request' : 'report.manage', row.projectId, db);

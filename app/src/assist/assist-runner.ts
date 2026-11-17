@@ -168,7 +168,7 @@ export async function completeQuestion(db: PoolClient, request: AssistRequest, o
   if (!(await mayStillPost(db, request, at))) return;
   const shared = await db.query(
     `UPDATE ai_answers SET visibility = 'shared', shared_thread_id = $2, shared_by = $3, shared_at = $4
-      WHERE request_id = $1 AND visibility = 'private' AND review_state = 'none'`,
+      WHERE request_id = $1 AND visibility = 'private' AND review_state = 'none' AND held_case_id IS NULL`,
     [request.id, request.scopeThreadId, request.requestedBy, at],
   );
   if (shared.rowCount !== 1) return;
@@ -189,7 +189,7 @@ async function mayStillPost(db: PoolClient, request: AssistRequest, at: Date): P
       `SELECT t.audience_id AS "audienceId", t.state, a.mode,
               COALESCE((SELECT array_agg(m.user_id) FROM audience_members m WHERE m.audience_id = a.id), '{}') AS named
          FROM discussion_threads t JOIN audiences a ON a.id = t.audience_id
-        WHERE t.id = $1 AND t.project_id = $2
+        WHERE t.id = $1 AND t.project_id = $2 AND t.held_case_id IS NULL
         FOR NO KEY UPDATE OF t`,
       [request.scopeThreadId, request.projectId],
     )
@@ -210,10 +210,11 @@ async function mayStillPost(db: PoolClient, request: AssistRequest, at: Date): P
   return inAudience(ctx, { id: thread.audienceId, projectId: request.projectId, mode: thread.mode, namedUserIds: thread.named });
 }
 
-/** A question's answer is withdrawn (private) or in review (shared) once the removal hook touched its material. */
+/** A question's answer is withdrawn (private) or in review (shared) once the removal hook touched its material, or held. */
 export async function questionRemoved(db: Db, request: AssistRequest): Promise<boolean> {
-  const state = (await db.query<{ state: string }>(`SELECT review_state AS state FROM ai_answers WHERE request_id = $1`, [request.id])).rows[0]?.state;
-  return state !== undefined && state !== 'none';
+  const row = (await db.query<{ state: string; held: boolean }>(`SELECT review_state AS state, held_case_id IS NOT NULL AS held FROM ai_answers WHERE request_id = $1`, [request.id])).rows[0];
+  // Held in a quarantine case (history spec 7.2): not run, nothing sent or charged.
+  return row !== undefined && (row.state !== 'none' || row.held);
 }
 
 registerInputBuilder('question', questionInput);
@@ -362,10 +363,11 @@ export class AssistRunner {
       await pool.query<{ id: string; state: 'open' | 'ended' | null; mode: AudienceMode; named: string[] }>(
         `SELECT a.id, t.state, a.mode, COALESCE((SELECT array_agg(m.user_id) FROM audience_members m WHERE m.audience_id = a.id), '{}') AS named
            FROM discussion_threads t JOIN audiences a ON a.id = t.audience_id
-          WHERE t.id = $1 AND t.project_id = $2`,
+          WHERE t.id = $1 AND t.project_id = $2 AND t.held_case_id IS NULL`,
         [request.scopeThreadId, request.projectId],
       )
     ).rows[0];
+    // A thread held in a quarantine case (history spec 7.2) counts as gone: nothing is sent or charged.
     if (!thread) return { code: 'thread_not_found', detail: 'The thread for this request no longer exists, so the AI request did not run.' };
     if (thread.state === 'ended') return { code: 'meeting_ended', detail: 'The meeting has ended, so the answer could not be posted and the AI request did not run.' };
     if (!inAudience(ctx, { id: thread.id, projectId: request.projectId, mode: thread.mode, namedUserIds: thread.named })) {

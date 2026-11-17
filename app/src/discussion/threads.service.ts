@@ -17,6 +17,7 @@ import { MINUTES_LABEL } from '../notes/notes.service';
 import { AudienceService } from './audience.service';
 import { type MessageState, cleanBody, displayBody, refuseSecrets, replyQuote } from './messages';
 import { HELD_TEXT, POSSIBLE_COPY_TEXT, possibleCopies } from '../quarantine/labels';
+import { HELD } from '../history/deleted-sql';
 
 type Db = Pool | PoolClient;
 
@@ -89,10 +90,12 @@ export interface ThreadRow {
   audienceId: string;
   meetingDate: string | null;
   state: 'open' | 'ended' | null;
+  /** Held in an open quarantine case (its title, or a minutes draft of the meeting; history spec 7.2). */
+  heldCaseId: string | null;
 }
 
 const THREAD_COLUMNS = `id, project_id AS "projectId", kind, title, audience_id AS "audienceId",
-  to_char(meeting_date, 'YYYY-MM-DD') AS "meetingDate", state`;
+  to_char(meeting_date, 'YYYY-MM-DD') AS "meetingDate", state, held_case_id AS "heldCaseId"`;
 
 export const STALE_EDIT = 'Someone changed this since you opened it';
 export const MEETING_ENDED = 'This meeting has ended.';
@@ -164,11 +167,19 @@ export class ThreadsService {
     return rows[0] as ThreadRow;
   }
 
-  /** Reading: a participant or valid grant holder inside the audience; anyone else finds nothing (404). */
-  async readable(db: Db, user: AuthUser, t: ThreadRow): Promise<{ ctx: ProjectContext; audience: AudienceRow }> {
+  /**
+   * Reading: a participant or valid grant holder inside the audience; anyone else finds nothing (404). A thread held in
+   * a quarantine case (history spec 7.2) is not found either; for a write (`write`), someone who could otherwise act on
+   * it is refused with HELD (409) instead.
+   */
+  async readable(db: Db, user: AuthUser, t: ThreadRow, write = false): Promise<{ ctx: ProjectContext; audience: AudienceRow }> {
     const ctx = await this.access.authorize(user, 'note.view', t.projectId, db);
     const audience = await this.audiences.load(t.audienceId, db);
     this.audiences.assertReadable(ctx, audience);
+    if (t.heldCaseId) {
+      if (write) throw new ConflictException(HELD);
+      throw new NotFoundException();
+    }
     return { ctx, audience };
   }
 
@@ -276,14 +287,14 @@ export class ThreadsService {
          SELECT t.kind, t.id, t.title, COALESCE(t.last_message_at, t.created_at) AS "lastActivityAt",
                 to_char(t.meeting_date, 'YYYY-MM-DD') AS "meetingDate", t.state, a.mode AS "audienceMode", t.next_message_no - 1 AS "messageCount", NULL AS label
            FROM discussion_threads t JOIN audiences a ON a.id = t.audience_id
-          WHERE t.project_id = $1 AND ${visible('a')}
+          WHERE t.project_id = $1 AND t.held_case_id IS NULL AND ${visible('a')}
          UNION ALL
          SELECT CASE WHEN s.publication <> 'published' THEN 'submission' WHEN s.kind = 'minutes' THEN 'minutes' ELSE 'notes' END,
                 s.id, s.title, max(v.created_at), NULL, NULL, a.mode, NULL,
                 CASE WHEN s.publication = 'submitted' THEN 'Submitted for review' WHEN s.publication = 'returned' THEN 'Returned'
                      WHEN s.kind = 'minutes' THEN '${MINUTES_LABEL}' END
            FROM sources s JOIN audiences a ON a.id = s.audience_id JOIN source_versions v ON v.source_id = s.id
-          WHERE s.project_id = $1 AND s.status = 'active' AND s.kind IN ('notes', 'minutes')
+          WHERE s.project_id = $1 AND s.status = 'active' AND s.held_case_id IS NULL AND s.kind IN ('notes', 'minutes')
             AND ((s.publication = 'published' AND ${visible('a')}) OR (s.publication <> 'published' AND ($4::boolean OR s.submitted_by = $2::uuid)))
           GROUP BY s.id, a.mode
        ) items ORDER BY "lastActivityAt" DESC, id DESC`,
@@ -331,7 +342,7 @@ export class ThreadsService {
     const messageId = await this.inTransaction(async (db) => {
       // The thread row lock keeps message numbers gap-free and in order when two people post at once.
       const t = await this.threadRow(db, threadId, true);
-      await this.readable(db, user, t);
+      await this.readable(db, user, t, true);
       await this.access.authorize(user, 'discussion.post', t.projectId, db);
       if (t.state === 'ended') throw new ConflictException(MEETING_ENDED);
       const text = cleanBody(body.body);
@@ -372,22 +383,23 @@ export class ThreadsService {
    * The message's thread, author and state. With `lock`, the thread row is locked first and the message row second
    * (the order `post` uses), both FOR NO KEY UPDATE so inserts that reference them (replies, events) are not blocked.
    */
-  private async messageRow(db: Db, messageId: string, lock = false): Promise<{ t: ThreadRow; authorId: string; state: MessageState }> {
+  private async messageRow(db: Db, messageId: string, lock = false): Promise<{ t: ThreadRow; authorId: string; state: MessageState; heldCaseId: string | null }> {
     const found = await db.query(`SELECT thread_id AS "threadId" FROM discussion_messages WHERE id = $1`, [uuidOrNotFound(messageId)]);
     if (!found.rows[0]) throw new NotFoundException();
     const t = await this.threadRow(db, found.rows[0].threadId, lock);
     const { rows } = await db.query(
-      `SELECT author_id AS "authorId", state FROM discussion_messages WHERE id = $1 ${lock ? 'FOR NO KEY UPDATE' : ''}`,
+      `SELECT author_id AS "authorId", state, held_case_id AS "heldCaseId" FROM discussion_messages WHERE id = $1 ${lock ? 'FOR NO KEY UPDATE' : ''}`,
       [messageId],
     );
-    return { t, authorId: rows[0].authorId, state: rows[0].state };
+    return { t, authorId: rows[0].authorId, state: rows[0].state, heldCaseId: rows[0].heldCaseId };
   }
 
   async edit(user: AuthUser, messageId: string, body: { body: unknown; basedOnVersion: unknown }): Promise<MessageView> {
     await this.inTransaction(async (db) => {
       // The message row lock makes two edits based on the same version meet: the second sees the first and is refused.
       const m = await this.messageRow(db, messageId, true);
-      await this.readable(db, user, m.t);
+      await this.readable(db, user, m.t, true);
+      if (m.heldCaseId) throw new ConflictException(HELD);
       if (m.authorId !== user.id) throw new ForbiddenException('Only the author can edit a message.');
       await this.access.authorize(user, 'discussion.post', m.t.projectId, db);
       if (m.t.state === 'ended') throw new ConflictException(MEETING_ENDED);
@@ -423,7 +435,8 @@ export class ThreadsService {
     await this.inTransaction(async (db) => {
       // Thread row first, then message row: the order posts and edits use, so moderation cannot deadlock with them.
       const m = await this.messageRow(db, messageId, true);
-      await this.readable(db, user, m.t);
+      await this.readable(db, user, m.t, true);
+      if (m.heldCaseId) throw new ConflictException(HELD);
       // Deleting one's own message needs only the right to post; every other move needs the moderator's (or restorer's) action.
       if (action === 'delete' && m.authorId === user.id) await this.access.authorize(user, 'discussion.post', m.t.projectId, db);
       else await this.access.authorize(user, MODERATION[action].matrix, m.t.projectId, db);

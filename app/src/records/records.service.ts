@@ -21,7 +21,7 @@ import { InvitationsService } from '../projects/invitations.service';
 import { GRANT_READ_ONLY } from '../projects/matrix';
 import { checkNewAppointment } from '../projects/memberships.service';
 import { membershipState, todayUtc8 } from '../projects/membership';
-import { DELETED_LINK, liveRecordRefSql, liveRecordSql } from '../history/deleted-sql';
+import { DELETED_LINK, liveRecordRefSql, liveRecordSql, notHeldSql, refuseHeld } from '../history/deleted-sql';
 import { type QuestionAction, type RiskAction, SEVERITIES, type Severity, questionTransition, riskTransition } from './lifecycles';
 import { TASK_ACTIONS, type TaskAction, type TaskStatus, ancestorsToReopen, parentMayComplete, taskIndicators, taskTransition } from './tasks';
 
@@ -112,12 +112,13 @@ export class RecordsService {
   async authoriseItem(user: AuthUser, runId: string, itemId: string, body: Record<string, unknown>): Promise<Authorised> {
     if (!UUID.test(itemId)) throw new NotFoundException();
     const projectId = await this.access.projectOfRun(runId);
-    const item = (await this.pool.query(`SELECT run_id, source_version_id AS "versionId" FROM extraction_items WHERE id = $1`, [itemId])).rows[0];
+    const item = (await this.pool.query(`SELECT run_id, source_version_id AS "versionId", held_case_id AS "heldCaseId" FROM extraction_items WHERE id = $1`, [itemId])).rows[0];
     if (!item || item.run_id !== runId) throw new NotFoundException();
     // Someone outside the note's audience finds nothing, before any other answer.
     const sourceId = (await this.pool.query(`SELECT source_id FROM source_versions WHERE id = $1`, [item.versionId])).rows[0]?.source_id;
     if (!sourceId) throw new NotFoundException();
     await this.audiences.assertSourceReadable(user, sourceId);
+    refuseHeld(item);
     return this.authoriseThrough(user, projectId, 'extraction_item', itemId, body);
   }
 
@@ -330,7 +331,7 @@ export class RecordsService {
     const { rows } = await this.pool.query(
       `SELECT h.id, h.kind, h.text, h.owner, h.due, u.display_name AS "proposedBy", h.proposed_at AS "proposedAt",
               h.review_status AS "reviewStatus", h.reject_reason AS "rejectReason", h.follows_task_id AS "followsTaskId"
-         FROM human_proposals h JOIN users u ON u.id = h.proposed_by WHERE h.project_id = $1 ORDER BY h.proposed_at, h.id`,
+         FROM human_proposals h JOIN users u ON u.id = h.proposed_by WHERE h.project_id = $1 AND ${notHeldSql('h')} ORDER BY h.proposed_at, h.id`,
       [projectId],
     );
     const out = [];
@@ -345,15 +346,18 @@ export class RecordsService {
   /** Locks a human proposal and returns it with its project (404 when unknown). */
   private async lockProposal(c: PoolClient, proposalId: string) {
     if (!UUID.test(proposalId)) throw new NotFoundException();
-    const p = (await c.query(`SELECT id, project_id, kind, text, owner, review_status FROM human_proposals WHERE id = $1`, [proposalId])).rows[0];
+    const p = (await c.query(`SELECT id, project_id, kind, text, owner, review_status, held_case_id FROM human_proposals WHERE id = $1`, [proposalId])).rows[0];
     if (!p) throw new NotFoundException();
+    refuseHeld(p);
     return p as { id: string; project_id: string; kind: Content['kind']; text: string; owner: string | null; review_status: string };
   }
 
   async authoriseProposal(user: AuthUser, proposalId: string, body: Record<string, unknown>): Promise<Authorised> {
     if (!UUID.test(proposalId)) throw new NotFoundException();
-    const p = (await this.pool.query(`SELECT project_id FROM human_proposals WHERE id = $1`, [proposalId])).rows[0];
+    const p = (await this.pool.query(`SELECT project_id, held_case_id FROM human_proposals WHERE id = $1`, [proposalId])).rows[0];
     if (!p) throw new NotFoundException();
+    await this.access.authorize(user, 'project.view', p.project_id);
+    refuseHeld(p);
     return this.authoriseThrough(user, p.project_id, 'human_proposal', proposalId, body);
   }
 
@@ -591,7 +595,7 @@ export class RecordsService {
            LEFT JOIN tasks p ON p.id = t.parent_id
            LEFT JOIN tasks fo ON fo.id = t.follows_task_id
            LEFT JOIN invitations i ON i.id = t.invitation_id
-           LEFT JOIN extraction_items x ON x.id = t.origin_item_id
+           LEFT JOIN extraction_items x ON x.id = t.origin_item_id AND x.held_case_id IS NULL
            LEFT JOIN extraction_runs xr ON xr.id = x.run_id
            LEFT JOIN source_versions xv ON xv.id = xr.source_version_id
            LEFT JOIN sources xs ON xs.id = xv.source_id

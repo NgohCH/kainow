@@ -1,4 +1,4 @@
-import { liveRecordRefSql, liveRecordSql } from '../history/deleted-sql';
+import { liveRecordRefSql, liveRecordSql, notHeldSql } from '../history/deleted-sql';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
@@ -35,9 +35,10 @@ export const TARGET_SQL: Record<TargetKind, string> = {
   extraction_item: `SELECT i.id, i.run_id AS "runId", i.kind, i.review_status AS "reviewStatus", s.project_id AS "projectId"
                       FROM extraction_items i JOIN extraction_runs r ON r.id = i.run_id
                       JOIN source_versions v ON v.id = r.source_version_id JOIN sources s ON s.id = v.source_id
-                     WHERE i.id = $1 FOR UPDATE OF i`,
-  human_proposal: `SELECT id, project_id AS "projectId", kind, text, owner, review_status AS "reviewStatus" FROM human_proposals WHERE id = $1 FOR UPDATE`,
-  // A Deleted or held record is not a target: changes to it answer as for a missing record (history spec 4.3).
+                     WHERE i.id = $1 AND ${notHeldSql('i')} FOR UPDATE OF i`,
+  human_proposal: `SELECT id, project_id AS "projectId", kind, text, owner, review_status AS "reviewStatus" FROM human_proposals h WHERE id = $1 AND ${notHeldSql('h')} FOR UPDATE`,
+  // A Deleted or held record (or a held proposal, history spec 7.2) is not a target: changes to it answer as for a
+  // missing record (history spec 4.3), as they always have for records.
   task: `SELECT x.*, x.project_id AS "projectId", to_char(x.due_on, 'YYYY-MM-DD') AS "dueOn" FROM tasks x WHERE x.id = $1 AND ${liveRecordSql('x')} FOR UPDATE`,
   decision: `SELECT x.*, x.project_id AS "projectId" FROM decisions x WHERE x.id = $1 AND ${liveRecordSql('x')} FOR UPDATE`,
   risk: `SELECT x.*, x.project_id AS "projectId", to_char(x.review_on, 'YYYY-MM-DD') AS "reviewOn" FROM risks x WHERE x.id = $1 AND ${liveRecordSql('x')} FOR UPDATE`,
@@ -455,13 +456,15 @@ export class ChangesService {
         WHERE project_id = $1 AND ($2::text IS NULL OR status = $2)
           -- Requests about a Deleted record leave the list with it (history spec 4.3).
           AND ${liveRecordRefSql('change_requests.target_kind', 'change_requests.target_id')}
+          -- Nor do requests about a held human proposal (history spec 7.2).
+          AND (target_kind <> 'human_proposal' OR EXISTS (SELECT 1 FROM human_proposals hp WHERE hp.id = change_requests.target_id AND ${notHeldSql('hp')}))
           -- A proposal from a note the viewer cannot see is not listed (the same rule as AudienceService.canSeeSource).
           AND (target_kind <> 'extraction_item' OR (${canReadContent(ctx) ? 'true' : 'false'} AND EXISTS (
                  SELECT 1 FROM extraction_items xi
                    JOIN source_versions xv ON xv.id = xi.source_version_id
                    JOIN sources xs ON xs.id = xv.source_id
                    LEFT JOIN audiences xa ON xa.id = xs.audience_id
-                  WHERE xi.id = change_requests.target_id
+                  WHERE xi.id = change_requests.target_id AND ${notHeldSql('xi')}
                     AND CASE WHEN xs.publication = 'published' THEN COALESCE(${audienceVisibleSql('xa', '$3', '$4')}, false)
                              ELSE xs.submitted_by = $3::uuid OR ${activeManagerSql('xs.project_id', '$3', '$4')} END)))
         ORDER BY submitted_at DESC, id DESC`,

@@ -45,11 +45,11 @@ export async function loadThreadFacts(db: Db, now: Date, threadId?: string): Pro
                      ELSE COALESCE((SELECT d.covers_through_no FROM minutes_drafts d WHERE d.thread_id = t.id ORDER BY d.version_no DESC LIMIT 1), 0)
                 END AS cursor
            FROM discussion_threads t JOIN projects p ON p.id = t.project_id
-          WHERE $1::uuid IS NULL OR t.id = $1
+          WHERE ($1::uuid IS NULL AND t.held_case_id IS NULL) OR t.id = $1
        ) b
        CROSS JOIN LATERAL (
          SELECT count(*)::int AS n, max(m.created_at) AS newest FROM discussion_messages m
-          WHERE m.thread_id = b.id AND m.state = 'visible' AND m.message_no > b.cursor
+          WHERE m.thread_id = b.id AND m.state = 'visible' AND m.held_case_id IS NULL AND m.message_no > b.cursor
        ) u
       WHERE $1::uuid IS NOT NULL OR (b.next_message_no - 1 > b.cursor AND u.n > 0)
       ORDER BY b.id`,
