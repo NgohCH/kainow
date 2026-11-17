@@ -314,12 +314,12 @@ ${m.text_body}`.toLowerCase().includes(k.marker));
         for (const c of [ben, ada, auditor, pm, own]) {
           for (const path of links(k)) {
             const r = await c.request('GET', path);
-            // A message has no page of its own: its version list (4a) answers empty, never the text.
-            if (k === MESSAGE) assert.deepEqual(r.body, { versions: [] }, path);
-            else assert.equal(r.status, 404, `${path} ${json(r.body)}`);
+            assert.equal(r.status, 404, `${path} ${json(r.body)}`);
           }
         }
         if (k === MESSAGE) {
+          // Only a grant with Inspect Deleted Content may still list the versions.
+          assert.equal((await holder.request('GET', links(k)[0])).status, 200);
           // The thread still shows that a message was deleted, never its text.
           const view = await ok(ben.request('GET', `/threads/${threadId}`));
           assert.equal(view.messages[0].text, null);

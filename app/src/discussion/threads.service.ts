@@ -457,12 +457,15 @@ export class ThreadsService {
 
   /**
    * Earlier versions are open to anyone who can read the thread (spec 4.2). A hidden message shows its versions
-   * only to its author, and a deleted one to nobody (spec 4.3).
+   * only to its author. A deleted or held message does not exist (404) unless the viewer holds Inspect Deleted Content
+   * and it is not held (history spec 4.7).
    */
   async versions(user: AuthUser, messageId: string): Promise<MessageVersionView[]> {
     const m = await this.messageRow(this.pool, messageId);
-    await this.readable(this.pool, user, m.t);
-    if (m.state === 'deleted' || (m.state === 'hidden' && m.authorId !== user.id)) return [];
+    const { ctx } = await this.readable(this.pool, user, m.t);
+    const held = (await this.pool.query(`SELECT held_case_id IS NOT NULL AS held FROM discussion_messages WHERE id = $1`, [messageId])).rows[0].held as boolean;
+    if (held || (m.state === 'deleted' && ctx.inspectDeleted !== true)) throw new NotFoundException();
+    if (m.state === 'hidden' && m.authorId !== user.id) return [];
     const { rows } = await this.pool.query(
       `SELECT version_no AS "versionNo", body AS text, created_at AS "createdAt" FROM message_versions WHERE message_id = $1 ORDER BY version_no`,
       [messageId],
