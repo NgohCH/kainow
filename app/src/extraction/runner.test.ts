@@ -182,6 +182,37 @@ describe('extraction runner', { skip: SKIP_NO_DB }, () => {
     assert.ok(!stored.includes(key), 'the stored notes were cleaned');
   });
 
+  test('a run on an older notes version holding a key opens a case on the source and cleans that version', async () => {
+    const key = 'AKIAABCDEFGHIJKLMNOP';
+    const older = await addVersion(`Deploy notes. The vendor portal uses ${key} until March.`);
+    const source = (await pool.query('SELECT source_id FROM source_versions WHERE id = $1', [older])).rows[0].source_id;
+    const newer = uuidv7();
+    await pool.query(
+      `INSERT INTO source_versions (id, source_id, version_no, origin, text_content, text_sha256, char_count, created_by, created_at)
+       VALUES ($1, $2, 2, 'paste', 'Deploy notes. The vendor portal login was rotated.', 'y', 50, $3, $4)`,
+      [newer, source, userId, clock.now()],
+    );
+    const model = new FakeModel(() => answer([]));
+    assert.equal(await keyed(model).process(await newRun(older), 1, false), 'blocked');
+    const [c, ...more] = await cases();
+    assert.equal(more.length, 0);
+    assert.deepEqual([c.item_kind, c.item_id, c.reporter_id], ['source', source, null]);
+    assert.ok(!(await pool.query('SELECT text_content FROM source_versions WHERE id = $1', [older])).rows[0].text_content.includes(key), 'the older version was cleaned');
+    assert.equal(model.calls.length, 0);
+  });
+
+  test('a mark outside the limits is dropped and logged, not sent, and the other marks are reported', async () => {
+    const sent: string[][] = [];
+    const logs: string[] = [];
+    const reporter = { report: async (_u: 'kainow', i: { marked: string[] }) => void sent.push(i.marked) };
+    const huge = `password=!${'x'.repeat(10_050)}`;
+    const key = 'AKIAABCDEFGHIJKLMNOP';
+    await reportOwned(reporter, projectId, [{ kind: 'source', id: uuidv7(), text: `${huge} and ${key}` }], (m) => logs.push(m));
+    assert.deepEqual(sent, [[key]]);
+    assert.equal(logs.length, 1);
+    assert.ok(!logs[0].includes(key) && !logs[0].includes('xxxx'));
+  });
+
   test('a second run on the same item does not open a second case', async () => {
     const vId = await addVersion('Deploy notes. The vendor portal uses AKIAABCDEFGHIJKLMNOP until March.');
     const source = (await pool.query('SELECT source_id FROM source_versions WHERE id = $1', [vId])).rows[0].source_id;

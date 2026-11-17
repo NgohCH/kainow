@@ -43,13 +43,13 @@ import { effectiveRoles } from '../projects/membership';
 import { cleanItem, findPlaces, restoreOriginals } from './clean';
 import { searchForms } from './clean-text';
 import { POSSIBLE_COPY_TEXT } from './labels';
+import { MAX_MARK_CHARS, MIN_MARK } from './mark-limits';
 import { PROTECTED_KEY, type ProtectedKey } from './protected-key';
 import { ITEM_KINDS, ITEM_PROJECT, type ItemKind, TEXT_COLUMNS } from './registry';
 
-export { POSSIBLE_COPY_TEXT };
+export { POSSIBLE_COPY_TEXT, MIN_MARK, MAX_MARK_CHARS };
 /** The reason on a queued email cancelled because it holds the reported text (spec 7.2). */
 export const CANCELLED_REASON = HELD_EMAIL_REASON;
-export const MIN_MARK = 4;
 export const MARKS_REFUSED = 'Mark the suspected secret: text of at least 4 characters that appears exactly in the item as it is now.';
 export const REASON_REPEATS = 'Do not repeat the suspected secret in the reason.';
 export const HOLDER_REFUSED = 'Name the credential holder from the organisation’s people.';
@@ -58,7 +58,9 @@ export const WAITING_FOR_KEY = 'Waiting for the protected key';
 export const CASE_CLOSED = 'This case is closed.';
 export const ALREADY_DECIDED = 'This place has already been confirmed or dismissed.';
 const MAX_MARKS = 20;
-const MAX_MARK_CHARS = 10_000;
+/** Kainow's own report marks every match the detector found, so its limit is wider than a person's. */
+const MAX_KAINOW_MARKS = 500;
+
 
 type Db = Pool | PoolClient;
 export type Reporter = AuthUser | 'kainow';
@@ -213,6 +215,26 @@ async function currentText(db: Db, kind: ItemKind, id: string): Promise<string |
   return rows[0]?.text ?? null;
 }
 
+/**
+ * Kainow's own reports (spec 7.1) may mark text found in any stored version of a versioned item, not only the current one,
+ * since the sweep cleans every version. The text a mark is looked up in: the current text, then (for a source or a message)
+ * the other versions' text. A person's report keeps the current-text rule.
+ */
+async function markableText(db: Db, kind: ItemKind, id: string, anyVersion: boolean): Promise<string | null> {
+  const current = await currentText(db, kind, id);
+  if (current === null || !anyVersion) return current;
+  const sql =
+    kind === 'source'
+      ? `SELECT string_agg(text_content, E'\n' ORDER BY version_no DESC) AS text FROM source_versions WHERE source_id = $1`
+      : kind === 'message'
+        ? `SELECT string_agg(body, E'\n' ORDER BY version_no DESC) AS text FROM message_versions WHERE message_id = $1`
+        : null;
+  if (!sql) return current;
+  const all = (await db.query<{ text: string | null }>(sql, [id])).rows[0]?.text;
+  return all ? `${current}
+${all}` : current;
+}
+
 async function event(
   db: Db,
   e: { caseId: string; projectId: string; actorId: string | null; action: string; kind?: ItemKind | null; itemId?: string | null; detail?: Record<string, unknown> | null; at: Date },
@@ -288,8 +310,8 @@ export async function cleanWaitingCases(pool: Pool, key: ProtectedKey, now: Date
     try {
       done = await inTransaction(pool, async (db) => {
         const c = (
-          await db.query<{ projectId: string; kind: ItemKind; itemId: string }>(
-            `SELECT project_id AS "projectId", item_kind AS kind, item_id AS "itemId" FROM quarantine_cases
+          await db.query<{ projectId: string; kind: ItemKind; itemId: string; kainow: boolean }>(
+            `SELECT project_id AS "projectId", item_kind AS kind, item_id AS "itemId", reporter_id IS NULL AS kainow FROM quarantine_cases
               WHERE id = $1 AND waiting_for_key AND state = 'held' FOR UPDATE SKIP LOCKED`,
             [id],
           )
@@ -299,7 +321,7 @@ export async function cleanWaitingCases(pool: Pool, key: ProtectedKey, now: Date
           `SELECT detail FROM quarantine_events WHERE case_id = $1 AND action = 'held' ORDER BY at, id LIMIT 1`,
           [id],
         )).rows[0]?.detail;
-        const text = await currentText(db, c.kind, c.itemId);
+        const text = await markableText(db, c.kind, c.itemId, c.kainow);
         if (!held?.marks || text === null || text.length !== held.textLength) {
           log('A case waiting for the protected key could not be cleaned: its held item is not as it was reported.');
           return false;
@@ -383,8 +405,8 @@ export class CasesService {
       }
 
       // The marks: distinct strings of 4+ characters, each exactly in the item's current text.
-      const marks = this.readMarks(input.marked);
-      const text = await currentText(db, input.kind, input.id);
+      const marks = this.readMarks(input.marked, user === 'kainow');
+      const text = await markableText(db, input.kind, input.id, user === 'kainow');
       if (text === null || marks.some((m) => !text.includes(m))) throw new BadRequestException(MARKS_REFUSED);
       let reason: string | null = null;
       if (user !== 'kainow' || input.reason !== null) {
@@ -402,8 +424,8 @@ export class CasesService {
     return { caseId };
   }
 
-  private readMarks(raw: unknown): string[] {
-    if (!Array.isArray(raw) || raw.length === 0 || raw.length > MAX_MARKS) throw new BadRequestException(MARKS_REFUSED);
+  private readMarks(raw: unknown, kainow = false): string[] {
+    if (!Array.isArray(raw) || raw.length === 0 || raw.length > (kainow ? MAX_KAINOW_MARKS : MAX_MARKS)) throw new BadRequestException(MARKS_REFUSED);
     if (raw.some((m) => typeof m !== 'string' || m.length < MIN_MARK || m.length > MAX_MARK_CHARS || m.trim().length < MIN_MARK)) throw new BadRequestException(MARKS_REFUSED);
     return [...new Set(raw as string[])];
   }

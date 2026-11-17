@@ -10,12 +10,13 @@
  *
  * The matched strings go from the detector straight to CasesService.report, which encrypts them. They are never
  * logged, never kept in a variable that outlives the call, and no error here carries them: a failure is logged as a
- * fixed sentence and the code only. A report that finds the item already held (409) or no longer readable (404) or
- * its text changed (400) is the same as already reported: no second case.
+ * fixed sentence and the code only. A report that finds the item already held (409) or gone or no longer readable (404)
+ * is the same as already reported: no second case. Anything else (a 400 included) is logged, never swallowed.
  */
 import type { Pool } from 'pg';
 import { findCredentialMatches } from '../extraction/credentials';
 import type { ReportInput } from './cases.service';
+import { MAX_MARK_CHARS, MIN_MARK } from './mark-limits';
 import type { ItemKind } from './registry';
 
 /** The part of CasesService the runners use. */
@@ -30,8 +31,8 @@ export interface OwnedText {
   text: string;
 }
 
-/** A report that found the item held, unreadable or changed is an "already reported", not a failure. */
-const BENIGN = new Set([400, 404, 409]);
+/** A report that found the item held (409) or gone or unreadable (404) is an "already reported", not a failure. */
+const BENIGN = new Set([404, 409]);
 
 /**
  * Reports each owner of a hit once, marking the matches found in its text. Never throws: the run must still end blocked.
@@ -52,7 +53,11 @@ export async function reportOwned(reporter: KainowReporter | undefined, projectI
   let opened = 0;
   for (const { kind, id, marked } of byItem.values()) {
     try {
-      await reporter.report('kainow', { projectId, kind, id, marked: [...marked].slice(0, 20), reason: null });
+      // One mark outside the service's limits would refuse the whole report, so such a mark is dropped (and said so), not sent.
+      const usable = [...marked].filter((m) => m.length >= MIN_MARK && m.length <= MAX_MARK_CHARS && m.trim().length >= MIN_MARK);
+      if (usable.length < marked.size) log?.(`${marked.size - usable.length} match(es) of a stored secret in ${kind} ${id} were outside the limits for a mark and were not marked.`);
+      if (usable.length === 0) continue;
+      await reporter.report('kainow', { projectId, kind, id, marked: usable, reason: null });
       opened++;
     } catch (err) {
       const status = (err as { getStatus?: () => number }).getStatus?.();
