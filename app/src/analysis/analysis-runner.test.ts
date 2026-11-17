@@ -10,6 +10,7 @@ import { MVP_SPEND_SETTINGS } from '../spend/mvp-settings';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
+import { CasesService } from '../quarantine/cases.service';
 import { AnalysisRunner } from './analysis-runner';
 import { insertRun } from './runs';
 
@@ -54,6 +55,11 @@ describe('analysis runner (discussion proposals)', { skip: SKIP_NO_DB }, () => {
       at: t.clock.now(),
     });
   const runner = (model: ModelClient | null) => new AnalysisRunner({ pool: t.pool, clock: t.clock.now, extraction: new ExtractionRunner({ pool: t.pool, spend, model, clock: t.clock.now }) });
+  const withCases = (model: ModelClient | null) => {
+    const quarantine = t.app.get(CasesService);
+    return new AnalysisRunner({ pool: t.pool, clock: t.clock.now, quarantine, extraction: new ExtractionRunner({ pool: t.pool, spend, model, clock: t.clock.now, quarantine }) });
+  };
+  const cases = async () => (await t.pool.query(`SELECT * FROM quarantine_cases ORDER BY reported_at, id`)).rows;
   const analysisRun = async (id: string) => (await t.pool.query(`SELECT * FROM analysis_runs WHERE id = $1`, [id])).rows[0];
   const itemsOf = async (extractionRunId: string) => (await t.pool.query(`SELECT * FROM extraction_items WHERE run_id = $1 ORDER BY position`, [extractionRunId])).rows;
   const spendEntries = async () => (await t.pool.query(`SELECT * FROM ai_spend_entries ORDER BY created_at, id`)).rows;
@@ -310,6 +316,62 @@ describe('analysis runner (discussion proposals)', { skip: SKIP_NO_DB }, () => {
     assert.ok(!run.failure_detail.includes(key));
     assert.match(run.failure_detail, /API secret key/);
     assert.deepEqual([model.calls.length, (await spendEntries()).length, run.source_version_id], [0, 0, null]);
+  });
+
+  test('analysis finding a stored key in a message opens a case on that message and blocks without charge', async () => {
+    const other = await post(ada, 'We decided to ship on Friday.');
+    const m = await post(ada, 'Shall we also order the pump?');
+    const key = `sk-${'a1B2c3D4e5F6g7H8i9J0'}kLmN`;
+    await t.pool.query(`INSERT INTO message_versions (id, message_id, version_no, body, body_sha256, created_at) VALUES ($1, $2, 2, $3, 'x', $4)`, [uuidv7(), m, `Use ${key} for the vendor`, t.clock.now()]);
+    const model = new FakeModel(() => answer([]));
+    const id = await queueRun();
+    assert.equal(await withCases(model).process(id, 1, false), 'blocked');
+    assert.equal((await analysisRun(id)).failure_code, 'secret_found');
+    assert.deepEqual([model.calls.length, (await spendEntries()).length], [0, 0]);
+    const [c, ...more] = await cases();
+    assert.equal(more.length, 0);
+    assert.deepEqual([c.item_kind, c.item_id, c.reporter_id], ['message', m, null]);
+    const held = (await t.pool.query(`SELECT id, held_case_id FROM discussion_messages WHERE thread_id = $1 ORDER BY message_no`, [thread])).rows;
+    assert.deepEqual(held.map((h) => [h.id, h.held_case_id]), [[other, null], [m, c.id]]);
+
+    // The next run finds the message held and leaves it out: no second case.
+    await settle(id);
+    await withCases(model).process(await queueRun(), 1, false);
+    assert.equal((await cases()).length, 1);
+  });
+
+  test('a stored transcript holding a key opens the case on the message its span names', async () => {
+    await post(ada, 'We decided to ship on Friday.');
+    const b = await post(ada, 'Shall we also order the pump?');
+    const key = `sk-${'a1B2c3D4e5F6g7H8i9J0'}kLmN`;
+    const versions = (await t.pool.query(`SELECT v.id AS version_id, m.message_no FROM discussion_messages m JOIN message_versions v ON v.message_id = m.id WHERE m.thread_id = $1 ORDER BY m.message_no`, [thread])).rows;
+    const bodies = ['We decided to ship on Friday.', `Use ${key} for the vendor`];
+    // The second message's current version holds the key, as the stored transcript says.
+    const edited = uuidv7();
+    await t.pool.query(`INSERT INTO message_versions (id, message_id, version_no, body, body_sha256, created_at) VALUES ($1, $2, 2, $3, 'x', $4)`, [edited, b, bodies[1], t.clock.now()]);
+    versions[1].version_id = edited;
+    const headers = ['[#1 · ada · 2026-11-09 10:00]', '[#2 · ada · 2026-11-09 10:01]'];
+    const text = `${headers[0]}\n${bodies[0]}\n\n${headers[1]}\n${bodies[1]}`;
+    const thr = (await t.pool.query(`SELECT audience_id FROM discussion_threads WHERE id = $1`, [thread])).rows[0];
+    const sourceId = uuidv7();
+    await t.pool.query(`INSERT INTO sources (id, title, created_by, created_at, project_id, kind, audience_id, thread_id) VALUES ($1, 'Discussion: Release plan', $2, $3, $4, 'discussion', $5, $6)`, [sourceId, ids.ada, t.clock.now(), project, thr.audience_id, thread]);
+    const vId = uuidv7();
+    await t.pool.query(`INSERT INTO source_versions (id, source_id, version_no, origin, text_content, text_sha256, char_count, created_by, created_at) VALUES ($1, $2, 1, 'discussion', $3, 'x', $4, $5, $6)`, [vId, sourceId, text, text.length, ids.ada, t.clock.now()]);
+    let at = 0;
+    for (const [i, v] of versions.entries()) {
+      const headerStart = at;
+      const bodyStart = headerStart + headers[i].length + 1;
+      at = bodyStart + bodies[i].length + 2;
+      await t.pool.query(`INSERT INTO transcript_spans (source_version_id, message_no, message_version_id, author_id, header_start, body_start, body_end, is_context) VALUES ($1, $2, $3, $4, $5, $6, $7, false)`, [vId, v.message_no, v.version_id, ids.ada, headerStart, bodyStart, bodyStart + bodies[i].length]);
+    }
+    const run = uuidv7();
+    await t.pool.query(`INSERT INTO extraction_runs (id, source_version_id, requested_by, status, created_at, trigger) VALUES ($1, $2, $3, 'queued', $4, 'discussion')`, [run, vId, ids.ada, t.clock.now()]);
+    const model = new FakeModel(() => answer([]));
+    assert.equal(await new ExtractionRunner({ pool: t.pool, spend, model, clock: t.clock.now, quarantine: t.app.get(CasesService) }).process(run, 1, false), 'blocked');
+    const [c, ...more] = await cases();
+    assert.equal(more.length, 0);
+    assert.deepEqual([c.item_kind, c.item_id, c.reporter_id], ['message', b, null], 'the message its span names, never the transcript or the first message');
+    assert.equal(model.calls.length, 0);
   });
 
   test('a run with no visible messages left is blocked with a plain reason', async () => {

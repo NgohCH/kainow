@@ -13,6 +13,8 @@ import { UsersService } from '../users/users.service';
 import { seedProject } from '../testing/projects';
 import { ModelBadResponse, ModelCallError, type ModelClient, type ModelRequest, type ModelResult, type RawItem } from './model';
 import { ExtractionRunner } from './runner';
+import { reportOwned } from '../quarantine/kainow-report';
+import { standaloneCases } from '../testing/quarantine';
 
 const NOTES = 'Weekly sync.\nWe agreed to ship on Friday.\nAli will email Sam by Monday.\nok. ok.\nRisk: the vendor may be late.';
 const USAGE = { inputTokens: 10_000, cachedInputTokens: 0, outputTokens: 2_000 };
@@ -155,6 +157,43 @@ describe('extraction runner', { skip: SKIP_NO_DB }, () => {
     assert.equal(items[0].due_event, null);
     assert.equal(items[1].due_event, 'after the vendor replies');
     assert.deepEqual(items[1].alternatives, []);
+  });
+
+  const keyed = (model: ModelClient | null) => new ExtractionRunner({ pool, spend, model, clock: clock.now, quarantine: standaloneCases(pool, clock.now) });
+  const cases = async () => (await pool.query('SELECT * FROM quarantine_cases ORDER BY reported_at, id')).rows;
+
+  test('extraction finding a stored key opens a case on the notes and blocks without charge', async () => {
+    const key = 'AKIAABCDEFGHIJKLMNOP';
+    const vId = await addVersion(`Deploy notes. The vendor portal uses ${key} until March.`);
+    const source = (await pool.query('SELECT source_id FROM source_versions WHERE id = $1', [vId])).rows[0].source_id;
+    const model = new FakeModel(() => answer([]));
+    const id = await newRun(vId);
+    assert.equal(await keyed(model).process(id, 1, false), 'blocked');
+
+    const r = await run(id);
+    assert.equal(r.failure_code, 'credential_detected');
+    assert.equal(model.calls.length, 0);
+    assert.deepEqual(await entries(id), []);
+    const [c, ...more] = await cases();
+    assert.equal(more.length, 0);
+    assert.deepEqual([c.item_kind, c.item_id, c.reporter_id, c.project_id], ['source', source, null, projectId]);
+    assert.equal((await pool.query('SELECT held_case_id FROM sources WHERE id = $1', [source])).rows[0].held_case_id, c.id);
+    const stored = (await pool.query('SELECT text_content FROM source_versions WHERE id = $1', [vId])).rows[0].text_content;
+    assert.ok(!stored.includes(key), 'the stored notes were cleaned');
+  });
+
+  test('a second run on the same item does not open a second case', async () => {
+    const vId = await addVersion('Deploy notes. The vendor portal uses AKIAABCDEFGHIJKLMNOP until March.');
+    const source = (await pool.query('SELECT source_id FROM source_versions WHERE id = $1', [vId])).rows[0].source_id;
+    const model = new FakeModel(() => answer([]));
+    assert.equal(await keyed(model).process(await newRun(vId), 1, false), 'blocked');
+    assert.equal(await keyed(model).process(await newRun(vId), 1, false), 'blocked');
+    assert.equal((await cases()).length, 1);
+    // Reporting the held item again (a race that got past the held check) is "already reported": no second case, no error.
+    const reporter = standaloneCases(pool, clock.now);
+    assert.equal(await reportOwned(reporter, projectId, [{ kind: 'source', id: source, text: 'AKIAABCDEFGHIJKLMNOP' }]), 0);
+    assert.equal((await cases()).length, 1);
+    assert.equal(model.calls.length, 0);
   });
 
   test('a note with a credential is never sent and costs nothing', async () => {

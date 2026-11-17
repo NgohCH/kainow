@@ -10,14 +10,17 @@ import '../assist/summaries.service';
 import { ExtractionRunner } from '../extraction/runner';
 import { OpenAiModelClient } from '../extraction/model';
 import { SpendService } from '../spend/spend.service';
-import { loadWorkerConfig } from '../config';
+import { type AppConfig, loadWorkerConfig } from '../config';
 import { AI_CONCURRENCY, registerAiWorker } from './ai-worker';
 import { EmailDispatcher } from '../email/dispatcher';
 import { createTransport } from '../email/transport';
 import type { EmailNudge } from '../email/nudge';
 import { Sweep } from '../notifications/sweep';
 import { Logger } from '@nestjs/common';
-import { cleanWaitingCases } from '../quarantine/cases.service';
+import { AudienceService } from '../discussion/audience.service';
+import { ProjectAccess } from '../projects/access.service';
+import { CasesService, cleanWaitingCases } from '../quarantine/cases.service';
+import type { PgBoss } from 'pg-boss';
 import { loadProtectedKey } from '../quarantine/protected-key';
 import { QUEUES, startQueues } from './queues';
 import { registerSchedules } from './schedules';
@@ -27,6 +30,23 @@ async function main(): Promise<void> {
   const pool = new Pool({ connectionString: config.databaseUrl });
   const clock = () => new Date();
   const spend = new SpendService(pool, clock);
+  // The protected key (history spec 7.3): held in memory only; without it, waiting quarantine cases stay waiting.
+  const keyLog = new Logger('ProtectedKey');
+  const key = loadProtectedKey(config.protectedKeyFile, (m) => keyLog.warn(m));
+  // The email nudge needs the queue, which starts later; a nudge before then is simply lost and the next tick catches it.
+  let boss: PgBoss | undefined;
+  const nudge: EmailNudge = {
+    async nudge() {
+      try {
+        await boss?.send(QUEUES.email, { nudge: true }, { singletonSeconds: 5 });
+      } catch {
+        console.error('Could not nudge the email dispatch.');
+      }
+    },
+  };
+  // Kainow's own reports of a secret found in stored text (history spec 7.1): the runners open the case themselves.
+  const access = new ProjectAccess(pool, clock);
+  const quarantine = new CasesService(pool, clock, key, { appUrl: config.appUrl } as AppConfig, nudge, access, new AudienceService(pool, clock, access));
   const model = config.openAiApiKey ? new OpenAiModelClient(config.openAiApiKey) : null;
   const extraction = new ExtractionRunner({
     pool,
@@ -34,27 +54,19 @@ async function main(): Promise<void> {
     model,
     clock,
     log: (m) => console.error(m),
+    quarantine,
   });
-  const minutes = new MinutesRunner({ pool, spend, model, clock, log: (m) => console.error(m) });
-  const analysisRunner = new AnalysisRunner({ pool, clock, extraction, minutes, log: (m) => console.error(m) });
-  const assist = new AssistRunner({ pool, spend, model, clock, log: (m) => console.error(m) });
+  const minutes = new MinutesRunner({ pool, spend, model, clock, quarantine, log: (m) => console.error(m) });
+  const analysisRunner = new AnalysisRunner({ pool, clock, extraction, minutes, quarantine, log: (m) => console.error(m) });
+  const assist = new AssistRunner({ pool, spend, model, clock, quarantine, log: (m) => console.error(m) });
   if (!config.openAiApiKey) {
     console.warn('OPENAI_API_KEY is not set: extraction runs will fail without sending anything.');
   }
 
-  const boss = await startQueues(config.databaseUrl, undefined, { schedule: true });
+  boss = await startQueues(config.databaseUrl, undefined, { schedule: true });
   await registerAiWorker(boss, { extraction, analysis: analysisRunner, assist }, pool);
 
   // The sweep nudges the dispatcher through the same boss instance; a lost nudge is caught by the next tick.
-  const nudge: EmailNudge = {
-    async nudge() {
-      try {
-        await boss.send(QUEUES.email, { nudge: true }, { singletonSeconds: 5 });
-      } catch {
-        console.error('Could not nudge the email dispatch.');
-      }
-    },
-  };
   const log = { warn: (m: string) => console.warn(m) };
   const sweep = new Sweep({ pool, clock, appUrl: config.appUrl, nudge, log });
   const dispatcher = new EmailDispatcher({
@@ -65,12 +77,9 @@ async function main(): Promise<void> {
     log,
   });
   const analysis = new AnalysisTick({ pool, clock, queue: bossAnalysisQueue(boss), spend: new SpendService(pool, clock) });
-  // The protected key (history spec 7.3): held in memory only; without it, waiting quarantine cases stay waiting.
-  const keyLog = new Logger('ProtectedKey');
-  const key = loadProtectedKey(config.protectedKeyFile, (m) => keyLog.warn(m));
   const quarantineLog = new Logger('Quarantine');
-  const quarantine = key ? { cleanWaiting: () => cleanWaitingCases(pool, key, clock(), (m) => quarantineLog.warn(m)) } : undefined;
-  await registerSchedules(boss, { sweep, dispatcher, analysis, quarantine });
+  const quarantineJob = key ? { cleanWaiting: () => cleanWaitingCases(pool, key, clock(), (m) => quarantineLog.warn(m)) } : undefined;
+  await registerSchedules(boss, { sweep, dispatcher, analysis, quarantine: quarantineJob });
   console.log(`kainow worker started (AI requests at once: ${AI_CONCURRENCY})`);
 
   const stop = async (): Promise<void> => {

@@ -11,6 +11,7 @@ import { guardedAiCall, markStaleReservations } from '../ai/guarded-call';
 import type { ModelClient, ModelAnswer } from './model';
 import { DISCUSSION_PREAMBLE, EXTRACTION_SYSTEM_PROMPT, MAX_OUTPUT_TOKENS, REQUEST_TIMEOUT_MS } from './prompt';
 import { type Span, placeItem } from '../analysis/transcript';
+import { type KainowReporter, type OwnedText, messagesOfVersions, reportOwned } from '../quarantine/kainow-report';
 
 const OPEN_STATES: ProjectStatus[] = ['draft', 'planned', 'active'];
 
@@ -26,12 +27,16 @@ export interface RunnerDeps {
   model: ModelClient | null;
   clock: Clock;
   log?: (message: string) => void;
+  /** Opens a quarantine case on the item holding a secret found in stored text (history spec 7.1); without it the run only blocks. */
+  quarantine?: KainowReporter;
 }
 
 interface RunRow {
   id: string;
   status: string;
   source_version_id: string;
+  source_id: string;
+  project_id: string | null;
   requested_by: string | null;
   /** 'discussion' for a stored transcript of a project discussion; 'notes' and 'minutes' are read as notes. */
   source_kind: string;
@@ -83,7 +88,7 @@ export class ExtractionRunner {
   async process(runId: string, attemptNo: number, isLastAttempt: boolean): Promise<RunOutcome> {
     const { pool, spend } = this.d;
     const { rows } = await pool.query<RunRow>(
-      `SELECT r.id, r.status, r.source_version_id, r.requested_by, r.trigger, s.kind AS source_kind, s.status AS source_status, s.held_case_id IS NOT NULL AS source_held,
+      `SELECT r.id, r.status, r.source_version_id, s.id AS source_id, s.project_id, r.requested_by, r.trigger, s.kind AS source_kind, s.status AS source_status, s.held_case_id IS NOT NULL AS source_held,
               u.status AS user_status, u.role AS user_role,
               v.text_content AS text
          FROM extraction_runs r
@@ -128,6 +133,8 @@ export class ExtractionRunner {
 
     const findings = findCredentials(run.text);
     if (findings.length > 0) {
+      // A secret in stored text: Kainow opens the case itself on the owning item, then blocks as before (history spec 7.1).
+      await this.reportStored(run);
       const kinds = findings.map((f) => `${f.pattern} (${f.count})`).join(', ');
       return this.finish(
         run,
@@ -171,6 +178,21 @@ export class ExtractionRunner {
       if (!isLastAttempt) return this.requeue(run);
       return this.finish(run, 'failed', 'internal_error', `An unexpected error stopped the ${discussion ? 'analysis' : 'extraction'}.`);
     }
+  }
+
+  /**
+   * Notes and minutes: the source owns its text. A stored discussion transcript: each message whose body holds a match
+   * owns it, found through the transcript's spans (the transcript itself is not an item). No transaction is open here.
+   */
+  private async reportStored(run: RunRow): Promise<void> {
+    let owned: OwnedText[];
+    if (run.source_kind === 'discussion') {
+      const spans = await this.loadSpans(this.d.pool, run.source_version_id);
+      owned = await messagesOfVersions(this.d.pool, spans.map((s) => ({ messageVersionId: s.messageVersionId, text: run.text.slice(s.bodyStart, s.bodyEnd) })));
+    } else {
+      owned = [{ kind: 'source', id: run.source_id, text: run.text }];
+    }
+    await reportOwned(this.d.quarantine, run.project_id, owned, this.d.log);
   }
 
   private async requeue(run: RunRow): Promise<RunOutcome> {
@@ -242,7 +264,7 @@ export class ExtractionRunner {
     }
   }
 
-  private async loadSpans(db: PoolClient, sourceVersionId: string): Promise<Span[]> {
+  private async loadSpans(db: Pick<Pool, 'query'>, sourceVersionId: string): Promise<Span[]> {
     const { rows } = await db.query(
       `SELECT message_no AS "messageNo", message_version_id AS "messageVersionId", author_id AS "authorId", header_start AS "headerStart",
               body_start AS "bodyStart", body_end AS "bodyEnd", is_context AS "isContext"

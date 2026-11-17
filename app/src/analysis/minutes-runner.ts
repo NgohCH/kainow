@@ -9,6 +9,7 @@ import type { RunOutcome } from '../extraction/runner';
 import { ProjectAccess } from '../projects/access.service';
 import type { SpendService } from '../spend/spend.service';
 import { MAX_MINUTES_INPUT_CHARS, MINUTES_SYSTEM_PROMPT, type MinutesAnswer, renderMinutes } from './minutes';
+import { type KainowReporter, messagesOfVersions, reportOwned } from '../quarantine/kainow-report';
 import { type Refusal, type RunRow, loadRun, recheckRun } from './run-recheck';
 import { headerOf } from './transcript';
 
@@ -18,6 +19,8 @@ export interface MinutesRunnerDeps {
   /** null when no AI key is configured: the run then fails without sending or charging anything. */
   model: MinutesModel | null;
   clock: Clock;
+  /** Opens a quarantine case on the message holding a secret found in the stored messages (history spec 7.1). */
+  quarantine?: KainowReporter;
   log?: (message: string) => void;
 }
 
@@ -59,6 +62,9 @@ export class MinutesRunner {
     if (input.length > MAX_MINUTES_INPUT_CHARS) return this.end(run, 'failed', { code: 'too_long', detail: TOO_LONG });
     const found = findCredentials(input);
     if (found.length > 0) {
+      // The secret is in stored messages: each message whose body holds a match owns it. No transaction is open here.
+      const owned = await messagesOfVersions(pool, messages.map((m) => ({ messageVersionId: m.versionId, text: m.body })));
+      await reportOwned(this.d.quarantine, run.projectId, owned, this.d.log);
       return this.end(run, 'blocked', {
         code: 'secret_found',
         detail: `Not sent to the AI: the meeting appears to contain ${found.map((f) => f.pattern).join(', ')}. Remove it first.`,
@@ -107,11 +113,11 @@ export class MinutesRunner {
     return rowCount ? { code: 'human_edited', detail: PAUSED } : null;
   }
 
-  private async visibleMessages(threadId: string): Promise<Array<{ no: number; authorName: string; at: Date; body: string }>> {
+  private async visibleMessages(threadId: string): Promise<Array<{ no: number; versionId: string; authorName: string; at: Date; body: string }>> {
     const { rows } = await this.d.pool.query(
-      `SELECT m.message_no AS no, u.display_name AS "authorName", m.created_at AS at, v.body
+      `SELECT m.message_no AS no, v.id AS "versionId", u.display_name AS "authorName", m.created_at AS at, v.body
          FROM discussion_messages m
-         JOIN LATERAL (SELECT body FROM message_versions WHERE message_id = m.id ORDER BY version_no DESC LIMIT 1) v ON true
+         JOIN LATERAL (SELECT id, body FROM message_versions WHERE message_id = m.id ORDER BY version_no DESC LIMIT 1) v ON true
          JOIN users u ON u.id = m.author_id
         WHERE m.thread_id = $1 AND m.state = 'visible' AND m.held_case_id IS NULL
         ORDER BY m.message_no`,

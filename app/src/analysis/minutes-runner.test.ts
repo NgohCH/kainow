@@ -8,6 +8,7 @@ import { MVP_SPEND_SETTINGS } from '../spend/mvp-settings';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
+import { CasesService } from '../quarantine/cases.service';
 import { AnalysisRunner } from './analysis-runner';
 import { MinutesRunner } from './minutes-runner';
 import type { MinutesAnswer } from './minutes';
@@ -241,6 +242,25 @@ describe('minutes runner', { skip: SKIP_NO_DB }, () => {
     const spent = await entries();
     assert.equal(spent.length, 2);
     assert.ok(spent.every((e) => e.purpose === 'minutes_draft' && e.status === 'confirmed'), 'a bad answer is still charged');
+  });
+
+  test('minutes finding a stored key in a message opens a case on that message and blocks without charge', async () => {
+    const first = await post(ada, 'We agreed to ship on Friday.');
+    const m = await post(ada, 'Shall we ship on Friday?');
+    const key = `sk-${'a1B2c3D4e5F6g7H8i9J0'}kLmN`;
+    await t.pool.query(`INSERT INTO message_versions (id, message_id, version_no, body, body_sha256, created_at) VALUES ($1, $2, 2, $3, 'x', $4)`, [uuidv7(), m, `Use ${key} for the vendor`, t.clock.now()]);
+    const model = new FakeModel();
+    const id = await queueRun();
+    const withCases = new MinutesRunner({ pool: t.pool, spend, model, clock: t.clock.now, quarantine: t.app.get(CasesService) });
+    assert.equal(await withCases.process(id, 1, false), 'blocked');
+    assert.equal((await run(id)).failure_code, 'secret_found');
+    assert.equal(model.calls.length, 0);
+    assert.equal((await entries()).length, 0);
+    const cases = (await t.pool.query(`SELECT * FROM quarantine_cases`)).rows;
+    assert.equal(cases.length, 1);
+    assert.deepEqual([cases[0].item_kind, cases[0].item_id, cases[0].reporter_id], ['message', m, null]);
+    assert.equal((await t.pool.query(`SELECT held_case_id FROM discussion_messages WHERE id = $1`, [first])).rows[0].held_case_id, null);
+    assert.equal((await t.pool.query(`SELECT held_case_id FROM discussion_messages WHERE id = $1`, [m])).rows[0].held_case_id, cases[0].id);
   });
 
   test('a secret and a deferred project block without a request', async () => {

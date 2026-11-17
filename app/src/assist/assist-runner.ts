@@ -11,6 +11,8 @@ import { ProjectAccess, canReadContent } from '../projects/access.service';
 import { type ProjectStatus, decide } from '../projects/matrix';
 import type { Usage } from '../spend/cost';
 import type { SpendService } from '../spend/spend.service';
+import { type KainowReporter, type OwnedText, reportOwned } from '../quarantine/kainow-report';
+import type { ItemKind } from '../quarantine/registry';
 import { normalizeMarker, validateCitations } from './citations';
 import { type MaterialScope, readableMaterial } from './material';
 import {
@@ -227,6 +229,8 @@ export interface AssistRunnerDeps {
   /** null when no AI key is configured: the request then fails without sending or charging anything. */
   model: JsonSchemaModel | null;
   clock: Clock;
+  /** Opens a quarantine case on the item holding a secret found in stored material (history spec 7.1). */
+  quarantine?: KainowReporter;
   log?: (message: string) => void;
 }
 
@@ -292,6 +296,8 @@ export class AssistRunner {
     if ('code' in input) return this.end(request, 'blocked', input);
     const found = findCredentials(`${input.system}\n${input.user}`);
     if (found.length > 0) {
+      // Only secrets in stored material have an owning item; anything else in the prompt (the question as typed) is only refused.
+      await reportOwned(this.d.quarantine, request.projectId, await this.owners(kept), this.d.log);
       return this.end(request, 'blocked', {
         code: 'secret_found',
         detail: `Not sent to the AI: the material appears to contain ${found.map((f) => f.pattern).join(', ')}. Remove it first.`,
@@ -424,6 +430,37 @@ export class AssistRunner {
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * The item that owns each piece of material sent (history spec 7.1): a passage belongs to its source (through the
+   * source version) or to its message (through the message version); a record snapshot belongs to its record. Never a
+   * derived row (the passage, the snapshot): the case is opened on the item the text came from.
+   */
+  private async owners(material: RequestMaterial[]): Promise<OwnedText[]> {
+    const passageIds = material.flatMap((m) => (m.passageId ? [m.passageId] : []));
+    const owner = new Map<string, { kind: ItemKind; id: string }>();
+    if (passageIds.length > 0) {
+      const { rows } = await this.d.pool.query<{ id: string; kind: 'source' | 'message'; owner: string }>(
+        `SELECT p.id, CASE p.owner_kind WHEN 'source_version' THEN 'source' ELSE 'message' END AS kind,
+                CASE p.owner_kind WHEN 'source_version' THEN (SELECT source_id FROM source_versions WHERE id = p.owner_id)
+                                  ELSE (SELECT message_id FROM message_versions WHERE id = p.owner_id) END AS owner
+           FROM passages p WHERE p.id = ANY($1::uuid[])`,
+        [passageIds],
+      );
+      for (const r of rows) if (r.owner) owner.set(r.id, { kind: r.kind, id: r.owner });
+    }
+    const out: OwnedText[] = [];
+    for (const m of material) {
+      if (m.passageId) {
+        const o = owner.get(m.passageId);
+        if (o) out.push({ ...o, text: m.text });
+      } else if (m.recordKind && m.recordId) {
+        const kind: ItemKind = m.recordKind === 'ai_proposal' ? 'proposal' : m.recordKind;
+        out.push({ kind, id: m.recordId, text: m.text });
+      }
+    }
+    return out;
   }
 
   private async requeue(request: AssistRequest): Promise<RunOutcome> {

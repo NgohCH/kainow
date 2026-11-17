@@ -5,6 +5,7 @@ import { uuidv7 } from '../common/uuid7';
 import { findCredentials } from '../extraction/credentials';
 import type { RunOutcome } from '../extraction/runner';
 import { ProjectAccess } from '../projects/access.service';
+import { type KainowReporter, messagesOfVersions, reportOwned } from '../quarantine/kainow-report';
 import { type Refusal, type RunRow, loadRun, recheckRun } from './run-recheck';
 import { type Span, type TranscriptMessage, buildTranscript } from './transcript';
 
@@ -23,6 +24,8 @@ export interface AnalysisRunnerDeps {
   clock: Clock;
   extraction: ExtractionStep;
   minutes?: MinutesStep;
+  /** Opens a quarantine case on the message holding a secret found in the stored messages (history spec 7.1). */
+  quarantine?: KainowReporter;
   log?: (message: string) => void;
 }
 
@@ -118,6 +121,9 @@ export class AnalysisRunner {
     const { text, spans } = buildTranscript(messages.fresh, messages.earlier);
     const found = findCredentials(text);
     if (found.length > 0) {
+      // The secret is in stored messages: each message whose body holds a match owns it. No transaction is open here.
+      const owned = await messagesOfVersions(this.d.pool, spans.map((s) => ({ messageVersionId: s.messageVersionId, text: text.slice(s.bodyStart, s.bodyEnd) })));
+      await reportOwned(this.d.quarantine, run.projectId, owned, this.d.log);
       return { code: 'secret_found', detail: `Not sent to the AI: the discussion appears to contain ${found.map((f) => f.pattern).join(', ')}. Remove it first.` };
     }
     const nos = messages.fresh.map((m) => m.no);
