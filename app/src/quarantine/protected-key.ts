@@ -20,6 +20,7 @@ export interface ProtectedKey {
 
 const KEY_BYTES = 32;
 const NONCE_BYTES = 12;
+const TAG_BYTES = 16;
 
 function fromBytes(key: Buffer): ProtectedKey {
   const id = createHash('sha256').update(key).digest('hex').slice(0, 16);
@@ -27,12 +28,14 @@ function fromBytes(key: Buffer): ProtectedKey {
     id,
     encrypt(plain) {
       const nonce = randomBytes(NONCE_BYTES);
-      const cipher = createCipheriv('aes-256-gcm', key, nonce);
+      const cipher = createCipheriv('aes-256-gcm', key, nonce, { authTagLength: TAG_BYTES });
       const ciphertext = Buffer.concat([cipher.update(plain), cipher.final()]);
       return { ciphertext, nonce, tag: cipher.getAuthTag() };
     },
     decrypt(v) {
-      const decipher = createDecipheriv('aes-256-gcm', key, v.nonce);
+      if (v.nonce.length !== NONCE_BYTES) throw new Error('protected key: nonce must be 12 bytes');
+      if (v.tag.length !== TAG_BYTES) throw new Error('protected key: tag must be 16 bytes');
+      const decipher = createDecipheriv('aes-256-gcm', key, v.nonce, { authTagLength: TAG_BYTES });
       decipher.setAuthTag(v.tag);
       return Buffer.concat([decipher.update(v.ciphertext), decipher.final()]);
     },
@@ -44,10 +47,8 @@ function fromBytes(key: Buffer): ProtectedKey {
  * The key is held in memory only.
  */
 export function loadProtectedKey(path: string | null, log: (message: string) => void = (m) => console.error(m)): ProtectedKey | null {
-  if (!path) {
-    log('protected key file not set (KAINOW_PROTECTED_KEY_FILE)');
-    return null;
-  }
+  // Unset is a normal state (the Administrator view shows the warning); only a configured file that fails is logged.
+  if (!path) return null;
   let bytes: Buffer;
   try {
     bytes = readFileSync(path);

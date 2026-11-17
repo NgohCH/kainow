@@ -44,6 +44,8 @@ describe('protected key', () => {
     const tag = Buffer.from(sealed.tag);
     tag[0] ^= 1;
     assert.throws(() => key.decrypt({ ...sealed, tag }));
+    assert.throws(() => key.decrypt({ ...sealed, tag: sealed.tag.subarray(0, 8) }), /tag must be 16/);
+    assert.throws(() => key.decrypt({ ...sealed, nonce: sealed.nonce.subarray(0, 8) }), /nonce must be 12/);
     const ciphertext = Buffer.from(sealed.ciphertext);
     ciphertext[0] ^= 1;
     assert.throws(() => key.decrypt({ ...sealed, ciphertext }));
@@ -72,9 +74,9 @@ describe('protected key', () => {
     assert.equal(loadProtectedKey(null, (m) => logs.push(m)), null);
     assert.equal(loadProtectedKey(join(dir, 'nope.key'), (m) => logs.push(m)), null);
     assert.equal(loadProtectedKey(dir, (m) => logs.push(m)), null);
-    assert.match(logs[0], /not set/);
-    assert.match(logs[1], /not found/);
-    assert.match(logs[2], /unreadable/);
+    assert.equal(logs.length, 2, 'unset is normal and logs nothing');
+    assert.match(logs[0], /not found/);
+    assert.match(logs[1], /unreadable/);
   });
 
   test('key id is stable and 16 hex', () => {
