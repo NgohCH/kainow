@@ -7,6 +7,9 @@ import { PG_POOL } from '../db/database.module';
 import { inAudience } from '../discussion/audience';
 import { AudienceService } from '../discussion/audience.service';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
+import { decide } from '../projects/matrix';
+import { openRecordDelegation } from './delegation';
+import { canActOnRecords } from './records-deletion.service';
 import { type RecordKind, RECORD_KINDS } from './final-states';
 
 export type SourceItemKind = 'note' | 'minutes' | 'summary';
@@ -26,6 +29,8 @@ export interface HistoryLine {
   /** Only for a holder of Inspect Deleted Content, and only for an item that is Deleted now and that they may open. */
   title?: string;
   href?: string;
+  /** On a `deleted` line whose item is still Deleted (not held) and which this viewer may restore now: what to restore. Never a title or text. */
+  restore?: { kind: 'source' | RecordKind; id: string };
 }
 
 /** A Deleted item a holder of Inspect Deleted Content may open (history spec 4.7). */
@@ -101,12 +106,52 @@ export class HistoryService {
       [ctx.project.id, seesReporter],
     );
     const openable = ctx.inspectDeleted ? new Map((await this.collect(ctx, user)).map((i) => [`${i.kind}:${i.id}`, i])) : new Map<string, DeletedItem>();
+    const restorable = await this.restorable(ctx, user);
+    const offered = new Set<string>();
     return rows.map((r) => {
       const line: HistoryLine = { at: iso(r.at), kind: r.kind, action: r.action, actor: r.actor ?? null, reason: r.action === 'reported' ? null : r.reason };
       if (r.kind === 'credential_report') return { ...line, itemKind: r.itemKind };
       const item = openable.get(`${r.kind}:${r.itemId}`);
-      return item ? { ...line, title: item.title, href: item.href } : line;
+      const out: HistoryLine = item ? { ...line, title: item.title, href: item.href } : line;
+      // Only the newest `deleted` line of an item that is still Deleted offers Restore.
+      const key = `${r.kind}:${r.itemId}`;
+      const target = r.action === 'deleted' && !offered.has(key) ? restorable.get(key) : undefined;
+      if (target) {
+        offered.add(key);
+        return { ...out, restore: target };
+      }
+      return out;
     });
+  }
+
+  /**
+   * The items this viewer may restore right now, keyed like the lines (`kind:id`): still Deleted, not held. Sources need
+   * the matrix's source.restore and the viewer's audience; records need the same people as the restore route (an Owner or
+   * Sponsor, or the PM under the open delegation). Messages are restored in their thread.
+   */
+  private async restorable(ctx: ProjectContext, user: AuthUser): Promise<Map<string, { kind: 'source' | RecordKind; id: string }>> {
+    const out = new Map<string, { kind: 'source' | RecordKind; id: string }>();
+    const status = ctx.project.status;
+    if (decide({ action: 'source.restore', roles: ctx.roles, status }).allowed) {
+      const { rows } = await this.pool.query(
+        `SELECT s.id, s.kind FROM sources s WHERE s.project_id = $1 AND s.status = 'deleted' AND s.held_case_id IS NULL AND s.kind IN ('notes', 'minutes', 'summary')`,
+        [ctx.project.id],
+      );
+      for (const r of rows) {
+        const row = await this.audiences.sourceAccessRow(r.id);
+        if (this.audiences.canSeeSource(ctx, user, row.kind === 'summary' ? { ...row, kind: 'notes' } : row)) out.set(`${SOURCE_KIND[r.kind]}:${r.id}`, { kind: 'source', id: r.id });
+      }
+    }
+    if (decide({ action: 'record.restore', roles: ctx.roles, status }).allowed) {
+      const delegated = (await openRecordDelegation(this.pool, ctx.project.id))?.pmUserId ?? null;
+      if (canActOnRecords(ctx, user.id, delegated) !== null) {
+        for (const kind of RECORD_KINDS) {
+          const { rows } = await this.pool.query(`SELECT x.id FROM ${RECORD_TITLE[kind].table} x WHERE x.project_id = $1 AND x.deleted_at IS NOT NULL AND x.held_case_id IS NULL`, [ctx.project.id]);
+          for (const r of rows) out.set(`${kind}:${r.id}`, { kind, id: r.id });
+        }
+      }
+    }
+    return out;
   }
 
   /** The Deleted items list: holders of Inspect Deleted Content only (404 for anyone else), newest deletion first. */

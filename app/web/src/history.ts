@@ -22,6 +22,8 @@ export interface HistoryLine {
   /** Only for a holder of Inspect Deleted Content. */
   title?: string;
   href?: string;
+  /** Present when this viewer may restore the item now (the server decides). */
+  restore?: { kind: 'source' | RecordKind; id: string };
 }
 
 export interface DeletedItem {

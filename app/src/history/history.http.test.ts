@@ -144,6 +144,26 @@ describe('project history and Inspect Deleted Content', { skip: SKIP_NO_DB }, ()
     assert.equal((await ada.request('GET', `/projects/${uuidv7()}/history/deletions`)).status, 404);
   });
 
+  test('Restore is offered on a deleted line only to those who may restore it, with no title', async () => {
+    const id = await task('Order kestrel valves');
+    await ok(own.request('POST', `/records/task/${id}/delete`, { reason: 'Duplicate' }));
+    const n = await note('Kestrel plan', PLANT);
+    await ok(pm.request('POST', `/sources/${n}/delete`, { reason: 'Wrong project' }));
+    const ownerLines = await lines(own);
+    const ownTask = ownerLines.find((l) => l.kind === 'task') as any;
+    assert.deepEqual(ownTask.restore, { kind: 'task', id });
+    assert.equal(ownTask.title, undefined);
+    assert.ok(!JSON.stringify(ownerLines).includes('Kestrel'));
+    const pmNote = (await lines(pm)).find((l) => l.kind === 'note') as any;
+    assert.deepEqual(pmNote.restore, { kind: 'source', id: n });
+    // A PM without delegation may not restore a task; a Member and an auditor are offered nothing.
+    assert.equal(((await lines(pm)).find((l) => l.kind === 'task') as any).restore, undefined);
+    for (const c of [ada, auditor]) assert.ok(!JSON.stringify(await lines(c)).includes('restore'));
+    // Once restored the line no longer offers it.
+    await ok(own.request('POST', `/records/task/${id}/restore`, { reason: 'Back' }));
+    assert.ok(!(await lines(own)).some((l: any) => l.restore && l.restore.id === id));
+  });
+
   test('a holder with Inspect Deleted Content sees the title and opens the item, logged', async () => {
     const id = await task('Order kestrel valves');
     await ok(own.request('POST', `/records/task/${id}/delete`, { reason: 'Duplicate of an earlier task' }));
