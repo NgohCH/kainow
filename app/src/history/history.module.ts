@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AudienceModule } from '../discussion/audience.module';
 import { ProjectsModule } from '../projects/projects.module';
 import { HistoryController } from './history.controller';
+import { RecordDelegationService } from './delegation.service';
 import { RecordsDeletionService } from './records-deletion.service';
 import { SourcesDeletionService } from './sources-deletion.service';
 
@@ -9,7 +10,7 @@ import { SourcesDeletionService } from './sources-deletion.service';
 @Module({
   imports: [ProjectsModule, AudienceModule],
   controllers: [HistoryController],
-  providers: [SourcesDeletionService, RecordsDeletionService],
+  providers: [SourcesDeletionService, RecordsDeletionService, RecordDelegationService],
   exports: [SourcesDeletionService, RecordsDeletionService],
 })
 export class HistoryModule {}

@@ -3,6 +3,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Inject, Inj
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
+import { openRecordDelegation } from '../history/delegation';
 import { assertClosureReady, finaliseClosure, openDelegation } from '../changes/closure';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { APP_CONFIG, type AppConfig } from '../config';
@@ -206,6 +207,11 @@ export class ProjectsService {
     return { project: await this.render(ctx) };
   }
 
+  private async recordDelegation(projectId: string) {
+    const d = await openRecordDelegation(this.pool, projectId);
+    return d === null ? null : { pm: d.pm, by: d.by, reason: d.reason, at: d.at };
+  }
+
   private async render(ctx: ProjectContext) {
     const id = ctx.project.id;
     const p = (
@@ -274,6 +280,7 @@ export class ProjectsService {
       onHold: managesRoles(ctx) && ctx.onHold,
       access: ctx.roles.length === 0 && ctx.grantKinds.length > 0 ? ctx.grantKinds[0] : null,
       grants: await this.grantsFor(ctx),
+      recordDeletionDelegation: await this.recordDelegation(id),
       ...(await loadArchiveState(this.pool, id, ctx.project.status, ctx.today)),
     };
   }

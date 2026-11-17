@@ -9,8 +9,9 @@ import { PG_POOL } from '../db/database.module';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { grantGivesAccess } from '../projects/grants';
 import { GRANT_READ_ONLY, PROJECT_MATRIX } from '../projects/matrix';
-import { effectiveRoles } from '../projects/membership';
+import { effectiveRoles, membershipState } from '../projects/membership';
 import { HELD } from './deleted-sql';
+import { openRecordDelegation } from './delegation';
 import { type RecordKind, RECORD_KINDS, deletionRefusal } from './final-states';
 
 export const ALREADY_DELETED_RECORD = 'This record is already deleted.';
@@ -71,9 +72,28 @@ export class RecordsDeletionService {
     }
   }
 
-  /** The one place that says who acts on records; Task 4 adds the open delegation's PM here. */
-  private async actingAs(_db: PoolClient, ctx: ProjectContext, userId: string): Promise<'owner_sponsor' | 'delegated_pm' | null> {
-    return canActOnRecords(ctx, userId);
+  /** The one place that says who acts on records: an Owner or Sponsor, or the PM named on the open delegation (D83). */
+  private async actingAs(db: PoolClient, ctx: ProjectContext, userId: string): Promise<'owner_sponsor' | 'delegated_pm' | null> {
+    const direct = canActOnRecords(ctx, userId);
+    if (direct !== null) return direct;
+    return canActOnRecords(ctx, userId, (await openRecordDelegation(db, ctx.project.id))?.pmUserId ?? null);
+  }
+
+  /**
+   * When the PM acts under the delegation, each active Owner and Sponsor gets an in-app notice: who, what kind of
+   * record and which project, nothing of the record's title or the reason.
+   */
+  private async tellOwners(db: PoolClient, r: Locked, what: 'deleted' | 'restored', user: AuthUser, at: Date): Promise<void> {
+    if (r.as !== 'delegated_pm') return;
+    const name = (await db.query<{ name: string }>(`SELECT display_name AS name FROM users WHERE id = $1`, [user.id])).rows[0].name;
+    const project = (await db.query<{ name: string }>(`SELECT name FROM projects WHERE id = $1`, [r.ctx.project.id])).rows[0].name;
+    const ids = new Set(r.ctx.rows.filter((m) => (m.role === 'owner' || m.role === 'sponsor') && membershipState(m, r.ctx.today) === 'active').map((m) => m.userId));
+    for (const userId of [...ids].sort()) {
+      await db.query(
+        `INSERT INTO notifications (id, user_id, project_id, kind, summary, link, created_at, email_off) VALUES ($1, $2, $3, 'record_deletion_by_pm', $4, $5, $6, true)`,
+        [uuidv7(at.getTime()), userId, r.ctx.project.id, `${name} ${what} a ${r.kind} in ${project}`, `#/projects/${r.ctx.project.id}`, at],
+      );
+    }
   }
 
   /**
@@ -133,6 +153,7 @@ export class RecordsDeletionService {
         await this.event(db, 'task', s.id, 'deleted', s.status, user, reason, at);
       }
       await onMaterialRemoved(db, { records: [{ kind: r.kind, id: r.id }, ...live.map((s) => ({ kind: 'task' as const, id: s.id }))] }, 'record_deleted', at);
+      await this.tellOwners(db, r, 'deleted', user, at);
       await writeAudit(db, {
         at, action: 'record.deleted', actorUserId: user.id, subjectType: r.kind, subjectId: r.id,
         detail: { projectId: r.ctx.project.id, subtasks: live.length, as: r.as },
@@ -185,6 +206,7 @@ export class RecordsDeletionService {
         await db.query(`UPDATE tasks SET deleted_at = NULL, deleted_by = NULL, delete_reason = NULL, deleted_with = NULL WHERE id = $1`, [s.id]);
         await this.event(db, 'task', s.id, 'restored', s.status, user, reason, at);
       }
+      await this.tellOwners(db, r, 'restored', user, at);
       await writeAudit(db, {
         at, action: 'record.restored', actorUserId: user.id, subjectType: r.kind, subjectId: r.id,
         detail: { projectId: r.ctx.project.id, subtasks: withIt.length, as: r.as },

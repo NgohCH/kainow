@@ -2,6 +2,7 @@ import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Req } 
 import { AnySignedInUser } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
+import { RecordDelegationService } from './delegation.service';
 import { RecordsDeletionService } from './records-deletion.service';
 import { SourcesDeletionService } from './sources-deletion.service';
 
@@ -19,6 +20,7 @@ export class HistoryController {
   constructor(
     private readonly sources: SourcesDeletionService,
     private readonly records: RecordsDeletionService,
+    private readonly delegation: RecordDelegationService,
   ) {}
 
   /** { reason } → { id, status: 'deleted' }. */
@@ -65,5 +67,21 @@ export class HistoryController {
   @HttpCode(200)
   restoreRecord(@Param('kind') kind: string, @Param('id') id: string, @Body() body: unknown, @Req() req: HttpRequest) {
     return this.records.restore(who(req), kind, id, reasonOf(body));
+  }
+
+  /** { reason } by an Owner or Sponsor: the Project Manager may delete and restore authorised records (D83). */
+  @Post('projects/:id/record-deletion-delegation')
+  @AnySignedInUser()
+  @HttpCode(200)
+  delegate(@Param('id') id: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    return this.delegation.delegate(who(req), id, reasonOf(body));
+  }
+
+  /** { reason } by any Owner or Sponsor. */
+  @Post('projects/:id/record-deletion-delegation/revoke')
+  @AnySignedInUser()
+  @HttpCode(200)
+  revokeDelegation(@Param('id') id: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    return this.delegation.revoke(who(req), id, reasonOf(body));
   }
 }
