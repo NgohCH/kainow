@@ -4,6 +4,8 @@ import { go } from '../App.tsx';
 import { type AudienceView, returnedNotice, versionOriginText } from '../discussion.ts';
 import { formatWhen, plural } from '../format.ts';
 import { mayDraftSummary } from '../assist.ts';
+import { type SourceKind, mayDeleteSource } from '../history.ts';
+import { DeleteAction } from './DeleteRestore.tsx';
 import { AudiencePanel } from './AudiencePanel.tsx';
 import { SummaryRequest } from './SummaryView.tsx';
 import { Intake } from './Intake.tsx';
@@ -111,11 +113,19 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
   const isReviewer = roles.some((r) => r !== 'member');
   const projectOpen = project ? ['draft', 'planned', 'active'].includes(project.status) : false;
   const published = src.publication === 'published';
+  // Notes, minutes and approved summaries can be deleted; a discussion transcript is not deleted directly (its messages are).
+  const sourceKind: SourceKind | null = src.kind === 'notes' ? 'note' : src.kind === 'minutes' ? 'minutes' : src.kind === 'summary' ? 'summary' : null;
+  const mayDelete = project !== null && sourceKind !== null && mayDeleteSource(project.myRoles, project.status);
 
   return (
     <main className="page">
       <p><a href={`#/projects/${src.projectId}/notes`}>Back to the project's notes</a></p>
       <h1>{src.title}</h1>
+      {mayDelete && sourceKind && (
+        <p>
+          <DeleteAction kind={sourceKind} id={sourceId} label={`${sourceKind === 'minutes' ? 'these minutes' : `this ${sourceKind}`}`} onDone={() => go(`#/projects/${src.projectId}/notes`)} />
+        </p>
+      )}
       {src.label && <p className="meta">{src.label}</p>}
       {src.provenance && <p className="meta">{src.provenance}</p>}
       {src.summary && (

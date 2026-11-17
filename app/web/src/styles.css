@@ -371,3 +371,9 @@ mark.summary-mark.intended { text-decoration: underline solid; }
 .marks li { margin: 0.35rem 0; overflow-wrap: anywhere; }
 .summary-request { margin: 0.5rem 0; }
 .ai-label.approved { border-style: solid; }
+
+/* Delete, restore and the Inspect Deleted Content tick-box (sub-project 5a) */
+.check-row label.check { display: flex; gap: 0.4rem; align-items: center; font-weight: 600; }
+.check-row p { margin: 0.2rem 0 0 1.6rem; }
+.delete-dialog textarea { width: 100%; }
+.delete-dialog h3 { margin: 0; }

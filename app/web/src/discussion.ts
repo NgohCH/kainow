@@ -27,6 +27,10 @@ export interface MessageView {
   state: MessageState;
   text: string | null;
   notice: string | null;
+  /** Only for a holder of Inspect Deleted Content looking at a Deleted message (then `text` is the message's text). */
+  deletedBy?: string;
+  deletedAt?: string;
+  deleteReason?: string;
   replyTo: { id: string; no: number; quote: string | null; notice: string | null } | null;
 }
 

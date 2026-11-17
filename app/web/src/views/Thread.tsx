@@ -25,6 +25,7 @@ import {
 } from '../discussion.ts';
 import { mayDraftSummary, mergeTimeline } from '../assist.ts';
 import { formatWhen } from '../format.ts';
+import { deletedLabel } from '../history.ts';
 import { ThreadAnswerItem } from './AiAnswer.tsx';
 import { AnalysisStatus } from './AnalysisStatus.tsx';
 import { MeetingControls } from './Meeting.tsx';
@@ -393,7 +394,11 @@ function MessageItem({
         )}
       </p>
       {lines.replyLine && <p className="reply-quote">{lines.replyLine}</p>}
-      {lines.notice && <p className="notice">{lines.notice}</p>}
+      {m.deletedBy !== undefined && m.deletedAt !== undefined ? (
+        <p className="warn" role="note">{deletedLabel(m.deletedBy, m.deletedAt, m.deleteReason ?? '')}</p>
+      ) : (
+        lines.notice && <p className="notice">{lines.notice}</p>
+      )}
       {editing ? (
         <form className="stack" onSubmit={saveEdit}>
           <label>

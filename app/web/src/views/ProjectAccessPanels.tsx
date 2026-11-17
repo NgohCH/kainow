@@ -281,9 +281,10 @@ function GrantRequestForm({ project, act, onDone }: { project: Project; act: Act
   const [scope, setScope] = useState('Read the project, its people, history, notes and proposals');
   const [startsOn, setStartsOn] = useState(todayUtc8());
   const [expiresOn, setExpiresOn] = useState(plusDays(todayUtc8(), 30));
+  const [inspectDeleted, setInspectDeleted] = useState(false);
   async function submit(e: FormEvent) {
     e.preventDefault();
-    if (await act(() => api.post(`/projects/${project.id}/grants`, { userId, kind, purpose, scope, startsOn, expiresOn }), 'Request recorded. Another manager now approves or declines it.')) onDone();
+    if (await act(() => api.post(`/projects/${project.id}/grants`, { userId, kind, purpose, scope, startsOn, expiresOn, inspectDeleted }), 'Request recorded. Another manager now approves or declines it.')) onDone();
   }
   return (
     <form className="panel stack" onSubmit={submit} aria-label="Record an access request">
@@ -324,6 +325,13 @@ function GrantRequestForm({ project, act, onDone }: { project: Project; act: Act
         Requested scope
         <input required maxLength={2000} value={scope} onChange={(e) => setScope(e.target.value)} />
       </label>
+      <div className="check-row">
+        <label className="check">
+          <input type="checkbox" checked={inspectDeleted} onChange={(e) => setInspectDeleted(e.target.checked)} aria-describedby="inspect-deleted-help" />
+          Include Inspect Deleted Content
+        </label>
+        <p id="inspect-deleted-help" className="meta">Lets this person read, but not change, what has been deleted from this project; each time they open an item is recorded. It cannot be added later.</p>
+      </div>
       <div className="decision">
         <button className="primary">Record request</button>
         <button type="button" onClick={onDone}>Cancel</button>
@@ -356,6 +364,7 @@ function GrantRow({ g, manager, act }: { g: Grant; manager: boolean; act: Act })
           {' '}
           {g.startsOn} to {g.expiresOn}. Purpose: {g.purpose}. Scope: {g.scope}. Recorded by {g.requestedBy}
           {g.decidedBy ? `; decided by ${g.decidedBy}` : ''}.
+          {g.inspectDeleted ? ' Includes Inspect Deleted Content.' : ''}
         </span>
       </div>
       {manager && mode === 'none' && (

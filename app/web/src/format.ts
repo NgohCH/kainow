@@ -20,3 +20,9 @@ export function plural(n: number, one: string, many: string = one + 's'): string
 }
 
 export const KIND_LABEL = { decision: 'Decision', action: 'Action', question: 'Open question', risk: 'Risk' } as const;
+
+/** "3 Dec 2026" for a stored UTC time, as the calendar day in UTC+8. */
+export function formatDay(iso: string): string {
+  const d = new Date(new Date(iso).getTime() + 8 * 3_600_000);
+  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.getUTCFullYear()}`;
+}

@@ -20,6 +20,9 @@ import {
   type TaskStatus,
   historyLine,
 } from '../records.ts';
+import { flagSentence, mayDeleteRecord } from '../history.ts';
+import type { ProjectRole, ProjectStatus } from '../projects.ts';
+import { DeleteAction } from './DeleteRestore.tsx';
 import type { Person } from './AuthoriseForm.tsx';
 import { ModeLabel } from './ProjectCalendar.tsx';
 import { type RequestView } from '../changes.ts';
@@ -29,7 +32,7 @@ import { AddSubtaskForm, AmendForm, CancelForm, FollowUpForm, SupersedeForm, Wit
 
 interface ReviewFlag {
   id: string;
-  decision: { id: string; statement: string; status: string };
+  decision: { id: string | null; statement: string; status: string };
   raisedAt: string;
 }
 
@@ -99,10 +102,16 @@ interface Records {
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
 /** The project's authorised work: tasks (with subtasks), questions, decisions and risks. */
-export function Work({ projectId, people, canPropose, canClear, focusId }: { projectId: string; people: Person[]; canPropose: boolean; canClear: boolean; focusId?: string }) {
+export function Work({
+  projectId, people, canPropose, canClear, focusId, roles, status, delegated,
+}: {
+  projectId: string; people: Person[]; canPropose: boolean; canClear: boolean; focusId?: string;
+  roles: ProjectRole[]; status: ProjectStatus; delegated: boolean;
+}) {
   const [records, setRecords] = useState<Records | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const mayDelete = mayDeleteRecord(roles, status, delegated);
   const { requests, reload: reloadRequests } = useRequests(projectId);
   const load = useCallback(() => {
     api.get<Records>(`/projects/${projectId}/records`).then(setRecords, (e: Error) => setError(e.message));
@@ -177,7 +186,7 @@ export function Work({ projectId, people, canPropose, canClear, focusId }: { pro
         ) : (
           <ul className="plain work-list">
             {records.tasks.map((t) => (
-              <TaskRow key={t.id} projectId={projectId} t={t} hasChildren={hasChildren.has(t.id)} work={work} act={act} propose={propose} canPropose={canPropose} canClear={canClear} />
+              <TaskRow key={t.id} projectId={projectId} t={t} hasChildren={hasChildren.has(t.id)} work={work} act={act} propose={propose} canPropose={canPropose} canClear={canClear} mayDelete={mayDelete} onChanged={changed} />
             ))}
           </ul>
         )}
@@ -189,7 +198,7 @@ export function Work({ projectId, people, canPropose, canClear, focusId }: { pro
         ) : (
           <ul className="plain work-list">
             {records.questions.map((q) => (
-              <QuestionRow key={q.id} q={q} act={act} canClear={canClear} />
+              <QuestionRow key={q.id} q={q} act={act} canClear={canClear} mayDelete={mayDelete} onChanged={changed} />
             ))}
           </ul>
         )}
@@ -201,7 +210,7 @@ export function Work({ projectId, people, canPropose, canClear, focusId }: { pro
         ) : (
           <ul className="plain work-list">
             {records.decisions.map((d) => (
-              <DecisionRow key={d.id} d={d} work={work} propose={propose} />
+              <DecisionRow key={d.id} d={d} work={work} propose={propose} mayDelete={mayDelete} onChanged={changed} />
             ))}
           </ul>
         )}
@@ -213,7 +222,7 @@ export function Work({ projectId, people, canPropose, canClear, focusId }: { pro
         ) : (
           <ul className="plain work-list">
             {records.risks.map((r) => (
-              <RiskRow key={r.id} r={r} people={people} act={act} canClear={canClear} />
+              <RiskRow key={r.id} r={r} people={people} act={act} canClear={canClear} mayDelete={mayDelete} onChanged={changed} />
             ))}
           </ul>
         )}
@@ -237,9 +246,7 @@ function Flags({ flags, canClear }: { flags: ReviewFlag[]; canClear: boolean }) 
       {shown.map((f) => (
         <li key={f.id}>
           <span className="badge badge-pending">Review: decision changed</span>{' '}
-          <span className="meta">
-            “{f.decision.statement}” is now {f.decision.status}
-          </span>
+          <span className="meta">{flagSentence(f.decision)}</span>
           {canClear && open !== f.id && (
             <button className="link-button" onClick={() => { setOpen(f.id); setError(null); }}>Clear</button>
           )}
@@ -290,9 +297,10 @@ type Act = (path: string, body: object, done: string) => Promise<boolean>;
 type TaskForm = TaskAction | 'amend' | 'subtask' | 'cancel' | 'followup';
 
 function TaskRow({
-  projectId, t, hasChildren, work, act, propose, canPropose, canClear,
+  projectId, t, hasChildren, work, act, propose, canPropose, canClear, mayDelete, onChanged,
 }: {
   projectId: string; t: TaskView; hasChildren: boolean; work: WorkContext; act: Act; propose: Propose; canPropose: boolean; canClear: boolean;
+  mayDelete: boolean; onChanged: (message: string) => void;
 }) {
   const [open, setOpen] = useState<TaskForm | null>(null);
   const [note, setNote] = useState('');
@@ -369,6 +377,7 @@ function TaskRow({
           <button className="link-button" aria-expanded={history !== null} onClick={() => void toggleHistory()}>
             {history ? 'Hide history' : 'History'}
           </button>
+          {mayDelete && <DeleteAction kind="task" id={t.id} label={`task “${t.title}”`} onDone={onChanged} />}
         </div>
       )}
       {historyError && <p role="alert" className="error">{historyError}</p>}
@@ -413,7 +422,7 @@ function TaskRow({
 }
 
 
-function DecisionRow({ d, work, propose }: { d: DecisionView; work: WorkContext; propose: Propose }) {
+function DecisionRow({ d, work, propose, mayDelete, onChanged }: { d: DecisionView; work: WorkContext; propose: Propose; mayDelete: boolean; onChanged: (message: string) => void }) {
   const [open, setOpen] = useState<'supersede' | 'withdraw' | null>(null);
   const send = (kind: string) => async (terms: Record<string, unknown>) => {
     const ok = await propose(kind, 'decision', d.id, terms);
@@ -432,10 +441,11 @@ function DecisionRow({ d, work, propose }: { d: DecisionView; work: WorkContext;
         {d.replaces ? ` · Replaces: ${d.replaces.statement}` : ''}
         {d.replacedBy ? ` · Replaced by: ${d.replacedBy.statement}` : ''}
       </span>
-      {open === null && d.mayAct.length > 0 && !d.changeWaiting && (
+      {open === null && ((d.mayAct.length > 0 && !d.changeWaiting) || mayDelete) && (
         <div className="decision">
-          {d.mayAct.includes('supersede') && <button className="link-button" onClick={() => setOpen('supersede')}>Propose a replacement</button>}
-          {d.mayAct.includes('withdraw') && <button className="link-button" onClick={() => setOpen('withdraw')}>Propose withdrawal</button>}
+          {!d.changeWaiting && d.mayAct.includes('supersede') && <button className="link-button" onClick={() => setOpen('supersede')}>Propose a replacement</button>}
+          {!d.changeWaiting && d.mayAct.includes('withdraw') && <button className="link-button" onClick={() => setOpen('withdraw')}>Propose withdrawal</button>}
+          {mayDelete && <DeleteAction kind="decision" id={d.id} label={`decision “${d.statement}”`} onDone={onChanged} />}
         </div>
       )}
       {open === 'supersede' && <SupersedeForm decision={d} work={work} onSubmit={send('supersede_decision')} onCancel={() => setOpen(null)} />}
@@ -452,7 +462,7 @@ const Q_FIELD: Record<QuestionAction, { name: string; prompt: string } | null> =
   withdraw: { name: 'reason', prompt: 'Why withdraw it?' },
 };
 
-function QuestionRow({ q, act, canClear }: { q: QuestionView; act: Act; canClear: boolean }) {
+function QuestionRow({ q, act, canClear, mayDelete, onChanged }: { q: QuestionView; act: Act; canClear: boolean; mayDelete: boolean; onChanged: (message: string) => void }) {
   const [open, setOpen] = useState<QuestionAction | null>(null);
   const [value, setValue] = useState('');
   return (
@@ -478,6 +488,7 @@ function QuestionRow({ q, act, canClear }: { q: QuestionView; act: Act; canClear
               {Q_LABEL[a]}
             </button>
           ))}
+          {mayDelete && <DeleteAction kind="question" id={q.id} label={`question “${q.text}”`} onDone={onChanged} />}
         </div>
       ) : (
         <form
@@ -504,7 +515,7 @@ function QuestionRow({ q, act, canClear }: { q: QuestionView; act: Act; canClear
 
 const R_LABEL: Record<RiskAction, string> = { mitigate: 'Start mitigating', update: 'Update', accept: 'Accept exposure', resolve: 'Approve resolution', reopen: 'Reopen' };
 
-function RiskRow({ r, people, act, canClear }: { r: RiskView; people: Person[]; act: Act; canClear: boolean }) {
+function RiskRow({ r, people, act, canClear, mayDelete, onChanged }: { r: RiskView; people: Person[]; act: Act; canClear: boolean; mayDelete: boolean; onChanged: (message: string) => void }) {
   const [open, setOpen] = useState<RiskAction | null>(null);
   const [note, setNote] = useState('');
   const [mitigation, setMitigation] = useState(r.mitigation ?? '');
@@ -532,6 +543,7 @@ function RiskRow({ r, people, act, canClear }: { r: RiskView; people: Person[]; 
               {R_LABEL[a]}
             </button>
           ))}
+          {mayDelete && <DeleteAction kind="risk" id={r.id} label={`risk “${r.description}”`} onDone={onChanged} />}
         </div>
       ) : (
         <form

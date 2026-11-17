@@ -231,6 +231,8 @@ export interface Grant {
   decisionReason: string | null;
   suspendReason: string | null;
   revokeReason: string | null;
+  /** The grant includes Inspect Deleted Content (chosen when it was requested). */
+  inspectDeleted?: boolean;
   /** This viewer may approve or decline it (a manager who is neither the grantee nor the recorder). */
   mayDecide: boolean;
   /** The viewer's own access: they may not extend or restore it. */
@@ -301,4 +303,8 @@ export interface Project {
   archived: boolean;
   archivedAutomatically: boolean;
   openReviewFlags?: number;
+  /** The viewer's own Active grant includes Inspect Deleted Content. */
+  inspectDeleted?: boolean;
+  /** Set while an Owner or Sponsor lets the Project Manager delete and restore records (D83). */
+  recordDeletionDelegation?: { pm: string; by: string; reason: string; at: string } | null;
 }
