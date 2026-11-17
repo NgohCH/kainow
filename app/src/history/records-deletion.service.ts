@@ -32,6 +32,16 @@ export function canActOnRecords(ctx: ProjectContext, userId: string, delegatedPm
   return null;
 }
 
+/**
+ * Whether this person may take `action` on records of this project now: the matrix's project states, and the people
+ * allowed by canActOnRecords (an Owner or Sponsor, or the PM under the open delegation). The matrix's role list is not
+ * used, because the delegated PM is not in it. The routes and the History list both ask here so they cannot drift.
+ */
+export async function mayActOnRecords(db: Pool | PoolClient, ctx: ProjectContext, userId: string, action: 'record.delete' | 'record.restore'): Promise<'owner_sponsor' | 'delegated_pm' | null> {
+  if (ctx.roles.length === 0 || !PROJECT_MATRIX[action].states.includes(ctx.project.status)) return null;
+  return canActOnRecords(ctx, userId) ?? canActOnRecords(ctx, userId, (await openRecordDelegation(db, ctx.project.id))?.pmUserId ?? null);
+}
+
 interface Locked {
   ctx: ProjectContext;
   kind: RecordKind;
@@ -70,13 +80,6 @@ export class RecordsDeletionService {
     } finally {
       client.release();
     }
-  }
-
-  /** The one place that says who acts on records: an Owner or Sponsor, or the PM named on the open delegation (D83). */
-  private async actingAs(db: PoolClient, ctx: ProjectContext, userId: string): Promise<'owner_sponsor' | 'delegated_pm' | null> {
-    const direct = canActOnRecords(ctx, userId);
-    if (direct !== null) return direct;
-    return canActOnRecords(ctx, userId, (await openRecordDelegation(db, ctx.project.id))?.pmUserId ?? null);
   }
 
   /**
@@ -121,9 +124,8 @@ export class RecordsDeletionService {
       )
     ).rows[0];
     if (ctx.roles.length === 0) throw new ForbiddenException(GRANT_READ_ONLY);
-    const as = await this.actingAs(db, ctx, user.id);
-    const rule = PROJECT_MATRIX[action];
-    if (as === null || !rule.states.includes(ctx.project.status)) throw new ForbiddenException(rule.refusal);
+    const as = await mayActOnRecords(db, ctx, user.id, action);
+    if (as === null) throw new ForbiddenException(PROJECT_MATRIX[action].refusal);
     return { ctx, kind, id, as, ...row };
   }
 

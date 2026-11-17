@@ -8,8 +8,7 @@ import { inAudience } from '../discussion/audience';
 import { AudienceService } from '../discussion/audience.service';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { decide } from '../projects/matrix';
-import { openRecordDelegation } from './delegation';
-import { canActOnRecords } from './records-deletion.service';
+import { mayActOnRecords } from './records-deletion.service';
 import { type RecordKind, RECORD_KINDS } from './final-states';
 
 export type SourceItemKind = 'note' | 'minutes' | 'summary';
@@ -142,9 +141,8 @@ export class HistoryService {
         if (this.audiences.canSeeSource(ctx, user, row.kind === 'summary' ? { ...row, kind: 'notes' } : row)) out.set(`${SOURCE_KIND[r.kind]}:${r.id}`, { kind: 'source', id: r.id });
       }
     }
-    if (decide({ action: 'record.restore', roles: ctx.roles, status }).allowed) {
-      const delegated = (await openRecordDelegation(this.pool, ctx.project.id))?.pmUserId ?? null;
-      if (canActOnRecords(ctx, user.id, delegated) !== null) {
+    {
+      if ((await mayActOnRecords(this.pool, ctx, user.id, 'record.restore')) !== null) {
         for (const kind of RECORD_KINDS) {
           const { rows } = await this.pool.query(`SELECT x.id FROM ${RECORD_TITLE[kind].table} x WHERE x.project_id = $1 AND x.deleted_at IS NOT NULL AND x.held_case_id IS NULL`, [ctx.project.id]);
           for (const r of rows) out.set(`${kind}:${r.id}`, { kind, id: r.id });

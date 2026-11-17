@@ -164,6 +164,18 @@ describe('project history and Inspect Deleted Content', { skip: SKIP_NO_DB }, ()
     assert.ok(!(await lines(own)).some((l: any) => l.restore && l.restore.id === id));
   });
 
+  test('a delegated PM is offered Restore on a deleted task line, with no title', async () => {
+    const id = await task('Order kestrel valves');
+    await ok(own.request('POST', `/records/task/${id}/delete`, { reason: 'Duplicate' }));
+    await ok(own.request('POST', `/projects/${project}/record-deletion-delegation`, { reason: 'PM keeps the register' }));
+    const l = (await lines(pm)).find((x) => x.kind === 'task') as any;
+    assert.deepEqual(l.restore, { kind: 'task', id });
+    assert.equal(l.title, undefined);
+    assert.ok(!JSON.stringify(await lines(pm)).includes('Kestrel'));
+    // A Deputy is never offered it.
+    assert.equal(((await lines(await t.signIn('dep@example.org'))).find((x) => x.kind === 'task') as any).restore, undefined);
+  });
+
   test('a holder with Inspect Deleted Content sees the title and opens the item, logged', async () => {
     const id = await task('Order kestrel valves');
     await ok(own.request('POST', `/records/task/${id}/delete`, { reason: 'Duplicate of an earlier task' }));
