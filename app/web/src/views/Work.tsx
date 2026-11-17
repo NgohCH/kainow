@@ -23,6 +23,7 @@ import {
 import { flagSentence, mayDeleteRecord } from '../history.ts';
 import type { ProjectRole, ProjectStatus } from '../projects.ts';
 import { DeleteAction } from './DeleteRestore.tsx';
+import { QuarantineBar } from './ReportSecret.tsx';
 import type { Person } from './AuthoriseForm.tsx';
 import { ModeLabel } from './ProjectCalendar.tsx';
 import { type RequestView } from '../changes.ts';
@@ -38,6 +39,8 @@ interface ReviewFlag {
 
 interface TaskView {
   id: string;
+  /** `Credential removed — under review` while the record is cleaned and under review. */
+  quarantineLabel?: string | null;
   parentId: string | null;
   depth: number;
   title: string;
@@ -60,6 +63,8 @@ interface TaskView {
 }
 interface QuestionView {
   id: string;
+  /** `Credential removed — under review` while the record is cleaned and under review. */
+  quarantineLabel?: string | null;
   text: string;
   status: QuestionStatus;
   requester: { id: string; displayName: string };
@@ -69,6 +74,8 @@ interface QuestionView {
 }
 interface RiskView {
   id: string;
+  /** `Credential removed — under review` while the record is cleaned and under review. */
+  quarantineLabel?: string | null;
   description: string;
   severity: Severity;
   status: RiskStatus;
@@ -82,6 +89,8 @@ interface RiskView {
 }
 interface DecisionView {
   id: string;
+  /** `Credential removed — under review` while the record is cleaned and under review. */
+  quarantineLabel?: string | null;
   statement: string;
   rationale: string | null;
   status: 'active' | 'superseded' | 'withdrawn' | string;
@@ -198,7 +207,7 @@ export function Work({
         ) : (
           <ul className="plain work-list">
             {records.questions.map((q) => (
-              <QuestionRow key={q.id} q={q} act={act} canClear={canClear} mayDelete={mayDelete} onChanged={changed} />
+              <QuestionRow key={q.id} projectId={projectId} q={q} act={act} canClear={canClear} mayDelete={mayDelete} onChanged={changed} />
             ))}
           </ul>
         )}
@@ -210,7 +219,7 @@ export function Work({
         ) : (
           <ul className="plain work-list">
             {records.decisions.map((d) => (
-              <DecisionRow key={d.id} d={d} work={work} propose={propose} mayDelete={mayDelete} onChanged={changed} />
+              <DecisionRow key={d.id} projectId={projectId} d={d} work={work} propose={propose} mayDelete={mayDelete} onChanged={changed} />
             ))}
           </ul>
         )}
@@ -222,7 +231,7 @@ export function Work({
         ) : (
           <ul className="plain work-list">
             {records.risks.map((r) => (
-              <RiskRow key={r.id} r={r} people={people} act={act} canClear={canClear} mayDelete={mayDelete} onChanged={changed} />
+              <RiskRow key={r.id} projectId={projectId} r={r} people={people} act={act} canClear={canClear} mayDelete={mayDelete} onChanged={changed} />
             ))}
           </ul>
         )}
@@ -288,6 +297,7 @@ function Evidence({ source, projectId }: { source: EvidenceSource; projectId: st
     <>
       <blockquote className="quote">{ev.quote}</blockquote>
       {ev.flag && <p className="warn" role="note">{ev.flag}</p>}
+      {!('restricted' in source) && source.quoteChanged && <p className="warn" role="note">{source.quoteChanged}</p>}
       {ev.from && <p className="meta">{ev.href ? <a href={ev.href}>{ev.from}</a> : ev.from}</p>}
     </>
   );
@@ -362,6 +372,7 @@ function TaskRow({
         {t.followedBy ? ` · Followed by ${t.followedBy.title}` : ''}
       </span>
       {t.source && <Evidence source={t.source} projectId={projectId} />}
+      <QuarantineBar projectId={projectId} kind="task" id={t.id} label={`task “${t.title}”`} quarantineLabel={t.quarantineLabel} onReported={() => onChanged('Reported. The task is held while the text is removed.')} />
       <Flags flags={t.reviewFlags} canClear={canClear} />
       {open === null && (
         <div className="decision">
@@ -422,7 +433,7 @@ function TaskRow({
 }
 
 
-function DecisionRow({ d, work, propose, mayDelete, onChanged }: { d: DecisionView; work: WorkContext; propose: Propose; mayDelete: boolean; onChanged: (message: string) => void }) {
+function DecisionRow({ projectId, d, work, propose, mayDelete, onChanged }: { projectId: string; d: DecisionView; work: WorkContext; propose: Propose; mayDelete: boolean; onChanged: (message: string) => void }) {
   const [open, setOpen] = useState<'supersede' | 'withdraw' | null>(null);
   const send = (kind: string) => async (terms: Record<string, unknown>) => {
     const ok = await propose(kind, 'decision', d.id, terms);
@@ -441,6 +452,7 @@ function DecisionRow({ d, work, propose, mayDelete, onChanged }: { d: DecisionVi
         {d.replaces ? ` · Replaces: ${d.replaces.statement}` : ''}
         {d.replacedBy ? ` · Replaced by: ${d.replacedBy.statement}` : ''}
       </span>
+      <QuarantineBar projectId={projectId} kind="decision" id={d.id} label={`decision “${d.statement}”`} quarantineLabel={d.quarantineLabel} onReported={() => onChanged('Reported. The decision is held while the text is removed.')} />
       {open === null && ((d.mayAct.length > 0 && !d.changeWaiting) || mayDelete) && (
         <div className="decision">
           {!d.changeWaiting && d.mayAct.includes('supersede') && <button className="link-button" onClick={() => setOpen('supersede')}>Propose a replacement</button>}
@@ -462,7 +474,7 @@ const Q_FIELD: Record<QuestionAction, { name: string; prompt: string } | null> =
   withdraw: { name: 'reason', prompt: 'Why withdraw it?' },
 };
 
-function QuestionRow({ q, act, canClear, mayDelete, onChanged }: { q: QuestionView; act: Act; canClear: boolean; mayDelete: boolean; onChanged: (message: string) => void }) {
+function QuestionRow({ projectId, q, act, canClear, mayDelete, onChanged }: { projectId: string; q: QuestionView; act: Act; canClear: boolean; mayDelete: boolean; onChanged: (message: string) => void }) {
   const [open, setOpen] = useState<QuestionAction | null>(null);
   const [value, setValue] = useState('');
   return (
@@ -471,6 +483,7 @@ function QuestionRow({ q, act, canClear, mayDelete, onChanged }: { q: QuestionVi
         <strong>{q.text}</strong> <span className="badge badge-pending">{QUESTION_STATUS_LABEL[q.status]}</span>
       </div>
       <span className="meta">Requested by {q.requester.displayName}</span>
+      <QuarantineBar projectId={projectId} kind="question" id={q.id} label={`question “${q.text}”`} quarantineLabel={q.quarantineLabel} onReported={() => onChanged('Reported. The question is held while the text is removed.')} />
       <Flags flags={q.reviewFlags} canClear={canClear} />
       {q.answers.length > 0 && (
         <ul className="plain answers">
@@ -515,7 +528,7 @@ function QuestionRow({ q, act, canClear, mayDelete, onChanged }: { q: QuestionVi
 
 const R_LABEL: Record<RiskAction, string> = { mitigate: 'Start mitigating', update: 'Update', accept: 'Accept exposure', resolve: 'Approve resolution', reopen: 'Reopen' };
 
-function RiskRow({ r, people, act, canClear, mayDelete, onChanged }: { r: RiskView; people: Person[]; act: Act; canClear: boolean; mayDelete: boolean; onChanged: (message: string) => void }) {
+function RiskRow({ projectId, r, people, act, canClear, mayDelete, onChanged }: { projectId: string; r: RiskView; people: Person[]; act: Act; canClear: boolean; mayDelete: boolean; onChanged: (message: string) => void }) {
   const [open, setOpen] = useState<RiskAction | null>(null);
   const [note, setNote] = useState('');
   const [mitigation, setMitigation] = useState(r.mitigation ?? '');
@@ -536,6 +549,7 @@ function RiskRow({ r, people, act, canClear, mayDelete, onChanged }: { r: RiskVi
         {r.handedOverTo ? ` · Handed over to ${r.handedOverTo.name}` : ''}
       </span>
       <Flags flags={r.reviewFlags} canClear={canClear} />
+      <QuarantineBar projectId={projectId} kind="risk" id={r.id} label={`risk “${r.description}”`} quarantineLabel={r.quarantineLabel} onReported={() => onChanged('Reported. The risk is held while the text is removed.')} />
       {open === null ? (
         <div className="decision">
           {r.mayAct.map((a) => (

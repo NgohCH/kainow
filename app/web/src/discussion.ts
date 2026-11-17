@@ -27,6 +27,8 @@ export interface MessageView {
   state: MessageState;
   text: string | null;
   notice: string | null;
+  /** `Possible credential removed — awaiting check` while a masked copy is waiting for the Project Manager. */
+  quarantineLabel?: string | null;
   /** Only for a holder of Inspect Deleted Content looking at a Deleted message (then `text` is the message's text). */
   deletedBy?: string;
   deletedAt?: string;
@@ -450,7 +452,7 @@ export interface DiscussionEvidence {
 /** The supporting quote of a record or proposal as the server sends it: the text, or a marker that it is in a restricted source. */
 export type EvidenceSource =
   | { restricted: true }
-  | { quote: string | null; quoteMasked?: SourceFlag | null; sourceFlag?: SourceFlag | null; discussionEvidence?: DiscussionEvidence | null };
+  | { quote: string | null; quoteMasked?: SourceFlag | null; sourceFlag?: SourceFlag | null; discussionEvidence?: DiscussionEvidence | null; quoteChanged?: string | null };
 
 export type EvidenceShown =
   | { kind: 'restricted'; text: string }

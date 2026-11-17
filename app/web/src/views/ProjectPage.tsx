@@ -36,6 +36,7 @@ import { ProjectCalendarProvider } from './ProjectCalendar.tsx';
 import { DeletedItemsList } from './DeletedItems.tsx';
 import { DeletionDelegationPanel } from './DeleteRestore.tsx';
 import { DeletionsList } from './HistoryList.tsx';
+import { HeldForReviewList } from './HeldReview.tsx';
 import { type Act, ArchivePanel, DepartmentMove, GrantsSection, HandoverForm, HoldActions } from './ProjectAccessPanels.tsx';
 
 type Tab = 'overview' | 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'feedback' | 'closing' | 'deadline-review' | 'deleted';
@@ -365,6 +366,8 @@ function Overview({ project, act }: { project: Project; act: Act }) {
       )}
 
       <DeletionDelegationPanel project={project} act={act} />
+
+      {project.myRoles.some((r) => r === 'pm' || r === 'owner' || r === 'sponsor') && <HeldForReviewList projectId={project.id} />}
 
       <ProjectApprovals projectId={project.id} />
 

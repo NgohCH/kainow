@@ -1,4 +1,5 @@
 import { type FormEvent, type KeyboardEvent, Fragment, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { ReportSecret } from './ReportSecret.tsx';
 import { ApiError, type Membership } from '../api.ts';
 import { go } from '../App.tsx';
 import {
@@ -292,6 +293,7 @@ export function SummaryPage({ summaryId }: { summaryId: string }) {
         {v.canReview || v.approval ? <a href={`#/projects/${v.projectId}/review`}>Back to Review</a> : <a href={originalHref}>Back to {v.original.kind === 'meeting' ? 'the meeting' : 'the source'}</a>}
       </p>
       <h1 tabIndex={-1} ref={heading}>Shareable summary of {v.original.title}</h1>
+      <p><ReportSecret projectId={v.projectId} kind="summary" id={summaryId} label="this summary" /></p>
       <p className="meta">
         <span className="badge badge-pending">{FROM_RESTRICTED_LABEL}</span>{' '}
         {v.reviewLabel && <span className="badge badge-pending">{v.reviewLabel}</span>}{' '}

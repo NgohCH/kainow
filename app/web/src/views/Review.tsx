@@ -401,6 +401,7 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                     <>
                       <blockquote>{ev.quote}</blockquote>
                       {ev.flag && <p className="warn" role="note">{ev.flag}</p>}
+                      {item.quoteChanged && <p className="warn" role="note">{item.quoteChanged}</p>}
                       {ev.from && <p className="meta">{ev.href ? <a href={ev.href}>{ev.from}</a> : ev.from}</p>}
                     </>
                   )

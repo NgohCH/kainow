@@ -12,6 +12,7 @@ import {
 import { formatWhen } from '../format.ts';
 import { FeedbackButton } from './Feedback.tsx';
 import { Markdown } from './Markdown.tsx';
+import { ReportSecret } from './ReportSecret.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
 
@@ -125,6 +126,7 @@ export function ThreadAnswerItem({
         {!answer.hidden && answer.answerMarkdown !== null && (
           <FeedbackButton projectId={projectId} targetKind="answer" targetId={answer.id} label="Give feedback on this AI answer" />
         )}
+        {!answer.hidden && answer.answerMarkdown !== null && <ReportSecret projectId={projectId} kind="answer" id={answer.id} label="this AI answer" onReported={onChanged} />}
       </div>
       {reasonFor && (
         <form className="inline-form" onSubmit={run}>

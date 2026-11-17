@@ -5,7 +5,13 @@ export type PlaceBranding = { url: string; width: number; height: number; isDefa
 export type Branding = { registered: boolean; name: string; places: Record<Place, PlaceBranding> };
 
 export type LogoMeta = { width: number; height: number; byteSize: number; uploadedAt: string };
-export type OrganisationProfile = { registered: boolean; name: string | null; logos: Record<LogoShape, LogoMeta | null> };
+export type OrganisationProfile = {
+  registered: boolean;
+  name: string | null;
+  logos: Record<LogoShape, LogoMeta | null>;
+  /** Whether the protected key is loaded and how many cases wait for it (Administrators). */
+  protectedKey?: { loaded: boolean; casesWaiting: number; warning: string | null };
+};
 
 export const MAX_LOGO_BYTES = 512 * 1024;
 

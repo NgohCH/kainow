@@ -87,6 +87,8 @@ export interface VersionSummary {
   mediaType: string | null;
   charCount: number;
   createdAt: string;
+  /** Set (with the words to show) when the uploaded file is withheld because a credential was removed from its text. */
+  originalWithheld?: string | null;
 }
 
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'blocked';
@@ -163,6 +165,8 @@ export interface Item {
   approvedWithoutRecord: boolean;
   /** Set when the quote lies in a discussion message that is now hidden or deleted, or the source is Deleted. */
   sourceFlag?: 'deleted' | 'hidden' | 'source_deleted' | null;
+  /** Set when the quote was cleaned of a credential and needs a second look. */
+  quoteChanged?: string | null;
   /** Set when the quote lies in a discussion message: which message, by whom and when. */
   discussionEvidence?: { threadId: string; messageNo: number; authorName: string; at: string } | null;
   /** True when a reviewer has changed the wording. `original` is then what the model said. */

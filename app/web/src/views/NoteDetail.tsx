@@ -6,6 +6,8 @@ import { formatWhen, plural } from '../format.ts';
 import { mayDraftSummary } from '../assist.ts';
 import { type SourceKind, mayDeleteSource } from '../history.ts';
 import { DeleteAction } from './DeleteRestore.tsx';
+import { runFailureText } from '../quarantine.ts';
+import { ReportSecret } from './ReportSecret.tsx';
 import { AudiencePanel } from './AudiencePanel.tsx';
 import { SummaryRequest } from './SummaryView.tsx';
 import { Intake } from './Intake.tsx';
@@ -126,6 +128,11 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
           <DeleteAction kind={sourceKind} id={sourceId} label={`${sourceKind === 'minutes' ? 'these minutes' : `this ${sourceKind}`}`} onDone={() => go(`#/projects/${src.projectId}/notes`)} />
         </p>
       )}
+      {project && src.kind !== 'discussion' && (
+        <p>
+          <ReportSecret projectId={src.projectId} kind="source" id={sourceId} label={`this ${sourceKind === 'minutes' ? 'set of minutes' : (sourceKind ?? 'source')}`} onReported={() => go(`#/projects/${src.projectId}/notes`)} />
+        </p>
+      )}
       {src.label && <p className="meta">{src.label}</p>}
       {src.provenance && <p className="meta">{src.provenance}</p>}
       {src.summary && (
@@ -179,7 +186,7 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
         <section aria-label="Notes text">
           <p className="meta">
             Version {version.versionNo}, {versionOriginText(version)}, {version.charCount.toLocaleString()} characters, added {formatWhen(version.createdAt)}.{' '}
-            {version.origin === 'upload' && <a href={api.originalUrl(sourceId, version.versionNo)}>Download the original file</a>}
+            {version.origin === 'upload' && (version.originalWithheld ? <span className="warn" role="note">{version.originalWithheld}</span> : <a href={api.originalUrl(sourceId, version.versionNo)}>Download the original file</a>)}
           </p>
           <div className="source" tabIndex={0}>{text ?? 'Loading'}</div>
         </section>
@@ -202,7 +209,7 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
                     <a className="button" href={`#/runs/${r.id}`}>Review</a>
                   </>
                 )}
-                {(r.status === 'failed' || r.status === 'blocked') && <span className="reason">{r.failureDetail}</span>}
+                {(r.status === 'failed' || r.status === 'blocked') && <span className="reason">{runFailureText(r.failureCode, r.failureDetail)}</span>}
               </li>
             ))}
           </ul>
