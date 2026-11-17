@@ -56,6 +56,13 @@ Development data does not matter here: go-live starts from an empty database (`g
 | How to clean copies | Approach A: clean every copy in place, from a registry of every stored text column, in one transaction (§7.4). |
 | How far one report reaches | Only the reported item (with its own derived rows: passages, transcript text, quotes, AI-material snapshots of it) is held at once. If the same text appears in other items of the project, the PM and Deputies are alerted with where. (PO, 16 Nov 2026: "secret is not a common thing to be shared".) |
 | Copies before the PM acts | The secret is masked in the other places at once, "preventing further damage" (PO, 16 Nov 2026): the marked text is cleaned there immediately while the items stay in view, labelled "Possible credential removed — awaiting check". A PM or Deputy then confirms (the place joins the case and stays cleaned) or dismisses (its original text returns). |
+| Marked text found in many places (PO, 18 Nov 2026) | A secret is private and rarely shared, so more than 10 other places in one project means an ordinary word was marked. A person's report or Mark more that finds more than 10 other places is refused: "This text appears in N other places in the project, too common to be a credential. Mark a longer, more exact part." Nothing is held or masked. Kainow's own reports are never refused for this (§7.1). |
+| Which kind the report notice names (PO, 18 Nov 2026) | The credential kind the check recognised ("API key", "password"), or "credential" when it recognised none, as built (§7.7). |
+| Outputs withdrawn during a hold, after release unchanged (PO, 18 Nov 2026) | They stay withdrawn; people ask the AI again (§7.6). |
+| Restoring a summary source (PO, 18 Nov 2026) | The summary its deletion withdrew comes back to the state it had (§4.4). |
+| A digest listing a held or Deleted item (PO, 18 Nov 2026) | Only that item drops out; the digest still goes, rebuilt at that moment (§7.2). |
+| Change requests pending on a Deleted record (PO, 18 Nov 2026) | They stay pending, hidden with the record, and come back if it is restored. |
+| Wording where a deleted source was cited (PO, 18 Nov 2026) | "[Source deleted]", as built. |
 
 ### 2.1 New Decision Register entries
 
@@ -114,7 +121,7 @@ Every deletion and restoration needs a reason (1–1,000 characters) and is refu
 ### 4.4 Restoring
 
 - Every restore shows a **preview of who will be able to see it again**: the current audience (current memberships, holds, grants and audience rules applied), as names. Confirming needs a reason.
-- The item returns to its earlier state with its history. Nothing restarts: no analysis or extraction, no AI request, no email or notification beyond the D83 notice, no reminder or deadline change, no invitation. Withdrawn AI answers stay withdrawn; a summary hidden because of the deletion stays hidden until PM/Owner/Sponsor confirm it (4b §7.3).
+- The item returns to its earlier state with its history. Nothing restarts: no analysis or extraction, no AI request, no email or notification beyond the D83 notice, no reminder or deadline change, no invitation. Withdrawn AI answers stay withdrawn; a summary hidden because its original source was deleted stays hidden until PM/Owner/Sponsor confirm it (4b §7.3). Restoring a **summary source** brings back the summary its deletion withdrew, in the state it had before (PO, 18 Nov 2026), unless something else has happened to the summary since; this is recorded as `summary_restored`, and the restore preview names the summary's readers. Answers built on it that were withdrawn meanwhile stay withdrawn.
 - A restored source is again eligible for future processing, but only when a person starts it.
 - An item in an open quarantine case cannot be restored or deleted until the case is released (§7). A released item can be deleted and restored normally; its cleaned text is what returns.
 
@@ -168,7 +175,7 @@ New matrix actions: `source.delete`, `source.restore`, `record.delete`, `record.
 
 ### 7.1 Reporting
 
-- **Report a suspected secret** appears on every item a person can read (§3). The person selects the secret text in the item (or pastes it; it must occur in the item's current text), and gives a reason. The marked text must be at least 4 characters.
+- **Report a suspected secret** appears on every item a person can read (§3). The person selects the secret text in the item (or pastes it; it must occur in the item's current text), and gives a reason. The marked text must be at least 4 characters, may not be part of the marker or run into a marker already in the item, and may be found in at most 10 other places in the project; more than that is refused as too common to be a credential, and nothing changes (PO, 18 Nov 2026). Kainow's own reports are not limited this way: they are credentials its check recognised.
 - **Kainow reports** when a secret check at job start (extraction, analysis, minutes, assist runners) finds a secret in stored content: it opens a case on the item with the detector's matches as the marked text and the reporter shown as "Kainow". The job still ends `blocked` as today. The case opens on the owning item, never on a derived row: a passage or transcript match opens on its source version's source or its message; a record snapshot in `ai_request_material` opens on that record. The author notified is that item's author *(Claude's call)*.
 - **Matching** is exact and case-sensitive on the marked string; in `email_outbox.html_body` the HTML-escaped form is matched too. Whitespace is not normalised *(Claude's call)*.
 - The marked text is never logged, never written to an event, notification or email, and never returned in an API response after the report.
@@ -178,7 +185,7 @@ New matrix actions: `source.delete`, `source.restore`, `record.delete`, `record.
 - A `quarantine_cases` row is opened and the item and every copy (§7.4) are linked to it. Each item table that can be held (`discussion_messages`, `sources`, `tasks`, `decisions`, `questions`, `risks`, `extraction_items`, `human_proposals`, `ai_answers`, `report_drafts`, `summaries`, `ai_feedback`, `discussion_threads` for meeting minutes drafts) gains `held_case_id uuid`, set and cleared in step with the case, so every view, count, search branch and runner filters a column rather than joining the case tables *(Claude's call)*.
 - Held items are hidden exactly as Deleted items are (§4), from everyone except: PM/Owner/Sponsor reviewers in the item's audience (cleaned text only, §7.5), and security reviewers with a current grant (§7.6). Inspect Deleted Content does not show held items.
 - `onMaterialRemoved(..., 'quarantined', at)` runs for the item's messages and sources (a new `RemovalReason`; private outputs disappear, shared ones go to review). An approved summary built on it is set to `hidden` (the hook 4b left, `summaries.state = 'hidden'`), overriding its approved audience.
-- Queued emails (`email_outbox` rows in `queued` or `retry_wait`) that contain the marked text are cancelled (`status = 'cancelled'`, reason "held: suspected credential"); this is the only content check on emails and runs by the copy sweep.
+- Queued emails (`email_outbox` rows in `queued` or `retry_wait`) that contain the marked text are cancelled (`status = 'cancelled'`, reason "held: suspected credential"); this is the only content check on emails and runs by the copy sweep. A cancelled **digest** goes again, rebuilt at that moment without the held item and with its copies masked (PO, 18 Nov 2026); the same happens when the dispatcher finds that a task a queued digest lists has since been held or Deleted. Nothing is queued when the project is no longer Active or no open task is left.
 
 ### 7.3 Encryption and the protected-key file
 
