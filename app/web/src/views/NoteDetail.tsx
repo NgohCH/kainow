@@ -3,7 +3,9 @@ import { ApiError, api, type Project, type Run, type VersionSummary } from '../a
 import { go } from '../App.tsx';
 import { type AudienceView, returnedNotice, versionOriginText } from '../discussion.ts';
 import { formatWhen, plural } from '../format.ts';
+import { mayDraftSummary } from '../assist.ts';
 import { AudiencePanel } from './AudiencePanel.tsx';
+import { SummaryRequest } from './SummaryView.tsx';
 import { Intake } from './Intake.tsx';
 import { SubmissionReview } from './Submissions.tsx';
 
@@ -20,6 +22,10 @@ interface Detail {
     returnedReason: string | null;
     provenance: string | null;
     audience: AudienceView;
+    /** An approved shareable summary's labels; null for any other source. */
+    summary?: { label: string; approved: string | null; from: string } | null;
+    /** False for a shareable summary: it is never evidence. */
+    mayExtract?: boolean;
   };
   mayAddVersion?: boolean;
   versions: VersionSummary[];
@@ -112,6 +118,12 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
       <h1>{src.title}</h1>
       {src.label && <p className="meta">{src.label}</p>}
       {src.provenance && <p className="meta">{src.provenance}</p>}
+      {src.summary && (
+        <p className="meta" role="note">
+          {src.summary.label}
+          {src.summary.approved && <> · {src.summary.approved}</>} · {src.summary.from}
+        </p>
+      )}
       {src.publication === 'submitted' && <p className="warn" role="note">Submitted for review. Only the person who submitted it and the reviewers can see it; it is not analysed, and not searched by other participants, until it is published.</p>}
       {src.publication === 'returned' && (
         <p className="warn" role="note">{returnedNotice(src.returnedReason)}</p>
@@ -126,6 +138,9 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
           canChange={projectOpen && roles.some((r) => r === 'pm' || r === 'owner' || r === 'sponsor')}
           onChanged={() => void load()}
         />
+      )}
+      {published && src.kind !== 'discussion' && src.kind !== 'summary' && src.audience.mode === 'restricted' && mayDraftSummary(roles, projectOpen) && (
+        <SummaryRequest target={{ kind: 'source', id: sourceId }} memberships={memberships} />
       )}
       <nav aria-label="Versions" className="versions">
         {detail.versions.map((v) => (
@@ -158,7 +173,7 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
           </p>
           <div className="source" tabIndex={0}>{text ?? 'Loading'}</div>
         </section>
-        {published && src.kind !== 'discussion' && (
+        {published && src.kind !== 'discussion' && src.mayExtract !== false && (
         <aside aria-label="Proposals">
           <h2>Proposals from this version</h2>
           <button className="primary" onClick={extract} disabled={starting || active}>

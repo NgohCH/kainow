@@ -23,16 +23,19 @@ import {
   threadReducer,
   type ThreadView,
 } from '../discussion.ts';
+import { mayDraftSummary, mergeTimeline } from '../assist.ts';
 import { formatWhen } from '../format.ts';
+import { ThreadAnswerItem } from './AiAnswer.tsx';
 import { AnalysisStatus } from './AnalysisStatus.tsx';
 import { MeetingControls } from './Meeting.tsx';
 import { MinutesPanel, useMinutes } from './MinutesPanel.tsx';
+import { SummaryRequest } from './SummaryView.tsx';
 import { useFocusItem } from './useFocusItem.ts';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
 
 /** One discussion thread or meeting: the messages, the composer and the analysis status. */
-export function Thread({ projectId, threadId, meId, messageNo }: { projectId: string; threadId: string; meId: string; messageNo: number | null }) {
+export function Thread({ projectId, threadId, meId, messageNo, answerId = null }: { projectId: string; threadId: string; meId: string; messageNo: number | null; answerId?: string | null }) {
   const [first, setFirst] = useState<ThreadView | null>(null);
   const [project, setProject] = useState<Project | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -53,10 +56,10 @@ export function Thread({ projectId, threadId, meId, messageNo }: { projectId: st
       </main>
     );
   }
-  return <ThreadBody key={threadId} first={first} projectId={projectId} meId={meId} messageNo={messageNo} project={project} />;
+  return <ThreadBody key={threadId} first={first} projectId={projectId} meId={meId} messageNo={messageNo} answerId={answerId} project={project} />;
 }
 
-function ThreadBody({ first, projectId, meId, messageNo, project }: { first: ThreadView; projectId: string; meId: string; messageNo: number | null; project: Project | null }) {
+function ThreadBody({ first, projectId, meId, messageNo, answerId, project }: { first: ThreadView; projectId: string; meId: string; messageNo: number | null; answerId: string | null; project: Project | null }) {
   const roles: string[] = project?.myRoles ?? [];
   const memberships = project?.memberships ?? [];
   const canRestore = roles.some((r) => r === 'pm' || r === 'deputy_pm');
@@ -122,6 +125,21 @@ function ThreadBody({ first, projectId, meId, messageNo, project }: { first: Thr
 
   // A link from search (`?m=<no>`) scrolls to the message and focuses it.
   useFocusItem(messageNo === null ? undefined : String(messageNo), true);
+  // A link from the review list (`?answer=<id>`) scrolls to the shared answer and focuses it, once it is in the thread.
+  const answerThere = answerId !== null && (t.aiAnswers ?? []).some((a) => a.id === answerId);
+  useEffect(() => {
+    if (!answerId || !answerThere) return;
+    const el = document.getElementById(`answer-${answerId}`);
+    if (!el) return;
+    el.scrollIntoView({ block: 'center' });
+    el.focus({ preventScroll: true });
+    el.classList.add('found');
+    const timer = window.setTimeout(() => el.classList.remove('found'), 3000);
+    return () => {
+      window.clearTimeout(timer);
+      el.classList.remove('found');
+    };
+  }, [answerId, answerThere]);
 
   async function post(e: FormEvent) {
     e.preventDefault();
@@ -190,6 +208,7 @@ function ThreadBody({ first, projectId, meId, messageNo, project }: { first: Thr
           onAudienceChanged={() => void reloadThread()}
         />
       )}
+      {meeting && t.audience.mode === 'restricted' && mayDraftSummary(roles, open) && <SummaryRequest target={{ kind: 'thread', id: t.id }} memberships={memberships} />}
       {t.state === 'ended' && <p className="meta">This meeting has ended, so no more messages can be posted.</p>}
       {!t.canPost && t.state !== 'ended' && <p className="meta">You can read this thread but not write in it.</p>}
       {pollError && <p role="status" className="warn">Could not refresh just now: {pollError}. Trying again.</p>}
@@ -200,27 +219,31 @@ function ThreadBody({ first, projectId, meId, messageNo, project }: { first: Thr
       <div className={meeting ? 'meeting-split' : undefined}>
       <div>
       <section aria-label="Messages">
-        {t.messages.length === 0 && <p className="empty">No messages yet.</p>}
+        {t.messages.length === 0 && (t.aiAnswers ?? []).length === 0 && <p className="empty">No messages yet.</p>}
         <ol className="messages">
-          {t.messages.map((m) => (
-            <MessageItem
-              key={m.id}
-              m={m}
-              s={s}
-              canPost={t.canPost}
-              canModerate={t.canModerate}
-              canRestore={canRestore}
-              meId={meId}
-              selectable={t.kind === 'discussion' && t.canPost && m.state === 'visible'}
-              checked={chosen.includes(m.id)}
-              onToggle={() => toggle(m.id)}
-              dispatch={dispatch}
-              onReply={() => {
-                dispatch({ type: 'replyTo', id: m.id });
-                composer.current?.focus();
-              }}
-            />
-          ))}
+          {mergeTimeline(t.messages, t.aiAnswers ?? []).map((item) =>
+            item.kind === 'answer' ? (
+              <ThreadAnswerItem key={`a-${item.answer.id}`} answer={item.answer} projectId={projectId} canModerate={t.canModerate} onChanged={() => void reloadThread()} />
+            ) : (
+              <MessageItem
+                key={item.message.id}
+                m={item.message}
+                s={s}
+                canPost={t.canPost}
+                canModerate={t.canModerate}
+                canRestore={canRestore}
+                meId={meId}
+                selectable={t.kind === 'discussion' && t.canPost && item.message.state === 'visible'}
+                checked={chosen.includes(item.message.id)}
+                onToggle={() => toggle(item.message.id)}
+                dispatch={dispatch}
+                onReply={() => {
+                  dispatch({ type: 'replyTo', id: item.message.id });
+                  composer.current?.focus();
+                }}
+              />
+            ),
+          )}
         </ol>
       </section>
 

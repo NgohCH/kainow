@@ -6,6 +6,8 @@ import { APP_CONFIG, type AppConfig } from './config';
 import { DatabaseModule } from './db/database.module';
 import { HealthController } from './health/health.controller';
 import type { AnalysisQueue } from './analysis/queue';
+import { AssistModule } from './assist/assist.module';
+import type { AssistQueue } from './assist/queue';
 import { ChangesModule } from './changes/changes.module';
 import { EmailModule, type EmailNudge } from './email/nudge';
 import { ExtractionModule } from './extraction/extraction.module';
@@ -47,6 +49,8 @@ export interface AppOptions extends AuthOptions {
   meetingEndHook?: MeetingEndHook;
   /** Tests only: replaces the reader of the project's automatic-analysis setting (Task 9 binds the real one). */
   automaticAnalysis?: AutomaticAnalysis;
+  /** Tests only: replaces the pg-boss queue that carries AI assist requests to the worker. */
+  assistQueue?: AssistQueue;
 }
 
 @Module({})
@@ -72,6 +76,7 @@ export class AppModule {
         GoLiveModule,
         SearchModule,
         DiscussionModule.register(options.meetingEndHook, options.automaticAnalysis, options.analysisQueue),
+        AssistModule.register(options.assistQueue),
       ],
       controllers: [HealthController],
     };

@@ -28,7 +28,15 @@ export type ProjectAction =
   | 'minutes.publish'
   | 'message.moderate'
   | 'message.restore'
-  | 'feedback.review';
+  | 'feedback.review'
+  | 'assist.ask'
+  | 'assist.share'
+  | 'assist.review'
+  | 'report.request'
+  | 'report.manage'
+  | 'summary.request'
+  | 'summary.approve'
+  | 'summary.review';
 
 interface MatrixRow {
   roles: ReadonlyArray<ProjectRole | 'participant'>;
@@ -110,6 +118,46 @@ export const PROJECT_MATRIX: Readonly<Record<ProjectAction, MatrixRow>> = {
     states: ALL,
     refusal: 'Only the Project Manager or a Deputy can review feedback on AI output.',
   },
+  'assist.ask': {
+    roles: ['participant'],
+    states: OPEN,
+    refusal: 'Only people in the project can ask the AI, and not while the project is Deferred or Closed.',
+  },
+  'assist.share': {
+    roles: ['participant'],
+    states: OPEN,
+    refusal: 'Only people in the project can share an AI answer, and not while the project is Deferred or Closed.',
+  },
+  'assist.review': {
+    roles: ['pm', 'deputy_pm'],
+    states: ALL,
+    refusal: 'Only the Project Manager or a Deputy can hide, clear or withdraw AI output.',
+  },
+  'report.request': {
+    roles: ['participant'],
+    states: OPEN,
+    refusal: 'Only people in the project can request a draft report, and not while the project is Deferred or Closed.',
+  },
+  'report.manage': {
+    roles: ['pm', 'deputy_pm'],
+    states: OPEN,
+    refusal: "Only the Project Manager or a Deputy can edit or share someone else's draft report, and not while the project is Deferred or Closed.",
+  },
+  'summary.request': {
+    roles: ['pm', 'deputy_pm', 'owner', 'sponsor'],
+    states: OPEN,
+    refusal: 'Only the Project Manager, a Deputy, the Owner or a Sponsor can request or edit a shareable summary, and not while the project is Deferred or Closed.',
+  },
+  'summary.approve': {
+    roles: ['pm', 'owner', 'sponsor'],
+    states: OPEN,
+    refusal: 'Only the Project Manager, the Owner or a Sponsor can approve a summary, and not while the project is Deferred or Closed.',
+  },
+  'summary.review': {
+    roles: ['pm', 'owner', 'sponsor'],
+    states: ALL,
+    refusal: 'Only the Project Manager, the Owner or a Sponsor can confirm or withdraw a summary in review.',
+  },
   'proposal.review': {
     roles: ['owner', 'sponsor'],
     states: ['planned', 'active'],
@@ -117,8 +165,11 @@ export const PROJECT_MATRIX: Readonly<Record<ProjectAction, MatrixRow>> = {
   },
 };
 
-/** What an Active Audit or Oversight grant allows: reading only. */
-export const GRANT_ACTIONS: readonly ProjectAction[] = ['project.view', 'note.view'];
+/**
+ * What an Active Audit or Oversight grant allows: reading only, plus asking the AI a private question within the
+ * grant's scope (AI assist spec 5.1; an answer to a grant holder is never shared). The project state still applies.
+ */
+export const GRANT_ACTIONS: readonly ProjectAction[] = ['project.view', 'note.view', 'assist.ask'];
 export const GRANT_READ_ONLY = 'Audit and Oversight access is read-only.';
 
 export function decide(input: { action: ProjectAction; roles: ProjectRole[]; status: ProjectStatus }): { allowed: true } | { allowed: false; reason: string } {

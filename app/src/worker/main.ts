@@ -3,6 +3,10 @@ import { AnalysisRunner } from '../analysis/analysis-runner';
 import { MinutesRunner } from '../analysis/minutes-runner';
 import { AnalysisTick } from '../analysis/tick';
 import { bossAnalysisQueue } from '../analysis/queue';
+import { AssistRunner } from '../assist/assist-runner';
+// Register the report and summary kinds' input, completion and removal check with the assist runner.
+import '../assist/reports.service';
+import '../assist/summaries.service';
 import { ExtractionRunner } from '../extraction/runner';
 import { OpenAiModelClient } from '../extraction/model';
 import { SpendService } from '../spend/spend.service';
@@ -30,12 +34,13 @@ async function main(): Promise<void> {
   });
   const minutes = new MinutesRunner({ pool, spend, model, clock, log: (m) => console.error(m) });
   const analysisRunner = new AnalysisRunner({ pool, clock, extraction, minutes, log: (m) => console.error(m) });
+  const assist = new AssistRunner({ pool, spend, model, clock, log: (m) => console.error(m) });
   if (!config.openAiApiKey) {
     console.warn('OPENAI_API_KEY is not set: extraction runs will fail without sending anything.');
   }
 
   const boss = await startQueues(config.databaseUrl, undefined, { schedule: true });
-  await registerAiWorker(boss, { extraction, analysis: analysisRunner }, pool);
+  await registerAiWorker(boss, { extraction, analysis: analysisRunner, assist }, pool);
 
   // The sweep nudges the dispatcher through the same boss instance; a lost nudge is caught by the next tick.
   const nudge: EmailNudge = {

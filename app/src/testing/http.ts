@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import { createApp } from '../bootstrap';
 import type { AutomaticAnalysis } from '../discussion/automatic-analysis';
 import type { AnalysisQueue } from '../analysis/queue';
+import type { AssistQueue } from '../assist/queue';
 import { NO_MEETING_END_HOOK, type MeetingEndHook } from '../discussion/meetings.service';
 import { loadConfig } from '../config';
 import { runMigrations } from '../db/migrate';
@@ -22,6 +23,8 @@ export interface Client {
   request(method: string, path: string, body?: unknown): Promise<Reply>;
   /** Sends raw bytes (a file upload) with the given type. */
   upload(method: string, path: string, body: Buffer, contentType: string): Promise<Reply>;
+  /** A request whose answer is not JSON (a download): status, headers and the text as sent. */
+  raw(method: string, path: string): Promise<{ status: number; headers: Headers; text: string }>;
 }
 
 /** A queued email as the tests see it. */
@@ -67,7 +70,7 @@ async function send(base: string, method: string, path: string, body: unknown, h
  * The organisation is already set up unless `organisation: false` (for onboarding tests).
  */
 /** Ending a meeting does nothing unless a test gives a hook, or an analysis queue (then the real hook requests the final draft). */
-export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opts: { organisation?: boolean; emailNudge?: { nudge(): Promise<void> }; meetingEndHook?: MeetingEndHook; automaticAnalysis?: AutomaticAnalysis; analysisQueue?: AnalysisQueue } = {}): Promise<TestApp> {
+export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opts: { organisation?: boolean; emailNudge?: { nudge(): Promise<void> }; meetingEndHook?: MeetingEndHook; automaticAnalysis?: AutomaticAnalysis; analysisQueue?: AnalysisQueue; assistQueue?: AssistQueue } = {}): Promise<TestApp> {
   const sender = new CaptureSender();
   const clock = new FakeClock(startAt);
   const config = loadConfig(testEnv(testDatabaseUrl() as string));
@@ -75,7 +78,7 @@ export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opt
   await resetPublicSchema(pool);
   await runMigrations(pool, config.migrationsDir);
   if (opts.organisation !== false) await seedOrganisation(pool);
-  const app = await createApp(config, { codeSender: sender, clock: clock.now, logger: false, extractionQueue: { enqueue: async () => undefined }, emailNudge: opts.emailNudge ?? { nudge: async () => undefined }, meetingEndHook: opts.meetingEndHook ?? (opts.analysisQueue ? undefined : NO_MEETING_END_HOOK), automaticAnalysis: opts.automaticAnalysis, analysisQueue: opts.analysisQueue ?? { enqueue: async () => undefined } });
+  const app = await createApp(config, { codeSender: sender, clock: clock.now, logger: false, extractionQueue: { enqueue: async () => undefined }, emailNudge: opts.emailNudge ?? { nudge: async () => undefined }, meetingEndHook: opts.meetingEndHook ?? (opts.analysisQueue ? undefined : NO_MEETING_END_HOOK), automaticAnalysis: opts.automaticAnalysis, analysisQueue: opts.analysisQueue ?? { enqueue: async () => undefined }, assistQueue: opts.assistQueue ?? { enqueue: async () => undefined } });
   await app.listen(0);
   const base = await app.getUrl();
 
@@ -98,6 +101,10 @@ export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opt
         const res = await fetch(`${base}${path}`, { method, headers: { Cookie: cookie, 'X-CSRF-Token': csrfToken, 'Content-Type': contentType }, body: new Uint8Array(body) });
         const text = await res.text();
         return { status: res.status, body: text ? JSON.parse(text) : undefined };
+      },
+      raw: async (method, path) => {
+        const res = await fetch(`${base}${path}`, { method, headers: { Cookie: cookie, 'X-CSRF-Token': csrfToken } });
+        return { status: res.status, headers: res.headers, text: await res.text() };
       },
     };
   }

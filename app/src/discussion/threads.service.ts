@@ -6,6 +6,10 @@ import { PG_POOL } from '../db/database.module';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { type ProjectAction, decide } from '../projects/matrix';
 import { todayUtc8 } from '../projects/membership';
+import { indexVersion } from '../assist/passage-index';
+import { formatMessageTime } from '../assist/passages';
+import { type ThreadAnswerView, threadAnswers } from '../assist/questions.service';
+import { onMaterialRemoved } from '../assist/removal';
 import { sha256Hex } from '../notes/text';
 import { type AudienceChange, type AudienceMode, type AudienceRow, type Person, RESTRICTED_ROLES, audienceVisibleSql, parseAudienceChange } from './audience';
 import { MINUTES_LABEL } from '../notes/notes.service';
@@ -42,6 +46,8 @@ export interface ThreadView {
   meetingDate: string | null;
   state: 'open' | 'ended' | null;
   messages: MessageView[];
+  /** AI answers shared into the thread (spec 5.4), oldest first: not numbered messages; the web merges them by time. */
+  aiAnswers: ThreadAnswerView[];
   /** The Present list of a meeting (empty for a discussion). */
   present: Person[];
   canPost: boolean;
@@ -275,6 +281,7 @@ export class ThreadsService {
       meetingDate: t.meetingDate,
       state: t.state,
       messages: await this.messageViews(this.pool, user.id, 'm.thread_id = $1 AND m.message_no > $2', [t.id, afterNo]),
+      aiAnswers: await threadAnswers(this.pool, ctx, t.id),
       present: await this.people(
         this.pool,
         (await this.pool.query(`SELECT user_id AS id FROM meeting_attendees WHERE thread_id = $1`, [t.id])).rows.map((r) => r.id),
@@ -282,6 +289,12 @@ export class ThreadsService {
       canPost: this.allowed(ctx, 'discussion.post') && t.state !== 'ended',
       canModerate: this.allowed(ctx, 'message.moderate'),
     };
+  }
+
+  /** Writes the passage index for a new message version, in the same transaction (spec 4.1). */
+  private async indexMessage(db: Db, versionId: string, projectId: string, messageNo: number, authorId: string, text: string, at: Date): Promise<void> {
+    const author = (await db.query(`SELECT display_name AS n FROM users WHERE id = $1`, [authorId])).rows[0].n as string;
+    await indexVersion(db, 'message_version', versionId, projectId, text, { messageNo, author, at: formatMessageTime(at) });
   }
 
   async post(user: AuthUser, threadId: string, body: { body: unknown; replyToId?: unknown }): Promise<MessageView> {
@@ -310,10 +323,12 @@ export class ThreadsService {
         `INSERT INTO discussion_messages (id, thread_id, message_no, author_id, reply_to_id, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
         [id, t.id, no, user.id, replyTo, at],
       );
+      const versionId = uuidv7(at.getTime());
       await db.query(
         `INSERT INTO message_versions (id, message_id, version_no, body, body_sha256, created_at) VALUES ($1, $2, 1, $3, $4, $5)`,
-        [uuidv7(at.getTime()), id, text, sha256Hex(text), at],
+        [versionId, id, text, sha256Hex(text), at],
       );
+      await this.indexMessage(db, versionId, t.projectId, no, user.id, text, at);
       await db.query(
         `INSERT INTO discussion_events (id, thread_id, message_id, actor_id, action, detail, at) VALUES ($1, $2, $3, $4, 'posted', $5, $6)`,
         [uuidv7(at.getTime()), t.id, id, user.id, JSON.stringify(meta(text)), at],
@@ -358,10 +373,13 @@ export class ThreadsService {
       }
       if (latest.body === text) throw new BadRequestException('Nothing has changed in this message.');
       const at = this.now();
+      const versionId = uuidv7(at.getTime());
       await db.query(
         `INSERT INTO message_versions (id, message_id, version_no, body, body_sha256, created_at) VALUES ($1, $2, $3, $4, $5, $6)`,
-        [uuidv7(at.getTime()), messageId, latest.v + 1, text, sha256Hex(text), at],
+        [versionId, messageId, latest.v + 1, text, sha256Hex(text), at],
       );
+      const no = (await db.query(`SELECT message_no AS n FROM discussion_messages WHERE id = $1`, [messageId])).rows[0].n as number;
+      await this.indexMessage(db, versionId, m.t.projectId, no, m.authorId, text, at);
       await db.query(`UPDATE discussion_threads SET last_message_at = $2 WHERE id = $1`, [m.t.id, at]);
       await db.query(
         `INSERT INTO discussion_events (id, thread_id, message_id, actor_id, action, detail, at) VALUES ($1, $2, $3, $4, 'edited', $5, $6)`,
@@ -394,6 +412,10 @@ export class ThreadsService {
         `INSERT INTO discussion_events (id, thread_id, message_id, actor_id, action, reason, at) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [uuidv7(at.getTime()), m.t.id, messageId, user.id, rule.event, reason, at],
       );
+      // AI answers and drafts built on this message (4b spec 5.5): private ones withdrawn, shared ones to review. Same
+      // transaction; the thread and message rows are already locked, and the hook locks answers and drafts after them.
+      // Unhiding or restoring brings nothing back.
+      if (rule.to === 'hidden' || rule.to === 'deleted') await onMaterialRemoved(db, { messageIds: [messageId] }, rule.to, at);
     });
     return (await this.messageViews(this.pool, user.id, 'm.id = $1', [messageId]))[0];
   }

@@ -5,11 +5,23 @@ import { estimateMaxCostMicroMyr, type Usage } from '../spend/cost';
 import type { SpendService } from '../spend/spend.service';
 import { readSettings } from '../spend/spend.settings';
 
+export type AiPurpose = 'extraction' | 'discussion_analysis' | 'minutes_draft' | 'question_answer' | 'report_draft' | 'summary_draft';
+
+/** How a failure names the work that stopped. */
+const NOUN: Record<AiPurpose, string> = {
+  extraction: 'extraction',
+  discussion_analysis: 'analysis',
+  minutes_draft: 'minutes drafting',
+  question_answer: 'answering',
+  report_draft: 'report drafting',
+  summary_draft: 'summary drafting',
+};
+
 export interface GuardedCallInput<T> {
   requestId: string;
   attemptNo: number;
   isLastAttempt: boolean;
-  purpose: 'extraction' | 'discussion_analysis' | 'minutes_draft';
+  purpose: AiPurpose;
   /** null for an automatic run: only the organisation caps apply, not a personal one. */
   actorUserId: string | null;
   promptBytes: number;
@@ -37,7 +49,7 @@ export interface GuardedDeps {
  */
 export async function markStaleReservations(
   pool: Pool,
-  spend: SpendService,
+  spend: Pick<SpendService, 'markUncertain'>,
   requestId: string,
   attemptNo: number,
 ): Promise<void> {
@@ -52,8 +64,8 @@ export async function markStaleReservations(
 
 /**
  * One AI request through the spend cap: reserve before sending, settle from reported usage afterwards, and
- * keep the full estimate counted whenever the outcome is unknown. Shared by extraction, discussion analysis
- * and minutes drafting.
+ * keep the full estimate counted whenever the outcome is unknown. Shared by extraction, discussion analysis,
+ * minutes drafting and the AI assist requests (answers, report drafts, summaries).
  */
 export async function guardedAiCall<T>(deps: GuardedDeps, input: GuardedCallInput<T>): Promise<GuardedOutcome<T>> {
   const { pool, spend } = deps;
@@ -108,7 +120,7 @@ export async function guardedAiCall<T>(deps: GuardedDeps, input: GuardedCallInpu
 async function failed<T>(deps: GuardedDeps, input: GuardedCallInput<T>, entryId: string, sent: boolean, err: unknown): Promise<GuardedOutcome<T>> {
   const { spend } = deps;
   let code = 'internal_error';
-  const noun = input.purpose === 'discussion_analysis' ? 'analysis' : input.purpose === 'minutes_draft' ? 'minutes drafting' : 'extraction';
+  const noun = NOUN[input.purpose];
   let detail = `An unexpected error stopped the ${noun}.`;
   let retryable = true;
 

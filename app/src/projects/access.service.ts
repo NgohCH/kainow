@@ -5,7 +5,7 @@ import { UUID } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { type MembershipRow, type ProjectRole, effectiveRoles, membershipState, requiredRolesCheck, todayUtc8 } from './membership';
 import { type GrantKind, type GrantRow, grantGivesAccess } from './grants';
-import { GRANT_ACTIONS, GRANT_READ_ONLY, type ProjectAction, type ProjectStatus, decide } from './matrix';
+import { GRANT_ACTIONS, GRANT_READ_ONLY, PROJECT_MATRIX, type ProjectAction, type ProjectStatus, decide } from './matrix';
 
 export const NOT_FOUND = 'Project not found';
 
@@ -130,6 +130,9 @@ export class ProjectAccess {
       // A grant holder may read, nothing more; anyone else sees nothing of the project.
       if (ctx.grantKinds.length === 0) throw new NotFoundException(NOT_FOUND);
       if (!GRANT_ACTIONS.includes(action)) throw new ForbiddenException(GRANT_READ_ONLY);
+      // A grant reaches only the states the action allows (asking the AI is not open in a Deferred or Closed project).
+      const row = PROJECT_MATRIX[action];
+      if (!row.states.includes(ctx.project.status)) throw new ForbiddenException(row.refusal);
       return ctx;
     }
     const verdict = decide({ action, roles: ctx.roles, status: ctx.project.status });

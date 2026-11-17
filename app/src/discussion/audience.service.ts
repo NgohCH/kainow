@@ -1,5 +1,6 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
+import { onMaterialRemoved } from '../assist/removal';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID, uuidv7 } from '../common/uuid7';
@@ -15,16 +16,30 @@ type Db = Pool | PoolClient;
 export interface SourceAccessRow {
   id: string;
   projectId: string;
-  kind: 'notes' | 'minutes' | 'discussion';
+  kind: 'notes' | 'minutes' | 'discussion' | 'summary';
   publication: 'published' | 'submitted' | 'returned';
   submittedBy: string | null;
   audience: AudienceRow;
+  /** For a `summary` source, its summary's state (AI assist spec 7.2, 7.3); null otherwise. */
+  summaryState?: string | null;
+  /** For a hidden `summary` source, the audience of the summarised original (still shown to it, spec 7.3). */
+  originalAudience?: AudienceRow | null;
 }
 
 export const NAMED_OUTSIDE = 'Only people in this project can be named.';
 const REASON_REQUIRED = 'A reason is required (up to 500 characters).';
 
 const sameSet = (a: string[], b: string[]) => a.length === b.length && a.every((x) => b.includes(x));
+
+/**
+ * Whether a change takes access away from anyone by the audience itself: Project-wide becoming Restricted, or a named
+ * person removed from a Restricted audience. Adding named people, or Restricted becoming Project-wide, does not.
+ */
+export function narrows(from: Pick<AudienceRow, 'mode' | 'namedUserIds'>, to: AudienceChange): boolean {
+  if (to.mode === 'project') return false;
+  if (from.mode === 'project') return true;
+  return from.namedUserIds.some((id) => !to.namedUserIds.includes(id));
+}
 
 /** The audience of a source or thread (spec 6): loading it, checking it, previewing and recording changes to it. */
 @Injectable()
@@ -75,6 +90,15 @@ export class AudienceService {
    * holding PM, Deputy, Owner or Sponsor today, whatever audience is intended (spec 5.4).
    */
   canSeeSource(ctx: ProjectContext, user: AuthUser, row: SourceAccessRow): boolean {
+    // A shareable summary is readable while approved (Access review required still shows it); a hidden one only by
+    // people also in the original's audience; a draft or withdrawn one by nobody (the same rule as summaryShownSql).
+    if (row.kind === 'summary') {
+      const shown =
+        row.summaryState === 'approved' ||
+        row.summaryState === 'review_required' ||
+        (row.summaryState === 'hidden' && !!row.originalAudience && inAudience(ctx, row.originalAudience));
+      if (!shown) return false;
+    }
     if (row.publication === 'published') return inAudience(ctx, row.audience);
     if (!canReadContent(ctx)) return false;
     return row.submittedBy === user.id || ctx.roles.some((r) => RESTRICTED_ROLES.includes(r));
@@ -88,18 +112,28 @@ export class AudienceService {
     const projectId = await this.access.projectOfSource(sourceId, db);
     const ctx = await this.access.authorize(user, 'note.view', projectId, db);
     const { rows } = await db.query(
-      `SELECT id, project_id AS "projectId", kind, publication, submitted_by AS "submittedBy", audience_id AS "audienceId" FROM sources WHERE id = $1`,
+      `SELECT s.id, s.project_id AS "projectId", s.kind, s.publication, s.submitted_by AS "submittedBy", s.audience_id AS "audienceId",
+              sm.state AS "summaryState", COALESCE(os.audience_id, ot.audience_id) AS "originalAudienceId"
+         FROM sources s
+         LEFT JOIN summaries sm ON sm.id = s.summary_id
+         LEFT JOIN sources os ON os.id = sm.original_source_id
+         LEFT JOIN discussion_threads ot ON ot.id = sm.original_thread_id
+        WHERE s.id = $1`,
       [sourceId],
     );
     if (!rows[0]) throw new NotFoundException();
-    const { audienceId, ...rest } = rows[0];
-    const row: SourceAccessRow = { ...rest, audience: await this.load(audienceId, db) };
+    const { audienceId, originalAudienceId, ...rest } = rows[0];
+    const row: SourceAccessRow = {
+      ...rest,
+      audience: await this.load(audienceId, db),
+      originalAudience: rest.summaryState === 'hidden' && originalAudienceId ? await this.load(originalAudienceId, db) : null,
+    };
     if (!this.canSeeSource(ctx, user, row)) throw new NotFoundException();
     return { ctx, row };
   }
 
   /** Named people must hold a valid membership or a grant giving access in the project today. */
-  private assertNamable(ctx: ProjectContext, change: AudienceChange): void {
+  assertNamable(ctx: ProjectContext, change: AudienceChange): void {
     for (const id of change.namedUserIds) {
       const member = effectiveRoles(ctx.rows, id, ctx.today).length > 0;
       const granted = ctx.grants.some((g) => g.userId === id && grantGivesAccess(g, ctx.today, ctx.rows));
@@ -204,6 +238,9 @@ export class AudienceService {
         subjectId: audienceId,
         detail: { from: locked.mode, to: change.mode, named: change.namedUserIds.length, unchanged: locked.mode === change.mode && sameSet(locked.namedUserIds, change.namedUserIds) },
       });
+      // Narrowing (Project-wide to Restricted, or a named person removed) sends AI answers and drafts built on material
+      // with this audience through the removal hook (4b spec 5.5), in this transaction. Widening never does.
+      if (narrows(locked, change)) await onMaterialRemoved(client, { audienceId }, 'audience_tightened', at);
       await client.query('COMMIT');
       return { ...locked, mode: change.mode, namedUserIds: [...change.namedUserIds] };
     } catch (err) {

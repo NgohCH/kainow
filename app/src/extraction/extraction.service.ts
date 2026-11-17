@@ -116,6 +116,8 @@ const REQUESTER_LABEL = `${triggerLabelSql(
   `(SELECT display_name FROM users WHERE id = r.requested_by)`,
 )} AS "requestedByLabel"`;
 
+export const SUMMARY_NOT_EVIDENCE = 'A shareable summary is never used as evidence, so it cannot be analysed for proposals.';
+
 @Injectable()
 export class ExtractionService {
   constructor(
@@ -133,6 +135,8 @@ export class ExtractionService {
     );
     // A discussion transcript is analysed only by the analysis runner, which rebuilds it from the messages visible at that moment.
     if (!found.rows[0] || found.rows[0].kind === 'discussion') throw new NotFoundException();
+    // An approved shareable summary is never evidence for proposals (AI assist spec 7.2).
+    if (found.rows[0].kind === 'summary') throw new ConflictException(SUMMARY_NOT_EVIDENCE);
     if (found.rows[0].publication !== 'published') throw new ConflictException('A submission is analysed only after a reviewer publishes it.');
     const versionId = found.rows[0].id;
 
@@ -183,6 +187,8 @@ export class ExtractionService {
    * starts, so this only records and queues. Returns the run id.
    */
   async requestAutomatic(versionId: string, trigger: 'minutes_published' | 'discussion'): Promise<string> {
+    const kind = (await this.pool.query<{ kind: string }>(`SELECT s.kind FROM source_versions v JOIN sources s ON s.id = v.source_id WHERE v.id = $1`, [versionId])).rows[0]?.kind;
+    if (kind === 'summary') throw new ConflictException(SUMMARY_NOT_EVIDENCE);
     const at = this.now();
     const runId = uuidv7(at.getTime());
     const client = await this.pool.connect();

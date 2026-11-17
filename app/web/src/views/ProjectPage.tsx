@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, api, type Membership, type Project } from '../api.ts';
 import { formatWhen } from '../format.ts';
 import {
@@ -22,6 +22,10 @@ import { HumanProposals } from './HumanProposals.tsx';
 import { ProjectApprovals } from './ApprovalSettings.tsx';
 import { Closing, DelegationControl, type ClosedSummary, type ClosureView } from './Closing.tsx';
 import { DeadlineReview } from './DeadlineReview.tsx';
+import { AskPanel } from './AskPanel.tsx';
+import { AssistReview } from './AssistReview.tsx';
+import { Drafts } from './Drafts.tsx';
+import { mayReviewAnswers, mayReviewSummaries } from '../assist.ts';
 import { Discussion } from './Discussion.tsx';
 import { Work } from './Work.tsx';
 import { DeliveryHistory } from './Deliveries.tsx';
@@ -31,13 +35,21 @@ import { ProjectSettings } from './NotificationSettings.tsx';
 import { ProjectCalendarProvider } from './ProjectCalendar.tsx';
 import { type Act, ArchivePanel, DepartmentMove, GrantsSection, HandoverForm, HoldActions } from './ProjectAccessPanels.tsx';
 
-type Tab = 'overview' | 'people' | 'notes' | 'work' | 'settings' | 'feedback' | 'closing' | 'deadline-review';
+type Tab = 'overview' | 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'feedback' | 'closing' | 'deadline-review';
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
 export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: string; tab: Tab; meId: string; itemId?: string }) {
   const [project, setProject] = useState<Project | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [asking, setAsking] = useState(false);
+  const askButton = useRef<HTMLButtonElement>(null);
+  // Focus goes back to the Ask button only after the panel has unmounted (the page behind it is inert until then).
+  const wasAsking = useRef(false);
+  useEffect(() => {
+    if (wasAsking.current && !asking) askButton.current?.focus();
+    wasAsking.current = asking;
+  }, [asking]);
   const [notice, setNotice] = useState<string | null>(null);
 
   const load = useCallback(() => {
@@ -83,7 +95,8 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
   const tabs: Array<[Tab, string]> = [
     ['overview', 'Overview'],
     ['people', 'People'],
-    ...(contentAllowed ? ([['notes', 'Notes & discussion'], ['work', 'Work']] as Array<[Tab, string]>) : []),
+    ...(contentAllowed ? ([['notes', 'Notes & discussion'], ['work', 'Work'], ['drafts', 'Drafts']] as Array<[Tab, string]>) : []),
+    ...(contentAllowed && (mayReviewAnswers(roles) || mayReviewSummaries(roles)) ? ([['review', 'Review']] as Array<[Tab, string]>) : []),
     ...(contentAllowed ? ([['feedback', 'Feedback']] as Array<[Tab, string]>) : []),
     ['settings', 'Settings'],
   ];
@@ -136,9 +149,22 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
           </a>
         ))}
       </nav>
+      {contentAllowed && (
+        <p>
+          <button type="button" ref={askButton} aria-expanded={asking} onClick={() => setAsking((v) => !v)}>Ask about this project</button>
+        </p>
+      )}
+      {asking && contentAllowed && (
+        <AskPanel
+          projectId={project.id}
+          onClose={() => setAsking(false)}
+        />
+      )}
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
       {tab === 'overview' && <Overview project={project} act={act} />}
+      {tab === 'drafts' && contentAllowed && <Drafts projectId={project.id} draftId={itemId} />}
+      {tab === 'review' && contentAllowed && <AssistReview projectId={project.id} roles={roles} />}
       {tab === 'feedback' && contentAllowed && <Feedback projectId={project.id} />}
       {tab === 'settings' && <ProjectSettings projectId={project.id} />}
       {tab === 'closing' && <Closing project={project} act={act} />}

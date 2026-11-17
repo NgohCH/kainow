@@ -67,6 +67,11 @@ export interface MinutesModel {
   draftMinutes(request: ModelRequest): Promise<MinutesAnswer & { usage: Usage }>;
 }
 
+/** One strict JSON-schema call: the answer's raw content and the reported usage. Used by the assist runner, which parses per kind. */
+export interface JsonSchemaModel {
+  callJson(request: ModelRequest, schema: object): Promise<{ content: unknown; usage: Usage }>;
+}
+
 const SCHEMA = {
   name: 'meeting_items',
   strict: true,
@@ -147,7 +152,7 @@ export function parseAnswer(content: unknown, usage: Usage): ModelAnswer {
 }
 
 /** Calls the OpenAI chat completions API with a strict JSON schema. Needs a key; the sandbox cannot reach it. */
-export class OpenAiModelClient implements ModelClient, MinutesModel {
+export class OpenAiModelClient implements ModelClient, MinutesModel, JsonSchemaModel {
   constructor(
     private readonly apiKey: string,
     private readonly baseUrl: string = 'https://api.openai.com/v1',
@@ -165,7 +170,7 @@ export class OpenAiModelClient implements ModelClient, MinutesModel {
   }
 
   /** One request with a strict JSON schema: the answer's text and the reported usage, or a ModelCallError / ModelBadResponse. */
-  private async callJson(req: ModelRequest, schema: object): Promise<{ content: unknown; usage: Usage }> {
+  async callJson(req: ModelRequest, schema: object): Promise<{ content: unknown; usage: Usage }> {
     let res: Response;
     try {
       res = await this.fetchImpl(`${this.baseUrl}/chat/completions`, {

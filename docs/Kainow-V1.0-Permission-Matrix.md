@@ -95,6 +95,12 @@ Self-approval is allowed by default for an eligible O/S, including a valid combi
 | Designate source Project-wide or Restricted; change audience | PM or O/S | Administrator bounds, confirmation and history; O09. |
 | Review/publish wider summary from restricted source | PM or O/S | Explicit intended-audience approval; sanitised summary does not widen original. |
 | Receive AI answer from restricted material | Requester with source permission | Separately permissioned result; shared reply only if whole intended audience can access. |
+| Share AI answer into thread | Requester (a participant who can post in the thread) | Only when safe for the thread audience: every passage sent to the AI is readable by the whole audience; otherwise a new answer is built for that thread (D76). |
+| Review shared AI answers and drafts | PM or DPM | Clear or withdraw an item hidden after material it used was hidden, deleted or restricted; private questions are never shown to them (D76, D77). |
+| Request draft report | Participant | Labelled "AI draft — not approved"; private until shared; PM or DPM may also edit and share it; approval and filing belong to the outputs capability (D77). |
+| Request shareable summary draft | PM, DPM or O/S in the source audience | Deputy may draft a summary but not approve it (D78). |
+| Approve shareable summary | PM or O/S in the original's audience | One version for a stated audience, shown before confirming; original's audience never widens (D78). |
+| Confirm/withdraw summary under review | PM or O/S | Applies when "Access review required" or hidden pending review (D78). |
 | Review/close AI feedback | PM or DPM | Escalate provider/configuration issues to EA; no automatic configuration edits. |
 | Inspect ordinary history | Person with current record access | Version retention does not bypass source restrictions. |
 | Mark discussion message Deleted | Author, PM or DPM | Logical deletion with actor/time/reason; exclude ordinary use/future processing. |

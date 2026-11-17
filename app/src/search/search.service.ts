@@ -4,6 +4,7 @@ import type { AuthUser } from '../auth/tokens';
 import { UUID } from '../common/uuid7';
 import { activeManagerSql, audienceVisibleSql } from '../discussion/audience';
 import { PG_POOL } from '../db/database.module';
+import { summaryShownSql } from '../assist/material';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { loadArchiveState } from '../projects/archive';
 import type { GrantKind } from '../projects/grants';
@@ -84,7 +85,10 @@ WITH hits AS (
      AND (d.publication IS NULL OR d.publication = 'published' OR d.submitted_by = ${user}::uuid
           OR ${activeManagerSql('d.project_id', user, '$3')})
      -- A deleted note's text and proposals are hidden (sub-project 5 quarantine adds its condition here too).
-     AND (d.kind NOT IN ('note', 'ai_proposal') OR EXISTS (SELECT 1 FROM sources s WHERE s.id = d.source_id AND s.status <> 'deleted' AND (d.kind <> 'note' OR s.kind <> 'discussion')))
+     -- An approved shareable summary is found as a note by its own audience; a hidden one only by people also in the
+     -- original's audience; a draft or withdrawn one by nobody.
+     AND (d.kind NOT IN ('note', 'ai_proposal') OR EXISTS (SELECT 1 FROM sources s WHERE s.id = d.source_id AND s.status <> 'deleted' AND (d.kind <> 'note' OR s.kind <> 'discussion')
+          AND ${summaryShownSql('s', { user, today: '$3' })}))
      AND (d.kind <> 'person' OR d.ends_on IS NULL OR d.ends_on >= $3::date)
 ), best AS (
   SELECT DISTINCT ON (project_id, kind, item_id) * FROM hits
@@ -228,7 +232,7 @@ export class SearchService {
           name: row.projectName,
           status: ctx.project.status,
           archived,
-          myAccess: { roles: ctx.roles, grant: ctx.roles.length === 0 ? (ctx.grantKinds[0] ?? null) : null },
+          myAccess: { roles: inRoleOrder(ctx.roles), grant: ctx.roles.length === 0 ? (ctx.grantKinds[0] ?? null) : null },
           total: row.total,
           results: [],
         };
@@ -271,7 +275,13 @@ export class SearchService {
       .map((r) => ({ role: r.role, state: membershipState(r, ctx.today) }))
       .filter((r) => r.state === 'active' || r.state === 'scheduled');
     if (held.length === 0) return null;
-    const roles = [...new Set(held.map((r) => ROLE_LABEL[r.role]))].join(', ');
+    const roles = inRoleOrder([...new Set(held.map((r) => r.role))]).map((r) => ROLE_LABEL[r]).join(', ');
     return `${roles} · ${held.some((r) => r.state === 'active') ? 'Active' : 'Scheduled'}`;
   }
+}
+
+/** Fixed role order (Project Manager, Deputy, Owner, Sponsor, Member), not the order the membership rows came back in. */
+function inRoleOrder(roles: readonly ProjectRole[]): ProjectRole[] {
+  const order = Object.keys(ROLE_LABEL);
+  return [...roles].sort((a, b) => order.indexOf(a) - order.indexOf(b));
 }
