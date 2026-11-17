@@ -248,7 +248,7 @@ export class HistoryService {
       case 'task':
         return one(
           `SELECT t.status, to_char(t.due_on, 'YYYY-MM-DD') AS "dueOn", u.display_name AS assignee, t.parent_id AS "parentId"
-             FROM tasks t JOIN users u ON u.id = t.assignee_id WHERE t.id = $1`,
+             FROM tasks t LEFT JOIN users u ON u.id = t.assignee_id WHERE t.id = $1`,
         );
       case 'decision':
         return one(`SELECT status, rationale FROM decisions WHERE id = $1`);

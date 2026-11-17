@@ -1,3 +1,4 @@
+import { possibleCopyLabelSql } from '../quarantine/labels';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { answerAccess, loadAnswerRow } from '../assist/questions.service';
@@ -39,6 +40,8 @@ export interface FeedbackView {
   reporterName: string;
   createdAt: Date;
   escalatedAt: Date | null;
+  /** "Possible credential removed — awaiting check" while the note is a possible copy masked at once (spec 7.4). */
+  quarantineLabel: string | null;
 }
 
 export interface AdminFeedbackRow {
@@ -173,7 +176,8 @@ export class FeedbackService {
   private async rows(db: Pool | PoolClient, where: string, params: unknown[]): Promise<FeedbackView[]> {
     const { rows } = await db.query(
       `SELECT f.id, f.project_id AS "projectId", f.target_kind AS "targetKind", f.target_id AS "targetId", f.category, f.note, f.status,
-              f.reporter_id AS "reporterId", u.display_name AS "reporterName", f.created_at AS "createdAt", f.escalated_at AS "escalatedAt"
+              f.reporter_id AS "reporterId", u.display_name AS "reporterName", f.created_at AS "createdAt", f.escalated_at AS "escalatedAt",
+              ${possibleCopyLabelSql('feedback', 'f.id')}
          FROM ai_feedback f JOIN users u ON u.id = f.reporter_id WHERE ${where} ORDER BY f.created_at DESC, f.id DESC`,
       params,
     );

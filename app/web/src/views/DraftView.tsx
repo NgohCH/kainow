@@ -24,7 +24,7 @@ import { formatDay } from '../due.ts';
 import { formatWhen } from '../format.ts';
 import { FeedbackButton } from './Feedback.tsx';
 import { Markdown } from './Markdown.tsx';
-import { ReportSecret } from './ReportSecret.tsx';
+import { QuarantineNote, ReportSecret } from './ReportSecret.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
 
@@ -217,6 +217,7 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
       </p>
       <div className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{info}</div>
       {active && <p className="meta" role="status">{draft.status === 'queued' ? 'Waiting to start' : 'Being drafted'}</p>}
+      <QuarantineNote text={draft.quarantineLabel} />
       {draft.notice && <p className="warn" role="alert">{draft.notice}</p>}
       {(error ?? loadError) && <p role="alert" className="error">{error ?? loadError}</p>}
 

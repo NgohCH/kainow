@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ReportSecret } from './ReportSecret.tsx';
+import { QuarantineNote, ReportSecret } from './ReportSecret.tsx';
 import { ApiError, api, type Item, type Project, type Run } from '../api.ts';
 import { FeedbackButton } from './Feedback.tsx';
 import { AuthoriseForm, type Person } from './AuthoriseForm.tsx';
@@ -291,6 +291,7 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                 <span className="proposal-text">{item.text}</span>
                 {item.owner && <span className="meta">Owner: {item.owner}</span>}
               </button>
+              <QuarantineNote text={item.quarantineLabel} />
               {(() => {
                 const line = dueLine(item, view.run);
                 return line && <p id={`due-${item.id}`} role="note" className={line.tone === 'warn' ? 'warn due-line' : 'meta due-line'}>{line.text}</p>;

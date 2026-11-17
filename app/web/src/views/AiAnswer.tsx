@@ -12,7 +12,7 @@ import {
 import { formatWhen } from '../format.ts';
 import { FeedbackButton } from './Feedback.tsx';
 import { Markdown } from './Markdown.tsx';
-import { ReportSecret } from './ReportSecret.tsx';
+import { QuarantineNote, ReportSecret } from './ReportSecret.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
 
@@ -114,6 +114,7 @@ export function ThreadAnswerItem({
         Asked by {answer.askedBy.displayName} · shared {formatWhen(answer.sharedAt)}
       </p>
       {answer.question !== null && <p className="answer-question"><strong>Question:</strong> {answer.question}</p>}
+      <QuarantineNote text={answer.quarantineLabel} />
       {answer.notice && <p className="notice">{answer.notice}</p>}
       {answer.answerMarkdown !== null && <p className="meta">{ANSWER_LABEL}</p>}
       {(answer.answerMarkdown !== null || answer.sources.length > 0) && <AnswerBody id={answer.id} scope="thread" markdown={answer.answerMarkdown} sources={answer.sources} droppedCount={answer.droppedCount} />}

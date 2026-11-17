@@ -266,6 +266,17 @@ describe('replacing and withdrawing decisions', { skip: SKIP_NO_DB }, () => {
     assert.equal((await pm.request('POST', `/review-flags/${flag}/clear`, { note: 'Looked' })).status, 200);
   });
 
+  test('a flag on a Deleted record answers 404, like the record (M4)', async () => {
+    const old = await decision();
+    const a = await task();
+    await submit(owner, 'withdraw_decision', old, { reason: 'x', affected: [{ kind: 'task', id: a }] }, true);
+    const flag = (await flags())[0].id;
+    await t.pool.query(`UPDATE tasks SET status = 'cancelled', deleted_at = now(), deleted_by = $2, delete_reason = 'Duplicate' WHERE id = $1`, [a, ids.owner]);
+    const r = await pm.request('POST', `/review-flags/${flag}/clear`, { note: 'Looked' });
+    assert.equal(r.status, 404);
+    assert.equal((await flags())[0].cleared_at, null);
+  });
+
   test('a Deputy can clear a flag', async () => {
     const old = await decision();
     const a = await task();

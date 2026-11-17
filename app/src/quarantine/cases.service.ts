@@ -474,7 +474,8 @@ export class CasesService {
       // The marks: distinct strings of 4+ characters, each exactly in the item's current text.
       const marks = this.readMarks(input.marked, user === 'kainow');
       const text = await markableText(db, input.kind, input.id, user === 'kainow');
-      if (text === null || marks.some((m) => !text.includes(m))) throw new BadRequestException(MARKS_REFUSED);
+      // A mark inside the marker ("credential", "removed") would rewrite markers already there (M1).
+      if (text === null || marks.some((m) => !text.includes(m) || MARKER.includes(m))) throw new BadRequestException(MARKS_REFUSED);
       let reason: string | null = null;
       if (user !== 'kainow' || input.reason !== null) {
         reason = readReason(input.reason);
@@ -522,7 +523,7 @@ export class CasesService {
     // Worked out before anything changes: who can read it now, what was sent, and what is still queued.
     const disclosures: Disclosures = {
       aiRequests: await this.aiDisclosures(db, kind, id),
-      emails: await sentHolding(db, marks),
+      emails: await sentHolding(db, marks, { kind, id }),
       audienceSize: await this.audienceSize(db, ctx, kind, id),
     };
     const authorId = (await db.query<{ id: string | null }>(AUTHOR[kind], [id])).rows[0]?.id ?? null;
@@ -546,7 +547,7 @@ export class CasesService {
     await event(db, { caseId, projectId, actorId: reporterId, action: 'held', kind, itemId: id, detail: heldDetail, at });
 
     // Emails still queued that hold the text never go; then the sweep cleans every stored copy.
-    const cancelled = await cancelQueuedHolding(db, marks);
+    const cancelled = await cancelQueuedHolding(db, marks, { kind, id });
     let cleanedRows = 0;
     if (key) cleanedRows = (await cleanItem(db, key, caseId, kind, id, await ownMarks(db, kind, id, marks))).rows;
 
@@ -981,7 +982,7 @@ export class CasesService {
       }
       const at = this.now();
       const projectId = c.projectId;
-      const cancelled = await cancelQueuedHolding(db, marks);
+      const cancelled = await cancelQueuedHolding(db, marks, { kind: c.kind, id: c.itemId });
       let rows = (await cleanItem(db, key, c.id, c.kind, c.itemId, await ownMarks(db, c.kind, c.itemId, marks))).rows;
       const derived = await quoteOnlyProposals(db, c.kind, c.itemId, marks);
       const places = (await findPlaces(db, projectId, marks, { kind: c.kind, id: c.itemId })).filter((p) => !(p.kind === 'proposal' && derived.has(p.id)));

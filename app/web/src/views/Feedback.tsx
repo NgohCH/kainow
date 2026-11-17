@@ -1,5 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
-import { ReportSecret } from './ReportSecret.tsx';
+import { QuarantineNote, ReportSecret } from './ReportSecret.tsx';
 import { ApiError } from '../api.ts';
 import {
   CATEGORIES,
@@ -120,6 +120,7 @@ function Item({ projectId, f, canReview, onChanged }: { projectId: string; f: Fe
       </p>
       <p className="meta">{f.reporterName}, {formatWhen(f.createdAt)}</p>
       <p><ReportSecret projectId={projectId} kind="feedback" id={f.id} label="this feedback note" /></p>
+      <QuarantineNote text={f.quarantineLabel} />
       <p>{f.note}</p>
       {canReview && (
         <span className="actions">

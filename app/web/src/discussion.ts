@@ -53,6 +53,8 @@ export interface ThreadView {
 }
 
 export interface DiscussionItem {
+  /** "Possible credential removed — awaiting check" while this is a possible copy masked at once (history spec 7.4). */
+  quarantineLabel?: string | null;
   kind: 'discussion' | 'meeting' | 'notes' | 'minutes' | 'submission';
   id: string;
   title: string;
@@ -252,6 +254,8 @@ export interface MinutesVersionSummary {
 }
 
 export interface DraftView {
+  /** "Possible credential removed — awaiting check" while this is a possible copy masked at once (history spec 7.4). */
+  quarantineLabel?: string | null;
   id: string;
   versionNo: number;
   origin: 'ai' | 'human';

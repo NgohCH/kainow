@@ -1,5 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
-import { ReportSecret } from './ReportSecret.tsx';
+import { QuarantineNote, ReportSecret } from './ReportSecret.tsx';
 import { ApiError, type Membership } from '../api.ts';
 import {
   AI_DRAFT_LABEL,
@@ -184,6 +184,7 @@ export function MinutesPanel({
       {shown && banner && mode === 'view' && (
         <div className={banner.className} tabIndex={0} aria-label={`Version ${shown.versionNo} of the draft minutes`}>
           <p className="badge ai-label">{banner.label}</p>
+          <QuarantineNote text={shown.quarantineLabel} />
           <p className="meta">
             Version {shown.versionNo}, {formatWhen(shown.createdAt)}, covers messages up to #{shown.coversThroughNo}
             {banner.fromLine ? ` · ${banner.fromLine}` : ''}

@@ -20,6 +20,7 @@ import {
 import { type DiscussionItem, listDiscussion } from '../discussion.ts';
 import { formatWhen } from '../format.ts';
 import { DraftDetail } from './DraftView.tsx';
+import { QuarantineNote } from './ReportSecret.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
 const STATUS_TEXT: Record<DraftStatus, string> = { queued: 'Waiting to start', running: 'Being drafted', ready: 'Ready', failed: 'AI draft unavailable', blocked: 'AI draft unavailable' };
@@ -79,6 +80,7 @@ function DraftList({ projectId }: { projectId: string }) {
             <p className={d.status === 'failed' || d.status === 'blocked' ? 'warn' : 'meta'} role={d.status === 'queued' || d.status === 'running' ? 'status' : undefined}>
               {d.notice ?? STATUS_TEXT[d.status]}
             </p>
+            <QuarantineNote text={d.quarantineLabel} />
           </li>
         ))}
       </ul>

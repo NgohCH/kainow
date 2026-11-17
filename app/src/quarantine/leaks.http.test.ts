@@ -477,6 +477,80 @@ describe('after a report, the marked text is nowhere in the project', { skip: SK
     for (let i = 0; i + 4 <= SECRET.length; i++) assert.ok(!passages.includes(SECRET.slice(i, i + 4)) || 'vault'.includes(SECRET.slice(i, i + 4).toLowerCase()), SECRET.slice(i, i + 4));
   });
 
+  test('every kind of place masked at once stays visible with its label and without the text (I3)', async () => {
+    const { t, ids, project } = h;
+    const POSSIBLE = 'Possible credential removed — awaiting check';
+    const source = (await ok(h.pm.request('POST', `/projects/${project}/notes`, { title: 'Plant room', text: `The kestrel pump. Vault ${SECRET}.` }), 201)).source.id as string;
+    // A second note holding it (a place), and a plain one the proposal and summary are taken from.
+    const note = (await ok(h.pm.request('POST', `/projects/${project}/notes`, { title: 'Copy', text: `Copied: ${SECRET}.` }), 201)).source.id as string;
+    const plain = (await ok(h.pm.request('POST', `/projects/${project}/notes`, { title: 'Pump plan', text: 'Kestrel pump plan.' }), 201)).source;
+    const version = (await t.pool.query(`SELECT id FROM source_versions WHERE source_id = $1`, [plain.id])).rows[0].id as string;
+    const task = uuidv7();
+    await t.pool.query(
+      `INSERT INTO tasks (id, project_id, depth, title, assignee_id, due_on, status, authorised_by, authorised_at) VALUES ($1, $2, 0, $3, $4, '2026-11-16', 'not_started', $5, now())`,
+      [task, project, `Rotate ${SECRET}`, ids.ben, ids.own],
+    );
+    const run = uuidv7();
+    await t.pool.query(`INSERT INTO extraction_runs (id, source_version_id, requested_by, status, created_at) VALUES ($1, $2, $3, 'succeeded', now())`, [run, version, ids.pm]);
+    const proposal = uuidv7();
+    await t.pool.query(
+      `INSERT INTO extraction_items (id, run_id, source_version_id, position, kind, text, quote, quote_start, quote_end, quote_matches, created_at)
+       VALUES ($1, $2, $3, 0, 'action', $4, 'Kestrel pump plan.', 0, 18, 1, now())`,
+      [proposal, run, version, `Rotate ${SECRET}`],
+    );
+    const human = uuidv7();
+    await t.pool.query(`INSERT INTO human_proposals (id, project_id, kind, text, proposed_by, proposed_at) VALUES ($1, $2, 'action', $3, $4, now())`, [human, project, `Rotate ${SECRET}`, ids.pm]);
+    // An answered question that used no material (a question asked through the API would find the reported note and
+    // be withdrawn with it).
+    const answer = uuidv7();
+    await t.pool.query(`INSERT INTO ai_requests (id, project_id, kind, requested_by, status, scope, created_at, finished_at) VALUES ($1, $2, 'question', $3, 'succeeded', 'personal', now(), now())`, [answer, project, ids.pm]);
+    await t.pool.query(`INSERT INTO ai_answers (request_id, project_id, question, answer_markdown, not_found) VALUES ($1, $2, $3, 'Nothing says.', true)`, [answer, project, `When does ${SECRET} expire?`]);
+    const draft = uuidv7();
+    await t.pool.query(`INSERT INTO report_drafts (id, project_id, kind, title, brief, created_by, created_at) VALUES ($1, $2, 'free_form', 'Kestrel brief', $3, $4, now())`, [draft, project, `Mention ${SECRET}`, ids.pm]);
+    const summary = uuidv7();
+    await t.pool.query(
+      `INSERT INTO summaries (id, project_id, original_source_id, intended_audience, leave_out, created_by, created_at) VALUES ($1, $2, $3, $4, $5, $6, now())`,
+      [summary, project, plain.id, json({ mode: 'project', namedUserIds: [] }), `Leave out ${SECRET}`, ids.pm],
+    );
+    const feedback = uuidv7();
+    await t.pool.query(
+      `INSERT INTO ai_feedback (id, project_id, target_kind, target_id, category, note, reporter_id, created_at) VALUES ($1, $2, 'proposal', $3, 'other', $4, $5, now())`,
+      [feedback, project, proposal, `It missed ${SECRET}`, ids.pm],
+    );
+    const meeting = (await ok(h.pm.request('POST', `/projects/${project}/threads`, { kind: 'meeting', title: 'Pump meeting', meetingDate: '2026-11-13' }), 201)).id as string;
+    await t.pool.query(
+      `INSERT INTO minutes_drafts (id, thread_id, version_no, origin, body, covers_through_no, created_by, created_at) VALUES ($1, $2, 1, 'human', $3, 0, $4, now())`,
+      [uuidv7(), meeting, `Minutes: ${SECRET}`, ids.pm],
+    );
+    t.clock.advanceSeconds(1);
+
+    await ok(h.ada.request('POST', `/projects/${project}/secret-reports`, { kind: 'source', id: source, marked: [SECRET], reason: 'Vault code' }), 201);
+    const listed = (await t.pool.query(`SELECT item_kind AS kind, item_id AS id FROM quarantine_possible_copies`)).rows.map((r) => `${r.kind}:${r.id}`).sort();
+    const want = [`source:${note}`, `task:${task}`, `proposal:${proposal}`, `human_proposal:${human}`, `answer:${answer}`, `report_draft:${draft}`, `summary:${summary}`, `feedback:${feedback}`];
+    for (const w of want) assert.ok(listed.includes(w), `${w} is a place: ${listed}`);
+    assert.ok(listed.some((p) => p.startsWith('minutes_draft:')), `a minutes draft is a place: ${listed}`);
+
+    const views: Array<[string, string]> = [
+      ['note', `/notes/${note}`],
+      ['notes list', `/projects/${project}/discussion`],
+      ['record', `/projects/${project}/records`],
+      ['proposal', `/extractions/${run}`],
+      ['human proposal', `/projects/${project}/proposals`],
+      ['AI answer', `/questions/${answer}`],
+      ['report draft', `/reports/${draft}`],
+      ['summary', `/summaries/${summary}`],
+      ['feedback', `/projects/${project}/feedback`],
+      ['minutes draft', `/threads/${meeting}/minutes`],
+    ];
+    for (const [kind, path] of views) {
+      const r = await h.pm.request('GET', path);
+      assert.equal(r.status, 200, `${kind} (${path}): ${json(r.body)}`);
+      const body = json(r.body);
+      assert.ok(body.includes(POSSIBLE), `${kind} (${path}) carries the label: ${body}`);
+      assert.ok(!body.includes(SECRET), `${kind} (${path}) holds the marked text`);
+    }
+  });
+
   test('decrypting the case\'s originals gives it back', async () => {
     const { source } = await spread();
     const original = (await h.t.pool.query(`SELECT text_content FROM source_versions WHERE source_id = $1`, [source])).rows[0].text_content as string;

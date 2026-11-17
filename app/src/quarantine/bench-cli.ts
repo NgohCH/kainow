@@ -2,8 +2,8 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Pool } from 'pg';
-import { type Session, seedBench, startApp } from '../analysis/bench-cli';
-import { type Stats, assertAssistBenchDatabase, measureSearch, seedAssist } from '../assist/bench-cli';
+import { type Session, assertBenchDatabase, seedBench, startApp } from '../analysis/bench-cli';
+import { type Stats, measureSearch, seedAssist } from '../assist/bench-cli';
 import { backfillPassages } from '../assist/passage-index';
 import { newKeyBytes } from './protected-key';
 
@@ -21,7 +21,7 @@ import { newKeyBytes } from './protected-key';
  * Requests go through the real HTTP app on loopback with a protected key made for this run in a temporary file (never
  * printed, removed afterwards). Five warm-up rounds are not counted; percentiles are nearest-rank.
  *
- * Refuses any database whose name does not end in `_test` or `_bench`; use `kainow_bench`.
+ * Refuses any database whose name does not end in `_bench`; use `kainow_bench`.
  */
 
 const USERS = 400;
@@ -54,11 +54,11 @@ export interface HistoryBenchResult {
 const secretOf = (run: string, i: number): string => `Qv${i}harbor-${run}Lantern${(i * 7919) % 1000}`;
 
 export async function runHistoryBench(databaseUrl: string, log: (m: string) => void = console.log): Promise<HistoryBenchResult> {
-  assertAssistBenchDatabase(databaseUrl);
+  assertBenchDatabase(databaseUrl);
   const pool = new Pool({ connectionString: databaseUrl, max: 10 });
   const dir = mkdtempSync(join(tmpdir(), 'kainow-history-bench-'));
   try {
-    const now = await seedBench(pool, log, assertAssistBenchDatabase);
+    const now = await seedBench(pool, log);
     await seedAssist(pool, now, log);
     const backfill = await backfillPassages(pool, () => undefined);
     if (backfill.versions > 0) log(`back-fill: ${backfill.versions} versions, ${backfill.passages} passages in ${(backfill.ms / 1000).toFixed(1)} s`);
@@ -179,7 +179,7 @@ export async function runHistoryBench(databaseUrl: string, log: (m: string) => v
 if (require.main === module) {
   const url = process.env.DATABASE_URL;
   if (!url) {
-    console.error('Set DATABASE_URL to a migrated database whose name ends in _test or _bench.');
+    console.error('Set DATABASE_URL to a migrated database whose name ends in _bench.');
     process.exit(1);
   }
   runHistoryBench(url).then(

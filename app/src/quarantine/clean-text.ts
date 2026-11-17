@@ -30,15 +30,27 @@ export function searchForms(marks: string[], htmlEscaped = false): string[] {
   return [...forms];
 }
 
+/** Every [start, end) of the marker in a text. */
+function markerSpans(text: string): Array<[number, number]> {
+  const out: Array<[number, number]> = [];
+  for (let at = text.indexOf(MARKER); at !== -1; at = text.indexOf(MARKER, at + MARKER.length)) out.push([at, at + MARKER.length]);
+  return out;
+}
+
 /**
  * Replaces every occurrence of every mark (exact, case-sensitive) with MARKER. Occurrences that overlap or touch
  * each other (including a mark overlapping itself) are merged into one span and one marker. With `htmlEscaped`
  * the HTML-escaped form of each mark is matched too. `edits` are in text order.
  */
 export function cleanText(text: string, marks: string[], htmlEscaped = false): { text: string; edits: Edit[] } {
+  const markers = markerSpans(text);
   const spans: Array<[number, number]> = [];
   for (const form of searchForms(marks, htmlEscaped)) {
-    for (let at = text.indexOf(form); at !== -1; at = text.indexOf(form, at + 1)) spans.push([at, at + form.length]);
+    for (let at = text.indexOf(form); at !== -1; at = text.indexOf(form, at + 1)) {
+      // An occurrence overlapping a marker already there (an earlier sweep) is left alone: markers are never nested.
+      if (markers.some(([from, to]) => at < to && at + form.length > from)) continue;
+      spans.push([at, at + form.length]);
+    }
   }
   if (spans.length === 0) return { text, edits: [] };
   spans.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
@@ -93,27 +105,40 @@ export function cleanJson(value: unknown, marks: string[]): unknown {
 export const MIN_FRAGMENT = 4;
 
 /**
- * Cleans a text that may have been cut out of a longer one (a quote the model shortened): whole occurrences as
- * cleanText, then a start that is a suffix of a mark, or an end that is a prefix of one, of at least MIN_FRAGMENT
- * characters, is replaced by the marker too.
+ * Cleans a text that may have been cut out of a longer one (an unplaced quote of a cleaned version, which the model may
+ * have shortened, cut off with "..." or "…", or elided in the middle): whole occurrences as cleanText, then every
+ * maximal run of at least MIN_FRAGMENT characters that also occurs inside a mark is replaced by the marker (Review
+ * Focus 1: no fragment longer than 3 characters survives; final review I5). Runs that overlap or touch are merged into
+ * one marker; markers already in the text are left alone. This may over-mask ordinary words that share 4 or more
+ * characters with a mark; that is accepted, since the original is encrypted and restores exactly.
  */
 export function cleanEdges(text: string, marks: string[]): string {
-  let out = cleanText(text, marks).text;
-  for (const m of searchForms(marks)) {
-    for (let n = Math.min(m.length - 1, out.length); n >= MIN_FRAGMENT; n--) {
-      if (out.endsWith(m.slice(0, n))) {
-        out = out.slice(0, out.length - n) + MARKER;
-        break;
-      }
-    }
-    for (let n = Math.min(m.length - 1, out.length); n >= MIN_FRAGMENT; n--) {
-      if (out.startsWith(m.slice(m.length - n))) {
-        out = MARKER + out.slice(n);
-        break;
-      }
-    }
+  const out = cleanText(text, marks).text;
+  const forms = searchForms(marks);
+  const markers = markerSpans(out);
+  const insideMarker = (i: number) => markers.some(([from, to]) => i >= from && i < to);
+  const spans: Array<[number, number]> = [];
+  for (let i = 0; i < out.length; i++) {
+    if (insideMarker(i)) continue;
+    // The longest run from i, outside every marker, that occurs inside some mark.
+    let len = 0;
+    while (i + len < out.length && !insideMarker(i + len) && forms.some((m) => m.includes(out.slice(i, i + len + 1)))) len++;
+    if (len >= MIN_FRAGMENT) spans.push([i, i + len]);
   }
-  return out;
+  if (spans.length === 0) return out;
+  const merged: Array<[number, number]> = [];
+  for (const sp of spans) {
+    const last = merged[merged.length - 1];
+    if (last && sp[0] <= last[1]) last[1] = Math.max(last[1], sp[1]);
+    else merged.push([sp[0], sp[1]]);
+  }
+  let result = '';
+  let at = 0;
+  for (const [from, to] of merged) {
+    result += out.slice(at, from) + MARKER;
+    at = to;
+  }
+  return result + out.slice(at);
 }
 
 /**

@@ -9,6 +9,7 @@ import { PROPOSAL_REJECTED_REASON, lockPendingAuthorisation, rejectPendingAuthor
 import { PG_POOL } from '../db/database.module';
 import { notHeldSql, refuseHeld } from '../history/deleted-sql';
 import { QUOTE_CHANGED_TEXT, quoteChangedItems } from '../quarantine/clean';
+import { possibleCopyLabelSql } from '../quarantine/labels';
 import { locateQuote } from '../notes/text';
 import { type DueReading, type ReviewerDue, isCalendarDate, readDue } from './due';
 import { EXTRACTION_QUEUE, type ExtractionQueue } from './queue';
@@ -235,7 +236,7 @@ export class ExtractionService {
               i.quote, i.quote_start AS "quoteStart", i.quote_end AS "quoteEnd",
               i.quote_matches AS "quoteMatches", i.review_status AS "reviewStatus",
               i.chosen_occurrence AS "chosenOccurrence",
-              i.reviewed_by AS "reviewedBy", i.reviewed_at AS "reviewedAt",
+              i.reviewed_by AS "reviewedBy", i.reviewed_at AS "reviewedAt", ${possibleCopyLabelSql('proposal', 'i.id')},
               (SELECT json_build_object('kind', x.kind, 'id', x.id) FROM (
                  SELECT 'task' AS kind, id FROM tasks WHERE origin_item_id = i.id AND depth = 0
                  UNION ALL SELECT 'decision', id FROM decisions WHERE origin_item_id = i.id

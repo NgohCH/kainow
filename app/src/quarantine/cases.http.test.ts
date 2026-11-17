@@ -211,6 +211,12 @@ describe('reporting, holding and possible copies', { skip: SKIP_NO_DB }, () => {
       assert.equal(res.status, 400, JSON.stringify(r));
       assert.ok(!JSON.stringify(res.body).includes(SECRET.toLowerCase()) && !JSON.stringify(res.body).includes('Nothing like it'));
     }
+    // A mark that is part of the marker is refused even when the item holds it (M1).
+    const words = await note('Words', 'The old credential was removed from the server.');
+    for (const m of ['removed', 'credential', 'dential']) {
+      const res = await report(ada, { kind: 'source', id: words, reason: 'Looks like a code', marked: [m] });
+      assert.equal(res.status, 400, m);
+    }
     // A reason is required, and it may not repeat the marked text.
     assert.equal((await report(ada, { kind: 'source', id, marked: [SECRET], reason: '' })).status, 400);
     const repeated = await report(ada, { kind: 'source', id, marked: [SECRET], reason: `the code ${SECRET}` });
@@ -356,7 +362,20 @@ describe('reporting, holding and possible copies', { skip: SKIP_NO_DB }, () => {
     await t.pool.query(`UPDATE email_outbox SET status = 'retry_wait', next_attempt_at = now() WHERE id = $1`, [waiting]);
     const harmless = await mail('Today: nothing new.');
     await mail(`Yesterday: ${SECRET}.`, 'sent');
+    // Another project's emails holding the same text are not this report's business (final review I2a).
+    const elsewhere = await seedProject(t.pool, { name: 'Beta Project', status: 'active', members: [{ userId: ids.ben, role: 'member' }] });
+    const otherMail = async (status: string) => {
+      const outboxId = await writeOutbox(t.pool, {
+        toUserId: ids.ben, toAddress: 'ben@example.org', subject: 'Your digest', body: `Beta: ${SECRET}.`, kind: 'digest', projectId: elsewhere, initiatedBy: 'digest', now: t.clock.now(),
+      });
+      if (status !== 'queued') await t.pool.query(`UPDATE email_outbox SET status = $2, sent_at = now() WHERE id = $1`, [outboxId, status]);
+      return outboxId;
+    };
+    const otherQueued = await otherMail('queued');
+    await otherMail('sent');
     const caseId = await reported(ada, 'source', id);
+    const other = (await t.pool.query(`SELECT status, last_reason, text_body FROM email_outbox WHERE id = $1`, [otherQueued])).rows[0];
+    assert.deepEqual([other.status, other.last_reason, other.text_body.includes(SECRET)], ['queued', null, true], "another project's queued email is untouched");
     const rows = (await t.pool.query(`SELECT id, status, last_reason FROM email_outbox WHERE id = ANY($1::uuid[])`, [[holding, waiting, harmless]])).rows;
     assert.deepEqual(Object.fromEntries(rows.map((x) => [x.id, [x.status, x.last_reason]])), {
       [holding]: ['cancelled', CANCELLED_REASON],

@@ -7,7 +7,7 @@ import { mayDraftSummary } from '../assist.ts';
 import { type SourceKind, mayDeleteSource } from '../history.ts';
 import { DeleteAction } from './DeleteRestore.tsx';
 import { runFailureText } from '../quarantine.ts';
-import { ReportSecret } from './ReportSecret.tsx';
+import { QuarantineNote, ReportSecret } from './ReportSecret.tsx';
 import { AudiencePanel } from './AudiencePanel.tsx';
 import { SummaryRequest } from './SummaryView.tsx';
 import { Intake } from './Intake.tsx';
@@ -21,6 +21,8 @@ interface Detail {
     projectId: string;
     kind: string;
     label: string | null;
+    /** "Possible credential removed — awaiting check" while this is a possible copy masked at once (history spec 7.4). */
+    quarantineLabel?: string | null;
     publication: 'published' | 'submitted' | 'returned';
     intendedMode: 'project' | 'restricted' | null;
     returnedReason: string | null;
@@ -134,6 +136,7 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
         </p>
       )}
       {src.label && <p className="meta">{src.label}</p>}
+      <QuarantineNote text={src.quarantineLabel} />
       {src.provenance && <p className="meta">{src.provenance}</p>}
       {src.summary && (
         <p className="meta" role="note">

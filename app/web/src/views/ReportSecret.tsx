@@ -173,6 +173,14 @@ export function ReportSecret({
   );
 }
 
+/**
+ * The quarantine line of any item that carries one (history spec 7.4, 7.5): "Possible credential removed — awaiting
+ * check" on a place masked at once, "Credential removed — under review" on a cleaned record. Nothing when none.
+ */
+export function QuarantineNote({ text }: { text?: string | null }) {
+  return text ? <p className="warn" role="note">{text}</p> : null;
+}
+
 /** A record's quarantine line (`Credential removed — under review`, when it has one) and its Report a suspected secret button. */
 export function QuarantineBar({
   projectId,

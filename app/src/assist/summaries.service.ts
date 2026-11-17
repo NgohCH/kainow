@@ -1,3 +1,4 @@
+import { possibleCopyLabelSql } from '../quarantine/labels';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { readReason } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
@@ -94,13 +95,14 @@ export interface SummaryRow {
   createdAt: Date;
   /** Held in an open quarantine case (history spec 7.2): hidden from everyone, whatever its state. */
   heldCaseId: string | null;
+  quarantineLabel: string | null;
 }
 
 const SUMMARY_ROW = `sm.id, sm.project_id AS "projectId", sm.original_source_id AS "originalSourceId", sm.original_thread_id AS "originalThreadId",
   sm.intended_audience AS "intendedAudience", sm.leave_out AS "leaveOut", sm.state, sm.summary_source_id AS "summarySourceId",
   sm.approved_version_id AS "approvedVersionId", sm.approved_by AS "approvedBy", sm.approved_at AS "approvedAt",
   sm.review_reason AS "reviewReason", sm.created_by AS "createdBy", sm.created_at AS "createdAt",
-  sm.held_case_id AS "heldCaseId"`;
+  sm.held_case_id AS "heldCaseId", ${possibleCopyLabelSql('summary', 'sm.id')}`;
 
 export async function loadSummaryRow(db: Db, id: string, lock = false): Promise<SummaryRow | undefined> {
   if (!UUID.test(id)) return undefined;
@@ -362,6 +364,8 @@ export interface SummaryView {
   reviewReason: string | null;
   /** PM, Owner or Sponsor, while in review or hidden: Confirm or Withdraw (any project state). */
   canReview: boolean;
+  /** "Possible credential removed — awaiting check" while it is a possible copy masked at once (spec 7.4). */
+  quarantineLabel: string | null;
 }
 
 /**
@@ -378,6 +382,8 @@ export interface SharedSummaryView {
   from: typeof FROM_RESTRICTED_LABEL;
   sourceId: string;
   body: string;
+  /** "Possible credential removed — awaiting check" while it is a possible copy masked at once (spec 7.4). */
+  quarantineLabel: string | null;
 }
 
 export interface SummaryListItem {
@@ -392,6 +398,8 @@ export interface SummaryListItem {
   approvalRequested: boolean;
   /** Why an access review is needed, in plain words; null for a draft. */
   reason: string | null;
+  /** "Possible credential removed — awaiting check" while it is a possible copy masked at once (spec 7.4). */
+  quarantineLabel: string | null;
 }
 
 interface VersionRow {
@@ -687,6 +695,7 @@ export class SummariesService {
       from: FROM_RESTRICTED_LABEL,
       sourceId: row.summarySourceId,
       body: r.body,
+      quarantineLabel: row.quarantineLabel ?? null,
     };
   }
 
@@ -987,6 +996,7 @@ export class SummariesService {
         openMarks: open,
         approvalRequested: latest ? await approvalRequested(this.pool, r.id, latest.no) : false,
         reason: r.state === 'draft' ? null : reviewReasonText(r.reviewReason),
+        quarantineLabel: r.quarantineLabel ?? null,
       });
     }
     return out;
@@ -1046,6 +1056,7 @@ export class SummariesService {
       view: 'full',
       id: row.id,
       projectId: row.projectId,
+      quarantineLabel: row.quarantineLabel ?? null,
       original: { kind: original.kind, id: original.id, title: original.title },
       intendedAudience: {
         mode: row.intendedAudience.mode,

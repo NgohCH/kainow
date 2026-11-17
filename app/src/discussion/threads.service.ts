@@ -17,7 +17,7 @@ import { type AudienceChange, type AudienceMode, type AudienceRow, type Person, 
 import { MINUTES_LABEL } from '../notes/notes.service';
 import { AudienceService } from './audience.service';
 import { type MessageState, cleanBody, displayBody, refuseSecrets, replyQuote } from './messages';
-import { HELD_TEXT, POSSIBLE_COPY_TEXT, possibleCopies } from '../quarantine/labels';
+import { HELD_TEXT, POSSIBLE_COPY_TEXT, possibleCopies, possibleCopyLabelSql } from '../quarantine/labels';
 import { HELD } from '../history/deleted-sql';
 
 type Db = Pool | PoolClient;
@@ -81,6 +81,8 @@ export interface DiscussionListItem {
   audienceMode: AudienceMode;
   messageCount: number | null;
   label: string | null;
+  /** "Possible credential removed — awaiting check" while the thread title or note is a possible copy masked at once. */
+  quarantineLabel: string | null;
 }
 
 export interface ThreadRow {
@@ -286,14 +288,16 @@ export class ThreadsService {
     const { rows } = await this.pool.query(
       `SELECT * FROM (
          SELECT t.kind, t.id, t.title, COALESCE(t.last_message_at, t.created_at) AS "lastActivityAt",
-                to_char(t.meeting_date, 'YYYY-MM-DD') AS "meetingDate", t.state, a.mode AS "audienceMode", t.next_message_no - 1 AS "messageCount", NULL AS label
+                to_char(t.meeting_date, 'YYYY-MM-DD') AS "meetingDate", t.state, a.mode AS "audienceMode", t.next_message_no - 1 AS "messageCount", NULL AS label,
+                ${possibleCopyLabelSql('thread', 't.id')}
            FROM discussion_threads t JOIN audiences a ON a.id = t.audience_id
           WHERE t.project_id = $1 AND t.held_case_id IS NULL AND ${visible('a')}
          UNION ALL
          SELECT CASE WHEN s.publication <> 'published' THEN 'submission' WHEN s.kind = 'minutes' THEN 'minutes' ELSE 'notes' END,
                 s.id, s.title, max(v.created_at), NULL, NULL, a.mode, NULL,
                 CASE WHEN s.publication = 'submitted' THEN 'Submitted for review' WHEN s.publication = 'returned' THEN 'Returned'
-                     WHEN s.kind = 'minutes' THEN '${MINUTES_LABEL}' END
+                     WHEN s.kind = 'minutes' THEN '${MINUTES_LABEL}' END,
+                ${possibleCopyLabelSql('source', 's.id')}
            FROM sources s JOIN audiences a ON a.id = s.audience_id JOIN source_versions v ON v.source_id = s.id
           WHERE s.project_id = $1 AND s.status = 'active' AND s.held_case_id IS NULL AND s.kind IN ('notes', 'minutes')
             AND ((s.publication = 'published' AND ${visible('a')}) OR (s.publication <> 'published' AND ($4::boolean OR s.submitted_by = $2::uuid)))

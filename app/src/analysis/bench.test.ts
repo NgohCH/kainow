@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { assertBenchDatabase, runBench } from './bench-cli';
+import { Pool } from 'pg';
+import { SKIP_NO_DB, testDatabaseUrl } from '../testing/db';
+import { assertBenchDatabase, runBench, seedBench } from './bench-cli';
 
 describe('bench seeding guard', () => {
   test('accepts only databases whose name ends in _bench', () => {
@@ -16,6 +18,19 @@ describe('bench seeding guard', () => {
       runBench('postgres://postgres:s3cret-pass@127.0.0.1:1/kainow'),
       (err: Error) => /must end in _bench/.test(err.message) && !err.message.includes('s3cret-pass'),
     );
+  });
+});
+
+describe('bench seeding on a test database', { skip: SKIP_NO_DB }, () => {
+  test('seedBench refuses a _test database before writing anything (I6)', async () => {
+    const pool = new Pool({ connectionString: testDatabaseUrl() });
+    try {
+      await pool.query(`DROP TABLE IF EXISTS bench_meta`);
+      await assert.rejects(seedBench(pool, () => undefined), /must end in _bench/);
+      assert.equal((await pool.query(`SELECT to_regclass('bench_meta') AS t`)).rows[0].t, null, 'no table was created');
+    } finally {
+      await pool.end();
+    }
   });
 });
 

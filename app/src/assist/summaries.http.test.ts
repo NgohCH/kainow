@@ -392,7 +392,7 @@ describe('shareable summaries', { skip: SKIP_NO_DB }, () => {
     // The wider audience reads the approved summary only; the draft and its versions stay with the original's audience.
     const shared = await view(ben, id);
     assert.equal(shared.status, 200, JSON.stringify(shared.body));
-    assert.deepEqual(Object.keys(shared.body).sort(), ['approved', 'body', 'from', 'id', 'label', 'projectId', 'sourceId', 'view']);
+    assert.deepEqual(Object.keys(shared.body).sort(), ['approved', 'body', 'from', 'id', 'label', 'projectId', 'quarantineLabel', 'sourceId', 'view']);
     assert.equal(shared.body.view, 'shared');
     assert.equal(shared.body.approved, `Approved by ${pmName} on 9 Nov 2026`);
     assert.equal((await ben.request('GET', `/summaries/${id}/versions/1`)).status, 404);

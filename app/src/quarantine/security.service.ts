@@ -220,6 +220,20 @@ export class SecurityService {
       await db.query(`INSERT INTO security_reviewer_events (id, user_id, kind, actor_id, reason, at) VALUES ($1, $2, $3, $4, $5, $6)`, [
         uuidv7(at.getTime()), userId, on ? 'designated' : 'undesignated', user.id, reason, at,
       ]);
+      if (!on) {
+        // Undesignating ends the reviewer's approved grants at once, so none revives on a later designation (M6).
+        const open = (
+          await db.query<{ id: string }>(
+            `UPDATE quarantine_grants SET revoked_by = $2, revoked_at = $3, revoke_reason = $4
+              WHERE requester_id = $1 AND decision = 'approved' AND revoked_at IS NULL RETURNING id`,
+            [userId, user.id, at, reason],
+          )
+        ).rows;
+        for (const g of open.sort((a, b) => a.id.localeCompare(b.id))) {
+          await this.grantEvents(db, g.id, { actorId: user.id, action: 'grant_revoked', reason, detail: { grantId: g.id, undesignated: true }, at });
+          await writeAudit(db, { at, action: 'security.grant_revoked', actorUserId: user.id, subjectType: 'quarantine_grant', subjectId: g.id });
+        }
+      }
       await writeAudit(db, { at, action: on ? 'security.reviewer_designated' : 'security.reviewer_undesignated', actorUserId: user.id, subjectType: 'user', subjectId: userId });
     });
   }

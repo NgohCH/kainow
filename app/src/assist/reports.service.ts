@@ -1,3 +1,4 @@
+import { possibleCopyLabelSql } from '../quarantine/labels';
 import { notHeldSql, refuseHeld, unheldRecordSql } from '../history/deleted-sql';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
@@ -92,11 +93,13 @@ export interface DraftRow {
   reviewState: ReviewState;
   /** Held in an open quarantine case (history spec 7.2): seen by nobody; a change is refused with HELD. */
   heldCaseId: string | null;
+  quarantineLabel: string | null;
 }
 
 const DRAFT_ROW = `d.id, d.project_id AS "projectId", d.kind, d.title, to_char(d.period_from, 'YYYY-MM-DD') AS "periodFrom",
   to_char(d.period_to, 'YYYY-MM-DD') AS "periodTo", d.brief, d.chosen, d.created_by AS "createdBy", d.created_at AS "createdAt",
-  d.shared, d.shared_at AS "sharedAt", d.review_state AS "reviewState", d.held_case_id AS "heldCaseId"`;
+  d.shared, d.shared_at AS "sharedAt", d.review_state AS "reviewState", d.held_case_id AS "heldCaseId",
+  ${possibleCopyLabelSql('report_draft', 'd.id')}`;
 
 /** A draft row, or undefined. With `lock`, the row is locked for the transaction. */
 export async function loadDraftRow(db: Db, id: string, lock = false): Promise<DraftRow | undefined> {
@@ -395,6 +398,8 @@ export interface ReportView {
   versions: DraftVersionView[];
   /** The newest version and its text; null before the first version, or when the viewer can no longer read it. */
   current: (DraftVersionView & { body: string }) | null;
+  /** "Possible credential removed — awaiting check" while it is a possible copy masked at once (spec 7.4). */
+  quarantineLabel: string | null;
 }
 
 export interface ReportListItem {
@@ -410,6 +415,8 @@ export interface ReportListItem {
   versionCount: number;
   updatedAt: Date;
   notice: string | null;
+  /** "Possible credential removed — awaiting check" while it is a possible copy masked at once (spec 7.4). */
+  quarantineLabel: string | null;
 }
 
 interface LatestRequest {
@@ -682,6 +689,7 @@ export class ReportsService {
         versionCount: row.versionCount,
         updatedAt: row.updatedAt,
         notice: seen === 'no_longer_readable' ? DRAFT_NO_LONGER_READABLE : null,
+        quarantineLabel: row.quarantineLabel ?? null,
       });
     }
     return out;
@@ -854,6 +862,7 @@ export class ReportsService {
       canUnshare: editable && row.shared,
       versions: versions.map(versionView),
       current: readable && last ? { ...versionView(last), body: last.body } : null,
+      quarantineLabel: row.quarantineLabel ?? null,
     };
   }
 

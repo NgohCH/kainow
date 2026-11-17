@@ -5,6 +5,7 @@ import { type DiscussionItem, itemHref, formatMeetingDate, listDiscussion, listT
 import { formatWhen, plural } from '../format.ts';
 import { Intake } from './Intake.tsx';
 import { StartMeetingForm } from './Meeting.tsx';
+import { QuarantineNote } from './ReportSecret.tsx';
 import { SubmitNotes } from './Submissions.tsx';
 
 /** The Notes & discussion tab: threads, meetings, notes and published minutes of one project, newest activity first. */
@@ -147,6 +148,7 @@ export function Discussion({
                   {formatWhen(i.lastActivityAt)}
                 </span>
               </a>
+              <QuarantineNote text={i.quarantineLabel} />
             </li>
           ))}
         </ul>

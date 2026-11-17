@@ -393,7 +393,7 @@ export async function runAssistBench(databaseUrl: string, log: (m: string) => vo
   assertAssistBenchDatabase(databaseUrl);
   const pool = new Pool({ connectionString: databaseUrl, max: 10 });
   try {
-    const now = await seedBench(pool, log, assertAssistBenchDatabase);
+    const now = await seedBench(pool, log);
     await seedAssist(pool, now, log);
 
     log('back-fill: indexing every source and message version without passages ...');

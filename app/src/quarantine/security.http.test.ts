@@ -289,6 +289,13 @@ describe('security reviewers, grants, reveal and release unchanged', { skip: SKI
     // Undesignated: the grant no longer opens anything.
     await ok(admin1.request('POST', `/security/reviewers/${ids.rev}/undesignate`, { reason: 'Moved to another team' }));
     await refused(reveal(rev, caseId, 'source', id), 403);
+    // Undesignating revoked the grant in the same transaction, with its event (M6): designating again revives nothing.
+    const grant = (await t.pool.query(`SELECT revoked_by, revoke_reason FROM quarantine_grants WHERE id = $1`, [g])).rows[0];
+    assert.deepEqual(grant, { revoked_by: ids.admin1, revoke_reason: 'Moved to another team' });
+    const revokedEvents = (await t.pool.query(`SELECT actor_id, detail FROM quarantine_events WHERE action = 'grant_revoked' AND case_id = $1`, [caseId])).rows;
+    assert.deepEqual(revokedEvents, [{ actor_id: ids.admin1, detail: { grantId: g, undesignated: true } }]);
+    await ok(admin1.request('POST', `/security/reviewers/${ids.rev}/designate`, { reason: 'Back again' }));
+    await refused(reveal(rev, caseId, 'source', id), 403);
   });
 
   test('reveal after expiry is refused', async () => {

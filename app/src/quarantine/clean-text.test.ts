@@ -79,6 +79,25 @@ describe('cleanText (spec 7.4)', () => {
     assert.equal(cleanEdges('ends Xy7', [SECRET]), 'ends Xy7');
     assert.equal(cleanEdges(`whole ${SECRET} inside`, [SECRET]), `whole ${MARKER} inside`);
   });
+
+  test('a quote cut off with an ellipsis, or with the middle elided, keeps no fragment longer than 3 characters (I5)', () => {
+    const long = 'Kp9vault-Rotor42';
+    assert.equal(cleanEdges('the code is Xy7!pa... for now', [SECRET]), `the code is ${MARKER}... for now`);
+    assert.equal(cleanEdges('the code is Xy7!pa… for now', [SECRET]), `the code is ${MARKER}… for now`);
+    assert.equal(cleanEdges(`uses Kp9vau…tor42 today`, [long]), `uses ${MARKER}…${MARKER} today`);
+    assert.equal(cleanEdges(`uses Kp9v...Rotor42 today`, [long]), `uses ${MARKER}...${MARKER} today`);
+    for (const out of [cleanEdges('Xy7!pa... and !pass', [SECRET]), cleanEdges('uses Kp9vau…tor42', [long])]) {
+      const plain = out.split(MARKER).join('');
+      for (const m of [SECRET, long]) for (let i = 0; i + 4 <= m.length; i++) assert.ok(!plain.includes(m.slice(i, i + 4)), `${out} holds ${m.slice(i, i + 4)}`);
+    }
+    // Markers already there are left alone, and three characters or fewer stay.
+    assert.equal(cleanEdges(`${MARKER} then Xy7`, [SECRET]), `${MARKER} then Xy7`);
+  });
+
+  test('a mark overlapping a marker already in the text leaves the marker alone (M1)', () => {
+    assert.equal(cleanText(`x ${MARKER} y`, ['credential']).text, `x ${MARKER} y`);
+    assert.equal(cleanText(`x ${MARKER} credential`, ['credential']).text, `x ${MARKER} ${MARKER}`);
+  });
 });
 
 describe('removedSpans (spec 7.6, Reveal original)', () => {

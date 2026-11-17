@@ -1,3 +1,4 @@
+import { possibleCopyLabelSql } from '../quarantine/labels';
 import { maskedVersionText } from '../discussion/masking';
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
@@ -51,6 +52,8 @@ export interface SourceSummary {
 export interface ListedSource extends SourceSummary {
   kind: 'notes' | 'minutes' | 'summary';
   label: string | null;
+  /** "Possible credential removed — awaiting check" while the note is a possible copy masked at once (spec 7.4). */
+  quarantineLabel: string | null;
 }
 
 export const MINUTES_LABEL = 'Minutes — from meeting';
@@ -326,7 +329,7 @@ export class NotesService {
     const { rows } = await this.pool.query<ListedSource>(
       `SELECT s.id, s.title, s.created_at AS "createdAt", s.kind,
               CASE WHEN s.kind = 'minutes' THEN $4::text WHEN s.kind = 'summary' THEN $5::text END AS label,
-              max(v.version_no)::int AS "latestVersion", count(v.id)::int AS "versionCount"
+              max(v.version_no)::int AS "latestVersion", count(v.id)::int AS "versionCount", ${possibleCopyLabelSql('source', 's.id')}
          FROM sources s JOIN source_versions v ON v.source_id = s.id JOIN audiences a ON a.id = s.audience_id
         WHERE ${liveSourceSql('s')} AND s.project_id = $1 AND s.kind IN ('notes', 'minutes', 'summary') AND s.publication = 'published'
           AND ${summaryShownSql('s', { user: '$2', today: '$3' })} AND ${audienceVisibleSql('a', '$2', '$3')}
@@ -342,6 +345,8 @@ export class NotesService {
       projectId: string;
       kind: string;
       label: string | null;
+      /** "Possible credential removed — awaiting check" while the note is a possible copy masked at once (spec 7.4). */
+      quarantineLabel: string | null;
       publication: string;
       intendedMode: string | null;
       returnedReason: string | null;
@@ -356,7 +361,7 @@ export class NotesService {
   }> {
     const src = await this.pool.query(
       `SELECT id, title, created_at AS "createdAt", project_id AS "projectId", kind, publication, intended_mode AS "intendedMode",
-              returned_reason AS "returnedReason", audience_id AS "audienceId"
+              returned_reason AS "returnedReason", audience_id AS "audienceId", ${possibleCopyLabelSql('source', 's.id')}
          FROM sources s WHERE id = $1 AND ${liveSourceSql('s')}`,
       [sourceId],
     );

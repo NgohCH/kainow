@@ -570,3 +570,42 @@ test('an invitation email is sent only while its invitation is still open and un
   assert.equal((await row(keep)).status, 'sent');
   assert.deepEqual([(await row(dropped)).status, (await row(dropped)).last_reason], ['cancelled', 'no longer relevant']);
 });
+
+/** A quarantine case on a task or risk, held (waiting for the protected key) or cleaned, and the record held in it. */
+async function holdIn(table: 'tasks' | 'risks', id: string, state: 'held' | 'cleaned'): Promise<string> {
+  const caseId = uuidv7();
+  await pool.query(
+    `INSERT INTO quarantine_cases (id, project_id, item_kind, item_id, reason, marked_length, state, waiting_for_key, reported_at, cleaned_at)
+     VALUES ($1, $2, $3, $4, 'test', 8, $5, $6, now(), CASE WHEN $5 = 'cleaned' THEN now() END)`,
+    [caseId, projectId, table === 'tasks' ? 'task' : 'risk', id, state, state === 'held'],
+  );
+  await pool.query(`UPDATE ${table} SET held_case_id = $2 WHERE id = $1`, [id, caseId]);
+  return caseId;
+}
+
+test('reminders and escalations about a cleaned record under review are still sent; one waiting for the key is not (I4)', { skip: SKIP_NO_DB }, async () => {
+  const cleaned = await makeTask('Cleaned');
+  await holdIn('tasks', cleaned, 'cleaned');
+  assert.equal(await stillRelevant(pool, { kind: 'task', taskId: cleaned, dueOn: '2026-11-20', reopenCount: 0 }), true);
+  const waiting = await makeTask('Waiting');
+  await holdIn('tasks', waiting, 'held');
+  assert.equal(await stillRelevant(pool, { kind: 'task', taskId: waiting, dueOn: '2026-11-20', reopenCount: 0 }), false);
+
+  const proposal = uuidv7();
+  await pool.query(`INSERT INTO human_proposals (id, project_id, kind, text, proposed_by, proposed_at) VALUES ($1, $2, 'risk', 'R', $3, now())`, [proposal, projectId, userId]);
+  const riskId = uuidv7();
+  await pool.query(
+    `INSERT INTO risks (id, project_id, description, severity, review_on, origin_proposal_id, authorised_by, authorised_at) VALUES ($1, $2, 'R', 'low', '2026-11-20', $3, $4, now())`,
+    [riskId, projectId, proposal, userId],
+  );
+  await holdIn('risks', riskId, 'cleaned');
+  assert.equal(await stillRelevant(pool, { kind: 'risk', riskId, reviewOn: '2026-11-20' }), true);
+});
+
+test('a digest listing a task held in a cleaned case is not sent (I4: strict for digests)', { skip: SKIP_NO_DB }, async () => {
+  await pool.query(`UPDATE projects SET status = 'active' WHERE id = $1`, [projectId]);
+  const listed = await makeTask('Listed');
+  assert.equal(await stillRelevant(pool, { kind: 'project_active', projectId, taskIds: [listed] }), true);
+  await holdIn('tasks', listed, 'cleaned');
+  assert.equal(await stillRelevant(pool, { kind: 'project_active', projectId, taskIds: [listed] }), false);
+});

@@ -1,6 +1,7 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { readReason } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
+import { possibleCopyLabelSql } from '../quarantine/labels';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
@@ -70,6 +71,8 @@ export interface AnswerView {
   /** Sources used: cited ones first, then the rest in the order they were found. */
   sources: AnswerSource[];
   droppedCount: number;
+  /** "Possible credential removed — awaiting check" while the answer is a possible copy masked at once (spec 7.4). */
+  quarantineLabel: string | null;
 }
 
 /** What visibility is decided on. */
@@ -197,13 +200,14 @@ interface ViewRow extends AnswerRow {
   modelId: string | null;
   createdAt: Date;
   finishedAt: Date | null;
+  quarantineLabel: string | null;
   question: string;
   notFound: boolean;
 }
 
 const VIEW_SELECT = `SELECT ${ANSWER_ROW}, u.display_name AS "askedByName", r.status, r.failure_code AS "failureCode",
        r.failure_detail AS "failureDetail", r.model_id AS "modelId", r.created_at AS "createdAt", r.finished_at AS "finishedAt",
-       a.question, a.not_found AS "notFound"
+       a.question, a.not_found AS "notFound", ${possibleCopyLabelSql('answer', 'a.request_id')}
   FROM ai_answers a JOIN ai_requests r ON r.id = a.request_id JOIN users u ON u.id = r.requested_by`;
 
 /** The newest questions shown in the Ask panel. */
@@ -261,6 +265,7 @@ async function buildView(db: Db, ctx: ProjectContext, row: ViewRow): Promise<Ans
     sharedAt: row.sharedAt,
     hidden: row.hidden,
     unavailableReason: reason,
+    quarantineLabel: row.quarantineLabel ?? null,
   } as const;
   if (seen === 'hidden') {
     return { ...base, question: null, searchedWords: [], answerMarkdown: null, notice: hiddenNotice(row), sources: [], droppedCount: 0 };
@@ -293,6 +298,7 @@ export interface ThreadAnswerView {
   sharedAt: Date;
   hidden: boolean;
   notice: string | null;
+  quarantineLabel: string | null;
 }
 
 /**
@@ -318,6 +324,7 @@ export async function threadAnswers(db: Db, ctx: ProjectContext, threadId: strin
       sharedAt: row.sharedAt as Date,
       hidden: v.hidden,
       notice: v.notice,
+      quarantineLabel: v.quarantineLabel,
     });
   }
   return out;

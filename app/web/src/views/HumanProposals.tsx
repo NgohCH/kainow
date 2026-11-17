@@ -1,5 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
-import { ReportSecret } from './ReportSecret.tsx';
+import { QuarantineNote, ReportSecret } from './ReportSecret.tsx';
 import { ApiError, api, type DueReading } from '../api.ts';
 import { formatWhen } from '../format.ts';
 import { AuthoriseForm, type Person } from './AuthoriseForm.tsx';
@@ -9,6 +9,8 @@ import { waitingLine, type RequestView } from '../changes.ts';
 
 type Kind = 'action' | 'decision' | 'question' | 'risk';
 interface Proposal {
+  /** "Possible credential removed — awaiting check" while this is a possible copy masked at once (history spec 7.4). */
+  quarantineLabel?: string | null;
   id: string;
   kind: Kind;
   text: string;
@@ -133,6 +135,7 @@ export function HumanProposals({
               <div>
                 <span className="badge">{KIND_LABEL[p.kind]}</span> <strong>{p.text}</strong>
               </div>
+              <QuarantineNote text={p.quarantineLabel} />
               <span className="meta">
                 {p.label}, by {p.proposedBy}, {formatWhen(p.proposedAt)}
                 {p.owner ? ` · who: ${p.owner}` : ''}

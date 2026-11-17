@@ -24,7 +24,7 @@ import { checkNewAppointment } from '../projects/memberships.service';
 import { membershipState, todayUtc8 } from '../projects/membership';
 import { DELETED_LINK, liveRecordRefSql, liveRecordSql, notHeldSql, refuseHeld } from '../history/deleted-sql';
 import { QUOTE_CHANGED_TEXT, quoteChangedItems } from '../quarantine/clean';
-import { UNDER_REVIEW_TEXT } from '../quarantine/labels';
+import { POSSIBLE_COPY_TEXT, UNDER_REVIEW_TEXT, possibleCopyLabelSql, possibleCopySql } from '../quarantine/labels';
 import { type QuestionAction, type RiskAction, SEVERITIES, type Severity, questionTransition, riskTransition } from './lifecycles';
 import { TASK_ACTIONS, type TaskAction, type TaskStatus, ancestorsToReopen, parentMayComplete, taskIndicators, taskTransition } from './tasks';
 
@@ -32,7 +32,9 @@ export const MISSING_ACCOUNTABILITY = 'The project is missing a required role, s
 export const NEEDS_ASSIGNEE = 'A task needs one assignee and a due date before it can be authorised.';
 export const HUMAN_LABEL = 'Human proposal — no discussion source';
 /** A cleaned record held in an open case (it is in view only once cleaned, see liveRecordSql): its label, or NULL. */
-const UNDER_REVIEW_SQL = (alias: string) => `CASE WHEN ${alias}.held_case_id IS NOT NULL THEN '${UNDER_REVIEW_TEXT}' END AS "quarantineLabel"`;
+/** A record held in a cleaned case is under review; a record masked at once as a possible copy awaits its check (I3). */
+const UNDER_REVIEW_SQL = (alias: string, kind: 'task' | 'decision' | 'question' | 'risk') =>
+  `CASE WHEN ${alias}.held_case_id IS NOT NULL THEN '${UNDER_REVIEW_TEXT}' WHEN ${possibleCopySql(kind, `${alias}.id`)} THEN '${POSSIBLE_COPY_TEXT}' END AS "quarantineLabel"`;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export type RecordKind = 'task' | 'decision' | 'question' | 'risk';
@@ -335,7 +337,8 @@ export class RecordsService {
     await this.access.authorize(user, 'project.view', projectId);
     const { rows } = await this.pool.query(
       `SELECT h.id, h.kind, h.text, h.owner, h.due, u.display_name AS "proposedBy", h.proposed_at AS "proposedAt",
-              h.review_status AS "reviewStatus", h.reject_reason AS "rejectReason", h.follows_task_id AS "followsTaskId"
+              h.review_status AS "reviewStatus", h.reject_reason AS "rejectReason", h.follows_task_id AS "followsTaskId",
+              ${possibleCopyLabelSql('human_proposal', 'h.id')}
          FROM human_proposals h JOIN users u ON u.id = h.proposed_by WHERE h.project_id = $1 AND ${notHeldSql('h')} ORDER BY h.proposed_at, h.id`,
       [projectId],
     );
@@ -353,8 +356,8 @@ export class RecordsService {
     if (!UUID.test(proposalId)) throw new NotFoundException();
     const p = (await c.query(`SELECT id, project_id, kind, text, owner, review_status, held_case_id FROM human_proposals WHERE id = $1`, [proposalId])).rows[0];
     if (!p) throw new NotFoundException();
-    refuseHeld(p);
-    return p as { id: string; project_id: string; kind: Content['kind']; text: string; owner: string | null; review_status: string };
+    // Held is refused by the caller once it has authorised (404 before 409 for an outsider; final review M3).
+    return p as { id: string; project_id: string; kind: Content['kind']; text: string; owner: string | null; review_status: string; held_case_id: string | null };
   }
 
   async authoriseProposal(user: AuthUser, proposalId: string, body: Record<string, unknown>): Promise<Authorised> {
@@ -373,6 +376,7 @@ export class RecordsService {
     return this.tx(async (c) => {
       const peek = await this.lockProposal(c, proposalId);
       await this.access.authorize(user, 'proposal.review', peek.project_id, c, true);
+      refuseHeld(peek);
       await lockPendingAuthorisation(c, 'human_proposal', proposalId);
       const p = (await c.query(`SELECT review_status FROM human_proposals WHERE id = $1 FOR UPDATE`, [proposalId])).rows[0];
       if (p.review_status !== 'pending') throw new ConflictException('Only a proposal waiting for review can be rejected.');
@@ -599,7 +603,7 @@ export class RecordsService {
                    FROM tasks n WHERE n.follows_task_id = t.id ORDER BY n.authorised_at, n.id LIMIT 1) AS "followedBy",
                 EXISTS (SELECT 1 FROM change_requests r WHERE r.target_kind = 'task' AND r.target_id = t.id AND r.status = 'pending') AS "changeWaiting",
                 t.deadline_review_required AS "deadlineReviewRequired",
-                t.held_case_id IS NOT NULL AS "underReview"
+                ${UNDER_REVIEW_SQL('t', 'task')}
            FROM tasks t JOIN users u ON u.id = t.assignee_id
            LEFT JOIN tasks p ON p.id = t.parent_id
            LEFT JOIN tasks fo ON fo.id = t.follows_task_id
@@ -637,7 +641,7 @@ export class RecordsService {
       // Outside a restricted source's audience the quote is withheld, and so is what it would reveal (spec 6.3).
       source: t.quote ? (t.evidenceVisible && canReadContent(ctx) ? { quote: flags.get(t.itemId) ? null : (t.quote as string), quoteMasked: flags.get(t.itemId) ?? null, sourceFlag: flags.get(t.itemId) ?? null, discussionEvidence: evidence.get(t.itemId) ?? null, quoteChanged: quoteChanged.has(t.itemId) ? QUOTE_CHANGED_TEXT : null } : { restricted: true as const }) : null,
       changeWaiting: t.changeWaiting as boolean,
-      quarantineLabel: t.underReview ? UNDER_REVIEW_TEXT : null,
+      quarantineLabel: (t.quarantineLabel ?? null) as string | null,
       parentCancelled: t.parentStatus === 'cancelled' && t.status !== 'cancelled' && t.status !== 'completed',
       follows: (t.follows ?? null) as { id: string; title: string } | null,
       followedBy: (t.followedBy ?? null) as { id: string; title: string } | null,
@@ -668,7 +672,7 @@ export class RecordsService {
     walk(null);
     const decisions = (
       await this.pool.query(
-        `SELECT d.id, d.statement, d.rationale, d.status, u.display_name AS "authorisedBy", d.authorised_at AS "authorisedAt", ${UNDER_REVIEW_SQL('d')},
+        `SELECT d.id, d.statement, d.rationale, d.status, u.display_name AS "authorisedBy", d.authorised_at AS "authorisedAt", ${UNDER_REVIEW_SQL('d', 'decision')},
                 CASE WHEN o.id IS NULL THEN NULL WHEN NOT ${liveRecordSql('o')} THEN json_build_object('id', NULL, 'statement', '${DELETED_LINK}')
                      ELSE json_build_object('id', o.id, 'statement', o.statement) END AS replaces,
                 (SELECT CASE WHEN ${liveRecordSql('n')} THEN json_build_object('id', n.id, 'statement', n.statement) ELSE json_build_object('id', NULL, 'statement', '${DELETED_LINK}') END
@@ -685,7 +689,7 @@ export class RecordsService {
     }));
     const questions = (
       await this.pool.query(
-        `SELECT q.id, q.text, q.status, json_build_object('id', r.id, 'displayName', r.display_name) AS requester, ${UNDER_REVIEW_SQL('q')},
+        `SELECT q.id, q.text, q.status, json_build_object('id', r.id, 'displayName', r.display_name) AS requester, ${UNDER_REVIEW_SQL('q', 'question')},
                 COALESCE((SELECT json_agg(json_build_object('answer', a.answer, 'author', au.display_name, 'at', a.at) ORDER BY a.at, a.id)
                             FROM question_answers a JOIN users au ON au.id = a.author_id WHERE a.question_id = q.id), '[]') AS answers
            FROM questions q JOIN users r ON r.id = q.requester_id WHERE q.project_id = $1 AND ${liveRecordSql('q')} ORDER BY q.authorised_at, q.id`,
@@ -698,7 +702,7 @@ export class RecordsService {
     });
     const risks = (
       await this.pool.query(
-        `SELECT k.id, k.description, k.severity, k.status, k.mitigation, to_char(k.review_on, 'YYYY-MM-DD') AS "reviewOn", ${UNDER_REVIEW_SQL('k')},
+        `SELECT k.id, k.description, k.severity, k.status, k.mitigation, to_char(k.review_on, 'YYYY-MM-DD') AS "reviewOn", ${UNDER_REVIEW_SQL('k', 'risk')},
                 CASE WHEN r.id IS NULL THEN NULL ELSE json_build_object('id', r.id, 'displayName', r.display_name) END AS responsible,
                 (SELECT json_build_object('projectId', e.detail->>'fromProjectId', 'name', e.detail->>'fromProjectName') FROM record_events e
                   WHERE e.record_kind = 'risk' AND e.record_id = k.id AND e.kind = 'handed_over_from' ORDER BY e.at DESC, e.id DESC LIMIT 1) AS "handedOverFrom",

@@ -1,4 +1,4 @@
-import { unheldRecordSql } from '../history/deleted-sql';
+import { liveRecordSql, unheldRecordSql } from '../history/deleted-sql';
 import type { Db } from './letterhead';
 
 /** What must still be true for a queued email to be worth delivering (checked by the dispatcher before every attempt). */
@@ -30,7 +30,13 @@ export type EmailRelevance = SingleRelevance | ConsolidatedRelevance;
 
 export const isConsolidated = (r: EmailRelevance): r is ConsolidatedRelevance => 'items' in r;
 
-/** Whether the thing an email is about is still as it was when the email was composed (`now`: the attempt time). */
+/**
+ * Whether the thing an email is about is still as it was when the email was composed (`now`: the attempt time).
+ * Reminders and escalations about a task or risk use the visible form (liveRecordSql): a record cleaned and under
+ * review stays in view "so reminders and work continue" (history spec 7.5); one waiting for the protected key, or
+ * Deleted, is not. A digest (project_active) uses the strict form: it is not delivered once a task it lists is held at
+ * all (final review I4).
+ */
 export async function stillRelevant(db: Db, r: Relevance, now: Date = new Date()): Promise<boolean> {
   switch (r.kind) {
     case 'none':
@@ -40,14 +46,14 @@ export async function stillRelevant(db: Db, r: Relevance, now: Date = new Date()
         await db.query(
           `SELECT status, to_char(due_on, 'YYYY-MM-DD') AS due_on, deadline_review_required,
                   (SELECT count(*)::int FROM task_events e WHERE e.task_id = tasks.id AND e.kind = 'reopened') AS reopened
-             FROM tasks WHERE id = $1 AND ${unheldRecordSql('tasks')}`,
+             FROM tasks WHERE id = $1 AND ${liveRecordSql('tasks')}`,
           [r.taskId],
         )
       ).rows[0];
       return !!t && t.status !== 'completed' && t.status !== 'cancelled' && t.due_on === r.dueOn && !t.deadline_review_required && t.reopened === r.reopenCount;
     }
     case 'risk': {
-      const k = (await db.query(`SELECT status, to_char(review_on, 'YYYY-MM-DD') AS review_on FROM risks k WHERE k.id = $1 AND ${unheldRecordSql('k')}`, [r.riskId])).rows[0];
+      const k = (await db.query(`SELECT status, to_char(review_on, 'YYYY-MM-DD') AS review_on FROM risks k WHERE k.id = $1 AND ${liveRecordSql('k')}`, [r.riskId])).rows[0];
       return !!k && k.status !== 'resolved' && k.review_on === r.reviewOn;
     }
     case 'project_active': {

@@ -135,6 +135,8 @@ export type Kind = 'decision' | 'action' | 'question' | 'risk';
 export type ReviewStatus = 'pending' | 'approved' | 'rejected';
 
 export interface Item {
+  /** "Possible credential removed — awaiting check" while this is a possible copy masked at once (history spec 7.4). */
+  quarantineLabel?: string | null;
   id: string;
   position: number;
   kind: Kind;

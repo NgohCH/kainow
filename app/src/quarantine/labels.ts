@@ -23,3 +23,16 @@ export async function possibleCopies(db: Pool | PoolClient, kind: ItemKind, ids:
   );
   return new Set(rows.map((r) => r.id));
 }
+
+/**
+ * SQL for the same test on one row (`idExpr` the item id as the possible-copies table keys it): true while the item is
+ * a possible copy masked at once and undecided in an open case. For list queries, so every kind of place carries the
+ * label without a lookup per row (spec 7.4, D80; final review I3).
+ */
+export const possibleCopySql = (kind: ItemKind, idExpr: string): string =>
+  `EXISTS (SELECT 1 FROM quarantine_possible_copies pcx JOIN quarantine_cases pcc ON pcc.id = pcx.case_id
+            WHERE pcx.item_kind = '${kind}' AND pcx.item_id = ${idExpr} AND pcx.masked AND pcx.decision IS NULL AND pcc.state IN ('held', 'cleaned'))`;
+
+/** `"quarantineLabel"`: POSSIBLE_COPY_TEXT for a possible copy (see possibleCopySql), else NULL. */
+export const possibleCopyLabelSql = (kind: ItemKind, idExpr: string): string =>
+  `CASE WHEN ${possibleCopySql(kind, idExpr)} THEN '${POSSIBLE_COPY_TEXT}' END AS "quarantineLabel"`;

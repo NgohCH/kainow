@@ -1,3 +1,4 @@
+import { possibleCopyLabelSql } from '../quarantine/labels';
 import { triggerLabel } from '../analysis/labels';
 import { BadRequestException, ConflictException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Pool, type PoolClient } from 'pg';
@@ -34,6 +35,8 @@ export interface DraftView {
   author: Person | null;
   editedFromVersion: number | null;
   label: string;
+  /** "Possible credential removed — awaiting check" while the draft is a possible copy masked at once (spec 7.4). */
+  quarantineLabel: string | null;
 }
 
 export interface MinutesVersionSummary {
@@ -57,7 +60,7 @@ const meta = (text: string) => ({ length: text.length, sha256: sha256Hex(text) }
 
 const DRAFT_SELECT = `SELECT d.id, d.version_no AS "versionNo", d.origin, d.body, d.covers_through_no AS "coversThroughNo", d.created_at AS "createdAt",
        d.created_by AS "authorId", u.display_name AS "authorName", f.version_no AS "editedFromVersion", r.trigger AS "trigger",
-       ru.display_name AS "requesterName"
+       ru.display_name AS "requesterName", ${possibleCopyLabelSql('minutes_draft', 'd.id')}
   FROM minutes_drafts d
   LEFT JOIN users u ON u.id = d.created_by
   LEFT JOIN minutes_drafts f ON f.id = d.edited_from_id
@@ -76,6 +79,7 @@ function draftView(r: Record<string, any>): DraftView {
     author,
     editedFromVersion: r.editedFromVersion ?? null,
     label: r.origin === 'human' && author ? `${AI_LABEL} · Edited by ${author.displayName}` : AI_LABEL,
+    quarantineLabel: (r.quarantineLabel ?? null) as string | null,
   };
 }
 

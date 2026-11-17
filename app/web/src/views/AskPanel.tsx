@@ -20,7 +20,7 @@ import {
 import { type DiscussionItem, listDiscussion, threadPath } from '../discussion.ts';
 import { formatWhen } from '../format.ts';
 import { AnswerBody } from './AiAnswer.tsx';
-import { ReportSecret } from './ReportSecret.tsx';
+import { QuarantineNote, ReportSecret } from './ReportSecret.tsx';
 import { FeedbackButton } from './Feedback.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
@@ -234,6 +234,7 @@ function AskCard({ a, projectId, threads, onNew, onChanged }: { a: AnswerView; p
         {done ? ANSWER_LABEL : statusText(a)}
       </p>
       {a.status === 'not_found' && a.searchedWords.length > 0 && <p className="meta">Searched for: {a.searchedWords.join(', ')}</p>}
+      <QuarantineNote text={a.quarantineLabel} />
       {a.notice && done && <p className="notice">{a.notice}</p>}
       {a.answerMarkdown !== null && <AnswerBody id={a.id} scope="panel" markdown={a.answerMarkdown} sources={a.sources} droppedCount={a.droppedCount} />}
       {a.answerMarkdown === null && (a.sources.length > 0 || a.droppedCount > 0) && <AnswerBody id={a.id} scope="panel" markdown={null} sources={a.sources} droppedCount={a.droppedCount} />}
