@@ -2,7 +2,7 @@ import { Inject, Injectable, type OnApplicationShutdown } from '@nestjs/common';
 import type { PgBoss } from 'pg-boss';
 import { APP_CONFIG, type AppConfig } from '../config';
 import { QUEUES, startQueues } from '../worker/queues';
-import { MAX_ATTEMPTS } from './prompt';
+import { POLICY_BOUNDS } from '../spend/spend.settings';
 
 export const EXTRACTION_QUEUE = Symbol('EXTRACTION_QUEUE');
 
@@ -22,11 +22,16 @@ export const priorityOf = (opts?: EnqueueOptions): number => (opts?.explicit ? E
 
 export interface ExtractionJob {
   runId: string;
+  /** Sent again after waiting for a free AI place: the attempt number already counted, so the claim does not count it again (spec 6.5). */
+  resume?: number;
 }
 
-/** Retry timing for a failed attempt. The attempt count itself is MAX_ATTEMPTS. */
+/**
+ * Retry timing for a failed attempt. pg-boss may retry up to the highest attempts setting (spec 6.6); the runner, not
+ * pg-boss, ends the request when the project's effective attempts are used, counting them on the request row.
+ */
 export const JOB_OPTIONS = {
-  retryLimit: MAX_ATTEMPTS - 1,
+  retryLimit: POLICY_BOUNDS.maxAttempts[1] - 1,
   retryDelay: 30,
   retryBackoff: true,
   // Longer than the AI request timeout, so a slow but live request is not taken over by a second worker.

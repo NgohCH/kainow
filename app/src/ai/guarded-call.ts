@@ -24,6 +24,9 @@ const NOUN: Record<AiPurpose, string> = {
   summary_draft: 'summary drafting',
 };
 
+/** The detail a run or request shows while it waits for a free AI place (spec 6.5, the existing Queued state). */
+export const WAITING_FOR_PLACE = 'Queued — waiting for a free AI place';
+
 /** The lease on a slot outlasts the call by this margin (spec 6.5). */
 const LEASE_MARGIN_MS = 60_000;
 

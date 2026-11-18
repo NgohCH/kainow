@@ -12,6 +12,8 @@ import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 import { CasesService } from '../quarantine/cases.service';
 import { projectHolding, standaloneCases } from '../testing/quarantine';
+import { aiDeps, aiReady, byAttempt } from '../testing/ai-runners';
+import { WAITING_FOR_PLACE } from '../ai/guarded-call';
 import { AnalysisRunner } from './analysis-runner';
 import { insertRun } from './runs';
 
@@ -55,10 +57,15 @@ describe('analysis runner (discussion proposals)', { skip: SKIP_NO_DB }, () => {
       selectedMessageIds: over.selected,
       at: t.clock.now(),
     });
-  const runner = (model: ModelClient | null) => new AnalysisRunner({ pool: t.pool, clock: t.clock.now, extraction: new ExtractionRunner({ pool: t.pool, spend, model, clock: t.clock.now }) });
+  const runner = (model: ModelClient | null) =>
+    byAttempt(t.pool, 'analysis_runs', new AnalysisRunner({ pool: t.pool, clock: t.clock.now, extraction: new ExtractionRunner({ pool: t.pool, spend, ...aiDeps(model), clock: t.clock.now }) }));
   const withCases = (model: ModelClient | null) => {
     const quarantine = t.app.get(CasesService);
-    return new AnalysisRunner({ pool: t.pool, clock: t.clock.now, quarantine, extraction: new ExtractionRunner({ pool: t.pool, spend, model, clock: t.clock.now, quarantine }) });
+    return byAttempt(
+      t.pool,
+      'analysis_runs',
+      new AnalysisRunner({ pool: t.pool, clock: t.clock.now, quarantine, extraction: new ExtractionRunner({ pool: t.pool, spend, ...aiDeps(model), clock: t.clock.now, quarantine }) }),
+    );
   };
   const cases = async () => (await t.pool.query(`SELECT * FROM quarantine_cases ORDER BY reported_at, id`)).rows;
   const analysisRun = async (id: string) => (await t.pool.query(`SELECT * FROM analysis_runs WHERE id = $1`, [id])).rows[0];
@@ -83,6 +90,7 @@ describe('analysis runner (discussion proposals)', { skip: SKIP_NO_DB }, () => {
     });
     await new SpendSettingsService(t.pool, t.clock.now).apply(MVP_SPEND_SETTINGS, ids.admin);
     spend = new SpendService(t.pool, t.clock.now);
+    await aiReady(t.pool, project);
     ada = await t.signIn('ada@example.org');
     const r = await ada.request('POST', `/projects/${project}/threads`, { kind: 'discussion', title: 'Release plan' });
     assert.equal(r.status, 201, JSON.stringify(r.body));
@@ -389,7 +397,7 @@ describe('analysis runner (discussion proposals)', { skip: SKIP_NO_DB }, () => {
     const run = uuidv7();
     await t.pool.query(`INSERT INTO extraction_runs (id, source_version_id, requested_by, status, created_at, trigger) VALUES ($1, $2, $3, 'queued', $4, 'discussion')`, [run, vId, ids.ada, t.clock.now()]);
     const model = new FakeModel(() => answer([]));
-    assert.equal(await new ExtractionRunner({ pool: t.pool, spend, model, clock: t.clock.now, quarantine: t.app.get(CasesService) }).process(run, 1, false), 'blocked');
+    assert.equal(await new ExtractionRunner({ pool: t.pool, spend, ...aiDeps(model), clock: t.clock.now, quarantine: t.app.get(CasesService) }).process(run, {}), 'blocked');
     const [c, ...more] = await cases();
     assert.equal(more.length, 0);
     assert.deepEqual([c.item_kind, c.item_id, c.reporter_id], ['message', b, null], 'the message its span names, never the transcript or the first message');
@@ -525,6 +533,27 @@ describe('analysis runner (discussion proposals)', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual([run.status, run.failure_code, ex.status, ex.failure_code], ['blocked', 'source_changed', 'blocked', 'source_changed']);
     assert.equal(run.failure_detail, 'A message in this analysis was hidden or deleted before it could be sent; ask for a new analysis.');
     assert.deepEqual([model.calls.length, (await spendEntries()).length], [1, spentBefore], 'no further call and no further spend');
+  });
+
+  test('a discussion analysis that waits for an AI place resumes as the same attempt on both rows', async () => {
+    await post(ada, 'We decided to ship on Friday.');
+    const id = await queueRun();
+    const model = new FakeModel(() => answer([item('ship on Friday')]));
+    const direct = new AnalysisRunner({ pool: t.pool, clock: t.clock.now, extraction: new ExtractionRunner({ pool: t.pool, spend, ...aiDeps(model), clock: t.clock.now, slotWait: { maxWaitMs: 0 } }) });
+    await t.pool.query(`UPDATE ai_call_slots SET holder = 'someone-else:1', leased_until = now() + interval '1 hour'`);
+    assert.equal(await direct.process(id, {}), 'wait');
+    const waiting = await analysisRun(id);
+    const ex = async () => (await t.pool.query(`SELECT status, attempts, failure_detail FROM extraction_runs WHERE id = $1`, [waiting.extraction_run_id])).rows[0];
+    assert.deepEqual([waiting.status, waiting.attempts, waiting.failure_detail], ['queued', 1, WAITING_FOR_PLACE]);
+    assert.deepEqual(Object.values(await ex()), ['queued', 1, WAITING_FOR_PLACE]);
+    assert.deepEqual([model.calls.length, (await spendEntries()).length], [0, 0]);
+
+    await t.pool.query(`UPDATE ai_call_slots SET holder = NULL, leased_until = NULL`);
+    assert.equal(await direct.process(id, { resume: 1 }), 'succeeded');
+    const done = await analysisRun(id);
+    assert.deepEqual([done.status, done.attempts, done.failure_detail], ['succeeded', 1, null]);
+    assert.deepEqual(Object.values(await ex()), ['succeeded', 1, null]);
+    assert.deepEqual((await spendEntries()).map((e) => [e.request_id, e.attempt_no]), [[waiting.extraction_run_id, 1]], 'the extraction run is the spend request');
   });
 
   test('a stored transcript cannot be extracted directly', async () => {

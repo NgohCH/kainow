@@ -13,6 +13,7 @@ import { seedProject, seedUser } from '../testing/projects';
 import { uuidv7 } from '../common/uuid7';
 import { AssistRunner } from './assist-runner';
 import { findMaterial } from './material';
+import { aiDeps, aiReady, byAttempt } from '../testing/ai-runners';
 
 const USAGE: Usage = { inputTokens: 2_000, cachedInputTokens: 0, outputTokens: 300 };
 const STALE = 'Someone changed this since you opened it';
@@ -46,7 +47,7 @@ describe('shareable summaries', { skip: SKIP_NO_DB }, () => {
   let queued: string[];
 
   const run = (id: string, model: JsonSchemaModel = new SummaryModel()) =>
-    new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), model, clock: t.clock.now }).process(id, 1, false);
+    byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), ...aiDeps(model), clock: t.clock.now })).process(id, 1, false);
   const lastRequest = () => queued[queued.length - 1];
   const note = async (title: string, text: string) => {
     const r = await pm.request('POST', `/projects/${project}/notes`, { title, text });
@@ -112,6 +113,7 @@ describe('shareable summaries', { skip: SKIP_NO_DB }, () => {
         { userId: ids.ben, role: 'member' },
       ],
     });
+    await aiReady(t.pool, project);
     await new SpendSettingsService(t.pool, t.clock.now).apply(MVP_SPEND_SETTINGS, ids.admin);
     [pm, dep, spo, ada, ben] = [
       await t.signIn('pm@example.org'),

@@ -17,6 +17,7 @@ import { SpendSettingsService } from '../spend/spend.settings';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
+import { aiDeps, aiReady, byAttempt } from '../testing/ai-runners';
 
 const USAGE: Usage = { inputTokens: 2_000, cachedInputTokens: 0, outputTokens: 300 };
 const KEY = `sk-${'a1B2c3D4e5'.repeat(3)}`;
@@ -125,7 +126,7 @@ describe('deleting and restoring sources', { skip: SKIP_NO_DB }, () => {
     assert.equal(r.status, 201, JSON.stringify(r.body));
     const plant = (r.body.sources as Source[]).find((s) => s.location?.startsWith('Plant room')) as Source;
     assert.ok(plant, JSON.stringify(r.body.sources));
-    const runner = new AssistRunner({ pool: t.pool, spend: spend(), model: new AnswerModel(plant.marker), clock: t.clock.now });
+    const runner = byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend: spend(), ...aiDeps(new AnswerModel(plant.marker)), clock: t.clock.now }));
     assert.equal(await runner.process(r.body.id, 1, false), 'succeeded');
     t.clock.advanceSeconds(1);
     return r.body.id as string;
@@ -134,7 +135,7 @@ describe('deleting and restoring sources', { skip: SKIP_NO_DB }, () => {
   const extracted = async (sourceId: string) => {
     const r = await pm.request('POST', `/notes/${sourceId}/versions/1/extractions`);
     assert.equal(r.status, 202, JSON.stringify(r.body));
-    const runner = new ExtractionRunner({ pool: t.pool, spend: spend(), model: new ExtractModel(), clock: t.clock.now });
+    const runner = byAttempt(t.pool, 'extraction_runs', new ExtractionRunner({ pool: t.pool, spend: spend(), ...aiDeps(new ExtractModel()), clock: t.clock.now }));
     assert.equal(await runner.process(r.body.run.id, 1, false), 'succeeded');
     return r.body.run.id as string;
   };
@@ -160,6 +161,7 @@ describe('deleting and restoring sources', { skip: SKIP_NO_DB }, () => {
         { userId: ids.ben, role: 'member' },
       ],
     });
+    await aiReady(t.pool, project);
     await t.pool.query(
       `INSERT INTO access_grants (id, project_id, user_id, kind, purpose, scope, starts_on, expires_on, requested_by, requested_at, decision, decided_by, decided_at)
        VALUES ($1, $2, $3, 'audit', 'Annual audit', 'Everything', '2026-11-01', '2026-11-30', $4, now(), 'approved', $5, now())`,
@@ -229,7 +231,7 @@ describe('deleting and restoring sources', { skip: SKIP_NO_DB }, () => {
     const thread = await startThread(pm, { kind: 'discussion', title: 'Plant' });
     await post(ada, thread, 'Shall we move the filter order?');
     const run = await insertRun(t.pool, { threadId: thread, kind: 'proposals', trigger: 'button', requestedBy: ids.ada, coversFromNo: 1, coversThroughNo: null, at: t.clock.now() });
-    await new AnalysisRunner({ pool: t.pool, clock: t.clock.now, extraction: { process: async () => 'skipped' } }).process(run, 1, false);
+    await byAttempt(t.pool, 'analysis_runs', new AnalysisRunner({ pool: t.pool, clock: t.clock.now, extraction: { process: async () => 'skipped' } })).process(run, 1, false);
     const transcript = (await t.pool.query(`SELECT id FROM sources WHERE thread_id = $1 AND kind = 'discussion'`, [thread])).rows[0].id as string;
     const r = await del(pm, transcript);
     assert.equal(r.status, 409);
@@ -320,7 +322,7 @@ describe('deleting and restoring sources', { skip: SKIP_NO_DB }, () => {
     await restrict(original, [ids.ada]);
     const asked = await dep.request('POST', `/sources/${original}/summaries`, { intendedAudience: { mode: 'project' }, leaveOut: '' });
     assert.equal(asked.status, 201, JSON.stringify(asked.body));
-    const runner = new AssistRunner({ pool: t.pool, spend: spend(), model: new SummaryModel('The turbine is replaced next month.'), clock: t.clock.now });
+    const runner = byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend: spend(), ...aiDeps(new SummaryModel('The turbine is replaced next month.')), clock: t.clock.now }));
     assert.equal(await runner.process(queued[queued.length - 1], 1, false), 'succeeded');
     t.clock.advanceSeconds(1);
     const approved = await pm.request('POST', `/summaries/${asked.body.id}/approve`, { versionNo: 1, reason: 'Fine to share' });
@@ -355,7 +357,7 @@ describe('deleting and restoring sources', { skip: SKIP_NO_DB }, () => {
     const original = await note('Board note', 'The turbine replacement goes ahead next month.');
     await restrict(original, [ids.ada]);
     const asked = await dep.request('POST', `/sources/${original}/summaries`, { intendedAudience: { mode: 'project' }, leaveOut: '' });
-    const runner = new AssistRunner({ pool: t.pool, spend: spend(), model: new SummaryModel('The turbine is replaced next month.'), clock: t.clock.now });
+    const runner = byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend: spend(), ...aiDeps(new SummaryModel('The turbine is replaced next month.')), clock: t.clock.now }));
     assert.equal(await runner.process(queued[queued.length - 1], 1, false), 'succeeded');
     t.clock.advanceSeconds(1);
     const approved = await pm.request('POST', `/summaries/${asked.body.id}/approve`, { versionNo: 1, reason: 'Fine to share' });
@@ -379,7 +381,7 @@ describe('deleting and restoring sources', { skip: SKIP_NO_DB }, () => {
     await restrict(original, [ids.ada]);
     const asked = await dep.request('POST', `/sources/${original}/summaries`, { intendedAudience: { mode: 'project' }, leaveOut: '' });
     assert.equal(asked.status, 201, JSON.stringify(asked.body));
-    const runner = new AssistRunner({ pool: t.pool, spend: spend(), model: new SummaryModel(`The turbine portal key is ${KEY}.`), clock: t.clock.now });
+    const runner = byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend: spend(), ...aiDeps(new SummaryModel(`The turbine portal key is ${KEY}.`)), clock: t.clock.now }));
     assert.equal(await runner.process(queued[queued.length - 1], 1, false), 'succeeded');
     t.clock.advanceSeconds(1);
     const r = await pm.request('POST', `/summaries/${asked.body.id}/approve`, { versionNo: 1, reason: 'Fine to share' });
@@ -411,7 +413,7 @@ describe('deleting and restoring sources', { skip: SKIP_NO_DB }, () => {
     assert.equal(r.status, 202, JSON.stringify(r.body));
     await deleted(pm, id);
     const model = new CountingModel();
-    assert.equal(await new ExtractionRunner({ pool: t.pool, spend: spend(), model, clock: t.clock.now }).process(r.body.run.id, 1, false), 'blocked');
+    assert.equal(await byAttempt(t.pool, 'extraction_runs', new ExtractionRunner({ pool: t.pool, spend: spend(), ...aiDeps(model), clock: t.clock.now })).process(r.body.run.id, 1, false), 'blocked');
     const run = (await t.pool.query(`SELECT status, failure_code, failure_detail FROM extraction_runs WHERE id = $1`, [r.body.run.id])).rows[0];
     assert.deepEqual(run, { status: 'blocked', failure_code: 'source_deleted', failure_detail: 'The source was deleted, so the extraction did not run.' });
     assert.equal(model.calls, 0);
@@ -423,15 +425,15 @@ describe('deleting and restoring sources', { skip: SKIP_NO_DB }, () => {
     await post(ada, thread, 'Shall we move the filter order?');
     const run = await insertRun(t.pool, { threadId: thread, kind: 'proposals', trigger: 'button', requestedBy: ids.ada, coversFromNo: 1, coversThroughNo: null, at: t.clock.now() });
     // The first attempt stores the transcript and stops before the extraction runs; the next attempt is a retry.
-    await new AnalysisRunner({ pool: t.pool, clock: t.clock.now, extraction: { process: async () => 'retry' } }).process(run, 1, false);
+    await byAttempt(t.pool, 'analysis_runs', new AnalysisRunner({ pool: t.pool, clock: t.clock.now, extraction: { process: async () => 'retry' } })).process(run, 1, false);
     // A transcript is never deleted through the endpoint; the start check still covers a deleted one.
     await t.pool.query(
       `UPDATE sources SET status = 'deleted', deleted_by = $2, deleted_at = now(), delete_reason = 'test' WHERE thread_id = $1 AND kind = 'discussion'`,
       [thread, ids.pm],
     );
     const model = new CountingModel();
-    const extraction = new ExtractionRunner({ pool: t.pool, spend: spend(), model, clock: t.clock.now });
-    assert.equal(await new AnalysisRunner({ pool: t.pool, clock: t.clock.now, extraction }).process(run, 2, false), 'blocked');
+    const extraction = new ExtractionRunner({ pool: t.pool, spend: spend(), ...aiDeps(model), clock: t.clock.now });
+    assert.equal(await byAttempt(t.pool, 'analysis_runs', new AnalysisRunner({ pool: t.pool, clock: t.clock.now, extraction })).process(run, 2, false), 'blocked');
     const row = (await t.pool.query(`SELECT status, failure_code FROM analysis_runs WHERE id = $1`, [run])).rows[0];
     assert.deepEqual(row, { status: 'blocked', failure_code: 'source_deleted' });
     assert.equal(model.calls, 0);
@@ -451,7 +453,7 @@ describe('deleting and restoring sources', { skip: SKIP_NO_DB }, () => {
     const run = await insertRun(t.pool, { threadId: meeting, kind: 'minutes', trigger: 'button', requestedBy: ids.ada, coversFromNo: 1, coversThroughNo: null, at: t.clock.now() });
     await deleted(pm, minutes);
     const model = new CountingModel();
-    assert.equal(await new MinutesRunner({ pool: t.pool, spend: spend(), model, clock: t.clock.now }).process(run, 1, false), 'blocked');
+    assert.equal(await byAttempt(t.pool, 'analysis_runs', new MinutesRunner({ pool: t.pool, spend: spend(), ...aiDeps(model), clock: t.clock.now })).process(run, 1, false), 'blocked');
     const row = (await t.pool.query(`SELECT status, failure_code FROM analysis_runs WHERE id = $1`, [run])).rows[0];
     assert.deepEqual(row, { status: 'blocked', failure_code: 'source_deleted' });
     assert.equal(model.calls, 0);
@@ -464,7 +466,7 @@ describe('deleting and restoring sources', { skip: SKIP_NO_DB }, () => {
     assert.equal(r.status, 201, JSON.stringify(r.body));
     await deleted(pm, id);
     const model = new CountingModel();
-    assert.equal(await new AssistRunner({ pool: t.pool, spend: spend(), model, clock: t.clock.now }).process(r.body.id, 1, false), 'blocked');
+    assert.equal(await byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend: spend(), ...aiDeps(model), clock: t.clock.now })).process(r.body.id, 1, false), 'blocked');
     const row = (await t.pool.query(`SELECT status, failure_code, failure_detail FROM ai_requests WHERE id = $1`, [r.body.id])).rows[0];
     assert.deepEqual(row, { status: 'blocked', failure_code: 'source_deleted', failure_detail: 'A source this request used was deleted, so the AI request did not run.' });
     assert.equal(model.calls, 0);

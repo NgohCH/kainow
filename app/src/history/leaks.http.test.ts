@@ -16,6 +16,7 @@ import { SpendSettingsService } from '../spend/spend.settings';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
+import { aiDeps, aiReady, byAttempt } from '../testing/ai-runners';
 
 /**
  * Leak tests for Deleted content (history spec section 10): a Deleted message, source and record never appear to an
@@ -159,6 +160,7 @@ describe('Deleted content never leaks to a Member or an Audit grant holder witho
         { userId: ids.ben, role: 'member' },
       ],
     });
+    await aiReady(t.pool, project);
     for (const [user, scoped] of [[ids.auditor, false], [ids.holder, true]] as const) {
       await t.pool.query(
         `INSERT INTO access_grants (id, project_id, user_id, kind, purpose, scope, starts_on, expires_on, requested_by, requested_at, decision, decided_by, decided_at, inspect_deleted)
@@ -221,7 +223,7 @@ describe('Deleted content never leaks to a Member or an Audit grant holder witho
           const model = new CapturingModel();
           const r = await ok(ben.request('POST', `/projects/${project}/questions`, { question: QUESTION }), 201);
           if (r.status === 'queued') {
-            const runner = new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), model, clock: t.clock.now });
+            const runner = byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), ...aiDeps(model), clock: t.clock.now }));
             await runner.process(r.id, 1, false);
           }
           return { model, view: await ok(ben.request('GET', `/questions/${r.id}`)) };

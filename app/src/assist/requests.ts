@@ -1,4 +1,5 @@
 import type { PoolClient } from 'pg';
+import { materialRestrictedSql } from '../ai/restricted';
 import { UUID, uuidv7 } from '../common/uuid7';
 import type { MaterialItem, RecordKind } from './material';
 
@@ -37,6 +38,8 @@ export interface RequestMaterial {
   text: string;
   cited: boolean;
   droppedAtStart: boolean;
+  /** The text is restricted material (spec 6.3), read in the same statement as `text`. */
+  restricted: boolean;
 }
 
 export interface AssistRequest {
@@ -106,7 +109,7 @@ export async function loadRequest(db: Db, id: string): Promise<AssistRequest | u
     await db.query(
       `SELECT m.ordinal, m.marker, m.passage_id AS "passageId", m.record_kind AS "recordKind", m.record_id AS "recordId",
               m.record_audience_id AS "recordAudienceId", m.snapshot, m.location, coalesce(p.body, m.snapshot) AS text,
-              m.cited, m.dropped_at_start AS "droppedAtStart"
+              m.cited, m.dropped_at_start AS "droppedAtStart", ${materialRestrictedSql('m', 'p')} AS restricted
          FROM ai_request_material m LEFT JOIN passages p ON p.id = m.passage_id
         WHERE m.request_id = $1 ORDER BY m.ordinal`,
       [id],

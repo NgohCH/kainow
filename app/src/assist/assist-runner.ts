@@ -1,14 +1,14 @@
 import type { Pool, PoolClient } from 'pg';
-import { type AiPurpose, guardedAiCall, markStaleReservations } from '../ai/guarded-call';
-import { type ModelClientFactory, realClientFactory } from '../ai/client-factory';
+import { type AiPurpose, type GuardedDeps, WAITING_FOR_PLACE, guardedAiCall, markStaleReservations } from '../ai/guarded-call';
+import type { ModelClientFactory } from '../ai/client-factory';
 import type { ProtectedKey } from '../quarantine/protected-key';
 import type { Clock } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
 import { type AudienceMode, inAudience } from '../discussion/audience';
 import { findCredentials } from '../extraction/credentials';
-import { type JsonSchemaModel, ModelBadResponse } from '../extraction/model';
+import { ModelBadResponse } from '../extraction/model';
 import { REQUEST_TIMEOUT_MS } from '../extraction/prompt';
-import { type RunOutcome, SOURCE_DELETED } from '../extraction/runner';
+import { CLAIM_ATTEMPTS_SQL, type RunJob, type RunOutcome, SOURCE_DELETED, isLastAttempt } from '../extraction/runner';
 import { ProjectAccess, canReadContent } from '../projects/access.service';
 import { type ProjectStatus, decide } from '../projects/matrix';
 import type { Usage } from '../spend/cost';
@@ -229,12 +229,12 @@ registerRemovedCheck('question', questionRemoved);
 export interface AssistRunnerDeps {
   pool: Pool;
   spend: SpendService;
-  /** Unused since sub-project 6 Task 10 (calls go through the project's connections); Task 11 replaces it with `factory`. */
-  model: JsonSchemaModel | null;
-  /** Builds the client for each attempt's connection (Task 11 makes this required). */
-  factory?: ModelClientFactory;
+  /** Builds the client for each attempt's chosen connection, with its decrypted key (spec 6.3). */
+  factory: ModelClientFactory;
   /** The protected key that opens the connections' keys; without it requests end blocked protected_key_missing. */
-  key?: ProtectedKey | null;
+  key: ProtectedKey | null;
+  /** Waiting for a free AI place; tests shorten it (spec 6.5). */
+  slotWait?: GuardedDeps['slotWait'];
   clock: Clock;
   /** Opens a quarantine case on the item holding a secret found in stored material (history spec 7.1). */
   quarantine?: KainowReporter;
@@ -246,7 +246,7 @@ export interface AssistRunnerDeps {
  * project is still Draft, Planned or Active; the requester can still read it (and the thread, for thread scope); each
  * stored passage or record is still readable in the request's scope, and those that are not are marked dropped and
  * never sent. The assembled input is checked for credentials. The call goes through the spend cap with the requester
- * as actor; three attempts of 120 seconds, as the analysis runner.
+ * as actor; the project's effective attempts and timeout apply, as for the analysis runner (spec 6.6).
  */
 export class AssistRunner {
   private readonly access: ProjectAccess;
@@ -256,18 +256,22 @@ export class AssistRunner {
     this.access = new ProjectAccess(d.pool, d.clock);
   }
 
-  async process(requestId: string, attemptNo: number, isLastAttempt: boolean): Promise<RunOutcome> {
+  async process(requestId: string, job: RunJob = {}): Promise<RunOutcome | 'wait'> {
     const { pool } = this.d;
     // The project's sweep marker, read before the request's material or any other text it sends or saves (C1).
     const mark = (await pool.query<{ mark: string }>(`SELECT ${sweepMarkSql('r.project_id')} AS mark FROM ai_requests r WHERE r.id = $1`, [requestId])).rows[0]?.mark;
     const request = await loadRequest(pool, requestId);
     if (!request || mark === undefined || (request.status !== 'queued' && request.status !== 'running')) return 'skipped';
     // A request already ended is left alone (a late retry must not revive it).
-    const claimed = await pool.query(
-      `UPDATE ai_requests SET status = 'running', attempts = $2, started_at = COALESCE(started_at, $3) WHERE id = $1 AND status IN ('queued', 'running')`,
-      [request.id, attemptNo, this.d.clock()],
+    // The request row counts the attempts (spec 6.6).
+    const claimed = await pool.query<{ attempts: number }>(
+      `UPDATE ai_requests SET status = 'running', ${CLAIM_ATTEMPTS_SQL}, started_at = COALESCE(started_at, $3),
+              failure_detail = NULLIF(failure_detail, $4)
+        WHERE id = $1 AND status IN ('queued', 'running') RETURNING attempts`,
+      [request.id, job.resume ?? null, this.d.clock(), WAITING_FOR_PLACE],
     );
     if (claimed.rowCount === 0) return 'skipped';
+    const attemptNo = claimed.rows[0].attempts;
     // An earlier attempt whose worker stopped mid-call left its reservation open. Mark it now, before any refusal below
     // ends the request without reaching guardedAiCall (which would otherwise do it): the outcome is unknown, so it stays counted.
     await markStaleReservations(pool, this.d.spend, request.id, attemptNo);
@@ -315,14 +319,15 @@ export class AssistRunner {
 
     const sent = kept.map((m) => m.marker);
     const outcome = await guardedAiCall(
-      { pool, spend: this.d.spend, clock: this.d.clock, log: this.d.log, key: this.d.key ?? null, factory: this.d.factory ?? realClientFactory },
+      { pool, spend: this.d.spend, clock: this.d.clock, log: this.d.log, key: this.d.key, factory: this.d.factory, slotWait: this.d.slotWait },
       {
         requestId: request.id,
         attemptNo,
         purpose: spec.purpose,
         actorUserId: request.requestedBy,
         projectId: request.projectId,
-        carriesRestricted: true, // Task 11 computes this
+        // Read with the material at this attempt (loadRequest); a summary draft always carries restricted material (spec 6.3).
+        carriesRestricted: request.kind === 'summary' || kept.some((m) => m.restricted !== false),
         promptBytes: Buffer.byteLength(input.system, 'utf8') + Buffer.byteLength(input.user, 'utf8'),
         maxOutputTokens: spec.maxOutputTokens,
         call: async (client, modelId, timeoutMs) => {
@@ -339,8 +344,8 @@ export class AssistRunner {
         },
       },
     );
-    // No AI place was free: nothing was reserved or sent. Task 11 re-sends the job with `resume` instead of using an attempt.
-    if (outcome.kind === 'wait') return this.requeue(request);
+    // No AI place was free: nothing was reserved or sent, and the worker sends the job again with `resume`.
+    if (outcome.kind === 'wait') return this.waiting(request);
     if (outcome.kind === 'retry') return this.requeue(request);
     if (outcome.kind !== 'ok') return this.end(request, outcome.kind, outcome);
     try {
@@ -348,14 +353,14 @@ export class AssistRunner {
       if (saved === 'swept') {
         // A report swept or held something in the project while the AI call ran: nothing saved (C1). Asked again, the
         // request reads its material as it is now (or finds it held and blocks); on its last attempt it ends blocked.
-        return isLastAttempt ? this.end(request, 'blocked', HELD_DURING_RUN) : this.requeue(request);
+        return (await isLastAttempt(pool, request.projectId, attemptNo)) ? this.end(request, 'blocked', HELD_DURING_RUN) : this.requeue(request);
       }
       // The request ended (for example stalled) while the AI call ran: nothing saved. The spend stays settled.
       return saved ? 'succeeded' : 'skipped';
     } catch (err) {
       if (err instanceof CompletionRefused) return this.end(request, 'failed', { code: err.code, detail: err.detail });
       this.d.log?.(`assist ${request.id}: unexpected error: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
-      if (!isLastAttempt) return this.requeue(request);
+      if (!(await isLastAttempt(pool, request.projectId, attemptNo))) return this.requeue(request);
       return this.end(request, 'failed', { code: 'internal_error', detail: 'An unexpected error stopped the AI request.' });
     }
   }
@@ -484,6 +489,12 @@ export class AssistRunner {
       }
     }
     return out;
+  }
+
+  /** Back to queued, showing that it waits for a free AI place; the attempt stays counted for the resumed job. */
+  private async waiting(request: AssistRequest): Promise<'wait'> {
+    await this.d.pool.query(`UPDATE ai_requests SET status = 'queued', failure_detail = $2 WHERE id = $1 AND status IN ('queued', 'running')`, [request.id, WAITING_FOR_PLACE]);
+    return 'wait';
   }
 
   private async requeue(request: AssistRequest): Promise<RunOutcome> {

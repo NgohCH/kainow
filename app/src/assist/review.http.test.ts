@@ -9,6 +9,7 @@ import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 import { AssistRunner } from './assist-runner';
+import { aiDeps, aiReady, byAttempt } from '../testing/ai-runners';
 
 const USAGE: Usage = { inputTokens: 2_000, cachedInputTokens: 0, outputTokens: 300 };
 const QUESTION = 'When is the pump service?';
@@ -35,7 +36,7 @@ describe('removal of material and review of shared AI outputs', { skip: SKIP_NO_
   let thread: string;
 
   const count = async (sql: string, params: unknown[] = []) => Number((await t.pool.query(sql, params)).rows[0].n);
-  const run = (id: string) => new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), model: new FakeModel(), clock: t.clock.now }).process(id, 1, false);
+  const run = (id: string) => byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), ...aiDeps(new FakeModel()), clock: t.clock.now })).process(id, 1, false);
   const state = async (id: string) => (await t.pool.query(`SELECT review_state, review_reason FROM ai_answers WHERE request_id = $1`, [id])).rows[0];
   const reviewList = (c: Client, projectId = project) => c.request('GET', `/projects/${projectId}/assist-review`);
   const decide = (c: Client, action: 'clear' | 'withdraw', id: string, reason: unknown = 'Checked with the team', kind = 'answer') =>
@@ -95,6 +96,7 @@ describe('removal of material and review of shared AI outputs', { skip: SKIP_NO_
         { userId: ids.ben, role: 'member' },
       ],
     });
+    await aiReady(t.pool, project);
     await new SpendSettingsService(t.pool, t.clock.now).apply(MVP_SPEND_SETTINGS, ids.admin);
     [pm, dep, ada, ben, outsider] = [
       await t.signIn('pm@example.org'),

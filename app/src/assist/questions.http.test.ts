@@ -12,6 +12,7 @@ import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 import { AssistRunner } from './assist-runner';
+import { aiDeps, aiReady, byAttempt } from '../testing/ai-runners';
 
 const KEY = `sk-${'a1B2c3D4e5'.repeat(3)}`;
 const USAGE: Usage = { inputTokens: 2_000, cachedInputTokens: 0, outputTokens: 300 };
@@ -43,7 +44,7 @@ describe('AI questions', { skip: SKIP_NO_DB }, () => {
   const ask = (c: Client, question: unknown, projectId = project) => c.request('POST', `/projects/${projectId}/questions`, { question });
   const settings = () => new SpendSettingsService(t.pool, t.clock.now);
   const run = async (id: string, model: JsonSchemaModel = new FakeModel()) =>
-    new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), model, clock: t.clock.now }).process(id, 1, false);
+    byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), ...aiDeps(model), clock: t.clock.now })).process(id, 1, false);
   const grant = (projectId: string, userId: string) =>
     t.pool.query(
       `INSERT INTO access_grants (id, project_id, user_id, kind, purpose, scope, starts_on, expires_on, requested_by, requested_at, decision, decided_by, decided_at)
@@ -66,6 +67,7 @@ describe('AI questions', { skip: SKIP_NO_DB }, () => {
         { userId: ids.ben, role: 'member' },
       ],
     });
+    await aiReady(t.pool, project);
     closed = await seedProject(t.pool, {
       name: 'Beta Project',
       status: 'closed',

@@ -11,6 +11,7 @@ import { SpendService } from '../spend/spend.service';
 import { SpendSettingsService } from '../spend/spend.settings';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { seedWorkingProject, seedOrganisation } from '../testing/projects';
+import { aiDeps, aiReady } from '../testing/ai-runners';
 import { CaptureSender, FakeClock, testEnv } from '../testing/fakes';
 import { QUEUES, startQueues } from '../worker/queues';
 import { AnalysisRunner } from '../analysis/analysis-runner';
@@ -65,6 +66,7 @@ describe('extraction over HTTP', { skip: SKIP_NO_DB }, () => {
     cookie = (verify.headers.getSetCookie()[0] ?? '').split(';')[0];
     csrf = ((await verify.json()) as { csrfToken: string }).csrfToken;
     projectId = await seedWorkingProject(pool, (await pool.query('SELECT id FROM users WHERE email = $1', [EMAIL])).rows[0].id);
+    await aiReady(pool, projectId);
   }
 
   async function api(method: string, path: string, body?: unknown, signedIn = true): Promise<{ status: number; body: any }> {
@@ -188,7 +190,7 @@ describe('extraction over HTTP', { skip: SKIP_NO_DB }, () => {
       await admin.end();
       boss = await startQueues(testDatabaseUrl() as string, SCHEMA);
       await start({ enqueue: async (runId) => void (await boss.send(QUEUES.ai, { runId })) });
-      const runner = new ExtractionRunner({ pool, spend: new SpendService(pool, clock.now), model, clock: clock.now });
+      const runner = new ExtractionRunner({ pool, spend: new SpendService(pool, clock.now), ...aiDeps(model), clock: clock.now });
       await registerAiWorker(boss, { extraction: runner, analysis: new AnalysisRunner({ pool, clock: clock.now, extraction: runner }) }, pool);
     });
     afterEach(async () => {

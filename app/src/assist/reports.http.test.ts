@@ -12,6 +12,7 @@ import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 import { AssistRunner } from './assist-runner';
+import { aiDeps, aiReady, byAttempt } from '../testing/ai-runners';
 
 const USAGE: Usage = { inputTokens: 3_000, cachedInputTokens: 0, outputTokens: 600 };
 const STALE = 'Someone changed this since you opened it';
@@ -45,7 +46,7 @@ describe('draft reports and specifications', { skip: SKIP_NO_DB }, () => {
 
   const count = async (sql: string, params: unknown[] = []) => Number((await t.pool.query(sql, params)).rows[0].n);
   const run = (id: string, model: JsonSchemaModel = new ReportModel(), last = false) =>
-    new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), model, clock: t.clock.now }).process(id, 1, last);
+    byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), ...aiDeps(model), clock: t.clock.now })).process(id, 1, last);
   const request = (c: Client, body: Record<string, unknown>) => c.request('POST', `/projects/${project}/reports`, body);
   const lastRequest = () => queued[queued.length - 1];
   const note = async (title: string, text: string) => {
@@ -103,6 +104,7 @@ describe('draft reports and specifications', { skip: SKIP_NO_DB }, () => {
         { userId: ids.ben, role: 'member' },
       ],
     });
+    await aiReady(t.pool, project);
     await grant(ids.auditor);
     await new SpendSettingsService(t.pool, t.clock.now).apply(MVP_SPEND_SETTINGS, ids.admin);
     [pm, dep, ada, ben, auditor] = [

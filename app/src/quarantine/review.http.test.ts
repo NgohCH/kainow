@@ -22,6 +22,7 @@ import { seedProject, seedUser } from '../testing/projects';
 import { QUOTE_CHANGED_TEXT, WITHHELD_TEXT } from './clean';
 import { MARKER } from './clean-text';
 import { POSSIBLE_COPY_TEXT, UNDER_REVIEW_TEXT } from './labels';
+import { aiDeps, aiReady, byAttempt } from '../testing/ai-runners';
 
 const USAGE: Usage = { inputTokens: 2_000, cachedInputTokens: 0, outputTokens: 300 };
 /** A secret the credential check does not know: only a person can mark it. */
@@ -84,6 +85,7 @@ describe('review, mark more and release', { skip: SKIP_NO_DB }, () => {
         { userId: ids.ben, role: 'member' },
       ],
     });
+    await aiReady(t.pool, project);
     other = await seedProject(t.pool, {
       name: 'Beta Project',
       status: 'active',
@@ -145,7 +147,7 @@ describe('review, mark more and release', { skip: SKIP_NO_DB }, () => {
     assert.equal(r.status, 201, json(r.body));
     const plant = (r.body.sources as Array<{ marker: string; location: string | null }>).find((s) => s.location?.startsWith('Plant room'));
     assert.ok(plant, json(r.body.sources));
-    const runner = new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), model: new AnswerModel(plant.marker), clock: t.clock.now });
+    const runner = byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), ...aiDeps(new AnswerModel(plant.marker)), clock: t.clock.now }));
     assert.equal(await runner.process(r.body.id, 1, false), 'succeeded');
     t.clock.advanceSeconds(1);
     return r.body.id as string;
@@ -257,7 +259,7 @@ describe('review, mark more and release', { skip: SKIP_NO_DB }, () => {
     await restrict(id, [ids.ada, ids.ben]);
     const answer = await answered(ben);
     const asked = await ok(dep.request('POST', `/sources/${id}/summaries`, { intendedAudience: { mode: 'project' }, leaveOut: '' }), 201);
-    const runner = new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), model: new SummaryModel(), clock: t.clock.now });
+    const runner = byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), ...aiDeps(new SummaryModel()), clock: t.clock.now }));
     assert.equal(await runner.process(queued[queued.length - 1], 1, false), 'succeeded');
     t.clock.advanceSeconds(1);
     await ok(pm.request('POST', `/summaries/${asked.id}/approve`, { versionNo: 1, reason: 'Fine to share' }));

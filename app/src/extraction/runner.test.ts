@@ -9,6 +9,7 @@ import { SpendSettingsService } from '../spend/spend.settings';
 import { MVP_SPEND_SETTINGS } from '../spend/mvp-settings';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { seedSpendTarget } from '../testing/ai-connections';
+import { aiDeps, aiReady, byAttempt } from '../testing/ai-runners';
 import { FakeClock } from '../testing/fakes';
 import { UsersService } from '../users/users.service';
 import { seedProject } from '../testing/projects';
@@ -73,7 +74,7 @@ describe('extraction runner', { skip: SKIP_NO_DB }, () => {
     return id;
   }
 
-  const runner = (model: ModelClient | null) => new ExtractionRunner({ pool, spend, model, clock: clock.now });
+  const runner = (model: ModelClient | null) => byAttempt(pool, 'extraction_runs', new ExtractionRunner({ pool, spend, ...aiDeps(model), clock: clock.now }));
   const run = async (id: string) => (await pool.query('SELECT * FROM extraction_runs WHERE id = $1', [id])).rows[0];
   const entries = async (id: string) => (await pool.query('SELECT * FROM ai_spend_entries WHERE request_id = $1 ORDER BY attempt_no', [id])).rows;
 
@@ -85,6 +86,7 @@ describe('extraction runner', { skip: SKIP_NO_DB }, () => {
     userId = (await new UsersService(pool, clock.now).create({ email: 'admin@example.org', displayName: 'Admin' })).id;
     await new SpendSettingsService(pool, clock.now).apply(MVP_SPEND_SETTINGS, userId);
     projectId = await seedProject(pool, { members: [{ userId, role: 'pm' }] });
+    await aiReady(pool, projectId);
     versionId = await addVersion(NOTES);
   });
 
@@ -160,7 +162,8 @@ describe('extraction runner', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(items[1].alternatives, []);
   });
 
-  const keyed = (model: ModelClient | null) => new ExtractionRunner({ pool, spend, model, clock: clock.now, quarantine: standaloneCases(pool, clock.now) });
+  const keyed = (model: ModelClient | null) =>
+    byAttempt(pool, 'extraction_runs', new ExtractionRunner({ pool, spend, ...aiDeps(model), clock: clock.now, quarantine: standaloneCases(pool, clock.now) }));
   const cases = async () => (await pool.query('SELECT * FROM quarantine_cases ORDER BY reported_at, id')).rows;
 
   test('extraction finding a stored key opens a case on the notes and blocks without charge', async () => {
@@ -299,11 +302,13 @@ describe('extraction runner', { skip: SKIP_NO_DB }, () => {
     assert.equal(model.calls.length, 0);
   });
 
-  test('without an AI key the run fails and nothing is reserved', async () => {
+  test('without the protected key the run is blocked and nothing is reserved', async () => {
     const id = await newRun();
-    assert.equal(await runner(null).process(id, 1, false), 'failed');
-    assert.equal((await run(id)).failure_code, 'model_not_configured');
+    const model = new FakeModel(() => answer([]));
+    assert.equal(await new ExtractionRunner({ pool, spend, ...aiDeps(model), key: null, clock: clock.now }).process(id, {}), 'blocked');
+    assert.equal((await run(id)).failure_code, 'protected_key_missing');
     assert.deepEqual(await entries(id), []);
+    assert.equal(model.calls.length, 0);
   });
 
   test('a disabled requester cannot run an extraction', async () => {

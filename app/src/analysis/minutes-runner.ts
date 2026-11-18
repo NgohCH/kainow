@@ -1,13 +1,13 @@
 import type { Pool } from 'pg';
-import { guardedAiCall } from '../ai/guarded-call';
-import { type ModelClientFactory, realClientFactory } from '../ai/client-factory';
+import { type GuardedDeps, WAITING_FOR_PLACE, guardedAiCall } from '../ai/guarded-call';
+import type { ModelClientFactory } from '../ai/client-factory';
+import { threadRestrictedSql } from '../ai/restricted';
 import type { ProtectedKey } from '../quarantine/protected-key';
 import type { Clock } from '../auth/tokens';
 import { insertAiDraft } from '../discussion/meetings.service';
 import { findCredentials } from '../extraction/credentials';
-import type { MinutesModel } from '../extraction/model';
 import { MAX_OUTPUT_TOKENS } from '../extraction/prompt';
-import type { RunOutcome } from '../extraction/runner';
+import { CLAIM_ATTEMPTS_SQL, type RunJob, type RunOutcome, isLastAttempt } from '../extraction/runner';
 import { ProjectAccess } from '../projects/access.service';
 import type { SpendService } from '../spend/spend.service';
 import { MAX_MINUTES_INPUT_CHARS, MINUTES_SYSTEM_PROMPT, type MinutesAnswer, renderMinutes } from './minutes';
@@ -19,12 +19,12 @@ import { headerOf } from './transcript';
 export interface MinutesRunnerDeps {
   pool: Pool;
   spend: SpendService;
-  /** Unused since sub-project 6 Task 10 (calls go through the project's connections); Task 11 replaces it with `factory`. */
-  model: MinutesModel | null;
-  /** Builds the client for each attempt's connection (Task 11 makes this required). */
-  factory?: ModelClientFactory;
+  /** Builds the client for each attempt's chosen connection, with its decrypted key (spec 6.3). */
+  factory: ModelClientFactory;
   /** The protected key that opens the connections' keys; without it requests end blocked protected_key_missing. */
-  key?: ProtectedKey | null;
+  key: ProtectedKey | null;
+  /** Waiting for a free AI place; tests shorten it (spec 6.5). */
+  slotWait?: GuardedDeps['slotWait'];
   clock: Clock;
   /** Opens a quarantine case on the message holding a secret found in the stored messages (history spec 7.1). */
   quarantine?: KainowReporter;
@@ -47,7 +47,7 @@ export class MinutesRunner {
     this.access = new ProjectAccess(d.pool, d.clock);
   }
 
-  async process(analysisRunId: string, attemptNo: number, isLastAttempt: boolean): Promise<RunOutcome> {
+  async process(analysisRunId: string, job: RunJob = {}): Promise<RunOutcome | 'wait'> {
     const { pool } = this.d;
     // The project's sweep marker, read before any text this run sends or saves (C1).
     const mark = (
@@ -59,11 +59,15 @@ export class MinutesRunner {
     const run = await loadRun(pool, analysisRunId);
     if (!run || mark === undefined || run.kind !== 'minutes' || ['succeeded', 'failed', 'blocked'].includes(run.status)) return 'skipped';
     // A run already stalled or finished is left alone (a late retry must not revive it).
-    const claimed = await pool.query(
-      `UPDATE analysis_runs SET status = 'running', attempts = $2, started_at = COALESCE(started_at, $3) WHERE id = $1 AND status IN ('queued', 'running')`,
-      [run.id, attemptNo, this.d.clock()],
+    // The analysis run is the request row of minutes drafting: it counts the attempts (spec 6.3, 6.6).
+    const claimed = await pool.query<{ attempts: number }>(
+      `UPDATE analysis_runs SET status = 'running', ${CLAIM_ATTEMPTS_SQL}, started_at = COALESCE(started_at, $3),
+              failure_detail = NULLIF(failure_detail, $4)
+        WHERE id = $1 AND status IN ('queued', 'running') RETURNING attempts`,
+      [run.id, job.resume ?? null, this.d.clock(), WAITING_FOR_PLACE],
     );
     if (claimed.rowCount === 0) return 'skipped';
+    const attemptNo = claimed.rows[0].attempts;
 
     const refusal = (await recheckRun(pool, this.access, run, 'meeting')) ?? (await this.humanEdited(run));
     if (refusal) return this.end(run, 'blocked', refusal);
@@ -88,7 +92,7 @@ export class MinutesRunner {
     const through = messages[messages.length - 1].no;
 
     const outcome = await guardedAiCall(
-      { pool, spend: this.d.spend, clock: this.d.clock, log: this.d.log, key: this.d.key ?? null, factory: this.d.factory ?? realClientFactory },
+      { pool, spend: this.d.spend, clock: this.d.clock, log: this.d.log, key: this.d.key, factory: this.d.factory, slotWait: this.d.slotWait },
       {
         requestId: run.id,
         attemptNo,
@@ -96,14 +100,15 @@ export class MinutesRunner {
         actorUserId: run.requestedBy,
         // recheckRun above refuses a run without a project.
         projectId: run.projectId as string,
-        carriesRestricted: true, // Task 11 computes this
+        // The meeting's audience, read with the messages at every attempt: it may have been narrowed while the run waited.
+        carriesRestricted: messages.some((m) => m.restricted !== false),
         promptBytes: Buffer.byteLength(MINUTES_SYSTEM_PROMPT, 'utf8') + Buffer.byteLength(input, 'utf8'),
         maxOutputTokens: MAX_OUTPUT_TOKENS,
         call: (client, modelId, timeoutMs) => client.draftMinutes({ modelId, system: MINUTES_SYSTEM_PROMPT, user: input, maxOutputTokens: MAX_OUTPUT_TOKENS, timeoutMs }),
       },
     );
-    // No AI place was free: nothing was reserved or sent. Task 11 re-sends the job with `resume` instead of using an attempt.
-    if (outcome.kind === 'wait') return this.requeue(run);
+    // No AI place was free: nothing was reserved or sent, and the worker sends the job again with `resume`.
+    if (outcome.kind === 'wait') return this.waiting(run);
     if (outcome.kind === 'retry') return this.requeue(run);
     if (outcome.kind !== 'ok') return this.end(run, outcome.kind, outcome);
     try {
@@ -111,7 +116,7 @@ export class MinutesRunner {
       if (saved === 'swept') {
         // A report swept or held something in the project while the AI call ran: nothing saved (C1). Asked again, the
         // run reads the messages as they are now; on its last attempt it ends blocked.
-        return isLastAttempt ? this.end(run, 'blocked', HELD_DURING_RUN) : this.requeue(run);
+        return (await isLastAttempt(pool, run.projectId, attemptNo)) ? this.end(run, 'blocked', HELD_DURING_RUN) : this.requeue(run);
       }
       // The run ended (stalled) while the AI call ran: no draft, no success. The spend stays settled.
       if (saved === 'stale') return 'skipped';
@@ -123,7 +128,7 @@ export class MinutesRunner {
     } catch (err) {
       // The cost is already settled; saving failed, so the run is retried or ends as an internal error.
       this.d.log?.(`minutes ${run.id}: unexpected error: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
-      if (!isLastAttempt) return this.requeue(run);
+      if (!(await isLastAttempt(pool, run.projectId, attemptNo))) return this.requeue(run);
       return this.end(run, 'failed', { code: 'internal_error', detail: 'An unexpected error stopped the minutes drafting.' });
     }
   }
@@ -135,9 +140,11 @@ export class MinutesRunner {
     return rowCount ? { code: 'human_edited', detail: PAUSED } : null;
   }
 
-  private async visibleMessages(threadId: string): Promise<Array<{ no: number; versionId: string; authorName: string; at: Date; body: string }>> {
+  /** The messages to send, each with whether the meeting is restricted material (spec 6.3), read in the same statement. */
+  private async visibleMessages(threadId: string): Promise<Array<{ no: number; versionId: string; authorName: string; at: Date; body: string; restricted: boolean }>> {
     const { rows } = await this.d.pool.query(
-      `SELECT m.message_no AS no, v.id AS "versionId", u.display_name AS "authorName", m.created_at AS at, v.body
+      `SELECT m.message_no AS no, v.id AS "versionId", u.display_name AS "authorName", m.created_at AS at, v.body,
+              ${threadRestrictedSql('m.thread_id')} AS restricted
          FROM discussion_messages m
          JOIN LATERAL (SELECT id, body FROM message_versions WHERE message_id = m.id ORDER BY version_no DESC LIMIT 1) v ON true
          JOIN users u ON u.id = m.author_id
@@ -197,6 +204,12 @@ export class MinutesRunner {
     } finally {
       client.release();
     }
+  }
+
+  /** Back to queued, showing that it waits for a free AI place; the attempt stays counted for the resumed job. */
+  private async waiting(run: RunRow): Promise<'wait'> {
+    await this.d.pool.query(`UPDATE analysis_runs SET status = 'queued', failure_detail = $2 WHERE id = $1 AND status IN ('queued', 'running')`, [run.id, WAITING_FOR_PLACE]);
+    return 'wait';
   }
 
   private async requeue(run: RunRow): Promise<RunOutcome> {

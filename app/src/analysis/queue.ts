@@ -6,6 +6,8 @@ import { QUEUES, startQueues } from '../worker/queues';
 
 export interface AnalysisJob {
   analysisRunId: string;
+  /** Sent again after waiting for a free AI place (spec 6.5): the attempt number already counted. */
+  resume?: number;
 }
 
 export const ANALYSIS_QUEUE = Symbol('ANALYSIS_QUEUE');

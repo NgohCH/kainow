@@ -3,7 +3,8 @@ import type { Clock } from '../auth/tokens';
 import { sha256Hex } from '../notes/text';
 import { uuidv7 } from '../common/uuid7';
 import { findCredentials } from '../extraction/credentials';
-import type { RunOutcome } from '../extraction/runner';
+import { CLAIM_ATTEMPTS_SQL, type RunJob, type RunOutcome, isLastAttempt } from '../extraction/runner';
+import { WAITING_FOR_PLACE } from '../ai/guarded-call';
 import { ProjectAccess } from '../projects/access.service';
 import { type KainowReporter, messagesOfVersions, reportOwned } from '../quarantine/kainow-report';
 import { HELD_DURING_RUN, sweepMarkSql, sweptSince } from '../quarantine/sweep-lock';
@@ -12,12 +13,12 @@ import { type Span, type TranscriptMessage, buildTranscript } from './transcript
 
 /** The part of ExtractionRunner this class needs: run the extraction that belongs to a snapshot. */
 export interface ExtractionStep {
-  process(runId: string, attemptNo: number, isLastAttempt: boolean): Promise<RunOutcome>;
+  process(runId: string, job: RunJob): Promise<RunOutcome | 'wait'>;
 }
 
 /** Minutes runs are handled by their own runner (Task 12). */
 export interface MinutesStep {
-  process(analysisRunId: string, attemptNo: number, isLastAttempt: boolean): Promise<RunOutcome>;
+  process(analysisRunId: string, job: RunJob): Promise<RunOutcome | 'wait'>;
 }
 
 export interface AnalysisRunnerDeps {
@@ -50,7 +51,7 @@ export class AnalysisRunner {
     this.access = new ProjectAccess(d.pool, d.clock);
   }
 
-  async process(analysisRunId: string, attemptNo: number, isLastAttempt: boolean): Promise<RunOutcome> {
+  async process(analysisRunId: string, job: RunJob = {}): Promise<RunOutcome | 'wait'> {
     const { pool } = this.d;
     // The project's sweep marker, read before any text the snapshot stores (C1).
     const mark = (
@@ -63,15 +64,20 @@ export class AnalysisRunner {
     if (!run || mark === undefined || run.status === 'succeeded' || run.status === 'failed' || run.status === 'blocked') return 'skipped';
 
     if (run.kind === 'minutes') {
-      if (this.d.minutes) return this.d.minutes.process(analysisRunId, attemptNo, isLastAttempt);
+      if (this.d.minutes) return this.d.minutes.process(analysisRunId, job);
       return (await this.end(run, 'failed', 'minutes_not_available', 'Drafting minutes is not available on this worker.')) ? 'failed' : 'skipped';
     }
 
-    const claimed = await pool.query(
-      `UPDATE analysis_runs SET status = 'running', attempts = $2, started_at = COALESCE(started_at, $3) WHERE id = $1 AND status IN ('queued', 'running')`,
-      [run.id, attemptNo, this.d.clock()],
+    // The attempts are counted here and given to the delegated extraction run, whose row is the spend request (spec 6.3):
+    // building the transcript is part of the attempt, and a sweep clash while storing it still uses one.
+    const claimed = await pool.query<{ attempts: number }>(
+      `UPDATE analysis_runs SET status = 'running', ${CLAIM_ATTEMPTS_SQL}, started_at = COALESCE(started_at, $3),
+              failure_detail = NULLIF(failure_detail, $4)
+        WHERE id = $1 AND status IN ('queued', 'running') RETURNING attempts`,
+      [run.id, job.resume ?? null, this.d.clock(), WAITING_FOR_PLACE],
     );
     if (claimed.rowCount === 0) return 'skipped';
+    const attemptNo = claimed.rows[0].attempts;
 
     const refusal = await recheckRun(this.d.pool, this.access, run, 'discussion');
     if (refusal) {
@@ -97,7 +103,7 @@ export class AnalysisRunner {
       const blocked = await this.snapshot(run, mark);
       if (blocked === 'swept') {
         // A report swept or held something in the project while the transcript was built: nothing stored (C1).
-        if (isLastAttempt) return (await this.end(run, 'blocked', HELD_DURING_RUN.code, HELD_DURING_RUN.detail)) ? 'blocked' : 'skipped';
+        if (await isLastAttempt(pool, run.projectId, attemptNo)) return (await this.end(run, 'blocked', HELD_DURING_RUN.code, HELD_DURING_RUN.detail)) ? 'blocked' : 'skipped';
         await pool.query(`UPDATE analysis_runs SET status = 'queued' WHERE id = $1 AND status IN ('queued', 'running')`, [run.id]);
         return 'retry';
       }
@@ -109,7 +115,9 @@ export class AnalysisRunner {
       run.extractionRunId = again.extractionRunId;
     }
 
-    const outcome = await this.d.extraction.process(run.extractionRunId, attemptNo, isLastAttempt);
+    // The extraction run takes this attempt number as already counted, so both rows always hold the same count.
+    await pool.query(`UPDATE extraction_runs SET attempts = $2 WHERE id = $1 AND status IN ('queued', 'running')`, [run.extractionRunId, attemptNo]);
+    const outcome = await this.d.extraction.process(run.extractionRunId, { resume: attemptNo });
     return this.copyOutcome(run, outcome);
   }
 
@@ -248,7 +256,12 @@ export class AnalysisRunner {
   }
 
   /** The analysis run takes the extraction run's state, whatever the runner returned (so a crash between the two heals itself). */
-  private async copyOutcome(run: RunRow, outcome: RunOutcome): Promise<RunOutcome> {
+  private async copyOutcome(run: RunRow, outcome: RunOutcome | 'wait'): Promise<RunOutcome | 'wait'> {
+    if (outcome === 'wait') {
+      // No AI place was free: the analysis run waits with its extraction run; the worker sends the job again with `resume`.
+      await this.d.pool.query(`UPDATE analysis_runs SET status = 'queued', failure_detail = $2 WHERE id = $1 AND status IN ('queued', 'running')`, [run.id, WAITING_FOR_PLACE]);
+      return 'wait';
+    }
     const { rows } = await this.d.pool.query(
       `SELECT status, failure_code AS code, failure_detail AS detail, finished_at AS "finishedAt" FROM extraction_runs WHERE id = $1`,
       [run.extractionRunId],
