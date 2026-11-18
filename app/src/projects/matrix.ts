@@ -44,7 +44,10 @@ export type ProjectAction =
   | 'record.delegate_deletion'
   | 'secret.report'
   | 'quarantine.release'
-  | 'quarantine.copies';
+  | 'quarantine.copies'
+  | 'ai.limits.manage'
+  | 'ai.connections.manage'
+  | 'ai.connections.view';
 
 interface MatrixRow {
   roles: ReadonlyArray<ProjectRole | 'participant'>;
@@ -207,6 +210,21 @@ export const PROJECT_MATRIX: Readonly<Record<ProjectAction, MatrixRow>> = {
     roles: ['pm', 'deputy_pm'],
     states: ALL,
     refusal: 'Only the Project Manager or a Deputy can confirm or dismiss possible copies of a suspected credential.',
+  },
+  'ai.limits.manage': {
+    roles: ['pm', 'owner', 'sponsor'],
+    states: OPEN,
+    refusal: "Only the Project Manager, the Owner or a Sponsor can change the project's AI limits, and only when the Administrator allows it.",
+  },
+  'ai.connections.manage': {
+    roles: ['pm', 'owner', 'sponsor'],
+    states: OPEN,
+    refusal: "Only the Project Manager, the Owner or a Sponsor can manage the project's AI connections, and only when the Administrator allows it.",
+  },
+  'ai.connections.view': {
+    roles: ['pm', 'deputy_pm', 'owner', 'sponsor'],
+    states: ALL,
+    refusal: "Only the Project Manager, a Deputy, the Owner or a Sponsor can see the project's AI connections and limits.",
   },
   'proposal.review': {
     roles: ['owner', 'sponsor'],

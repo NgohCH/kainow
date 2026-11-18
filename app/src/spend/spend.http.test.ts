@@ -15,13 +15,15 @@ import { UsersService } from '../users/users.service';
 const EMAIL = 'admin@example.org';
 
 const MVP_BODY = {
-  modelId: 'gpt-6.1-sol',
-  inputUsdPerMillion: '2.00',
-  cachedInputUsdPerMillion: '0.10',
-  outputUsdPerMillion: '10.00',
   myrPerUsd: 4.1,
   monthlyLimitMyr: 20,
   daily: { mode: 'not_applied' },
+  projectsMaySetLimits: false,
+  projectsMayManageConnections: false,
+  projectCeiling: { mode: 'not_applied' },
+  maxAttempts: 3,
+  timeoutSeconds: 120,
+  concurrency: 2,
 };
 
 describe('spend settings over HTTP', { skip: SKIP_NO_DB }, () => {
@@ -84,10 +86,9 @@ describe('spend settings over HTTP', { skip: SKIP_NO_DB }, () => {
 
     const view = (await call('GET', '/ai/spend')).body;
     assert.equal(view.configured, true);
-    assert.equal(view.settings.modelId, 'gpt-6.1-sol');
-    assert.equal(view.settings.inputUsdPerMillion, '2.000000');
-    assert.equal(view.settings.cachedInputUsdPerMillion, '0.100000');
-    assert.equal(view.settings.outputUsdPerMillion, '10.000000');
+    assert.equal(view.settings.myrPerUsd, '4.100000');
+    assert.equal(view.settings.maxAttempts, 3);
+    assert.deepEqual(view.settings.projectCeiling, { mode: 'not_applied' });
     assert.deepEqual(view.settings.daily, { mode: 'not_applied' });
     assert.equal(view.month.limitMyr, '20.000000');
     assert.equal(view.month.usedMyr, '0.000000');
@@ -129,12 +130,23 @@ describe('spend settings over HTTP', { skip: SKIP_NO_DB }, () => {
       'text',
       withoutMonthly,
       withoutDaily,
-      { ...MVP_BODY, modelId: '' },
-      { ...MVP_BODY, modelId: 5 },
       { ...MVP_BODY, myrPerUsd: 0 },
       { ...MVP_BODY, myrPerUsd: '-4.1' },
-      { ...MVP_BODY, inputUsdPerMillion: '1e1' },
-      { ...MVP_BODY, outputUsdPerMillion: undefined },
+      { ...MVP_BODY, maxAttempts: undefined },
+      { ...MVP_BODY, maxAttempts: 6 },
+      { ...MVP_BODY, maxAttempts: 0 },
+      { ...MVP_BODY, timeoutSeconds: undefined },
+      { ...MVP_BODY, timeoutSeconds: 29 },
+      { ...MVP_BODY, timeoutSeconds: 301 },
+      { ...MVP_BODY, concurrency: undefined },
+      { ...MVP_BODY, concurrency: 11 },
+      { ...MVP_BODY, concurrency: 2.5 },
+      { ...MVP_BODY, projectsMaySetLimits: undefined },
+      { ...MVP_BODY, projectsMayManageConnections: 'yes' },
+      { ...MVP_BODY, projectCeiling: undefined },
+      { ...MVP_BODY, projectCeiling: { mode: 'limit' } },
+      { ...MVP_BODY, projectCeiling: { mode: 'limit', limitMyr: null } },
+      { ...MVP_BODY, projectCeiling: { mode: 'not_applied', limitMyr: 5 } },
       { ...MVP_BODY, monthlyLimitMyr: '20.1234567' },
       { ...MVP_BODY, daily: { mode: 'unlimited' } },
       { ...MVP_BODY, daily: { mode: 'limit' } },

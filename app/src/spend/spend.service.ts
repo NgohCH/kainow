@@ -6,6 +6,7 @@ import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { costMicroMyr, type Prices, type Usage } from './cost';
 import { dayPeriod, monthPeriod, type Period } from './periods';
+import { bridgedModel } from './mvp-settings';
 import { readSettings } from './spend.settings';
 
 /** Serialises reservations so parallel requests cannot each see the same headroom. */
@@ -146,13 +147,14 @@ export class SpendService {
       }
 
       const entryId = uuidv7(now.getTime());
-      const p = settings.prices;
+      const { modelId: bridgedModelId, prices: p } = bridgedModel(settings); // bridged until Task 5
       await c.query(
+      // ruled = false: organisation-level only, until reserve applies project scopes (bridged until Task 5)
         `INSERT INTO ai_spend_entries
            (id, request_id, attempt_no, created_at, updated_at, status, purpose, actor_user_id, model_id,
             input_usd_per_million_micro, cached_input_usd_per_million_micro, output_usd_per_million_micro,
-            myr_per_usd_micro, estimate_micro_myr, amount_micro_myr)
-         VALUES ($1, $2, $3, $4, $4, 'reserved', $5, $6, $7, $8, $9, $10, $11, $12, $12)`,
+            myr_per_usd_micro, estimate_micro_myr, amount_micro_myr, ruled)
+         VALUES ($1, $2, $3, $4, $4, 'reserved', $5, $6, $7, $8, $9, $10, $11, $12, $12, false)`,
         [
           entryId,
           input.requestId,
@@ -160,7 +162,7 @@ export class SpendService {
           now,
           input.purpose,
           input.actorUserId ?? null,
-          settings.modelId,
+          bridgedModelId,
           p.inputMicroUsdPerMillion.toString(),
           p.cachedInputMicroUsdPerMillion.toString(),
           p.outputMicroUsdPerMillion.toString(),

@@ -3,6 +3,7 @@ import type { Clock } from '../auth/tokens';
 import { ModelBadResponse, ModelCallError } from '../extraction/model';
 import { estimateMaxCostMicroMyr, type Usage } from '../spend/cost';
 import type { SpendService } from '../spend/spend.service';
+import { bridgedModel } from '../spend/mvp-settings';
 import { readSettings } from '../spend/spend.settings';
 
 export type AiPurpose = 'extraction' | 'discussion_analysis' | 'minutes_draft' | 'question_answer' | 'report_draft' | 'summary_draft';
@@ -80,7 +81,8 @@ export async function guardedAiCall<T>(deps: GuardedDeps, input: GuardedCallInpu
     return { kind: 'blocked', code: 'spend_not_configured', detail: 'The AI spend settings have not been approved yet, so no AI request is allowed.' };
   }
 
-  const estimate = estimateMaxCostMicroMyr(input.promptBytes, input.maxOutputTokens, settings.prices);
+  const model = bridgedModel(settings); // bridged until Task 10
+  const estimate = estimateMaxCostMicroMyr(input.promptBytes, input.maxOutputTokens, model.prices);
   const reserved = await spend.reserve({
     requestId: input.requestId,
     attemptNo: input.attemptNo,
@@ -108,10 +110,10 @@ export async function guardedAiCall<T>(deps: GuardedDeps, input: GuardedCallInpu
   let sent = false;
   try {
     sent = true; // from here on the provider may have done the work and charged for it
-    const result = await input.call(settings.modelId);
+    const result = await input.call(model.modelId);
     // The cost is recorded first, so it is counted even if the caller's saving of the answer fails.
     await spend.settle(entryId, result.usage);
-    return { kind: 'ok', value: result, modelId: settings.modelId };
+    return { kind: 'ok', value: result, modelId: model.modelId };
   } catch (err) {
     return failed(deps, input, entryId, sent, err);
   }

@@ -108,7 +108,7 @@ describe('per-person monthly limit', { skip: SKIP_NO_DB }, () => {
   });
 
   test('saving the setting is audited, and leaving it out of a request means no personal limit', async () => {
-    const body = { modelId: 'm', inputUsdPerMillion: '1', cachedInputUsdPerMillion: '1', outputUsdPerMillion: '1', myrPerUsd: 4, monthlyLimitMyr: 20, daily: { mode: 'not_applied' } };
+    const body = { myrPerUsd: 4, monthlyLimitMyr: 20, daily: { mode: 'not_applied' }, projectsMaySetLimits: false, projectsMayManageConnections: false, projectCeiling: { mode: 'not_applied' }, maxAttempts: 3, timeoutSeconds: 120, concurrency: 2 };
     assert.deepEqual(parseSettingsBody(body).userMonthly, { mode: 'not_applied' });
     const withLimit = parseSettingsBody({ ...body, userMonthly: { mode: 'limit', limitMyr: '2.5' } });
     assert.deepEqual(describeSettings(withLimit).userMonthly, { mode: 'limit', limitMyr: '2.500000' });
@@ -118,7 +118,7 @@ describe('per-person monthly limit', { skip: SKIP_NO_DB }, () => {
   });
 
   test('a malformed personal limit is refused', () => {
-    const body = { modelId: 'm', inputUsdPerMillion: '1', cachedInputUsdPerMillion: '1', outputUsdPerMillion: '1', myrPerUsd: 4, monthlyLimitMyr: 20, daily: { mode: 'not_applied' } };
+    const body = { myrPerUsd: 4, monthlyLimitMyr: 20, daily: { mode: 'not_applied' }, projectsMaySetLimits: false, projectsMayManageConnections: false, projectCeiling: { mode: 'not_applied' }, maxAttempts: 3, timeoutSeconds: 120, concurrency: 2 };
     for (const userMonthly of [null, 'x', [], {}, { mode: 'unlimited' }, { mode: 'limit' }, { mode: 'not_applied', limitMyr: 1 }, { mode: 'limit', limitMyr: '-1' }]) {
       assert.throws(() => parseSettingsBody({ ...body, userMonthly }), /userMonthly|limitMyr/, JSON.stringify(userMonthly));
     }

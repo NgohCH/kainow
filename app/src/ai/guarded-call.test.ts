@@ -7,7 +7,7 @@ import { runMigrations } from '../db/migrate';
 import { ModelBadResponse, ModelCallError } from '../extraction/model';
 import { SpendService } from '../spend/spend.service';
 import { SpendSettingsService } from '../spend/spend.settings';
-import { MVP_SPEND_SETTINGS } from '../spend/mvp-settings';
+import { MVP_BRIDGE_MODEL, MVP_SPEND_SETTINGS } from '../spend/mvp-settings';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { FakeClock } from '../testing/fakes';
 import { UsersService } from '../users/users.service';
@@ -57,7 +57,7 @@ describe('guarded AI call', { skip: SKIP_NO_DB }, () => {
     assert.equal(out.kind, 'ok');
     if (out.kind === 'ok') {
       assert.equal(out.value.answer, 'x');
-      assert.equal(out.modelId, MVP_SPEND_SETTINGS.modelId);
+      assert.equal(out.modelId, MVP_BRIDGE_MODEL.modelId);
     }
     const [e] = await entries(i.requestId);
     assert.equal(e.status, 'confirmed');

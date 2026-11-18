@@ -6,7 +6,7 @@ import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import type { Usage } from '../spend/cost';
 import { SpendService } from '../spend/spend.service';
 import { SpendSettingsService } from '../spend/spend.settings';
-import { MVP_SPEND_SETTINGS } from '../spend/mvp-settings';
+import { MVP_BRIDGE_MODEL, MVP_SPEND_SETTINGS } from '../spend/mvp-settings';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
@@ -97,7 +97,7 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     assert.equal(await runner(model).process(id, 1, false), 'succeeded');
 
     const r = await request(id);
-    assert.deepEqual([r.status, r.attempts, r.failure_code, r.model_id], ['succeeded', 1, null, MVP_SPEND_SETTINGS.modelId]);
+    assert.deepEqual([r.status, r.attempts, r.failure_code, r.model_id], ['succeeded', 1, null, MVP_BRIDGE_MODEL.modelId]);
     assert.ok(r.started_at && r.finished_at);
     const a = await answer(id);
     assert.deepEqual([a.answer_markdown, a.not_found], ['The pump is booked [P1].', false]);

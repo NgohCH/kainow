@@ -130,7 +130,7 @@ describe('AI spend cap', { skip: SKIP_NO_DB }, () => {
     await configure();
     const id = await reserved(500_000n);
     await configure({
-      prices: { ...MVP_SPEND_SETTINGS.prices, inputMicroUsdPerMillion: 20_000_000n, outputMicroUsdPerMillion: 100_000_000n, myrPerUsdMicro: 9_000_000n },
+      prices: { myrPerUsdMicro: 9_000_000n }, // the model's own prices move to the catalogue (Task 5)
     });
     await spend.settle(id, EXAMPLE_USAGE);
     assert.equal((await spend.getEntry(id))?.amountMicroMyr, EXAMPLE_COST);
@@ -326,7 +326,7 @@ describe('AI spend cap', { skip: SKIP_NO_DB }, () => {
     const rows = await pool.query(`SELECT actor_user_id, detail FROM audit_events WHERE action = 'ai.spend_settings_changed' ORDER BY occurred_at, id`);
     assert.equal(rows.rows.length, 2);
     assert.equal(rows.rows[0].actor_user_id, actorId);
-    assert.equal(rows.rows[0].detail.settings.modelId, 'gpt-6.1-sol');
+    assert.equal(rows.rows[0].detail.settings.myrPerUsd, '4.100000');
     assert.equal(rows.rows[0].detail.settings.monthlyLimitMyr, '20.000000');
     assert.deepEqual(rows.rows[0].detail.settings.daily, { mode: 'not_applied' });
     assert.equal(rows.rows[1].detail.settings.monthlyLimitMyr, '25.500000');
@@ -335,9 +335,8 @@ describe('AI spend cap', { skip: SKIP_NO_DB }, () => {
   test('the database does not accept a daily limit amount when no daily limit applies', async () => {
     await assert.rejects(
       pool.query(
-        `INSERT INTO ai_spend_settings (id, model_id, input_usd_per_million_micro, cached_input_usd_per_million_micro,
-           output_usd_per_million_micro, myr_per_usd_micro, monthly_limit_micro_myr, daily_mode, daily_limit_micro_myr, updated_at)
-         VALUES (1, 'm', 1, 1, 1, 1, 1, 'not_applied', 5, now())`,
+        `INSERT INTO ai_spend_settings (id, myr_per_usd_micro, monthly_limit_micro_myr, daily_mode, daily_limit_micro_myr, updated_at)
+         VALUES (1, 1, 1, 'not_applied', 5, now())`,
       ),
       /ai_spend_daily_limit_only_with_limit_mode/,
     );
