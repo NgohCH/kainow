@@ -13,9 +13,10 @@ export interface Sealed {
 export interface ProtectedKey {
   /** First 16 hex characters of SHA-256 of the key; stored with each encrypted row. */
   id: string;
-  encrypt(plain: Buffer): Sealed;
+  /** `aad` is optional associated data: when given, the same bytes must be given to decrypt. */
+  encrypt(plain: Buffer, aad?: Buffer): Sealed;
   /** Throws when the tag or ciphertext was changed or the key is not the one that encrypted it. */
-  decrypt(v: Sealed): Buffer;
+  decrypt(v: Sealed, aad?: Buffer): Buffer;
 }
 
 const KEY_BYTES = 32;
@@ -26,17 +27,19 @@ function fromBytes(key: Buffer): ProtectedKey {
   const id = createHash('sha256').update(key).digest('hex').slice(0, 16);
   return {
     id,
-    encrypt(plain) {
+    encrypt(plain, aad) {
       const nonce = randomBytes(NONCE_BYTES);
       const cipher = createCipheriv('aes-256-gcm', key, nonce, { authTagLength: TAG_BYTES });
+      if (aad) cipher.setAAD(aad);
       const ciphertext = Buffer.concat([cipher.update(plain), cipher.final()]);
       return { ciphertext, nonce, tag: cipher.getAuthTag() };
     },
-    decrypt(v) {
+    decrypt(v, aad) {
       if (v.nonce.length !== NONCE_BYTES) throw new Error('protected key: nonce must be 12 bytes');
       if (v.tag.length !== TAG_BYTES) throw new Error('protected key: tag must be 16 bytes');
       const decipher = createDecipheriv('aes-256-gcm', key, v.nonce, { authTagLength: TAG_BYTES });
       decipher.setAuthTag(v.tag);
+      if (aad) decipher.setAAD(aad);
       return Buffer.concat([decipher.update(v.ciphertext), decipher.final()]);
     },
   };
