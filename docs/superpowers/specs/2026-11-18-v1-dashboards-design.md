@@ -1,7 +1,7 @@
 # V1.0 sub-project 7: dashboards and analytics — personal, project, leadership and Administrator — design
 
 **Date:** 18 November 2026
-**Status:** Draft for Product Owner approval. Scope, focus and approach were agreed section by section in conversation on 18 November 2026.
+**Status:** Approved by the Product Owner on 19 November 2026, including the D90 bounds, the bench aims and the leadership risk descriptions. Scope, focus and approach were agreed section by section in conversation on 18 November 2026.
 **Builds on:** branch `TheLord/subproject-7-design-7fdf29`, cut from the sub-project 6 branch `TheLord/amazing-gates-323bc6` (head ede3479, not yet pushed). Rebase onto `main` once sub-projects 5 and 6 merge. Next migration: `0029_dashboards.sql`.
 **Authority:**
 - Intent Card principles 4, 5 and 8, and its "Included in V1.0" dashboard line.
@@ -378,7 +378,7 @@ The sketch shows intent; the builder fixes exact names, indexes and the append-o
 - **Catalogue completeness test** (§10).
 - **CSV tests:** header lines, formula-injection escaping, export disallowed, audit event.
 - **Web helper tests:** label and empty-state wording, expansion defaults with saved choices, preference validation, chart-to-table equivalence data.
-- **Bench (`npm run bench-dashboards`, own `kainow_bench` style database):** 200 users, 100 projects, 30,000 tasks with subtasks, 3,000 risks, events for a year. **Aims (my proposal, to confirm): `GET /dashboard/me` p95 < 300 ms for a user in 10 projects; `GET /projects/:id/dashboard` p95 < 200 ms; each analytics panel p95 < 500 ms; leadership summary for organisation scope p95 < 500 ms.** Results are recorded in this section, met or missed, as earlier sub-projects did.
+- **Bench (`npm run bench-dashboards`, own `kainow_bench` style database):** 200 users, 100 projects, 30,000 tasks with subtasks, 3,000 risks, events for a year. **Aims (approved by the Product Owner, 19 November 2026): `GET /dashboard/me` p95 < 300 ms for a user in 10 projects; `GET /projects/:id/dashboard` p95 < 200 ms; each analytics panel p95 < 500 ms; leadership summary for organisation scope p95 < 500 ms.** Results are recorded in this section, met or missed, as earlier sub-projects did.
 - Screens checked at desktop width and at 375 px, by keyboard, in both themes; WCAG 2.2 AA.
 
 ## 15. Left to the builder, and open items
@@ -386,7 +386,7 @@ The sketch shows intent; the builder fixes exact names, indexes and the append-o
 - Exact SQL shapes and indexes, guided by the bench.
 - The chart drawing: plain SVG or CSS bars with no new chart library, each with an equivalent table and a text summary.
 - Which existing project-settings items still lack a screen. Known: categories, stage simplification, required fields and export policy per project are not built and are not part of this sub-project; they stay with their owning sub-projects or a later settings pass, to be placed by the Product Owner.
-- **For the Product Owner:**
+- **Settled by the Product Owner on 19 November 2026 (approved as proposed):**
   - the D90 bounds;
   - the bench aims;
   - leadership showing High and Critical risk descriptions (cut to 120 characters), since risks have no separate title.
