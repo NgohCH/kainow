@@ -50,7 +50,10 @@ export class SpendController {
     const summary = await this.spend.summary(user.id, projectId);
     const manages = decide({ action: 'ai.usage.view', roles: ctx.roles, status: ctx.project.status }).allowed;
     const mine = summary.projectMine ?? summary.mine;
-    const meter = manages ? { kind: 'project' as const, ...describePeriod(summary.project) } : mine ? { kind: 'personal' as const, ...describePeriod(mine) } : null;
+    // No figures (AI settings not saved yet) means no meter, never a meter without numbers.
+    const projectPeriod = describePeriod(summary.project);
+    const minePeriod = describePeriod(mine);
+    const meter = manages ? (projectPeriod ? { kind: 'project' as const, ...projectPeriod } : null) : minePeriod ? { kind: 'personal' as const, ...minePeriod } : null;
     const base = isAdmin ? await this.administratorView(user.id, projectId) : { configured: summary.configured, settings: null };
     return {
       ...base,

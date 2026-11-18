@@ -217,6 +217,8 @@ export interface PickableModel {
 export interface ConnectionsList {
   connections: ConnectionView[];
   editable: boolean;
+  /** Disable is open in every project state to a connection manager. */
+  mayDisable?: boolean;
   models: PickableModel[];
   protectedKeyLoaded: boolean;
 }
@@ -431,6 +433,10 @@ export interface Meter {
   usedMyr: string;
   remainingMyr: string;
 }
+
+/** A meter is only worth showing with its figures (the server sends none before AI settings are saved). */
+export const usableMeter = (m: Partial<Meter> | null | undefined): m is Meter =>
+  !!m && (m.kind === 'project' || m.kind === 'personal') && typeof m.remainingMyr === 'string' && typeof m.usedMyr === 'string' && (m.limitMyr === null || typeof m.limitMyr === 'string');
 
 export function meterText(m: Meter): string {
   if (m.kind === 'project') {

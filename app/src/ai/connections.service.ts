@@ -139,6 +139,8 @@ export class ConnectionsService {
     return {
       connections: rows.map((r) => this.view(r)),
       editable: await this.canEdit(ctx),
+      // Disable is a protective action, open in every project state to whoever may manage connections.
+      mayDisable: await this.canDisable(ctx),
       models: approved.map((m) => ({ id: m.id, provider: m.provider, modelId: m.modelId, displayName: m.displayName, purposes: m.purposes, restrictedOk: m.restrictedOk })),
       protectedKeyLoaded: this.protectedKey !== null,
     };
@@ -294,6 +296,12 @@ export class ConnectionsService {
     if (ctx.isAdmin) return true;
     const settings = await readSettings(this.pool);
     return decide({ action: MANAGE, roles: ctx.roles, status: ctx.project.status }).allowed && (settings?.projectsMayManageConnections ?? false);
+  }
+
+  private async canDisable(ctx: ProjectContext): Promise<boolean> {
+    if (ctx.isAdmin) return true;
+    const settings = await readSettings(this.pool);
+    return decide({ action: MANAGE, roles: ctx.roles, status: 'active' }).allowed && (settings?.projectsMayManageConnections ?? false);
   }
 
   /**

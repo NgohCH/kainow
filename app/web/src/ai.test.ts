@@ -23,6 +23,7 @@ import {
   projectIdFromHash,
   replaceBody,
   sourceText,
+  usableMeter,
   type DisplayState,
 } from './ai.ts';
 import { runFailureText } from './quarantine.ts';
@@ -187,6 +188,12 @@ test('the header meter words the project figure and the personal figure', () => 
   assert.equal(meterText({ kind: 'project', ...base, limitMyr: '10.000000', remainingMyr: '9.000000' }), 'This project’s AI allowance left this month: MYR 9.00 of MYR 10.00');
   assert.equal(meterText({ kind: 'personal', ...base, limitMyr: '5.000000', remainingMyr: '4.500000' }), 'Your AI allowance left in this project this month: MYR 4.50 of MYR 5.00');
   assert.equal(meterText({ kind: 'project', ...base, limitMyr: null, remainingMyr: '0.000000' }), 'This project has no AI allowance this month');
+});
+
+test('a meter without figures is not shown', () => {
+  assert.equal(usableMeter({ kind: 'project' } as never), false);
+  assert.equal(usableMeter(null), false);
+  assert.equal(usableMeter({ kind: 'project', limitMyr: null, usedMyr: '0', remainingMyr: '0' }), true);
 });
 
 test('money is shown to two places, or more when the amount is smaller', () => {

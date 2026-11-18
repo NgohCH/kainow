@@ -8,6 +8,7 @@ import {
   type Grant,
   type ItemKind,
   type ProtectedKeyStatus,
+  protectedKeyLines,
   REVEAL_CONFIRMATION,
   type Revealed,
   type Reviewer,
@@ -430,11 +431,9 @@ export function ProtectedKeyWarning({ status }: { status: ProtectedKeyStatus | u
   return (
     <section className="panel" aria-labelledby="key-warning-heading">
       <h2 id="key-warning-heading">{status.warning}</h2>
-      <p className="warn" role="status">
-        {status.loaded
-          ? `${status.casesWaiting} ${status.casesWaiting === 1 ? 'case is' : 'cases are'} held and waiting to be cleaned.`
-          : `The protected key file is missing or unreadable.${status.casesWaiting > 0 ? ` ${status.casesWaiting} ${status.casesWaiting === 1 ? 'case is' : 'cases are'} held and waiting.` : ''} Reported items stay hidden, including authorised records, until it is back.`}
-      </p>
+      {protectedKeyLines(status).map((l) => (
+        <p key={l} className="warn" role="status">{l}</p>
+      ))}
       <p className="meta">Put the key file back at the configured path; waiting cases are cleaned in the order they were reported.</p>
     </section>
   );

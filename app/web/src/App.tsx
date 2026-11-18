@@ -27,7 +27,7 @@ import { AiAdmin } from './views/AiAdmin.tsx';
 import { MyAiUsage } from './views/AiUsage.tsx';
 import { SummaryPage } from './views/SummaryView.tsx';
 import { Thread } from './views/Thread.tsx';
-import { type Meter, formatMyr, meterText, projectIdFromHash } from './ai.ts';
+import { type Meter, formatMyr, meterText, projectIdFromHash, usableMeter } from './ai.ts';
 import { answerIdFromHash } from './assist.ts';
 import { parseThreadHash } from './discussion.ts';
 
@@ -71,7 +71,7 @@ function SpendMeter({ hash, isAdmin }: { hash: string; isAdmin: boolean }) {
     };
   }, [projectId, isAdmin]);
   if (!spend) return null;
-  if (projectId && spend.meter) {
+  if (projectId && usableMeter(spend.meter)) {
     return <a className="meter" href="#/my-ai-usage" title="Counted from the start of the calendar month, UTC+8">{meterText(spend.meter)}</a>;
   }
   if (!isAdmin) return null;

@@ -310,3 +310,14 @@ export const revealOriginal = (caseId: string, kind: ItemKind, itemId: string) =
   api.post<Revealed>(`/security/cases/${caseId}/items/${kind}/${itemId}/reveal`, { confirm: true });
 export const releaseUnchanged = (caseId: string, reason: string) =>
   api.post<{ caseId: string; state: 'released_unchanged'; restored: number; changed: Array<{ table: string }> }>(`/security/cases/${caseId}/release-unchanged`, { reason });
+
+/** The lines under the persistent protected-key warning. The key also seals AI keys, so the warning names them (spec 5.2). */
+export function protectedKeyLines(status: { loaded: boolean; casesWaiting: number }): string[] {
+  const cases = `${status.casesWaiting} ${status.casesWaiting === 1 ? 'case is' : 'cases are'} held and waiting`;
+  const ai = 'AI keys cannot be saved, checked or used until it is installed, so every AI request ends blocked.';
+  if (status.loaded) return [`${cases} to be cleaned.`];
+  return [
+    `The protected key file is missing or unreadable.${status.casesWaiting > 0 ? ` ${cases}.` : ''} Reported items stay hidden, including authorised records, until it is back.`,
+    ai,
+  ];
+}

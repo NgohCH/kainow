@@ -211,11 +211,24 @@ describe('project AI connections over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual((await rows(`SELECT position FROM ai_connections ORDER BY position`)).map((r) => r.position), [1, 2, 3]);
   });
 
+  test('the header meter is null, not a meter without figures, while no AI settings are saved', async () => {
+    const withSettings = (await pm.request('GET', `/ai/spend?projectId=${projectId}`)).body.meter;
+    assert.equal(withSettings.kind, 'project');
+    assert.equal(withSettings.limitMyr, null, 'no project limits: no allowance, but with figures');
+    assert.equal(typeof withSettings.remainingMyr, 'string');
+    await t.pool.query(`DELETE FROM ai_spend_settings`);
+    const r = await pm.request('GET', `/ai/spend?projectId=${projectId}`);
+    assert.equal(r.status, 200);
+    assert.equal(r.body.meter, null);
+    assert.equal((await ann.request('GET', `/ai/spend?projectId=${projectId}`)).body.meter, null);
+  });
+
   test('a Deputy can see connections and the approved models but not change them; a delegate with the switch off cannot; the Administrator always can', async () => {
     const id = (await add(pm)).body.connection.id;
     const seen = await deputy.request('GET', url());
     assert.equal(seen.status, 200);
     assert.equal(seen.body.editable, false);
+    assert.equal(seen.body.mayDisable, false, 'a Deputy may not disable');
     assert.equal(seen.body.connections.length, 1);
     assert.deepEqual(Object.keys(seen.body.models[0]).sort(), ['displayName', 'id', 'modelId', 'provider', 'purposes', 'restrictedOk']);
     assert.equal(seen.body.models.length, 2);
@@ -232,6 +245,7 @@ describe('project AI connections over HTTP', { skip: SKIP_NO_DB }, () => {
 
     await putOrg({ projectsMayManageConnections: false });
     assert.equal((await pm.request('GET', url())).body.editable, false);
+    assert.equal((await pm.request('GET', url())).body.mayDisable, false, 'delegation off');
     const off = await add(pm, { label: 'Second' });
     assert.equal(off.status, 403);
     assert.equal(off.body.message, 'The Administrator has not allowed projects to manage their own AI connections.');
@@ -253,6 +267,7 @@ describe('project AI connections over HTTP', { skip: SKIP_NO_DB }, () => {
       assert.equal((await pm.request('PUT', url('/order'), { ids: [id], reason: 'x' })).status, 403);
       assert.equal((await pm.request('GET', url())).status, 200);
       assert.equal((await pm.request('GET', url())).body.editable, false);
+      assert.equal((await pm.request('GET', url())).body.mayDisable, true, `${status}: disable stays open`);
       const off = await pm.request('POST', url(`/${id}/disable`), { reason: `Protective stop while ${status}` });
       assert.equal(off.status, 200, status);
       assert.equal(off.body.connection.state, 'disabled');
