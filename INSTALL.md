@@ -37,7 +37,7 @@ The PowerShell lines in this guide were run in Windows PowerShell 5.1 on 8 Novem
      $b = New-Object byte[] 48; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [Convert]::ToBase64String($b)
      ```
    - Email (sign-in codes and reminders): either the four Microsoft 365 variables (see "Microsoft 365 email" below), or `SMTP_URL` and `SMTP_FROM`, or leave `LOG_SIGN_IN_CODES=true` to read codes from the log (own computer only).
-   - `OPENAI_API_KEY`: your key. It stays in `.env`, which is never committed, and only the worker receives it.
+   - No AI key goes in `.env`. The worker does not read `OPENAI_API_KEY` or any provider key from its environment. AI keys are entered later, per project, in Kainow itself (see "Set up AI" below), and are stored encrypted with the protected key.
 
 2. **Build and start.**
 
@@ -86,13 +86,13 @@ The PowerShell lines in this guide were run in Windows PowerShell 5.1 on 8 Novem
 
 ## Check that it works
 
-1. Sign in as the administrator. The top bar should show "AI spend this month MYR 0.00 of MYR 20.00".
+1. Sign in as the administrator. Until AI is set up (see "Set up AI" below) the top bar says that AI spending is not set up; after the organisation limits are saved it shows your remaining allowance.
 2. Add a department and your domain, create a project, and invite a Project Manager, an Owner and a Member (three addresses at your domain). Open each link from the log, sign in with the code for that address, and accept.
 3. As the Project Manager: **Move to Planned**, then **Make Active**. Until everyone has accepted, Kainow says which role is still needed.
 4. As the Project Manager, on the **Notes** tab, add notes: paste any meeting notes, or upload one of `tests/extraction/inputs/synthetic/*.md`.
 5. Choose "Find decisions and actions". The run should go from waiting to ready in under a minute.
 6. Sign in as the Owner, choose Review, **Authorise** one proposal (for an action: pick the accountable person and the due date) and reject another. The highlighted passage should change colour, and the authorised item appears on the project's **Work** tab. The spend figure should rise by a few sen. (The Project Manager and Members can read the proposals but cannot authorise them.)
-7. If extraction says "No AI key is configured", the worker did not receive `OPENAI_API_KEY`: check `.env` and run `docker compose up -d` again.
+7. If a request ends "AI is not set up for this project" or says there is no eligible connection, finish "Set up AI" below: an approved model, the organisation limits, and in the project a connection with its key and limits. If a connection says "Waiting for the protected key", create and mount the protected key (see "Protected key") and restart `api` and `worker`.
 
 8. Optional, as the Administrator: under **People**, disable the Member's account. The project now says "A member is On Hold — investigation needed" and the Project Manager gets an email (or a line in `docker compose logs api`). Enable the account again, then as the Project Manager or Owner record a finding on the People tab and choose **Restore**.
 
@@ -130,6 +130,25 @@ docker compose exec -T db rm /tmp/kainow.dump
 ```
 
 This holds everything: notes, original files, proposals, decisions, the audit trail and AI spend records. Keep it somewhere other than this computer. **Restoring from a backup has not been rehearsed** (the full restore drill is deferred to January), so treat the backup as unproven until you have restored one into a spare copy.
+
+## Set up AI
+
+AI runs only through a model the Administrator has approved and a connection that belongs to one project. Nothing is sent until all of this is done. Each step is a screen in Kainow; every change asks for a short reason and is kept in the history.
+
+**The protected key is required before any AI key can be saved.** An AI key is stored encrypted with the protected key (see "Protected key" below). Without the key file the form refuses to save a key and the connection shows "Waiting for the protected key".
+
+First setup, in this order:
+
+1. **Approve a model** (as the Administrator: **AI** in the top bar, **Approved models**). Give the model identifier exactly as the provider names it, its prices in USD per million tokens, the provider's data terms, the kinds of AI work it may do, and whether it may receive restricted sources. OpenAI and Anthropic models are supported. Kainow has no built-in model.
+2. **Set the organisation limits and rate** (the same screen): the exchange rate, the monthly limit, and optionally a daily limit and a per-person monthly limit. A blank limit means no allowance, so nothing runs until a limit is set. Also here: attempts per request (1 to 5, default 3), timeout per attempt (30 to 300 seconds, default 120), AI requests at once (1 to 10, default 2), and whether projects may manage their own connections or set their own limits (both off by default).
+3. **In each project, add a connection** (the project's **AI** tab, as the Administrator, or as the Project Manager, Owner or Sponsor when you allowed it): choose an approved model, name the connection, and paste that project's own API key into the form. The key is never shown again; to change it, enter a new one. Add a second connection to give the project a fallback. Connections are tried in order, and a refused key takes its connection out of use until you replace the key.
+4. **In each project, set its limits** (same tab): a monthly limit, and optionally a daily and a per-person limit. A project with no limits set has no allowance. A project's limits cannot be above the ceiling the Administrator sets.
+
+A request must fit every limit that applies (organisation and project, monthly, daily and per person), and the tightest one wins.
+
+### Trying the AI from your own shell
+
+`npm run probe-ai`, `probe-minutes` and `probe-assist` (in `app/`) send a few real requests to check a model. They read `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` from **your own shell's environment only**, never from the database or `.env`, and never print it. Choose the provider with `--provider openai|anthropic` (OpenAI by default); for Anthropic, name the model id. For example, in a Mac or Linux shell: `ANTHROPIC_API_KEY=... npm run probe-ai -- --provider anthropic <model id>`. A missing key stops the command with "<VARIABLE> is not set". Use a test project's key.
 
 ## Protected key
 

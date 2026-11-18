@@ -1,7 +1,9 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DISCUSSION_PREAMBLE, EXTRACTION_SYSTEM_PROMPT, MAX_OUTPUT_TOKENS, REQUEST_TIMEOUT_MS } from '../extraction/prompt';
-import { ModelBadResponse, ModelCallError, OpenAiModelClient } from '../extraction/model';
+import type { ProviderClient } from '../ai/client-factory';
+import { ProbeUsageError, exitWith, modelFor, probeClient, resolveProbe } from '../ai/probe-args';
+import { ModelBadResponse, ModelCallError } from '../extraction/model';
 import type { Usage } from '../spend/cost';
 import { MAX_MINUTES_INPUT_CHARS, MINUTES_SYSTEM_PROMPT } from './minutes';
 import { type TranscriptMessage, buildTranscript, headerOf, placeItem } from './transcript';
@@ -9,14 +11,15 @@ import { type TranscriptMessage, buildTranscript, headerOf, placeItem } from './
 /**
  * Real-model check of minutes drafting and discussion analysis (spec 12). Needs no database.
  *
- *   OPENAI_API_KEY=... npm run probe-minutes -- <folder of .txt files> [model id]   (default model gpt-6.1-sol)
+ *   OPENAI_API_KEY=... npm run probe-minutes -- [--provider openai] <folder of .txt files> [model id]   (default model gpt-6.1-sol)
+ *   ANTHROPIC_API_KEY=... npm run probe-minutes -- --provider anthropic <folder of .txt files> <model id>
  *
  * Each .txt file is one typed meeting or thread. Blocks separated by a blank line are messages; a block that starts with
  * "Name: " is by that person, otherwise by "Participant". The first 40 percent of the messages are earlier context for the
- * analysis and the rest are new (so repeated items can show up). Prints counts and token usage; it never prints the key.
+ * analysis and the rest are new (so repeated items can show up). Prints the provider, model, counts and token usage. The key is read
+ * from your shell's environment only and is never printed.
  */
 
-const DEFAULT_MODEL = 'gpt-6.1-sol';
 const START = Date.UTC(2026, 10, 11, 2, 0, 0);
 
 export function parseMessages(text: string): TranscriptMessage[] {
@@ -53,7 +56,7 @@ export interface FileReport {
   usage: Usage;
 }
 
-export async function probeFile(client: OpenAiModelClient, modelId: string, file: string, text: string): Promise<FileReport> {
+export async function probeFile(client: ProviderClient, modelId: string, file: string, text: string): Promise<FileReport> {
   const messages = parseMessages(text);
   const lines: string[] = [];
   let usage: Usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
@@ -129,14 +132,14 @@ function failure(err: unknown): string {
 }
 
 async function main(): Promise<void> {
-  const key = process.env.OPENAI_API_KEY?.trim();
-  if (!key) throw new Error('Set OPENAI_API_KEY first.');
-  const folder = process.argv[2];
-  if (!folder) throw new Error('Usage: npm run probe-minutes -- <folder of .txt files> [model id]');
-  const modelId = process.argv[3] ?? DEFAULT_MODEL;
+  const { provider, apiKey, args } = resolveProbe(process.argv.slice(2), process.env);
+  const folder = args[0];
+  if (!folder) throw new ProbeUsageError('Usage: npm run probe-minutes -- [--provider openai|anthropic] <folder of .txt files> [model id]');
+  const modelId = modelFor(provider, args[1]);
   const files = readdirSync(folder).filter((f) => f.toLowerCase().endsWith('.txt')).sort();
   if (files.length === 0) throw new Error('The folder holds no .txt files.');
-  const client = new OpenAiModelClient(key);
+  const client = probeClient(provider, apiKey, REQUEST_TIMEOUT_MS);
+  console.log(`provider ${provider}, model ${modelId}`);
   let total: Usage = { inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 };
   for (const f of files) {
     const report = await probeFile(client, modelId, f, readFileSync(join(folder, f), 'utf8'));
@@ -148,8 +151,5 @@ async function main(): Promise<void> {
 }
 
 if (require.main === module) {
-  main().catch((err: unknown) => {
-    console.error(err instanceof Error ? err.message : err);
-    process.exit(1);
-  });
+  main().catch(exitWith);
 }

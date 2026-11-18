@@ -1,7 +1,8 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { findCredentials } from '../extraction/credentials';
-import { type JsonSchemaModel, ModelBadResponse, ModelCallError, OpenAiModelClient } from '../extraction/model';
+import { ProbeUsageError, exitWith, modelFor, probeClient, resolveProbe } from '../ai/probe-args';
+import { type JsonSchemaModel, ModelBadResponse, ModelCallError } from '../extraction/model';
 import { REQUEST_TIMEOUT_MS } from '../extraction/prompt';
 import type { Usage } from '../spend/cost';
 import { markersIn, normalizeMarker, validateCitations } from './citations';
@@ -30,7 +31,8 @@ import { buildTerms } from './terms';
 /**
  * Real-model check of questions, draft reports and shareable summaries (spec 11). Needs no database.
  *
- *   OPENAI_API_KEY=... npm run probe-assist -- <folder> [model id] [--show]   (default model gpt-6.1-sol)
+ *   OPENAI_API_KEY=... npm run probe-assist -- [--provider openai] <folder> [model id] [--show]   (default model gpt-6.1-sol)
+ *   ANTHROPIC_API_KEY=... npm run probe-assist -- --provider anthropic <folder> <model id> [--show]
  *
  * Every .txt file in the folder is one notes or minutes document, except two optional files:
  *   questions.txt   one question per line (default: ten general questions in English and Malay);
@@ -38,11 +40,10 @@ import { buildTerms } from './terms';
  * It asks every question, drafts two of each report kind (from the first document, then from all), and summarises
  * the first three documents. Material is chosen in memory the way the passage search does (split into passages,
  * terms from the question, best matches first, 40 passages or 30,000 characters); it approximates the database
- * ranking and is meant to test the model, not the search. Prints counts and token usage only (with --show, also the
- * AI text, so the Product Owner can judge usefulness). It never prints the key.
+ * ranking and is meant to test the model, not the search. Prints the provider, model, counts and token usage only (with --show,
+ * also the AI text, so the Product Owner can judge usefulness). The key is read from your shell's environment only and is never printed.
  */
 
-const DEFAULT_MODEL = 'gpt-6.1-sol';
 const SPECIAL = new Set(['questions.txt', 'leave-out.txt']);
 const DEFAULT_QUESTIONS = [
   'What was decided in these meetings?',
@@ -265,12 +266,11 @@ export async function probeFolder(model: JsonSchemaModel, modelId: string, docs:
 }
 
 async function main(): Promise<void> {
-  const key = process.env.OPENAI_API_KEY?.trim();
-  if (!key) throw new Error('Set OPENAI_API_KEY first.');
-  const args = process.argv.slice(2).filter((a) => a !== '--show');
+  const { provider, apiKey, args: rest } = resolveProbe(process.argv.slice(2), process.env);
+  const args = rest.filter((a) => a !== '--show');
   const folder = args[0];
-  if (!folder) throw new Error('Usage: npm run probe-assist -- <folder of .txt files> [model id] [--show]');
-  const modelId = args[1] ?? DEFAULT_MODEL;
+  if (!folder) throw new ProbeUsageError('Usage: npm run probe-assist -- [--provider openai|anthropic] <folder of .txt files> [model id] [--show]');
+  const modelId = modelFor(provider, args[1]);
   const names = readdirSync(folder).filter((f) => f.toLowerCase().endsWith('.txt'));
   const docs = names
     .filter((f) => !SPECIAL.has(f.toLowerCase()))
@@ -282,13 +282,10 @@ async function main(): Promise<void> {
     return f ? readFileSync(join(folder, f), 'utf8') : undefined;
   };
   const questions = special('questions.txt')?.split(/\r?\n/).map((q) => q.trim()).filter((q) => q !== '');
-  console.log(`${docs.length} document(s), model ${modelId}`);
-  await probeFolder(new OpenAiModelClient(key), modelId, docs, { questions, leaveOut: special('leave-out.txt'), show: process.argv.includes('--show') });
+  console.log(`${docs.length} document(s), provider ${provider}, model ${modelId}`);
+  await probeFolder(probeClient(provider, apiKey, REQUEST_TIMEOUT_MS), modelId, docs, { questions, leaveOut: special('leave-out.txt'), show: process.argv.includes('--show') });
 }
 
 if (require.main === module) {
-  main().catch((err: unknown) => {
-    console.error(err instanceof Error ? err.message : err);
-    process.exit(1);
-  });
+  main().catch(exitWith);
 }

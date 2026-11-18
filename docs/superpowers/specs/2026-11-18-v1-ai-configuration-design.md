@@ -473,6 +473,18 @@ The existing `ai.settings.manage` action covers the Administrator rows. New proj
 
 **Measured aim:** a reservation with all six scopes applying, on the sub-project 5 bench data plus 200,000 seeded spend entries over 50 projects and 400 people, takes under 25 ms at p95 over 500 reservations, measured as sub-project 5 measured its aims. Without the new indexes the six sums would scan the month's entries.
 
+### Measured aims as found
+
+**18 November 2026 — reservation with all six scopes applying: aim missed.**
+
+- **Command:** `npm run bench-ai` (`app/src/ai/bench-cli.ts`) on a freshly created and migrated `kainow_bench` database (PostgreSQL 16.15 in a Docker container, reached over 127.0.0.1).
+- **Data:** 200,000 spend entries (spread over the last 45 days; mostly confirmed, with released and uncertain ones) over 50 projects and 400 people, one connection per project. The organisation has its monthly, daily and per-person limits and every project has its monthly, daily and per-person limits, so all six scopes are checked on every call. Limits are set high enough that nothing is refused during the run. The bench seeds its own 400 people and 50 projects (the same shapes as the sub-project 5 bench) and not that bench's discussion data, which the six sums never read.
+- **Method:** 20 warm-up reservations, then 500 timed calls of `SpendService.reserve`, each by a different person in a different project in turn, percentiles by nearest rank, as the analysis bench computes them.
+- **Result:** p50 29.12 ms, p95 **36.45 ms**, max 65.36 ms. The aim was p95 under 25 ms, so **the aim is missed** by about 11 ms. It has not been tuned.
+- **Machine:** 11th Gen Intel Core i7-1185G7 at 3.00 GHz, 8 logical processors, 32 GiB memory, Windows 11, Node 24.22.1, one run, the database in a Docker Desktop container on the same computer. A plain `SELECT 1` over the same connection takes about 0.45 ms at the median, so the time is not the network.
+- **Where the time goes (one extra measurement, nothing changed):** a bare monthly sum over the current month's entries on this data takes about 22 ms at the median. A reservation runs that kind of sum at organisation level (monthly) and the project, daily and per-person sums over smaller sets, so the organisation monthly sum is most of the time. Whether the new indexes help enough is for the Product Owner and the builder to decide; this record does not choose a remedy.
+- **For the Product Owner:** decide whether to accept the measured p95 as the aim for V1.0 (a reservation holds the global lock for its whole run, so at 36 ms the installation reserves at most about 25 to 30 requests a second, far above the two requests at once Kainow allows by default), or to ask for the organisation sums to be made cheaper.
+
 ## 12. Left to the builder, and open items
 
 - **Builder's choices:**

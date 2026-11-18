@@ -148,7 +148,7 @@ Self-approval is allowed by default for an eligible O/S, including a valid combi
 | --- | --- | --- |
 | System-wide policy, role-permission definitions, approval/security rules, organisation limits and delegation | EA | Q01: project delegates cannot edit role-policy definitions or expand delegation; mandatory safeguards fixed. |
 | Delegated project settings, AI enablement/limits/connections/formats | PM or O/S explicitly delegated | Within EA bounds; project credential control does not reveal saved values. |
-| Configure stored API credentials | EA; explicitly delegated project connection manager | Protected write/replace/revoke path; no ordinary secret read/export. |
+| Configure stored API credentials | EA; explicitly delegated project connection manager | Protected write/replace/revoke path; no ordinary secret read/export. AI connection rows: section 10. |
 | Change export/channel/source policy | EA; delegated PM or O/S within bounds | Change is not retroactive approval, access grant or commitment amendment. |
 
 Configuration must not make unsupported actions available by silently interpreting a label. See the [Configuration Catalogue](Kainow-V1.0-Configuration-Catalogue.md) for defaults and [Design Register](Kainow-V1.0-Remaining-Design-and-Verification-Register.md) for contracts still required.
@@ -195,3 +195,16 @@ For work actually completed during the pause, use the accepted reconciliation ex
 Ordinary users access managed source files only through Kainow. Direct SharePoint/OneDrive source-area access is reserved to explicitly designated storage Administrators and the authorised integration identity; EA status alone grants no direct access. Designation authority and provider ACL mechanics require a concrete security contract. Direct storage access does not itself authorise quarantine decryption or project approvals.
 
 Administrator confirmation restores normal writable operation from protective read-only mode only after capacity restoration and successful health checks. Recovery must preserve current access/revocation boundaries; credentials remain protected. [Managed-Sources-Credentials-Storage-and-Recovery-Rules](Kainow-V1.0-Managed-Sources-Credentials-Storage-and-Recovery-Rules.md)
+
+## 10. Accepted AI configuration (V1.0 sub-project 6, D84–D87)
+
+| Action | Authority | Boundary |
+| --- | --- | --- |
+| Approve, change or withdraw an AI model | Enterprise Administrator | Reason; provider terms recorded; never deletes. |
+| Set organisation AI limits, policy numbers and delegation switches | Enterprise Administrator | Reason; bounds of D87 (attempts 1–5, timeout 30–300 seconds, requests at once 1–10). |
+| Add, replace the key of, reorder, disable or enable, or check a project AI connection | Enterprise Administrator; PM, Owner or Sponsor while "projects may manage AI connections" is on | Reason; Draft, Planned or Active projects only (disable also when Deferred or Closed); the key is never shown. |
+| Set project AI limits | Enterprise Administrator; PM, Owner or Sponsor while "projects may set AI limits" is on | Reason; never above the Administrator's ceiling; Draft, Planned or Active projects only. |
+| See a project's AI connections (labels, models, states, last used; never keys) | PM, Deputy PM, Owner, Sponsor; Enterprise Administrator | Deputies see but cannot change. |
+| View own, project or organisation AI usage | As the usage rows of section 5 | Unchanged. |
+
+The Administrator rows are the action `ai.settings.manage`; the project rows are `ai.connections.manage`, `ai.limits.manage` and `ai.connections.view`, decided with the delegation switch passed in. Turning delegation off or lowering the ceiling leaves an existing project value in force; the delegate can no longer change it.

@@ -28,7 +28,7 @@ The API refuses to start unless these are set:
 | `APP_URL` | Optional. The address people open Kainow at, used for links in emails (default `http://localhost:3000`). The API and the worker both read it. |
 | `COOKIE_SECURE=false` | Optional. The session cookie is Secure by default; turn it off only if a browser refuses it on plain `http://localhost`. |
 
-The worker needs `DATABASE_URL` and a way to deliver email: `EMAIL_PROVIDER` (`smtp`, `m365` or `log`) with `EMAIL_FROM`, plus `SMTP_URL` for `smtp`, or `M365_TENANT_ID`, `M365_CLIENT_ID` and `M365_CLIENT_SECRET` for `m365`. For development only, `LOG_SIGN_IN_CODES=true` prints emails in the log instead. Set `APP_URL` for the worker as well, so the links in notification emails are right. It also reads `OPENAI_API_KEY` for extraction. It runs the notification sweep and the email dispatch once a minute.
+The worker needs `DATABASE_URL` and a way to deliver email: `EMAIL_PROVIDER` (`smtp`, `m365` or `log`) with `EMAIL_FROM`, plus `SMTP_URL` for `smtp`, or `M365_TENANT_ID`, `M365_CLIENT_ID` and `M365_CLIENT_SECRET` for `m365`. For development only, `LOG_SIGN_IN_CODES=true` prints emails in the log instead. Set `APP_URL` for the worker as well, so the links in notification emails are right. It reads no AI key: AI keys are per project, stored encrypted with the protected key, and opened only for one attempt. It runs the notification sweep and the email dispatch once a minute.
 
 ## Tests
 
@@ -62,7 +62,7 @@ None at the moment.
 
 ## AI spend cap
 
-Run `npm run apply-mvp-spend-settings` once after `npm run migrate` to save the values approved in [`docs/MVP-DECISIONS.md`](../docs/MVP-DECISIONS.md): `gpt-6.1-sol`, USD 2.00 / 0.10 / 10.00 per million tokens (input / cached input / output), 1 USD = 4.1 MYR, MYR 20 a month, no daily cap. Until settings are saved, every AI request is blocked. An administrator can view and change them with `GET /ai/spend` and `PUT /ai/spend-settings`; each change is written to the audit trail with the new values.
+Run `npm run apply-mvp-spend-settings` once after `npm run migrate` to save the organisation values approved in [`docs/MVP-DECISIONS.md`](../docs/MVP-DECISIONS.md): 1 USD = 4.1 MYR, MYR 20 a month, no daily cap. Models and their prices are no longer in these settings: the Administrator approves each model (identifier, USD prices per million tokens, such as 2.00 / 0.10 / 10.00 for `gpt-6.1-sol`, and data terms) on the AI screen, and each project then adds a connection with its own key and sets its limits (V1.0 sub-project 6; see INSTALL.md, "Set up AI"). Until settings are saved, every AI request is blocked. An administrator can view and change them with `GET /ai/spend` and `PUT /ai/spend-settings`; each change is written to the audit trail with the new values.
 
 How a request is paid for (code in `src/spend/`, to be called by the extraction job in M4b):
 
@@ -120,7 +120,7 @@ Code in `src/extraction/` and `src/worker/`. `POST /notes/:id/versions/:n/extrac
 
 **An unusable answer is still paid for.** If the model answers with broken JSON, a malformed item, a refusal, or is cut off at the 8,000-token limit, the usage it reported is charged and the attempt counts as failed.
 
-**The adapter is not yet verified against the real API.** The standalone check `tests/extraction/run.mjs` has run against `gpt-6.1-sol` on the Product Owner's computer (7 November 2026): the model answered, and all quotes were verbatim. The adapter makes the same call but adds `max_completion_tokens` so cost can be bounded, and it has not run against `gpt-6.1-sol`. Run `tests/extraction` on your computer with `OPENAI_API_KEY` set, then start the worker with the same key, before relying on it. The worker needs `OPENAI_API_KEY`; without it runs fail with `model_not_configured` and nothing is sent or charged.
+**The adapter is not yet verified against the real API.** The standalone check `tests/extraction/run.mjs` has run against `gpt-6.1-sol` on the Product Owner's computer (7 November 2026): the model answered, and all quotes were verbatim. The adapter makes the same call but adds `max_completion_tokens` so cost can be bounded, and it has not run against `gpt-6.1-sol`. Run `tests/extraction` on your computer with `OPENAI_API_KEY` set, and `npm run probe-ai` with `OPENAI_API_KEY` (or `ANTHROPIC_API_KEY` with `--provider anthropic`) set in your own shell, before relying on it. The worker reads no key from its environment: without an approved model and a ready project connection, a run ends `ai_not_set_up` or `no_eligible_connection` and nothing is sent or charged.
 
 ## Review screen
 
