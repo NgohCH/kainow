@@ -89,12 +89,13 @@ const blocked = (code: string, detail: string) => ({ kind: 'blocked' as const, c
 
 /** The sealed current key of a connection, or null when it has none (replaced or removed since the candidates were read). */
 async function sealedKeyOf(pool: Pool, connectionId: string) {
-  const { rows } = await pool.query<{ ciphertext: Buffer; nonce: Buffer; tag: Buffer; key_id: string }>(
-    `SELECT ciphertext, nonce, tag, key_id FROM ai_connection_keys WHERE connection_id = $1 AND superseded_at IS NULL`,
+  const { rows } = await pool.query<{ id: string; ciphertext: Buffer; nonce: Buffer; tag: Buffer; key_id: string }>(
+    `SELECT id, ciphertext, nonce, tag, key_id FROM ai_connection_keys WHERE connection_id = $1 AND superseded_at IS NULL`,
     [connectionId],
   );
   const r = rows[0];
-  return r ? { ciphertext: r.ciphertext, nonce: r.nonce, tag: r.tag, keyId: r.key_id } : null;
+  // rowId names the key row this attempt uses: a result is applied to that key only (final review I4).
+  return r ? { rowId: r.id, sealed: { ciphertext: r.ciphertext, nonce: r.nonce, tag: r.tag, keyId: r.key_id } } : null;
 }
 
 /**
@@ -147,11 +148,13 @@ export async function guardedAiCall<T>(deps: GuardedDeps, input: GuardedCallInpu
   try {
     // The decrypted key lives only inside the client built for this attempt.
     let client: ProviderClient | null = null;
+    let keyRowId: string | undefined;
     while (chosen && !client) {
-      const sealed = await sealedKeyOf(pool, chosen.id);
+      const stored = await sealedKeyOf(pool, chosen.id);
       try {
-        if (!sealed) throw new KeyUnreadableError();
-        client = clientForAttempt(deps.key, sealed, { connectionId: chosen.id, projectId: input.projectId, provider: chosen.provider }, deps.factory, policy.timeoutMs);
+        if (!stored) throw new KeyUnreadableError();
+        keyRowId = stored.rowId;
+        client = clientForAttempt(deps.key, stored.sealed, { connectionId: chosen.id, projectId: input.projectId, provider: chosen.provider }, deps.factory, policy.timeoutMs);
       } catch (err) {
         if (!(err instanceof KeyUnreadableError)) throw err;
         deps.log?.(`${input.purpose} ${input.requestId}: the key of AI connection ${chosen.id} cannot be read; skipping it for this attempt`);
@@ -160,8 +163,9 @@ export async function guardedAiCall<T>(deps: GuardedDeps, input: GuardedCallInpu
         chosen = chooseConnection(candidates.list, previous);
       }
     }
-    if (!chosen || !client) return noneEligible;
+    if (!chosen || !client || !keyRowId) return noneEligible;
     const connection = chosen;
+    const usedKey = keyRowId;
 
     const settings = await readSettings(pool);
     if (!settings) return blocked(spendFailureCode('not_configured'), spendFailureDetail('not_configured'));
@@ -188,13 +192,18 @@ export async function guardedAiCall<T>(deps: GuardedDeps, input: GuardedCallInpu
       // From here on the provider may have done the work and charged for it.
       result = await input.call(client, connection.modelId, policy.timeoutMs);
     } catch (err) {
-      return await failed(deps, input, policy.maxAttempts, connection, entryId, err);
+      return await failed(deps, input, policy.maxAttempts, connection, usedKey, entryId, err);
     }
     // The cost is recorded first, so it is counted even if the caller's saving of the answer fails.
     await spend.settle(entryId, result.usage);
+    // An answer proves the key it was sent with: unchecked becomes ready only while that key is still the current one.
     await pool.query(
-      `UPDATE ai_connections SET last_used_at = $2, state = CASE WHEN state = 'unchecked' THEN 'ready' ELSE state END WHERE id = $1`,
-      [connection.id, deps.clock()],
+      `UPDATE ai_connections SET last_used_at = $2,
+              state = CASE WHEN state = 'unchecked'
+                            AND EXISTS (SELECT 1 FROM ai_connection_keys k WHERE k.id = $3 AND k.connection_id = $1 AND k.superseded_at IS NULL)
+                           THEN 'ready' ELSE state END
+        WHERE id = $1`,
+      [connection.id, deps.clock(), usedKey],
     );
     return { kind: 'ok', value: result, modelId: connection.modelId, connectionId: connection.id, provider: connection.provider };
   } finally {
@@ -207,6 +216,7 @@ async function failed<T>(
   input: GuardedCallInput<T>,
   maxAttempts: number,
   connection: CandidateConnection,
+  keyRowId: string,
   entryId: string,
   err: unknown,
 ): Promise<GuardedOutcome<T>> {
@@ -233,7 +243,7 @@ async function failed<T>(
       retryable = err.retryable;
       if (err.keyRejected) {
         retryable = false;
-        const notice = await markKeyRejectedNow(deps.pool, { connectionId: connection.id, status: err.status as number, at: deps.clock() });
+        const notice = await markKeyRejectedNow(deps.pool, { connectionId: connection.id, keyRowId, status: err.status as number, at: deps.clock() });
         if (notice) await deps.notify?.(notice);
       }
     } else {

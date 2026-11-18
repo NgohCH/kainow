@@ -195,6 +195,76 @@ describe('project AI connections over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.ok(!JSON.stringify(events).includes(KEY_A));
   });
 
+  test('Check key on a key replaced during the check changes nothing and tells nobody (final review I4)', async () => {
+    const id = (await add(pm)).body.connection.id;
+    const keyEvents = async () => (await rows(`SELECT action FROM ai_connection_events WHERE connection_id = $1 AND action IN ('checked', 'key_rejected')`, [id])).length;
+    // The old key is refused while, during the provider round trip, the key is replaced with one that cannot be checked yet.
+    svc.keyChecker = async (provider, apiKey, modelId) => {
+      calls.push([provider, apiKey, modelId]);
+      if (apiKey === KEY_B) return { outcome: 'unreachable' };
+      t.clock.advanceSeconds(1);
+      assert.equal((await pm.request('PUT', url(`/${id}/key`), { apiKey: KEY_B, reason: 'Rotated' })).status, 200);
+      return { outcome: 'refused', status: 401 };
+    };
+    const refused = await pm.request('POST', url(`/${id}/check`), { reason: 'Looking again' });
+    assert.equal(refused.status, 409);
+    assert.match(refused.body.message, /replaced while it was being checked/);
+    let conn = (await rows(`SELECT state, rejected_at FROM ai_connections WHERE id = $1`, [id]))[0];
+    assert.deepEqual([conn.state, conn.rejected_at], ['unchecked', null], 'the new key is not marked rejected');
+    assert.equal(await keyEvents(), 0);
+    assert.deepEqual(await rows(`SELECT id FROM notifications WHERE kind = 'ai_key_rejected'`), [], 'nobody is told the new key was refused');
+
+    // The other way round: the old key passes while the new one is unverified; the new one is not made ready.
+    svc.keyChecker = async (provider, apiKey, modelId) => {
+      calls.push([provider, apiKey, modelId]);
+      if (apiKey === KEY_A) return { outcome: 'unreachable' };
+      t.clock.advanceSeconds(1);
+      assert.equal((await pm.request('PUT', url(`/${id}/key`), { apiKey: KEY_A, reason: 'Rotated back' })).status, 200);
+      return { outcome: 'ok' };
+    };
+    assert.equal((await pm.request('POST', url(`/${id}/check`), { reason: 'Looking again' })).status, 409);
+    conn = (await rows(`SELECT state FROM ai_connections WHERE id = $1`, [id]))[0];
+    assert.equal(conn.state, 'unchecked');
+    assert.equal(await keyEvents(), 0);
+  });
+
+  test('a refused Check key on a disabled connection is kept, so enabling it gives key_rejected (final review I4)', async () => {
+    const id = (await add(pm)).body.connection.id;
+    assert.equal((await pm.request('POST', url(`/${id}/disable`), { reason: 'Pause' })).body.connection.state, 'disabled');
+    answer = { outcome: 'refused', status: 401 };
+    const refused = await pm.request('POST', url(`/${id}/check`), { reason: 'Before enabling' });
+    assert.equal(refused.status, 200);
+    assert.equal(refused.body.connection.state, 'disabled', 'a disabled connection stays disabled');
+    assert.equal(refused.body.connection.rejectedStatus, 401);
+    assert.equal((await rows(`SELECT count(*)::int AS n FROM ai_connection_events WHERE connection_id = $1 AND action = 'key_rejected'`, [id]))[0].n, 1);
+    t.clock.advanceSeconds(1);
+    assert.equal((await pm.request('POST', url(`/${id}/enable`), { reason: 'Back on' })).body.connection.state, 'key_rejected');
+  });
+
+  test('enabling after a key replaced while disabled is ready only when the new key passed its check (final review I4)', async () => {
+    const id = (await add(pm)).body.connection.id;
+    assert.equal((await pm.request('POST', url(`/${id}/disable`), { reason: 'Rotating' })).status, 200);
+    t.clock.advanceSeconds(1);
+    answer = { outcome: 'unreachable' };
+    assert.equal((await pm.request('PUT', url(`/${id}/key`), { apiKey: KEY_B, reason: 'New key' })).body.connection.state, 'disabled');
+    t.clock.advanceSeconds(1);
+    assert.equal((await pm.request('POST', url(`/${id}/enable`), { reason: 'Back on' })).body.connection.state, 'unchecked', 'the new key is unverified');
+
+    t.clock.advanceSeconds(1);
+    assert.equal((await pm.request('POST', url(`/${id}/disable`), { reason: 'Rotating again' })).status, 200);
+    t.clock.advanceSeconds(1);
+    answer = { outcome: 'ok' };
+    assert.equal((await pm.request('PUT', url(`/${id}/key`), { apiKey: KEY_A, reason: 'Checked key' })).status, 200);
+    t.clock.advanceSeconds(1);
+    assert.equal((await pm.request('POST', url(`/${id}/enable`), { reason: 'Back on' })).body.connection.state, 'ready', 'the new key passed its check');
+
+    // A connection disabled while ready, with no key change, returns ready.
+    t.clock.advanceSeconds(1);
+    assert.equal((await pm.request('POST', url(`/${id}/disable`), { reason: 'Pause' })).status, 200);
+    t.clock.advanceSeconds(1);
+    assert.equal((await pm.request('POST', url(`/${id}/enable`), { reason: 'Back on' })).body.connection.state, 'ready');
+  });
+
   test('reordering swaps positions atomically; the list must name every connection once', async () => {
     const ids: string[] = [];
     for (const label of ['One', 'Two', 'Three']) ids.push((await add(pm, { label })).body.connection.id);

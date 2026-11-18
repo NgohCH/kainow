@@ -18,6 +18,7 @@ import { FakeClock } from '../testing/fakes';
 import { seedProject, seedUser } from '../testing/projects';
 import { type GuardedCallInput, type GuardedDeps, type GuardedOutcome, guardedAiCall } from './guarded-call';
 import { type KeyRejectedNotice, markKeyRejectedNow } from './key-rejected';
+import { sealApiKey } from './keys';
 
 const USAGE = { inputTokens: 10_000, cachedInputTokens: 0, outputTokens: 2_000 };
 type Answer = { answer: string };
@@ -262,10 +263,76 @@ describe('fallback and rejected keys', { skip: SKIP_NO_DB }, () => {
     assert.equal(notices.length, 1);
   });
 
+  /** As ConnectionsService.replaceKey does: the current key row is superseded by a new one, and the state set. Returns the new row id. */
+  async function replaceKeyNow(connectionId: string, state: 'ready' | 'unchecked'): Promise<string> {
+    const id = uuidv7();
+    const sealed = sealApiKey(protectedKey, KEY_B, { connectionId, projectId, provider: 'openai' });
+    await pool.query(`UPDATE ai_connection_keys SET superseded_at = now() WHERE connection_id = $1 AND superseded_at IS NULL`, [connectionId]);
+    await pool.query(`INSERT INTO ai_connection_keys (id, connection_id, ciphertext, nonce, tag, key_id, saved_at) VALUES ($1, $2, $3, $4, $5, $6, now())`, [
+      id,
+      connectionId,
+      sealed.ciphertext,
+      sealed.nonce,
+      sealed.tag,
+      sealed.keyId,
+    ]);
+    await pool.query(`UPDATE ai_connections SET state = $2, rejected_at = NULL, rejected_status = NULL, rejection_notified_at = NULL WHERE id = $1`, [connectionId, state]);
+    return id;
+  }
+  const currentKeyRow = async (connectionId: string): Promise<string> =>
+    (await pool.query(`SELECT id FROM ai_connection_keys WHERE connection_id = $1 AND superseded_at IS NULL`, [connectionId])).rows[0].id;
+
+  test('a 401 on a key replaced while the call was out marks nothing and tells nobody (final review I4)', async () => {
+    const [a] = await connections(1);
+    const r = await run({}, uuidv7(), {
+      call: async () => {
+        // Key rotation: replaced in Kainow, then revoked at the provider while this call with the old key is out.
+        await replaceKeyNow(a.id, 'ready');
+        return status(401)();
+      },
+    });
+    assert.equal(r.last.kind, 'failed');
+    const conn = (await pool.query(`SELECT state, rejected_at, rejection_notified_at FROM ai_connections WHERE id = $1`, [a.id])).rows[0];
+    assert.deepEqual([conn.state, conn.rejected_at, conn.rejection_notified_at], ['ready', null, null], 'the new key is not marked rejected');
+    assert.equal(Number((await pool.query(`SELECT count(*) FROM ai_connection_events WHERE action = 'key_rejected'`)).rows[0].count), 0);
+    assert.equal(Number((await pool.query(`SELECT count(*) FROM notifications`)).rows[0].count), 0);
+    assert.deepEqual(notices, []);
+  });
+
+  test('an answer on a key replaced while the call was out does not make the new unchecked key ready (final review I4)', async () => {
+    const [a] = await connections(1);
+    await pool.query(`UPDATE ai_connections SET state = 'unchecked' WHERE id = $1`, [a.id]);
+    const r = await run({}, uuidv7(), {
+      call: async () => {
+        await replaceKeyNow(a.id, 'unchecked');
+        return answer('from the old key')();
+      },
+    });
+    assert.equal(r.last.kind, 'ok');
+    const conn = (await pool.query(`SELECT state, last_used_at FROM ai_connections WHERE id = $1`, [a.id])).rows[0];
+    assert.equal(conn.state, 'unchecked', 'the new key is still unverified');
+    assert.ok(conn.last_used_at, 'the use is still recorded');
+
+    // An answer on the current unchecked key does make it ready.
+    await run({ [a.modelId]: [answer('from the new key')] });
+    assert.equal((await pool.query(`SELECT state FROM ai_connections WHERE id = $1`, [a.id])).rows[0].state, 'ready');
+  });
+
+  test('markKeyRejectedNow on a superseded key row changes nothing (final review I4)', async () => {
+    const [a] = await connections(1);
+    const old = await currentKeyRow(a.id);
+    await replaceKeyNow(a.id, 'ready');
+    assert.equal(await markKeyRejectedNow(pool, { connectionId: a.id, keyRowId: old, status: 401, at: clock.now() }), null);
+    assert.equal((await pool.query(`SELECT state FROM ai_connections WHERE id = $1`, [a.id])).rows[0].state, 'ready');
+    assert.notEqual(await markKeyRejectedNow(pool, { connectionId: a.id, keyRowId: await currentKeyRow(a.id), status: 401, at: clock.now() }), null);
+    assert.equal((await pool.query(`SELECT state FROM ai_connections WHERE id = $1`, [a.id])).rows[0].state, 'key_rejected');
+  });
+
   test('two markKeyRejectedNow at once write one event and one notice per recipient', async () => {
     const [a] = await connections(1);
     const at = clock.now();
-    const results = await Promise.all([markKeyRejectedNow(pool, { connectionId: a.id, status: 401, at }), markKeyRejectedNow(pool, { connectionId: a.id, status: 403, at })]);
+    const keyRowId = await currentKeyRow(a.id);
+    const results = await Promise.all([markKeyRejectedNow(pool, { connectionId: a.id, keyRowId, status: 401, at }), markKeyRejectedNow(pool, { connectionId: a.id, keyRowId, status: 403, at })]);
     assert.equal(results.filter((n) => n !== null).length, 1, 'exactly one of them marked it');
     assert.equal(Number((await pool.query(`SELECT count(*) FROM ai_connection_events WHERE action = 'key_rejected'`)).rows[0].count), 1);
     const perUser = (await pool.query(`SELECT user_id, count(*)::int AS n FROM notifications WHERE kind = 'ai_key_rejected' GROUP BY user_id`)).rows;

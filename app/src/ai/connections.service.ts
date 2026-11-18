@@ -32,6 +32,7 @@ export const STATE_LABELS: Readonly<Record<DisplayState, string>> = {
 export const NO_PROTECTED_KEY = 'AI keys cannot be saved until the protected key is installed. See INSTALL.md.';
 const NO_PROTECTED_KEY_CHECK = 'AI keys cannot be checked until the protected key is installed. See INSTALL.md.';
 const NOT_DELEGATED = 'The Administrator has not allowed projects to manage their own AI connections.';
+const REPLACED_DURING_CHECK = 'The key was replaced while it was being checked, so nothing changed. Check the new key.';
 const MANAGE = 'ai.connections.manage';
 const PROVIDER_NAME = PROVIDER_NAMES;
 
@@ -57,11 +58,13 @@ interface ConnectionRow {
   key_nonce: Buffer | null;
   key_tag: Buffer | null;
   key_id: string | null;
+  /** The current ai_connection_keys row: a Check key result applies only while it is still current. */
+  key_row_id: string | null;
 }
 
 const SELECT = `SELECT c.id, c.project_id, c.model_ref, c.label, c.position, c.state, c.rejected_at, c.rejected_status, c.last_used_at, c.created_at,
     m.provider, m.model_id, m.display_name, m.state AS model_state,
-    k.ciphertext AS key_ciphertext, k.nonce AS key_nonce, k.tag AS key_tag, k.key_id
+    k.ciphertext AS key_ciphertext, k.nonce AS key_nonce, k.tag AS key_tag, k.key_id, k.id AS key_row_id
   FROM ai_connections c
   JOIN ai_models m ON m.id = c.model_ref
   LEFT JOIN ai_connection_keys k ON k.connection_id = c.id AND k.superseded_at IS NULL`;
@@ -194,7 +197,11 @@ export class ConnectionsService {
     return { connection: await this.one(projectId, connectionId), check: this.checkView(check, before.provider, before.model_id) };
   }
 
-  /** Free check of the stored key. A key rejected on a real call stays rejected until the key is replaced. */
+  /**
+   * Free check of the stored key. A key rejected on a real call stays rejected until the key is replaced. The result applies
+   * only to the key that was checked: if it was replaced during the provider round trip, nothing changes (409). A refusal on
+   * a disabled connection is kept too, so enabling it gives key_rejected (final review I4).
+   */
   async check(projectId: string, connectionId: string, reason: string, user: AuthUser) {
     await this.authorizeManage(user, projectId, this.pool, false, false);
     const key = this.requireKey(NO_PROTECTED_KEY_CHECK);
@@ -213,15 +220,19 @@ export class ConnectionsService {
     await this.inTransaction(async (c) => {
       await this.authorizeManage(user, projectId, c, true, false);
       const current = await this.load(c, projectId, connectionId, true);
+      // The row lock is held, so the current key cannot change between this comparison and the updates below.
+      if (current.key_row_id !== before.key_row_id) throw new ConflictException(REPLACED_DURING_CHECK);
+      const keyRowId = current.key_row_id as string;
       let next = current.state;
       if (result.outcome === 'ok' && current.state === 'unchecked') {
         next = 'ready';
         await c.query(`UPDATE ai_connections SET state = 'ready' WHERE id = $1`, [connectionId]);
       }
-      if (result.outcome === 'refused' && (current.state === 'ready' || current.state === 'unchecked')) {
+      if (result.outcome === 'refused' && current.state !== 'key_rejected') {
         // The same rejected-key behaviour as a real call (spec 5.4): state, event, History line and notices, once.
-        next = 'key_rejected';
-        await markKeyRejected(c, { connectionId, status: result.status, at });
+        // A disabled connection stays disabled but keeps the rejection.
+        const notice = await markKeyRejected(c, { connectionId, keyRowId, status: result.status, at });
+        if (notice) next = current.state === 'disabled' ? 'disabled' : 'key_rejected';
       }
       const detail: Record<string, unknown> = { outcome: result.outcome, previousState: current.state, state: next };
       if (result.outcome === 'refused') detail.status = result.status;
@@ -244,7 +255,11 @@ export class ConnectionsService {
     return { connection: await this.one(projectId, connectionId) };
   }
 
-  /** Back to what it was before it was disabled: a rejected key stays rejected; ready returns ready; anything else is unchecked. */
+  /**
+   * Back to what it was before it was disabled: a rejected key stays rejected. Otherwise, when the key was replaced while
+   * disabled, ready only if the new key passed its check; with no replacement, ready returns ready. Anything else is
+   * unchecked: ready is never restored for a key that is unverified or refused (final review I4).
+   */
   async enable(projectId: string, connectionId: string, reason: string, user: AuthUser) {
     await this.authorizeManage(user, projectId, this.pool, false, false);
     const at = this.clock();
@@ -252,11 +267,15 @@ export class ConnectionsService {
       await this.authorizeManage(user, projectId, c, true, false);
       const current = await this.load(c, projectId, connectionId, true);
       if (current.state !== 'disabled') throw new ConflictException('This connection is not disabled.');
-      const { rows } = await c.query<{ previous: string | null }>(
-        `SELECT detail->>'previousState' AS previous FROM ai_connection_events WHERE connection_id = $1 AND action = 'disabled' ORDER BY at DESC, id DESC LIMIT 1`,
+      // The latest of the disabling and any key replacement since: a replacement's own check decides for the new key.
+      const { rows } = await c.query<{ action: string; previous: string | null; check: string | null }>(
+        `SELECT action, detail->>'previousState' AS previous, detail->>'check' AS check
+           FROM ai_connection_events WHERE connection_id = $1 AND action IN ('disabled', 'key_replaced') ORDER BY at DESC, id DESC LIMIT 1`,
         [connectionId],
       );
-      const next: ConnectionState = current.rejected_at !== null ? 'key_rejected' : rows[0]?.previous === 'ready' ? 'ready' : 'unchecked';
+      const last = rows[0];
+      const verified = last?.action === 'key_replaced' ? last.check === 'ok' : last?.previous === 'ready';
+      const next: ConnectionState = current.rejected_at !== null ? 'key_rejected' : verified ? 'ready' : 'unchecked';
       await c.query(`UPDATE ai_connections SET state = $2 WHERE id = $1`, [connectionId, next]);
       await this.record(c, at, projectId, connectionId, 'enabled', user.id, reason, { state: next });
     });

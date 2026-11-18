@@ -39,9 +39,19 @@ const MANAGER_ROLES = new Set(['pm', 'owner', 'sponsor']);
  * RETURNING`): a second 401 seen at the same time waits on the row lock, then finds it already rejected, and notifies
  * nobody. Replacing the key clears rejection_notified_at. Returns the notice, or null when the connection was already
  * rejected.
+ *
+ * `keyRowId` is the ai_connection_keys row that was refused. The mark applies only while that row is still the current key:
+ * a refusal of a key replaced meanwhile says nothing about the new key, so it changes nothing and tells nobody (final review I4).
  */
-export async function markKeyRejected(c: PoolClient, input: { connectionId: string; status: number; at: Date }): Promise<KeyRejectedNotice | null> {
-  const { connectionId, status, at } = input;
+export interface KeyRejection {
+  connectionId: string;
+  keyRowId: string;
+  status: number;
+  at: Date;
+}
+
+export async function markKeyRejected(c: PoolClient, input: KeyRejection): Promise<KeyRejectedNotice | null> {
+  const { connectionId, keyRowId, status, at } = input;
   // Lock first: a concurrent rejection of the same connection commits before this one reads the state again below.
   const previous = (await c.query<{ state: string }>(`SELECT state FROM ai_connections WHERE id = $1 FOR UPDATE`, [connectionId])).rows[0]?.state;
   const { rows } = await c.query<{ project_id: string; label: string; state: string; provider: Provider; model_id: string; project_name: string }>(
@@ -51,8 +61,9 @@ export async function markKeyRejected(c: PoolClient, input: { connectionId: stri
        FROM ai_models m, projects p
       WHERE c.id = $1 AND m.id = c.model_ref AND p.id = c.project_id
         AND c.state <> 'key_rejected' AND c.rejection_notified_at IS NULL
+        AND EXISTS (SELECT 1 FROM ai_connection_keys k WHERE k.id = $4 AND k.connection_id = c.id AND k.superseded_at IS NULL)
       RETURNING c.project_id, c.label, c.state, m.provider, m.model_id, p.name AS project_name`,
-    [connectionId, at, status],
+    [connectionId, at, status, keyRowId],
   );
   const r = rows[0];
   if (!r) return null;
@@ -84,7 +95,7 @@ export async function markKeyRejected(c: PoolClient, input: { connectionId: stri
 }
 
 /** markKeyRejected in its own transaction. */
-export async function markKeyRejectedNow(pool: Pool, input: { connectionId: string; status: number; at: Date }): Promise<KeyRejectedNotice | null> {
+export async function markKeyRejectedNow(pool: Pool, input: KeyRejection): Promise<KeyRejectedNotice | null> {
   const c = await pool.connect();
   try {
     await c.query('BEGIN');
