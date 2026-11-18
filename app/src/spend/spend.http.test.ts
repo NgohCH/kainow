@@ -133,15 +133,16 @@ describe('spend settings over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.equal((await call('PUT', '/ai/spend-settings', { ...MVP_BODY, monthlyLimitMyr: 25, projectsMaySetLimits: true, reason: 'More work this month.' })).status, 200);
     const pool = new Pool({ connectionString: testDatabaseUrl() });
     try {
-      const rows = (await pool.query(`SELECT detail FROM audit_events WHERE action = 'ai.spend_settings_changed' ORDER BY occurred_at, id`)).rows;
+      // Both saves happen at the same fake instant, so the rows are told apart by their reasons, not their order.
+      const rows = (await pool.query(`SELECT detail FROM audit_events WHERE action = 'ai.spend_settings_changed'`)).rows.map((r) => r.detail);
       assert.equal(rows.length, 2);
-      assert.equal(rows[0].detail.previous, null);
-      assert.equal(rows[0].detail.reason, 'Approved MVP settings.');
-      assert.equal(rows[0].detail.new.monthlyLimitMyr, '20.000000');
-      const second = rows[1].detail;
+      const first = rows.find((d) => d.reason === 'Approved MVP settings.');
+      const second = rows.find((d) => d.reason === 'More work this month.');
+      assert.ok(first && second, JSON.stringify(rows));
+      assert.equal(first.previous, null);
+      assert.equal(first.new.monthlyLimitMyr, '20.000000');
       assert.deepEqual([second.previous.monthlyLimitMyr, second.previous.projectsMaySetLimits], ['20.000000', false]);
       assert.deepEqual([second.new.monthlyLimitMyr, second.new.projectsMaySetLimits], ['25.000000', true]);
-      assert.equal(second.reason, 'More work this month.');
     } finally {
       await pool.end();
     }
