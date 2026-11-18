@@ -12,7 +12,7 @@ The PowerShell lines in this guide were run in Windows PowerShell 5.1 on 8 Novem
 
 - Docker Desktop (or Docker Engine with the Compose plugin), version 24 or later.
 - About 2 GB of free disk space for the first build.
-- An OpenAI key for `gpt-6.1-sol`, if you want extraction to run. Without one everything else works and extraction fails with a clear message, sending and costing nothing.
+- An OpenAI or Anthropic API key for each project that will use AI, if you want AI to run. Keys are entered per project in Kainow itself, never in `.env` (see "Set up AI" below). Without one everything else works and AI requests end with a clear message, sending and costing nothing.
 - A way to send email, if you want sign-in codes emailed. To try Kainow alone, codes can be printed in the server log instead.
 
 ## Install
@@ -55,7 +55,7 @@ The PowerShell lines in this guide were run in Windows PowerShell 5.1 on 8 Novem
 
    For a demonstration only, `docker compose run --rm api node dist/users/seed-demo-cli.js` instead sets up a made-up "Example Organisation" (example.com) with the Administrator admin@example.com, on an empty database.
 
-4. **Save the approved AI spend settings** (model `gpt-6.1-sol`, USD 2.00 / 0.10 / 10.00 per million tokens, 1 USD = MYR 4.10, MYR 20 a month, no daily cap). Until you do this every AI request is refused:
+4. **Save the starting AI spend settings** (1 USD = MYR 4.10, MYR 20 a month, no daily cap, projects not yet allowed to set limits or manage connections, 3 attempts, 120 seconds, 2 requests at once). This saves no model and no key, so AI still does not run: finish "Set up AI" below (approve a model in **AI** › **Models**, then add a connection and limits in each project). If settings are already saved, the command changes nothing, so running it again is safe; change them later in **AI** › **Limits and policy**, with a reason. Until settings are saved every AI request is refused:
 
    ```
    docker compose run --rm api node dist/spend/apply-mvp-settings-cli.js

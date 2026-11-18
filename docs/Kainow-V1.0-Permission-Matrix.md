@@ -185,7 +185,7 @@ For work actually completed during the pause, use the accepted reconciliation ex
 | Drill into named person, record/source, finance or investigation detail | Person with the relevant current additional permission | Analytics scope alone is insufficient; recheck every level, cached result and export. |
 | Export analytics/report | Current permitted reader with enabled export policy | Recheck at job execution and retrieval; preserve period/filters/definitions/coverage. |
 | Approve/install or schedule a release update | Enterprise Administrator | Explicit approval for each release; pre-update backup/compatibility and integrity checks require verified design. |
-| Configure installation-wide AI concurrency | Enterprise Administrator | Default two across all projects/workers; supported limits still require exact contract. |
+| Configure installation-wide AI concurrency | Enterprise Administrator | Default two across all projects and workers; 1 to 10, held in the database so it holds across every worker process; changed with a reason, recorded with the previous and new values. |
 | Configure automatic backups/retention and initiate protected restore | Enterprise Administrator under approved operational procedure | Daily encrypted/30-day default; restore authority never grants ordinary access to credential values or restricted sources. |
 
 [Administrator analytics rules](Kainow-V1.0-Administrator-Analytics-and-Reporting-Rules.md) and [architecture](Kainow-V1.0-Application-Architecture-and-Operations-Design.md) contain the accepted detail.

@@ -471,7 +471,7 @@ The existing `ai.settings.manage` action covers the Administrator rows. New proj
 
 **Real-model probe:** `npm run probe-ai`, `probe-minutes` and `probe-assist` gain `--provider openai|anthropic`. They read `OPENAI_API_KEY` or `ANTHROPIC_API_KEY` from the environment of the PO's own shell, never from the database. Their reports record provider and model. They are not run in the sandbox. The PO runs them with a test project's key. An Anthropic run should confirm that 8,000 output tokens are enough with the model's thinking. If not, the per-kind maximum output becomes a catalogue field (§12).
 
-**Measured aim:** a reservation with all six scopes applying, on the sub-project 5 bench data plus 200,000 seeded spend entries over 50 projects and 400 people, takes under 25 ms at p95 over 500 reservations, measured as sub-project 5 measured its aims. Without the new indexes the six sums would scan the month's entries.
+**Measured aim:** a reservation with all six scopes applying, on its own seeded bench data (people and projects of the same shapes as the sub-project 5 analysis bench) plus 200,000 seeded spend entries over 50 projects and 400 people, takes under 25 ms at p95 over 500 reservations, measured as sub-project 5 measured its aims. Without the new indexes the six sums would scan the month's entries.
 
 ### Measured aims as found
 
