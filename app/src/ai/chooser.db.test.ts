@@ -143,7 +143,7 @@ describe('previousOutcome', { skip: SKIP_NO_DB }, () => {
     return id;
   }
 
-  test('reads the highest earlier attempt and decides moveOn', async () => {
+  test('reads the attempt just before and decides moveOn', async () => {
     const req = uuidv7();
     const a = await conn();
     const b = await conn();
@@ -157,5 +157,19 @@ describe('previousOutcome', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(await previousOutcome(pool, req, 4), { connectionId: a, moveOn: true });
     await entry(req, 4, 'confirmed', null, b);
     assert.deepEqual(await previousOutcome(pool, req, 5), { connectionId: b, moveOn: false });
+  });
+
+  test('an attempt that left no spend entry gives no previous outcome, so the next starts on the first eligible (spec 6.2, final review M1)', async () => {
+    const req = uuidv7();
+    const a = await conn();
+    // Attempt 1 timed out on A; attempt 2 ended without an entry (a sweep clash or a check at job start).
+    await entry(req, 1, 'uncertain', null, a);
+    assert.equal(await previousOutcome(pool, req, 3), null, 'attempt 3 does not move on from attempt 1');
+    // Another request's entries and an entry without a connection are not read as this one's.
+    const other = uuidv7();
+    await entry(other, 2, 'uncertain', null, a);
+    assert.equal(await previousOutcome(pool, req, 3), null);
+    await entry(req, 2, 'uncertain', null, null);
+    assert.equal(await previousOutcome(pool, req, 3), null);
   });
 });

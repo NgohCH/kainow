@@ -126,10 +126,13 @@ export async function loadCandidates(
   return { list };
 }
 
-/** The entry with the highest attempt_no below `attemptNo` for this request, or null when there is none. */
+/**
+ * The entry of the attempt just before `attemptNo` for this request, or null when that attempt left none (spec 6.2: a sweep
+ * clash or a check at job start writes no entry, and the next attempt then starts on the first eligible connection).
+ */
 export async function previousOutcome(db: Db, requestId: string, attemptNo: number): Promise<PreviousOutcome> {
   const { rows } = await db.query<{ connection_id: string | null; status: string; note: string | null }>(
-    `SELECT connection_id, status, note FROM ai_spend_entries WHERE request_id = $1 AND attempt_no < $2 ORDER BY attempt_no DESC LIMIT 1`,
+    `SELECT connection_id, status, note FROM ai_spend_entries WHERE request_id = $1 AND attempt_no = $2 - 1`,
     [requestId, attemptNo],
   );
   if (rows.length === 0) return null;
