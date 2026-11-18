@@ -47,7 +47,11 @@ export class ModelCallError extends Error {
     readonly status?: number,
   ) {
     super(message);
+    this.keyRejected = status === 401 || status === 403;
   }
+
+  /** The provider refused the key (401/403), or the key may not use the model. */
+  readonly keyRejected: boolean;
 }
 
 /** The provider did the work and reported usage, but the answer could not be used. The usage is still charged. */
@@ -72,7 +76,7 @@ export interface JsonSchemaModel {
   callJson(request: ModelRequest, schema: object): Promise<{ content: unknown; usage: Usage }>;
 }
 
-const SCHEMA = {
+export const EXTRACTION_SCHEMA = {
   name: 'meeting_items',
   strict: true,
   schema: {
@@ -160,7 +164,7 @@ export class OpenAiModelClient implements ModelClient, MinutesModel, JsonSchemaM
   ) {}
 
   async extract(req: ModelRequest): Promise<ModelResult> {
-    const { content, usage } = await this.callJson(req, SCHEMA);
+    const { content, usage } = await this.callJson(req, EXTRACTION_SCHEMA);
     return { ...parseAnswer(content, usage), usage };
   }
 
