@@ -226,6 +226,41 @@ describe('organisation AI policy and project limits over HTTP', { skip: SKIP_NO_
     assert.equal((await admin.request('PUT', url(), { ...LIMITS, monthlyLimitMyr: '12', reason: 'Administrator override' })).status, 200);
   });
 
+  test('a delegate may re-save an unchanged above-ceiling monthly limit while changing daily or userMonthly', async () => {
+    await putOrg({ projectsMaySetLimits: true, projectCeiling: { mode: 'limit', limitMyr: '50' } });
+    assert.equal((await pm.request('PUT', url(), { ...LIMITS, monthlyLimitMyr: '40' })).status, 200);
+    t.clock.advanceSeconds(5);
+    await putOrg({ projectsMaySetLimits: true, projectCeiling: { mode: 'limit', limitMyr: '10' } });
+    const daily = await pm.request('PUT', url(), { ...LIMITS, monthlyLimitMyr: '40', daily: { mode: 'limit', limitMyr: '2' }, reason: 'Add a daily limit' });
+    assert.equal(daily.status, 200);
+    assert.equal(daily.body.project.monthlyLimitMyr, '40.000000');
+    assert.deepEqual(daily.body.project.daily, { mode: 'limit', limitMyr: '2.000000' });
+    t.clock.advanceSeconds(5);
+    const person = await pm.request('PUT', url(), {
+      ...LIMITS,
+      monthlyLimitMyr: '40',
+      daily: { mode: 'limit', limitMyr: '2' },
+      userMonthly: { mode: 'limit', limitMyr: '5' },
+      reason: 'Add a personal limit',
+    });
+    assert.equal(person.status, 200);
+    assert.deepEqual(person.body.project.userMonthly, { mode: 'limit', limitMyr: '5.000000' });
+    assert.equal((await pm.request('PUT', url(), { ...LIMITS, monthlyLimitMyr: '41', daily: { mode: 'limit', limitMyr: '2' } })).status, 403, 'a different value above the ceiling is still refused');
+  });
+
+  test('a delegate may re-save unchanged attempts and timeout above a lowered organisation value, but not change them upward', async () => {
+    await putOrg({ projectsMaySetLimits: true, maxAttempts: 5, timeoutSeconds: 200 });
+    assert.equal((await pm.request('PUT', url(), { ...LIMITS, maxAttempts: 4, timeoutSeconds: 150 })).status, 200);
+    t.clock.advanceSeconds(5);
+    await putOrg({ projectsMaySetLimits: true, maxAttempts: 2, timeoutSeconds: 60 });
+    const resave = await pm.request('PUT', url(), { ...LIMITS, maxAttempts: 4, timeoutSeconds: 150, daily: { mode: 'limit', limitMyr: '1' }, reason: 'Add a daily limit' });
+    assert.equal(resave.status, 200);
+    assert.deepEqual([resave.body.project.maxAttempts, resave.body.project.timeoutSeconds], [4, 150]);
+    assert.deepEqual(resave.body.sources, { maxAttempts: 'organisation', timeoutSeconds: 'organisation' }, 'the lower organisation value still governs');
+    assert.equal((await pm.request('PUT', url(), { ...LIMITS, maxAttempts: 5, timeoutSeconds: 150, daily: { mode: 'limit', limitMyr: '1' } })).status, 403);
+    assert.equal((await pm.request('PUT', url(), { ...LIMITS, maxAttempts: 4, timeoutSeconds: 151, daily: { mode: 'limit', limitMyr: '1' } })).status, 403);
+  });
+
   test('without saved organisation settings the project reads the defaults and a delegate cannot edit', async () => {
     const view = await pm.request('GET', url());
     assert.equal(view.status, 200);
