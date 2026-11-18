@@ -47,7 +47,8 @@ export type ProjectAction =
   | 'quarantine.copies'
   | 'ai.limits.manage'
   | 'ai.connections.manage'
-  | 'ai.connections.view';
+  | 'ai.connections.view'
+  | 'ai.usage.view';
 
 interface MatrixRow {
   roles: ReadonlyArray<ProjectRole | 'participant'>;
@@ -225,6 +226,12 @@ export const PROJECT_MATRIX: Readonly<Record<ProjectAction, MatrixRow>> = {
     roles: ['pm', 'deputy_pm', 'owner', 'sponsor'],
     states: ALL,
     refusal: "Only the Project Manager, a Deputy, the Owner or a Sponsor can see the project's AI connections and limits.",
+  },
+  // Not the Deputy (they see connections and limits, not who spent what), and not the Administrator standing alone.
+  'ai.usage.view': {
+    roles: ['pm', 'owner', 'sponsor'],
+    states: ALL,
+    refusal: "Only the Project Manager, the Owner or a Sponsor can see the project's AI usage.",
   },
   'proposal.review': {
     roles: ['owner', 'sponsor'],
