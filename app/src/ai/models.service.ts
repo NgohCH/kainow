@@ -62,18 +62,23 @@ const COLUMNS = `id, provider, model_id, display_name, input_usd_per_million_mic
   cached_input_usd_per_million_micro::text AS p_cached, cache_write_usd_per_million_micro::text AS p_write,
   output_usd_per_million_micro::text AS p_out, data_terms, purposes, restricted_ok, state`;
 
+/** The four price columns, read as text (`p_in`, `p_cached`, `p_write`, `p_out`), as model prices. */
+export function modelPricesFromColumns(r: { p_in: string; p_cached: string; p_write: string; p_out: string }): ModelPrices {
+  return {
+    inputMicroUsdPerMillion: BigInt(r.p_in),
+    cachedInputMicroUsdPerMillion: BigInt(r.p_cached),
+    cacheWriteMicroUsdPerMillion: BigInt(r.p_write),
+    outputMicroUsdPerMillion: BigInt(r.p_out),
+  };
+}
+
 function toModel(r: Row): ApprovedModel {
   return {
     id: r.id,
     provider: r.provider,
     modelId: r.model_id,
     displayName: r.display_name,
-    prices: {
-      inputMicroUsdPerMillion: BigInt(r.p_in),
-      cachedInputMicroUsdPerMillion: BigInt(r.p_cached),
-      cacheWriteMicroUsdPerMillion: BigInt(r.p_write),
-      outputMicroUsdPerMillion: BigInt(r.p_out),
-    },
+    prices: modelPricesFromColumns(r),
     purposes: r.purposes,
     restrictedOk: r.restricted_ok,
     dataTerms: r.data_terms,
