@@ -28,7 +28,8 @@ import { JOB_OPTIONS, type ExtractionJob } from '../extraction/queue';
 import { ModelCallError } from '../extraction/model';
 import { WAITING_FOR_PLACE } from '../ai/guarded-call';
 import { aiDeps, aiReady } from '../testing/ai-runners';
-import { registerAiWorker } from './ai-worker';
+import { AI_CONCURRENCY, registerAiWorker } from './ai-worker';
+import { POLICY_BOUNDS } from '../ai/policy';
 import { QUEUES, startQueues } from './queues';
 
 describe('ai worker dispatch', { skip: SKIP_NO_DB }, () => {
@@ -220,5 +221,17 @@ describe('worker start', () => {
     assert.equal(code, 1, output);
     assert.match(output, /Worker failed to start/);
     assert.ok(!output.includes('OPENAI_API_KEY'), output);
+  });
+});
+
+describe('ai worker concurrency (spec 6.5)', () => {
+  test('pg-boss localConcurrency is the concurrency bound maximum, so the database-held AI places govern', async () => {
+    const seen: Array<{ name: string; options: { localConcurrency?: number } }> = [];
+    const boss = { work: async (name: string, options: { localConcurrency?: number }) => (seen.push({ name, options }), 'worker-id') } as unknown as PgBoss;
+    await registerAiWorker(boss, {} as never, {} as Pool);
+    assert.equal(seen.length, 1);
+    assert.equal(seen[0].name, QUEUES.ai);
+    assert.equal(seen[0].options.localConcurrency, POLICY_BOUNDS.concurrency[1]);
+    assert.equal(AI_CONCURRENCY, POLICY_BOUNDS.concurrency[1]);
   });
 });

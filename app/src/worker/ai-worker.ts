@@ -6,10 +6,14 @@ import type { AssistRunner } from '../assist/assist-runner';
 import type { AssistJob } from '../assist/queue';
 import { type ExtractionJob, JOB_OPTIONS } from '../extraction/queue';
 import type { ExtractionRunner, RunOutcome } from '../extraction/runner';
+import { POLICY_BOUNDS } from '../ai/policy';
 import { QUEUES } from './queues';
 
-/** At most this many AI jobs at once in one process; the real limit is the database-held AI places (spec 6.5). */
-export const AI_CONCURRENCY = 2;
+/**
+ * The ceiling of AI jobs at once in one process: the concurrency setting's maximum (spec 6.5). The real limit is the
+ * setting itself, held in the database as AI places (ai_call_slots), so it holds across every worker process.
+ */
+export const AI_CONCURRENCY = POLICY_BOUNDS.concurrency[1];
 
 /** A job that waited for a free AI place starts again after this many seconds (spec 6.5). */
 export const WAIT_AGAIN_SECONDS = 30;

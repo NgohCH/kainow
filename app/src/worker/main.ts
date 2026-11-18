@@ -79,7 +79,7 @@ async function main(): Promise<void> {
   const quarantineLog = new Logger('Quarantine');
   const quarantineJob = key ? { cleanWaiting: () => cleanWaitingCases(pool, key, clock(), (m) => quarantineLog.warn(m)) } : undefined;
   await registerSchedules(boss, { sweep, dispatcher, analysis, quarantine: quarantineJob });
-  console.log(`kainow worker started (AI requests at once: ${AI_CONCURRENCY})`);
+  console.log(`kainow worker started (at most ${AI_CONCURRENCY} AI jobs at once in this process; the AI places setting is the real limit)`);
 
   const stop = async (): Promise<void> => {
     await boss.stop({ graceful: true, timeout: 10000 });
