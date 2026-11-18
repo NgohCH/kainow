@@ -13,12 +13,14 @@ export type SourceKind = 'note' | 'minutes' | 'summary';
 
 export interface HistoryLine {
   at: string;
-  kind: DeletedKind | 'credential_report';
-  action: 'deleted' | 'restored' | 'reported';
+  kind: DeletedKind | 'credential_report' | 'ai_connection';
+  action: 'deleted' | 'restored' | 'reported' | 'key_rejected';
   actor: string | null;
   reason: string | null;
   /** For a credential report, the kind of item it was reported in. */
   itemKind?: string;
+  /** For an AI connection line: the connection's label (never its key). */
+  label?: string;
   /** Only for a holder of Inspect Deleted Content. */
   title?: string;
   href?: string;
@@ -74,6 +76,10 @@ export function historyLineText(l: HistoryLine): string {
   const day = formatDay(l.at);
   if (l.kind === 'credential_report') {
     return `${day} — A suspected credential was reported in a ${itemKindNoun(l.itemKind)}${l.actor ? ` by ${l.actor}` : ''}`;
+  }
+  if (l.kind === 'ai_connection') {
+    // A null actor is Kainow itself, which marked the key rejected after the provider refused it.
+    return `${day} — The key for AI connection "${l.label ?? ''}" was refused; AI requests skip this connection until the key is replaced (recorded by ${l.actor ?? 'Kainow'})`;
   }
   const noun = KIND_NOUN[l.kind];
   return `${day} — A ${noun} was ${l.action}${l.actor ? ` by ${l.actor}` : ''}${l.reason ? ` — "${l.reason}"` : ''}`;

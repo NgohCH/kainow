@@ -187,13 +187,25 @@ describe('guarded AI call', { skip: SKIP_NO_DB }, () => {
 
   test('lowering attempts ends a pending request without sending: attemptNo above effective attempts → failed attempts_used, nothing reserved', async () => {
     await connect();
-    await seedProjectAllowance(pool, projectId, { maxAttempts: 1 });
-    let called = false;
-    const i = input({ attemptNo: 2, call: async () => ((called = true), ok()) });
-    assert.deepEqual(await guardedAiCall(deps(), i), { kind: 'failed', code: 'attempts_used', detail: 'No attempts are left for this request.' });
-    assert.equal(called, false);
-    assert.deepEqual(await entries(i.requestId), []);
-    assert.equal(factory.opened.length, 0, 'no key was opened');
+    // Attempt 1 of 3 (the default) ends in an outage and asks for a retry.
+    const requestId = uuidv7();
+    let calls = 0;
+    const first = input({
+      requestId,
+      attemptNo: 1,
+      call: async () => {
+        calls++;
+        throw new ModelCallError('The AI request timed out', 'unknown', true);
+      },
+    });
+    assert.deepEqual(await guardedAiCall(deps(), first), { kind: 'retry' });
+    // While the request waits, the Administrator lowers the organisation's attempts from 3 to 1.
+    await configure({ maxAttempts: 1 });
+    const second = input({ requestId, attemptNo: 2, call: async () => (calls++, ok()) });
+    assert.deepEqual(await guardedAiCall(deps(), second), { kind: 'failed', code: 'attempts_used', detail: 'No attempts are left for this request.' });
+    assert.equal(calls, 1, 'attempt 2 sent nothing');
+    assert.deepEqual((await entries(requestId)).map((e) => [e.attempt_no, e.status]), [[1, 'uncertain']], 'only attempt 1 has an entry');
+    assert.equal(factory.opened.length, 1, 'only attempt 1 opened a key');
   });
 
   test('no connections → blocked ai_not_set_up', async () => {

@@ -50,6 +50,14 @@ test('credential report lines name the reporter only when the server sent one', 
   assert.equal(historyLineText({ ...report, actor: 'Mei Lin' }), '3 Dec 2026 — A suspected credential was reported in a note by Mei Lin');
 });
 
+test('a rejected AI key line names the connection label and Kainow, never a key', () => {
+  const l = line({ kind: 'ai_connection', action: 'key_rejected', actor: null, reason: null, label: 'Main' });
+  assert.equal(
+    historyLineText(l),
+    '3 Dec 2026 — The key for AI connection "Main" was refused; AI requests skip this connection until the key is replaced (recorded by Kainow)',
+  );
+});
+
 test('deleted label format', () => {
   assert.equal(deletedLabel('Aisyah Rahman', '2026-12-03T02:00:00.000Z', 'Duplicate'), 'Deleted — Aisyah Rahman, 3 Dec 2026: Duplicate');
 });

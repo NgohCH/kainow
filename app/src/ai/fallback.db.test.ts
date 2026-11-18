@@ -17,7 +17,7 @@ import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { FakeClock } from '../testing/fakes';
 import { seedProject, seedUser } from '../testing/projects';
 import { type GuardedCallInput, type GuardedDeps, type GuardedOutcome, guardedAiCall } from './guarded-call';
-import type { KeyRejectedNotice } from './key-rejected';
+import { type KeyRejectedNotice, markKeyRejectedNow } from './key-rejected';
 
 const USAGE = { inputTokens: 10_000, cachedInputTokens: 0, outputTokens: 2_000 };
 type Answer = { answer: string };
@@ -237,7 +237,22 @@ describe('fallback and rejected keys', { skip: SKIP_NO_DB }, () => {
 
   test('two concurrent 401s mark the connection once and notify once', async () => {
     const [a] = await connections(1);
-    await Promise.all([run({ [a.modelId]: [status(401)] }), run({ [a.modelId]: [status(401)] })]);
+    // Both calls are in flight on the same connection before either 401 is answered.
+    let entered = 0;
+    let bothIn!: () => void;
+    const together = new Promise<void>((resolve) => (bothIn = resolve));
+    const call = async (): Promise<never> => {
+      if (++entered === 2) bothIn();
+      await together;
+      return status(401)();
+    };
+    const [r1, r2] = await Promise.all([run({}, uuidv7(), { call }), run({}, uuidv7(), { call })]);
+    assert.equal(entered, 2, 'both requests sent');
+    for (const r of [r1, r2]) {
+      assert.equal(r.outcomes.length, 1);
+      assert.equal(r.last.kind, 'failed');
+      if (r.last.kind === 'failed') assert.equal(r.last.code, 'model_rejected');
+    }
     assert.equal((await pool.query(`SELECT state FROM ai_connections WHERE id = $1`, [a.id])).rows[0].state, 'key_rejected');
     assert.equal(Number((await pool.query(`SELECT count(*) FROM ai_connection_events WHERE action = 'key_rejected'`)).rows[0].count), 1);
     assert.equal(Number((await pool.query(`SELECT count(*) FROM audit_events WHERE action = 'ai.connection_key_rejected'`)).rows[0].count), 1);
@@ -245,6 +260,17 @@ describe('fallback and rejected keys', { skip: SKIP_NO_DB }, () => {
     assert.equal(perUser.length, 5);
     assert.ok(perUser.every((r) => r.n === 1), 'each manager gets exactly one notice');
     assert.equal(notices.length, 1);
+  });
+
+  test('two markKeyRejectedNow at once write one event and one notice per recipient', async () => {
+    const [a] = await connections(1);
+    const at = clock.now();
+    const results = await Promise.all([markKeyRejectedNow(pool, { connectionId: a.id, status: 401, at }), markKeyRejectedNow(pool, { connectionId: a.id, status: 403, at })]);
+    assert.equal(results.filter((n) => n !== null).length, 1, 'exactly one of them marked it');
+    assert.equal(Number((await pool.query(`SELECT count(*) FROM ai_connection_events WHERE action = 'key_rejected'`)).rows[0].count), 1);
+    const perUser = (await pool.query(`SELECT user_id, count(*)::int AS n FROM notifications WHERE kind = 'ai_key_rejected' GROUP BY user_id`)).rows;
+    assert.deepEqual(perUser.map((r) => r.user_id).sort(), [admin, admin2, pm, owner, sponsor].sort());
+    assert.ok(perUser.every((r) => r.n === 1));
   });
 
   test('a key that will not open (a copied row) makes its connection ineligible for the attempt; the next one is used', async () => {
