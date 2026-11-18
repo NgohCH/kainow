@@ -6,6 +6,7 @@ import { PROMPT_OVERHEAD_TOKENS, costMicroMyr, estimateMaxCostMicroMyr, type Pri
 const MVP: Prices = {
   inputMicroUsdPerMillion: 2_000_000n,
   cachedInputMicroUsdPerMillion: 100_000n,
+  cacheWriteMicroUsdPerMillion: 0n,
   outputMicroUsdPerMillion: 10_000_000n,
   myrPerUsdMicro: 4_100_000n,
 };

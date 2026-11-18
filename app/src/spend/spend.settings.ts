@@ -57,6 +57,7 @@ export async function readSettings(db: Pool | PoolClient): Promise<SpendSettings
     prices: {
       inputMicroUsdPerMillion: BigInt(row.p_in),
       cachedInputMicroUsdPerMillion: BigInt(row.p_cached),
+      cacheWriteMicroUsdPerMillion: 0n, // reworked in Task 4
       outputMicroUsdPerMillion: BigInt(row.p_out),
       myrPerUsdMicro: BigInt(row.fx),
     },
@@ -162,6 +163,7 @@ export function parseSettingsBody(body: unknown): SpendSettingsInput {
     prices: {
       inputMicroUsdPerMillion: parseMicro(b.inputUsdPerMillion, 'inputUsdPerMillion'),
       cachedInputMicroUsdPerMillion: parseMicro(b.cachedInputUsdPerMillion, 'cachedInputUsdPerMillion'),
+      cacheWriteMicroUsdPerMillion: 0n, // reworked in Task 4
       outputMicroUsdPerMillion: parseMicro(b.outputUsdPerMillion, 'outputUsdPerMillion'),
       myrPerUsdMicro,
     },

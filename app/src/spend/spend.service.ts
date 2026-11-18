@@ -82,6 +82,7 @@ function snapshotPrices(row: EntryRow): Prices {
   return {
     inputMicroUsdPerMillion: BigInt(row.p_in),
     cachedInputMicroUsdPerMillion: BigInt(row.p_cached),
+    cacheWriteMicroUsdPerMillion: 0n, // reworked in Task 5
     outputMicroUsdPerMillion: BigInt(row.p_out),
     myrPerUsdMicro: BigInt(row.fx),
   };

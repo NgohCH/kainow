@@ -11,6 +11,7 @@ export const MVP_SPEND_SETTINGS: SpendSettingsInput = {
   prices: {
     inputMicroUsdPerMillion: parseMicro('2.00', 'input'),
     cachedInputMicroUsdPerMillion: parseMicro('0.10', 'cached input'),
+    cacheWriteMicroUsdPerMillion: 0n,
     outputMicroUsdPerMillion: parseMicro('10.00', 'output'),
     myrPerUsdMicro: parseMicro('4.1', 'rate'),
   },

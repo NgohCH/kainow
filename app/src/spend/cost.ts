@@ -4,6 +4,8 @@ import { ceilDiv } from './money';
 export interface Prices {
   inputMicroUsdPerMillion: bigint;
   cachedInputMicroUsdPerMillion: bigint;
+  /** Cache-write price (Anthropic). 0 where the provider does not charge one. */
+  cacheWriteMicroUsdPerMillion: bigint;
   outputMicroUsdPerMillion: bigint;
   myrPerUsdMicro: bigint;
 }
