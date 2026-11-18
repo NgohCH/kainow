@@ -49,9 +49,9 @@ describe('feedback on AI output', { skip: SKIP_NO_DB }, () => {
   const seedSpend = (requestId: string, model: string) =>
     t.pool.query(
       `INSERT INTO ai_spend_entries (id, request_id, attempt_no, created_at, updated_at, status, purpose, model_id,
-         input_usd_per_million_micro, cached_input_usd_per_million_micro, output_usd_per_million_micro, myr_per_usd_micro, estimate_micro_myr, amount_micro_myr)
-       VALUES ($1, $2, 1, now(), now(), 'confirmed', 'minutes_draft', $3, 1, 1, 1, 1, 5, 5)`,
-      [uuidv7(), requestId, model],
+         input_usd_per_million_micro, cached_input_usd_per_million_micro, output_usd_per_million_micro, myr_per_usd_micro, estimate_micro_myr, amount_micro_myr, project_id)
+       VALUES ($1, $2, 1, now(), now(), 'confirmed', 'minutes_draft', $3, 1, 1, 1, 1, 5, 5, $4)`,
+      [uuidv7(), requestId, model, project],
     );
 
   beforeEach(async () => {

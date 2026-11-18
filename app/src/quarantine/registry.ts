@@ -722,6 +722,7 @@ export const NO_USER_TEXT: Readonly<Record<string, string>> = {
   'ai_models.purposes': 'kinds of work from a fixed list (CHECK), never typed by a person',
   'ai_models.state': ENUM,
   'ai_spend_entries.provider': ENUM,
+  'ai_call_slots.holder': 'the request holding an AI place, `<request id>:<attempt number>`; a code identifier, never typed',
   'ai_spend_settings.project_ceiling_mode': ORG,
   'project_ai_limits.daily_mode': ENUM,
   'project_ai_limits.user_monthly_mode': ENUM,
