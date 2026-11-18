@@ -80,3 +80,36 @@ test('a reservation is never zero, even when prices are zero', () => {
   const free: Prices = { ...MVP, inputMicroUsdPerMillion: 0n, cachedInputMicroUsdPerMillion: 0n, outputMicroUsdPerMillion: 0n };
   assert.equal(estimateMaxCostMicroMyr(10, 10, free), 1n);
 });
+
+const ANTHROPIC: Prices = {
+  inputMicroUsdPerMillion: 3_000_000n,
+  cachedInputMicroUsdPerMillion: 300_000n,
+  cacheWriteMicroUsdPerMillion: 3_750_000n,
+  outputMicroUsdPerMillion: 15_000_000n,
+  myrPerUsdMicro: 4_100_000n,
+};
+
+test('cache writes priced at the cache-write price', () => {
+  // 1,000,000 input: 200,000 cache writes at $3.75 = $0.75, 800,000 uncached at $3 = $2.40; $3.15 at 4.1 = MYR 12.915.
+  const usage = { inputTokens: 1_000_000, cachedInputTokens: 0, cacheWriteTokens: 200_000, outputTokens: 0 };
+  assert.equal(costMicroMyr(usage, ANTHROPIC), 12_915_000n);
+  // Omitted cache writes are the same as zero.
+  assert.equal(
+    costMicroMyr({ inputTokens: 10, cachedInputTokens: 0, outputTokens: 1 }, ANTHROPIC),
+    costMicroMyr({ inputTokens: 10, cachedInputTokens: 0, cacheWriteTokens: 0, outputTokens: 1 }, ANTHROPIC),
+  );
+});
+
+test('cached plus cache-write above input throws', () => {
+  assert.throws(() => costMicroMyr({ inputTokens: 10, cachedInputTokens: 6, cacheWriteTokens: 5, outputTokens: 0 }, ANTHROPIC), RangeError);
+  assert.throws(() => costMicroMyr({ inputTokens: 10, cachedInputTokens: 0, cacheWriteTokens: 11, outputTokens: 0 }, ANTHROPIC), RangeError);
+  assert.throws(() => costMicroMyr({ inputTokens: 10, cachedInputTokens: 0, cacheWriteTokens: -1, outputTokens: 0 }, ANTHROPIC), RangeError);
+});
+
+test('estimate uses the highest of three input prices', () => {
+  const high: Prices = { ...ANTHROPIC, inputMicroUsdPerMillion: 100_000n, cachedInputMicroUsdPerMillion: 200_000n, cacheWriteMicroUsdPerMillion: 5_000_000n };
+  const reserved = estimateMaxCostMicroMyr(1_000, 1, high);
+  assert.ok(reserved >= costMicroMyr({ inputTokens: 1_000, cachedInputTokens: 0, cacheWriteTokens: 1_000, outputTokens: 1 }, high));
+  // Exactly (1,100 tokens x $5 + 1 x $15) per million at 4.1, rounded up.
+  assert.equal(reserved, 22_612n);
+});

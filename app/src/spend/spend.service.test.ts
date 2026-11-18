@@ -46,7 +46,7 @@ describe('AI spend cap', { skip: SKIP_NO_DB }, () => {
 
   let attempt = 0;
   const reserve = (estimate: bigint, requestId: string = uuidv7()): Promise<ReserveResult> =>
-    spend.reserve({ requestId, attemptNo: ++attempt, estimateMicroMyr: estimate, purpose: 'extraction', actorUserId: actorId });
+    spend.reserveOrganisationOnlyBridged({ requestId, attemptNo: ++attempt, estimateMicroMyr: estimate, purpose: 'extraction', actorUserId: actorId });
 
   const reserved = async (estimate: bigint): Promise<string> => {
     const result = await reserve(estimate);
@@ -287,11 +287,11 @@ describe('AI spend cap', { skip: SKIP_NO_DB }, () => {
   test('a second attempt of the same request is its own entry, but the same attempt cannot be reserved twice', async () => {
     await configure();
     const requestId = uuidv7();
-    const first = await spend.reserve({ requestId, attemptNo: 1, estimateMicroMyr: 100_000n, purpose: 'extraction' });
+    const first = await spend.reserveOrganisationOnlyBridged({ requestId, attemptNo: 1, estimateMicroMyr: 100_000n, purpose: 'extraction' });
     assert.equal(first.status, 'reserved');
-    const retry = await spend.reserve({ requestId, attemptNo: 2, estimateMicroMyr: 100_000n, purpose: 'extraction' });
+    const retry = await spend.reserveOrganisationOnlyBridged({ requestId, attemptNo: 2, estimateMicroMyr: 100_000n, purpose: 'extraction' });
     assert.equal(retry.status, 'reserved');
-    await assert.rejects(spend.reserve({ requestId, attemptNo: 2, estimateMicroMyr: 100_000n, purpose: 'extraction' }), /ai_spend_request_attempt_key/);
+    await assert.rejects(spend.reserveOrganisationOnlyBridged({ requestId, attemptNo: 2, estimateMicroMyr: 100_000n, purpose: 'extraction' }), /ai_spend_request_attempt_key/);
     assert.equal((await spend.summary()).monthly?.usedMicroMyr, 200_000n, 'every attempt counts');
   });
 
@@ -300,7 +300,7 @@ describe('AI spend cap', { skip: SKIP_NO_DB }, () => {
     for (const bad of [0n, -1n]) {
       await assert.rejects(reserve(bad), RangeError);
     }
-    await assert.rejects(spend.reserve({ requestId: uuidv7(), attemptNo: 0, estimateMicroMyr: 1n, purpose: 'x' }), RangeError);
+    await assert.rejects(spend.reserveOrganisationOnlyBridged({ requestId: uuidv7(), attemptNo: 0, estimateMicroMyr: 1n, purpose: 'x' }), RangeError);
   });
 
   test('spend rows can never be deleted', async () => {

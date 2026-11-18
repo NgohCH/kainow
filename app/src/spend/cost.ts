@@ -14,6 +14,8 @@ export interface Prices {
 export interface Usage {
   inputTokens: number;
   cachedInputTokens: number;
+  /** Tokens written to the provider's cache (Anthropic). Part of inputTokens. Absent means 0. */
+  cacheWriteTokens?: number;
   outputTokens: number;
 }
 
@@ -37,12 +39,17 @@ export function costMicroMyr(usage: Usage, prices: Prices): bigint {
   const input = tokenCount(usage.inputTokens, 'inputTokens');
   const cached = tokenCount(usage.cachedInputTokens, 'cachedInputTokens');
   const output = tokenCount(usage.outputTokens, 'outputTokens');
+  const cacheWrite = tokenCount(usage.cacheWriteTokens ?? 0, 'cacheWriteTokens');
   if (cached > input) {
     throw new RangeError('cachedInputTokens cannot be more than inputTokens');
   }
+  if (cached + cacheWrite > input) {
+    throw new RangeError('cachedInputTokens and cacheWriteTokens together cannot be more than inputTokens');
+  }
   const microUsdTimesMillion =
-    (input - cached) * prices.inputMicroUsdPerMillion +
+    (input - cached - cacheWrite) * prices.inputMicroUsdPerMillion +
     cached * prices.cachedInputMicroUsdPerMillion +
+    cacheWrite * prices.cacheWriteMicroUsdPerMillion +
     output * prices.outputMicroUsdPerMillion;
   return ceilDiv(microUsdTimesMillion * prices.myrPerUsdMicro, TRILLION);
 }
@@ -63,10 +70,10 @@ export function estimateMaxCostMicroMyr(promptBytes: number, maxOutputTokens: nu
   if (!Number.isSafeInteger(maxOutputTokens) || maxOutputTokens < 1) {
     throw new RangeError('maxOutputTokens must be a whole number of at least 1: without a maximum the cost cannot be bounded');
   }
-  const inputPrice =
-    prices.inputMicroUsdPerMillion > prices.cachedInputMicroUsdPerMillion
-      ? prices.inputMicroUsdPerMillion
-      : prices.cachedInputMicroUsdPerMillion;
+  const inputPrice = [prices.cachedInputMicroUsdPerMillion, prices.cacheWriteMicroUsdPerMillion].reduce(
+    (highest, price) => (price > highest ? price : highest),
+    prices.inputMicroUsdPerMillion,
+  );
   const inputTokens = BigInt(promptBytes + PROMPT_OVERHEAD_TOKENS);
   const microUsdTimesMillion = inputTokens * inputPrice + BigInt(maxOutputTokens) * prices.outputMicroUsdPerMillion;
   const cost = ceilDiv(microUsdTimesMillion * prices.myrPerUsdMicro, TRILLION);

@@ -2,7 +2,7 @@ import type { Pool } from 'pg';
 import type { Clock } from '../auth/tokens';
 import { ModelBadResponse, ModelCallError } from '../extraction/model';
 import { estimateMaxCostMicroMyr, type Usage } from '../spend/cost';
-import type { SpendService } from '../spend/spend.service';
+import { spendFailureCode, spendFailureDetail, type SpendService } from '../spend/spend.service';
 import { bridgedModel } from '../spend/mvp-settings';
 import { readSettings } from '../spend/spend.settings';
 
@@ -83,7 +83,7 @@ export async function guardedAiCall<T>(deps: GuardedDeps, input: GuardedCallInpu
 
   const model = bridgedModel(settings); // bridged until Task 10
   const estimate = estimateMaxCostMicroMyr(input.promptBytes, input.maxOutputTokens, model.prices);
-  const reserved = await spend.reserve({
+  const reserved = await spend.reserveOrganisationOnlyBridged({ // bridged until Task 10
     requestId: input.requestId,
     attemptNo: input.attemptNo,
     estimateMicroMyr: estimate,
@@ -91,19 +91,7 @@ export async function guardedAiCall<T>(deps: GuardedDeps, input: GuardedCallInpu
     actorUserId: input.actorUserId,
   });
   if (reserved.status === 'blocked') {
-    const personal = reserved.scope === 'user_monthly';
-    const why: Record<string, string> = {
-      no_allowance: personal ? 'This person has no personal AI allowance (the personal limit is blank or zero).' : 'There is no AI allowance (the limit is blank or zero).',
-      cap_would_be_exceeded: personal
-        ? 'This request could cost more than the personal monthly AI allowance that is left.'
-        : 'This request could cost more than the AI allowance that is left.',
-      not_configured: 'The AI spend settings have not been approved yet.',
-    };
-    return {
-      kind: 'blocked',
-      code: `spend_${personal ? 'user_' : ''}${reserved.reason}`,
-      detail: why[reserved.reason] ?? 'Blocked by the AI spend cap.',
-    };
+    return { kind: 'blocked', code: spendFailureCode(reserved.reason, reserved.scope), detail: spendFailureDetail(reserved.reason, reserved.scope) };
   }
   const entryId = reserved.entryId;
 

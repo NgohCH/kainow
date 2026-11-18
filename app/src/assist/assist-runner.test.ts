@@ -254,7 +254,7 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     await note('Plant room', 'The pump service is booked for Thursday morning.');
     const id = await ask('When is the pump service?');
     // Attempt 1 reserved and then its worker stopped: the entry stays reserved.
-    const reserved = await spend.reserve({ requestId: id, attemptNo: 1, estimateMicroMyr: 1_000n, purpose: 'question_answer', actorUserId: ids.ada });
+    const reserved = await spend.reserveOrganisationOnlyBridged({ requestId: id, attemptNo: 1, estimateMicroMyr: 1_000n, purpose: 'question_answer', actorUserId: ids.ada });
     assert.equal(reserved.status, 'reserved');
     await t.pool.query(`UPDATE projects SET status = 'deferred' WHERE id = $1`, [project]);
     assert.equal(await runner(new FakeModel()).process(id, 2, false), 'blocked');

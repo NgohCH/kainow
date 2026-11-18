@@ -165,7 +165,7 @@ describe('analysis tick', { skip: SKIP_NO_DB }, () => {
     const running = await insertRequest('running');
     const withJob = await insertRequest('queued');
     const spend = new SpendService(t.pool, t.clock.now);
-    const reserved = await spend.reserve({ requestId: running, attemptNo: 3, estimateMicroMyr: 1000n, purpose: 'question_answer', actorUserId: null });
+    const reserved = await spend.reserveOrganisationOnlyBridged({ requestId: running, attemptNo: 3, estimateMicroMyr: 1000n, purpose: 'question_answer', actorUserId: null });
     assert.equal(reserved.status, 'reserved');
     await t.pool.query(`CREATE SCHEMA IF NOT EXISTS pgboss`);
     await t.pool.query(`CREATE TABLE pgboss.job (name text NOT NULL, singleton_key text, state text NOT NULL)`);

@@ -40,7 +40,7 @@ describe('per-person monthly limit', { skip: SKIP_NO_DB }, () => {
   });
 
   const ask = (actor: string | null, estimate: number) =>
-    spend.reserve({ requestId: uuidv7(), attemptNo: 1, estimateMicroMyr: MYR(estimate), purpose: 'extraction', actorUserId: actor });
+    spend.reserveOrganisationOnlyBridged({ requestId: uuidv7(), attemptNo: 1, estimateMicroMyr: MYR(estimate), purpose: 'extraction', actorUserId: actor });
 
   test('with no per-person limit (the default) nobody is limited beyond the organisation', async () => {
     await settings.apply(MVP_SPEND_SETTINGS, ann);

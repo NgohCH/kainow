@@ -421,7 +421,7 @@ describe('extraction runner', { skip: SKIP_NO_DB }, () => {
 
   test('a reservation left open by a crashed worker is kept counted, not forgotten', async () => {
     const id = await newRun();
-    const held = await spend.reserve({ requestId: id, attemptNo: 1, estimateMicroMyr: 500_000n, purpose: 'extraction', actorUserId: userId });
+    const held = await spend.reserveOrganisationOnlyBridged({ requestId: id, attemptNo: 1, estimateMicroMyr: 500_000n, purpose: 'extraction', actorUserId: userId });
     assert.equal(held.status, 'reserved');
     const model = new FakeModel(() => answer([{ kind: 'decision', text: 'd', owner: null, due: null, source_quote: 'We agreed to ship on Friday.' }]));
     assert.equal(await runner(model).process(id, 2, false), 'succeeded');
