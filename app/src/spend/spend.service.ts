@@ -453,3 +453,37 @@ export class SpendService {
     }
   }
 }
+
+/**
+ * Where each project stands against its own monthly and daily limits, for many projects in one query, by the rules
+ * reserve() applies: a missing limits row or a blank or zero limit is no allowance; a limit with nothing left (used, which
+ * counts reserved and uncertain, has reached it) is used up. The per-person limit needs a person and is not part of this.
+ */
+export async function projectAllowancesMany(db: Pool | PoolClient, projectIds: string[], at: Date): Promise<Map<string, 'ok' | 'no_allowance' | 'used'>> {
+  const month = monthPeriod(at);
+  const day = dayPeriod(at);
+  const { rows } = await db.query<{ project_id: string; monthly: string | null; daily_mode: string; daily_limit: string | null; month_used: string; day_used: string }>(
+    `SELECT l.project_id, l.monthly_limit_micro_myr::text AS monthly, l.daily_mode, l.daily_limit_micro_myr::text AS daily_limit,
+            COALESCE((SELECT SUM(e.amount_micro_myr) FROM ai_spend_entries e
+                       WHERE e.project_id = l.project_id AND e.status <> 'released' AND e.created_at >= $2 AND e.created_at < $3), 0)::text AS month_used,
+            COALESCE((SELECT SUM(e.amount_micro_myr) FROM ai_spend_entries e
+                       WHERE e.project_id = l.project_id AND e.status <> 'released' AND e.created_at >= $4 AND e.created_at < $5), 0)::text AS day_used
+       FROM project_ai_limits l WHERE l.project_id = ANY ($1::uuid[])`,
+    [projectIds, month.start, month.end, day.start, day.end],
+  );
+  const out = new Map<string, 'ok' | 'no_allowance' | 'used'>(projectIds.map((id) => [id, 'no_allowance']));
+  for (const r of rows) {
+    const checks: Array<[bigint | null, bigint]> = [[r.monthly === null ? null : BigInt(r.monthly), BigInt(r.month_used)]];
+    if (r.daily_mode === 'limit') checks.push([r.daily_limit === null ? null : BigInt(r.daily_limit), BigInt(r.day_used)]);
+    let verdict: 'ok' | 'no_allowance' | 'used' = 'ok';
+    for (const [limit, used] of checks) {
+      if (limit === null || limit === 0n) {
+        verdict = 'no_allowance';
+        break;
+      }
+      if (limit - used <= 0n) verdict = 'used';
+    }
+    out.set(r.project_id, verdict);
+  }
+  return out;
+}

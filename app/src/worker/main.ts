@@ -75,7 +75,7 @@ async function main(): Promise<void> {
     clock,
     log,
   });
-  const analysis = new AnalysisTick({ pool, clock, queue: bossAnalysisQueue(boss), spend: new SpendService(pool, clock) });
+  const analysis = new AnalysisTick({ pool, clock, queue: bossAnalysisQueue(boss), spend: new SpendService(pool, clock), key });
   const quarantineLog = new Logger('Quarantine');
   const quarantineJob = key ? { cleanWaiting: () => cleanWaitingCases(pool, key, clock(), (m) => quarantineLog.warn(m)) } : undefined;
   await registerSchedules(boss, { sweep, dispatcher, analysis, quarantine: quarantineJob });

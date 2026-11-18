@@ -13,7 +13,8 @@ import { ANALYSIS_QUEUE, type AnalysisQueue } from './queue';
 import { type NewRun, enqueueOrFail, insertRun, isActiveRunConflict } from './runs';
 import { effectiveAnalysisSettings } from './settings.service';
 import { type AnalysisStatus, analysisState, explanation, statusLine } from './state';
-import { readiness } from './tick';
+import { PROTECTED_KEY, type ProtectedKey } from '../quarantine/protected-key';
+import { readiness, readinessMany } from './tick';
 
 export const ALREADY_ACTIVE = 'An analysis of this thread is already queued or running.';
 export const NOTHING_NEW = 'No new messages since the last analysis; analysing again may repeat earlier proposals.';
@@ -56,7 +57,14 @@ export class AnalysisService implements MeetingEndHook {
     private readonly threads: ThreadsService,
     private readonly access: ProjectAccess,
     private readonly spend: SpendService,
+    @Inject(PROTECTED_KEY) private readonly key: ProtectedKey | null,
   ) {}
+
+  /** The organisation's readiness plus this project's own (the same rule the tick applies). */
+  private async readinessOf(projectId: string, now: Date) {
+    const [org, own] = await Promise.all([readiness(this.spend), readinessMany(this.pool, [projectId], now, this.key?.id ?? null)]);
+    return { ...org, blockedReason: own.get(projectId)?.blockedReason };
+  }
 
   async status(user: AuthUser, threadId: string): Promise<StatusView> {
     const t = await this.threads.threadRow(this.pool, threadId);
@@ -64,7 +72,7 @@ export class AnalysisService implements MeetingEndHook {
     const now = this.now();
     const [loaded] = await loadThreadFacts(this.pool, now, t.id);
     const settings = await effectiveAnalysisSettings(this.pool, t.projectId);
-    const { status } = analysisState(loaded.facts, settings, await readiness(this.spend), now);
+    const { status } = analysisState(loaded.facts, settings, await this.readinessOf(t.projectId, now), now);
     const last = await this.pool.query(`SELECT r.id, r.trigger, u.display_name AS name FROM analysis_runs r LEFT JOIN users u ON u.id = r.requested_by
         WHERE r.thread_id = $1 AND r.status = 'succeeded' ORDER BY r.created_at DESC, r.id DESC LIMIT 1`, [t.id]);
     return { status, line: statusLine(status), explanation: explanation(settings), lastFailure: loaded.facts.lastFailure, lastRunId: (last.rows[0]?.id as string | undefined) ?? null, lastRunLabel: last.rows[0] ? triggerLabel(last.rows[0].trigger, last.rows[0].name) : null };
