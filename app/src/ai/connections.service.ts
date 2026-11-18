@@ -11,6 +11,7 @@ import { PROTECTED_KEY, type ProtectedKey } from '../quarantine/protected-key';
 import { readSettings } from '../spend/spend.settings';
 import { type KeyCheck, type SealedRow, checkKey, checkStoredKey, keyReadable } from './key-check';
 import { type KeyBinding, KeyUnreadableError, type Provider, normaliseApiKey, sealApiKey } from './keys';
+import { PROVIDER_NAMES, markKeyRejected } from './key-rejected';
 import { ModelsService } from './models.service';
 
 type Db = Pool | PoolClient;
@@ -32,7 +33,7 @@ export const NO_PROTECTED_KEY = 'AI keys cannot be saved until the protected key
 const NO_PROTECTED_KEY_CHECK = 'AI keys cannot be checked until the protected key is installed. See INSTALL.md.';
 const NOT_DELEGATED = 'The Administrator has not allowed projects to manage their own AI connections.';
 const MANAGE = 'ai.connections.manage';
-const PROVIDER_NAME: Readonly<Record<Provider, string>> = { openai: 'OpenAI', anthropic: 'Anthropic' };
+const PROVIDER_NAME = PROVIDER_NAMES;
 
 /** Checker injected by tests; the real one calls the provider's model listing. */
 export type KeyChecker = (provider: Provider, apiKey: string, modelId: string) => Promise<KeyCheck>;
@@ -211,15 +212,14 @@ export class ConnectionsService {
       await this.authorizeManage(user, projectId, c, true, false);
       const current = await this.load(c, projectId, connectionId, true);
       let next = current.state;
-      if (result.outcome === 'ok' && current.state === 'unchecked') next = 'ready';
-      if (result.outcome === 'refused' && (current.state === 'ready' || current.state === 'unchecked')) next = 'key_rejected';
-      if (next !== current.state) {
-        await c.query(`UPDATE ai_connections SET state = $2, rejected_at = $3, rejected_status = $4 WHERE id = $1`, [
-          connectionId,
-          next,
-          next === 'key_rejected' ? at : current.rejected_at,
-          next === 'key_rejected' && result.outcome === 'refused' ? result.status : current.rejected_status,
-        ]);
+      if (result.outcome === 'ok' && current.state === 'unchecked') {
+        next = 'ready';
+        await c.query(`UPDATE ai_connections SET state = 'ready' WHERE id = $1`, [connectionId]);
+      }
+      if (result.outcome === 'refused' && (current.state === 'ready' || current.state === 'unchecked')) {
+        // The same rejected-key behaviour as a real call (spec 5.4): state, event, History line and notices, once.
+        next = 'key_rejected';
+        await markKeyRejected(c, { connectionId, status: result.status, at });
       }
       const detail: Record<string, unknown> = { outcome: result.outcome, previousState: current.state, state: next };
       if (result.outcome === 'refused') detail.status = result.status;

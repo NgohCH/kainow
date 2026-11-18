@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import { uuidv7 } from '../common/uuid7';
 import { loadDatabaseConfig } from '../config';
 import { runMigrations } from '../db/migrate';
+import { seedSpendTarget } from '../testing/ai-connections';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { FakeClock } from '../testing/fakes';
 import { UsersService } from '../users/users.service';
@@ -23,6 +24,7 @@ describe('AI spend cap', { skip: SKIP_NO_DB }, () => {
   let spend: SpendService;
   let settings: SpendSettingsService;
   let actorId: string;
+  let target: Awaited<ReturnType<typeof seedSpendTarget>>;
   const migrationsDir = loadDatabaseConfig({ DATABASE_URL: 'x' }).migrationsDir;
 
   before(() => {
@@ -38,6 +40,7 @@ describe('AI spend cap', { skip: SKIP_NO_DB }, () => {
     spend = new SpendService(pool, clock.now);
     settings = new SpendSettingsService(pool, clock.now);
     actorId = (await new UsersService(pool, clock.now).create({ email: 'admin@example.org', displayName: 'Admin' })).id;
+    target = await seedSpendTarget(pool, actorId);
   });
 
   /** Approves the Product Owner's settings with any changes for the test. */
@@ -46,7 +49,7 @@ describe('AI spend cap', { skip: SKIP_NO_DB }, () => {
 
   let attempt = 0;
   const reserve = (estimate: bigint, requestId: string = uuidv7()): Promise<ReserveResult> =>
-    spend.reserveOrganisationOnlyBridged({ requestId, attemptNo: ++attempt, estimateMicroMyr: estimate, purpose: 'extraction', actorUserId: actorId });
+    spend.reserve({ ...target, requestId, attemptNo: ++attempt, estimateMicroMyr: estimate, purpose: 'extraction', actorUserId: actorId });
 
   const reserved = async (estimate: bigint): Promise<string> => {
     const result = await reserve(estimate);
@@ -287,11 +290,11 @@ describe('AI spend cap', { skip: SKIP_NO_DB }, () => {
   test('a second attempt of the same request is its own entry, but the same attempt cannot be reserved twice', async () => {
     await configure();
     const requestId = uuidv7();
-    const first = await spend.reserveOrganisationOnlyBridged({ requestId, attemptNo: 1, estimateMicroMyr: 100_000n, purpose: 'extraction' });
+    const first = await spend.reserve({ ...target, requestId, attemptNo: 1, estimateMicroMyr: 100_000n, purpose: 'extraction' });
     assert.equal(first.status, 'reserved');
-    const retry = await spend.reserveOrganisationOnlyBridged({ requestId, attemptNo: 2, estimateMicroMyr: 100_000n, purpose: 'extraction' });
+    const retry = await spend.reserve({ ...target, requestId, attemptNo: 2, estimateMicroMyr: 100_000n, purpose: 'extraction' });
     assert.equal(retry.status, 'reserved');
-    await assert.rejects(spend.reserveOrganisationOnlyBridged({ requestId, attemptNo: 2, estimateMicroMyr: 100_000n, purpose: 'extraction' }), /ai_spend_request_attempt_key/);
+    await assert.rejects(spend.reserve({ ...target, requestId, attemptNo: 2, estimateMicroMyr: 100_000n, purpose: 'extraction' }), /ai_spend_request_attempt_key/);
     assert.equal((await spend.summary()).monthly?.usedMicroMyr, 200_000n, 'every attempt counts');
   });
 
@@ -300,7 +303,7 @@ describe('AI spend cap', { skip: SKIP_NO_DB }, () => {
     for (const bad of [0n, -1n]) {
       await assert.rejects(reserve(bad), RangeError);
     }
-    await assert.rejects(spend.reserveOrganisationOnlyBridged({ requestId: uuidv7(), attemptNo: 0, estimateMicroMyr: 1n, purpose: 'x' }), RangeError);
+    await assert.rejects(spend.reserve({ ...target, requestId: uuidv7(), attemptNo: 0, estimateMicroMyr: 1n, purpose: 'x' }), RangeError);
   });
 
   test('spend rows can never be deleted', async () => {

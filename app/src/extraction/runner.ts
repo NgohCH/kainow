@@ -9,7 +9,9 @@ import { locateQuote } from '../notes/text';
 import { findCredentials } from './credentials';
 import { guardedAiCall, markStaleReservations } from '../ai/guarded-call';
 import type { ModelClient, ModelAnswer } from './model';
-import { DISCUSSION_PREAMBLE, EXTRACTION_SYSTEM_PROMPT, MAX_OUTPUT_TOKENS, REQUEST_TIMEOUT_MS } from './prompt';
+import { type ModelClientFactory, realClientFactory } from '../ai/client-factory';
+import type { ProtectedKey } from '../quarantine/protected-key';
+import { DISCUSSION_PREAMBLE, EXTRACTION_SYSTEM_PROMPT, MAX_OUTPUT_TOKENS } from './prompt';
 import { type Span, placeItem } from '../analysis/transcript';
 import { type KainowReporter, type OwnedText, messagesOfVersions, reportOwned } from '../quarantine/kainow-report';
 import { HELD_DURING_RUN, sweepMarkSql, sweptSince } from '../quarantine/sweep-lock';
@@ -24,8 +26,12 @@ export const SOURCE_DELETED = 'source_deleted';
 export interface RunnerDeps {
   pool: Pool;
   spend: SpendService;
-  /** null when no API key is configured: runs then fail without any charge. */
+  /** Unused since sub-project 6 Task 10 (calls go through the project's connections); Task 11 replaces it with `factory`. */
   model: ModelClient | null;
+  /** Builds the client for each attempt's connection (Task 11 makes this required). */
+  factory?: ModelClientFactory;
+  /** The protected key that opens the connections' keys; without it requests end blocked protected_key_missing. */
+  key?: ProtectedKey | null;
   clock: Clock;
   log?: (message: string) => void;
   /** Opens a quarantine case on the item holding a secret found in stored text (history spec 7.1); without it the run only blocks. */
@@ -148,29 +154,32 @@ export class ExtractionRunner {
     }
 
 
-    const model = this.d.model;
     const discussion = run.source_kind === 'discussion';
     const system = discussion ? `${DISCUSSION_PREAMBLE} ${EXTRACTION_SYSTEM_PROMPT}` : EXTRACTION_SYSTEM_PROMPT;
     const outcome = await guardedAiCall(
-      { pool, spend, clock: this.d.clock, log: this.d.log, modelConfigured: model !== null },
+      { pool, spend, clock: this.d.clock, log: this.d.log, key: this.d.key ?? null, factory: this.d.factory ?? realClientFactory },
       {
         requestId: runId,
         attemptNo,
-        isLastAttempt,
         purpose: discussion ? 'discussion_analysis' : 'extraction',
         actorUserId: run.requested_by,
+        // mayStillRun above refuses a run whose source has no project.
+        projectId: run.project_id as string,
+        carriesRestricted: true, // Task 11 computes this
         promptBytes: Buffer.byteLength(system, 'utf8') + Buffer.byteLength(run.text, 'utf8'),
         maxOutputTokens: MAX_OUTPUT_TOKENS,
-        call: (modelId) =>
-          model!.extract({
+        call: (client, modelId, timeoutMs) =>
+          client.extract({
             modelId,
             system,
             user: run.text,
             maxOutputTokens: MAX_OUTPUT_TOKENS,
-            timeoutMs: REQUEST_TIMEOUT_MS,
+            timeoutMs,
           }),
       },
     );
+    // No AI place was free: nothing was reserved or sent. Task 11 re-sends the job with `resume` instead of using an attempt.
+    if (outcome.kind === 'wait') return this.requeue(run);
     if (outcome.kind === 'retry') return this.requeue(run);
     if (outcome.kind !== 'ok') return this.finish(run, outcome.kind, outcome.code, outcome.detail);
     try {

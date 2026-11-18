@@ -5,6 +5,7 @@ import { SpendService } from '../spend/spend.service';
 import { SpendSettingsService } from '../spend/spend.settings';
 import { MVP_SPEND_SETTINGS } from '../spend/mvp-settings';
 import { SKIP_NO_DB } from '../testing/db';
+import { seedSpendTarget } from '../testing/ai-connections';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 import type { AnalysisQueue } from './queue';
@@ -165,7 +166,7 @@ describe('analysis tick', { skip: SKIP_NO_DB }, () => {
     const running = await insertRequest('running');
     const withJob = await insertRequest('queued');
     const spend = new SpendService(t.pool, t.clock.now);
-    const reserved = await spend.reserveOrganisationOnlyBridged({ requestId: running, attemptNo: 3, estimateMicroMyr: 1000n, purpose: 'question_answer', actorUserId: null });
+    const reserved = await spend.reserve({ ...(await seedSpendTarget(t.pool, ids.ada)), requestId: running, attemptNo: 3, estimateMicroMyr: 1000n, purpose: 'question_answer', actorUserId: null });
     assert.equal(reserved.status, 'reserved');
     await t.pool.query(`CREATE SCHEMA IF NOT EXISTS pgboss`);
     await t.pool.query(`CREATE TABLE pgboss.job (name text NOT NULL, singleton_key text, state text NOT NULL)`);

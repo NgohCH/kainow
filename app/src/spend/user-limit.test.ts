@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import { uuidv7 } from '../common/uuid7';
 import { loadDatabaseConfig } from '../config';
 import { runMigrations } from '../db/migrate';
+import { seedSpendTarget } from '../testing/ai-connections';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { FakeClock } from '../testing/fakes';
 import { UsersService } from '../users/users.service';
@@ -20,6 +21,7 @@ describe('per-person monthly limit', { skip: SKIP_NO_DB }, () => {
   let settings: SpendSettingsService;
   let ann: string;
   let bob: string;
+  let target: Awaited<ReturnType<typeof seedSpendTarget>>;
   const migrationsDir = loadDatabaseConfig({ DATABASE_URL: 'x' }).migrationsDir;
 
   before(() => {
@@ -37,10 +39,11 @@ describe('per-person monthly limit', { skip: SKIP_NO_DB }, () => {
     const users = new UsersService(pool, clock.now);
     ann = (await users.create({ email: 'ann@example.org', displayName: 'Ann' })).id;
     bob = (await users.create({ email: 'bob@example.org', displayName: 'Bob' })).id;
+    target = await seedSpendTarget(pool, ann);
   });
 
   const ask = (actor: string | null, estimate: number) =>
-    spend.reserveOrganisationOnlyBridged({ requestId: uuidv7(), attemptNo: 1, estimateMicroMyr: MYR(estimate), purpose: 'extraction', actorUserId: actor });
+    spend.reserve({ ...target, requestId: uuidv7(), attemptNo: 1, estimateMicroMyr: MYR(estimate), purpose: 'extraction', actorUserId: actor });
 
   test('with no per-person limit (the default) nobody is limited beyond the organisation', async () => {
     await settings.apply(MVP_SPEND_SETTINGS, ann);

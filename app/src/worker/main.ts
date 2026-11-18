@@ -9,6 +9,7 @@ import '../assist/reports.service';
 import '../assist/summaries.service';
 import { ExtractionRunner } from '../extraction/runner';
 import { OpenAiModelClient } from '../extraction/model';
+import { realClientFactory } from '../ai/client-factory';
 import { SpendService } from '../spend/spend.service';
 import { type AppConfig, loadWorkerConfig } from '../config';
 import { AI_CONCURRENCY, registerAiWorker } from './ai-worker';
@@ -52,13 +53,15 @@ async function main(): Promise<void> {
     pool,
     spend,
     model,
+    factory: realClientFactory,
+    key,
     clock,
     log: (m) => console.error(m),
     quarantine,
   });
-  const minutes = new MinutesRunner({ pool, spend, model, clock, quarantine, log: (m) => console.error(m) });
+  const minutes = new MinutesRunner({ pool, spend, model, factory: realClientFactory, key, clock, quarantine, log: (m) => console.error(m) });
   const analysisRunner = new AnalysisRunner({ pool, clock, extraction, minutes, quarantine, log: (m) => console.error(m) });
-  const assist = new AssistRunner({ pool, spend, model, clock, quarantine, log: (m) => console.error(m) });
+  const assist = new AssistRunner({ pool, spend, model, factory: realClientFactory, key, clock, quarantine, log: (m) => console.error(m) });
   if (!config.openAiApiKey) {
     console.warn('OPENAI_API_KEY is not set: extraction runs will fail without sending anything.');
   }

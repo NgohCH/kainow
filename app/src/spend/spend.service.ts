@@ -8,7 +8,6 @@ import type { Provider } from '../ai/keys';
 import { readProjectLimits } from '../ai/limits.service';
 import { costMicroMyr, type Prices, type Usage } from './cost';
 import { dayPeriod, monthPeriod, type Period } from './periods';
-import { bridgedModel } from './mvp-settings';
 import { readSettings, type SpendSettings } from './spend.settings';
 
 /** Serialises reservations so parallel requests cannot each see the same headroom. */
@@ -226,51 +225,6 @@ export class SpendService {
     });
   }
 
-  /**
-   * Organisation limits only, with the bridged model and no project: today's behaviour for guardedAiCall,
-   * which cannot supply a project or connection yet. The entry is not "ruled", so it counts for the
-   * organisation and for no project.
-   */
-  // bridged until Task 10: guardedAiCall then calls reserve() and this method is deleted.
-  async reserveOrganisationOnlyBridged(input: OrganisationReserveInput): Promise<ReserveResult> {
-    this.checkInput(input);
-    const now = this.clock();
-    return this.tx(async (c) => {
-      await c.query('SELECT pg_advisory_xact_lock($1)', [SPEND_LOCK_KEY]);
-      const settings = await readSettings(c);
-      if (!settings) {
-        return this.block(c, now, input, 'not_configured');
-      }
-      const refused = await this.checkOrganisation(c, now, input, settings);
-      if (refused) return refused;
-
-      const entryId = uuidv7(now.getTime());
-      const { modelId, prices: p } = bridgedModel(settings); // bridged until Task 10
-      await c.query(
-        `INSERT INTO ai_spend_entries
-           (id, request_id, attempt_no, created_at, updated_at, status, purpose, actor_user_id, model_id,
-            input_usd_per_million_micro, cached_input_usd_per_million_micro, output_usd_per_million_micro,
-            myr_per_usd_micro, estimate_micro_myr, amount_micro_myr, ruled)
-         VALUES ($1, $2, $3, $4, $4, 'reserved', $5, $6, $7, $8, $9, $10, $11, $12, $12, false)`,
-        [
-          entryId,
-          input.requestId,
-          input.attemptNo,
-          now,
-          input.purpose,
-          input.actorUserId ?? null,
-          modelId,
-          p.inputMicroUsdPerMillion.toString(),
-          p.cachedInputMicroUsdPerMillion.toString(),
-          p.outputMicroUsdPerMillion.toString(),
-          p.myrPerUsdMicro.toString(),
-          input.estimateMicroMyr.toString(),
-        ],
-      );
-      return { status: 'reserved', entryId };
-    });
-  }
-
   private checkInput(input: OrganisationReserveInput): void {
     if (input.estimateMicroMyr <= 0n) {
       throw new RangeError('estimateMicroMyr must be positive');
@@ -324,8 +278,9 @@ export class SpendService {
    * rates in force when the request was reserved. Also settles an uncertain entry once the real
    * usage is known. Doing it again changes nothing, so a cost is never counted twice. If the
    * real cost is higher than the estimate, the real cost is recorded and the entry is flagged.
+   * `note`, when given, is kept on the entry (a bad response is settled with the chooser's note).
    */
-  async settle(entryId: string, usage: Usage): Promise<void> {
+  async settle(entryId: string, usage: Usage, note?: string): Promise<void> {
     const now = this.clock();
     await this.withEntry(entryId, async (c, e) => {
       if (e.status === 'confirmed') return;
@@ -334,9 +289,9 @@ export class SpendService {
       await c.query(
         `UPDATE ai_spend_entries
             SET status = 'confirmed', amount_micro_myr = $2, input_tokens = $3, cached_input_tokens = $4,
-                output_tokens = $5, exceeded_estimate = $6, updated_at = $7, cache_write_tokens = $8
+                output_tokens = $5, exceeded_estimate = $6, updated_at = $7, cache_write_tokens = $8, note = COALESCE($9, note)
           WHERE id = $1`,
-        [entryId, amount.toString(), usage.inputTokens, usage.cachedInputTokens, usage.outputTokens, amount > BigInt(e.estimate), now, usage.cacheWriteTokens ?? 0],
+        [entryId, amount.toString(), usage.inputTokens, usage.cachedInputTokens, usage.outputTokens, amount > BigInt(e.estimate), now, usage.cacheWriteTokens ?? 0, note ?? null],
       );
     });
   }

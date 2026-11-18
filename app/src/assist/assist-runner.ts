@@ -1,5 +1,7 @@
 import type { Pool, PoolClient } from 'pg';
 import { type AiPurpose, guardedAiCall, markStaleReservations } from '../ai/guarded-call';
+import { type ModelClientFactory, realClientFactory } from '../ai/client-factory';
+import type { ProtectedKey } from '../quarantine/protected-key';
 import type { Clock } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
 import { type AudienceMode, inAudience } from '../discussion/audience';
@@ -227,8 +229,12 @@ registerRemovedCheck('question', questionRemoved);
 export interface AssistRunnerDeps {
   pool: Pool;
   spend: SpendService;
-  /** null when no AI key is configured: the request then fails without sending or charging anything. */
+  /** Unused since sub-project 6 Task 10 (calls go through the project's connections); Task 11 replaces it with `factory`. */
   model: JsonSchemaModel | null;
+  /** Builds the client for each attempt's connection (Task 11 makes this required). */
+  factory?: ModelClientFactory;
+  /** The protected key that opens the connections' keys; without it requests end blocked protected_key_missing. */
+  key?: ProtectedKey | null;
   clock: Clock;
   /** Opens a quarantine case on the item holding a secret found in stored material (history spec 7.1). */
   quarantine?: KainowReporter;
@@ -308,20 +314,20 @@ export class AssistRunner {
     }
 
     const sent = kept.map((m) => m.marker);
-    const model = this.d.model;
     const outcome = await guardedAiCall(
-      { pool, spend: this.d.spend, clock: this.d.clock, log: this.d.log, modelConfigured: model !== null },
+      { pool, spend: this.d.spend, clock: this.d.clock, log: this.d.log, key: this.d.key ?? null, factory: this.d.factory ?? realClientFactory },
       {
         requestId: request.id,
         attemptNo,
-        isLastAttempt,
         purpose: spec.purpose,
         actorUserId: request.requestedBy,
+        projectId: request.projectId,
+        carriesRestricted: true, // Task 11 computes this
         promptBytes: Buffer.byteLength(input.system, 'utf8') + Buffer.byteLength(input.user, 'utf8'),
         maxOutputTokens: spec.maxOutputTokens,
-        call: async (modelId) => {
-          const { content, usage } = await model!.callJson(
-            { modelId, system: input.system, user: input.user, maxOutputTokens: spec.maxOutputTokens, timeoutMs: REQUEST_TIMEOUT_MS },
+        call: async (client, modelId, timeoutMs) => {
+          const { content, usage } = await client.callJson(
+            { modelId, system: input.system, user: input.user, maxOutputTokens: spec.maxOutputTokens, timeoutMs },
             spec.schema,
           );
           const output = spec.parse(content, usage);
@@ -333,6 +339,8 @@ export class AssistRunner {
         },
       },
     );
+    // No AI place was free: nothing was reserved or sent. Task 11 re-sends the job with `resume` instead of using an attempt.
+    if (outcome.kind === 'wait') return this.requeue(request);
     if (outcome.kind === 'retry') return this.requeue(request);
     if (outcome.kind !== 'ok') return this.end(request, outcome.kind, outcome);
     try {

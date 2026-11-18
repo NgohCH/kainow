@@ -3,7 +3,9 @@ import { afterEach, beforeEach, describe, test } from 'node:test';
 import { uuidv7 } from '../common/uuid7';
 import type { JsonSchemaModel, ModelRequest } from '../extraction/model';
 import type { Usage } from '../spend/cost';
-import { MVP_BRIDGE_MODEL, MVP_SPEND_SETTINGS } from '../spend/mvp-settings';
+import { MVP_SPEND_SETTINGS } from '../spend/mvp-settings';
+/** The model the run's connection uses (Task 11 seeds the project connection with it). */
+const RUN_MODEL = 'gpt-6.1-sol';
 import { SpendService } from '../spend/spend.service';
 import { SpendSettingsService } from '../spend/spend.settings';
 import { SKIP_NO_DB } from '../testing/db';
@@ -131,7 +133,7 @@ describe('AI questions', { skip: SKIP_NO_DB }, () => {
     const done = (await ada.request('GET', `/questions/${v.id}`)).body;
     assert.equal(done.status, 'answered');
     assert.equal(done.answerMarkdown, 'The pump service is on Thursday [P1].');
-    assert.equal(done.model, MVP_BRIDGE_MODEL.modelId);
+    assert.equal(done.model, RUN_MODEL);
     assert.ok(done.answeredAt);
     assert.equal(done.sources[0].cited, true);
 
@@ -291,6 +293,6 @@ describe('AI questions', { skip: SKIP_NO_DB }, () => {
     const escalated = await pm.request('POST', `/feedback/${r.body.id}/escalate`, { note: 'Please check the answer.' });
     assert.equal(escalated.status, 200, JSON.stringify(escalated.body));
     const listed = (await admin.request('GET', '/admin/feedback')).body.feedback;
-    assert.deepEqual(listed.map((f: { runRef: string; model: string }) => [f.runRef, f.model]), [[mine.body.id, MVP_BRIDGE_MODEL.modelId]]);
+    assert.deepEqual(listed.map((f: { runRef: string; model: string }) => [f.runRef, f.model]), [[mine.body.id, RUN_MODEL]]);
   });
 });

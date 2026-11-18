@@ -1,10 +1,12 @@
 import type { Pool } from 'pg';
 import { guardedAiCall } from '../ai/guarded-call';
+import { type ModelClientFactory, realClientFactory } from '../ai/client-factory';
+import type { ProtectedKey } from '../quarantine/protected-key';
 import type { Clock } from '../auth/tokens';
 import { insertAiDraft } from '../discussion/meetings.service';
 import { findCredentials } from '../extraction/credentials';
 import type { MinutesModel } from '../extraction/model';
-import { MAX_OUTPUT_TOKENS, REQUEST_TIMEOUT_MS } from '../extraction/prompt';
+import { MAX_OUTPUT_TOKENS } from '../extraction/prompt';
 import type { RunOutcome } from '../extraction/runner';
 import { ProjectAccess } from '../projects/access.service';
 import type { SpendService } from '../spend/spend.service';
@@ -17,8 +19,12 @@ import { headerOf } from './transcript';
 export interface MinutesRunnerDeps {
   pool: Pool;
   spend: SpendService;
-  /** null when no AI key is configured: the run then fails without sending or charging anything. */
+  /** Unused since sub-project 6 Task 10 (calls go through the project's connections); Task 11 replaces it with `factory`. */
   model: MinutesModel | null;
+  /** Builds the client for each attempt's connection (Task 11 makes this required). */
+  factory?: ModelClientFactory;
+  /** The protected key that opens the connections' keys; without it requests end blocked protected_key_missing. */
+  key?: ProtectedKey | null;
   clock: Clock;
   /** Opens a quarantine case on the message holding a secret found in the stored messages (history spec 7.1). */
   quarantine?: KainowReporter;
@@ -81,20 +87,23 @@ export class MinutesRunner {
     const first = messages[0].no;
     const through = messages[messages.length - 1].no;
 
-    const model = this.d.model;
     const outcome = await guardedAiCall(
-      { pool, spend: this.d.spend, clock: this.d.clock, log: this.d.log, modelConfigured: model !== null },
+      { pool, spend: this.d.spend, clock: this.d.clock, log: this.d.log, key: this.d.key ?? null, factory: this.d.factory ?? realClientFactory },
       {
         requestId: run.id,
         attemptNo,
-        isLastAttempt,
         purpose: 'minutes_draft',
         actorUserId: run.requestedBy,
+        // recheckRun above refuses a run without a project.
+        projectId: run.projectId as string,
+        carriesRestricted: true, // Task 11 computes this
         promptBytes: Buffer.byteLength(MINUTES_SYSTEM_PROMPT, 'utf8') + Buffer.byteLength(input, 'utf8'),
         maxOutputTokens: MAX_OUTPUT_TOKENS,
-        call: (modelId) => model!.draftMinutes({ modelId, system: MINUTES_SYSTEM_PROMPT, user: input, maxOutputTokens: MAX_OUTPUT_TOKENS, timeoutMs: REQUEST_TIMEOUT_MS }),
+        call: (client, modelId, timeoutMs) => client.draftMinutes({ modelId, system: MINUTES_SYSTEM_PROMPT, user: input, maxOutputTokens: MAX_OUTPUT_TOKENS, timeoutMs }),
       },
     );
+    // No AI place was free: nothing was reserved or sent. Task 11 re-sends the job with `resume` instead of using an attempt.
+    if (outcome.kind === 'wait') return this.requeue(run);
     if (outcome.kind === 'retry') return this.requeue(run);
     if (outcome.kind !== 'ok') return this.end(run, outcome.kind, outcome);
     try {

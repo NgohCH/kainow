@@ -166,6 +166,20 @@ describe('project AI connections over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.equal(refused.body.connection.state, 'key_rejected');
     assert.equal(refused.body.connection.rejectedStatus, 401);
     assert.equal(refused.body.check.message, 'The provider refused this key');
+    // The same rejected-key behaviour as a real call (Ruling P8): one key_rejected event and the notices, once.
+    const rejectedEvents = async () => (await rows(`SELECT count(*)::int AS n FROM ai_connection_events WHERE connection_id = $1 AND action = 'key_rejected'`, [id]))[0].n;
+    const notices = async () => rows(`SELECT user_id, summary FROM notifications WHERE kind = 'ai_key_rejected'`);
+    assert.equal(await rejectedEvents(), 1);
+    const sent = await notices();
+    assert.ok(sent.length > 0, 'the Administrators and managers are told');
+    for (const n of sent) {
+      assert.match(n.summary, /^The OpenAI key for AI connection ".+" in .+ was refused, or this key may not use the model\./);
+      assert.ok(!n.summary.includes(KEY_A));
+    }
+    assert.equal(new Set(sent.map((n) => n.user_id)).size, sent.length, 'one notice each');
+    assert.equal((await pm.request('POST', url(`/${id}/check`), { reason: 'Looking again' })).body.connection.state, 'key_rejected');
+    assert.equal(await rejectedEvents(), 1, 'a second refusal changes nothing');
+    assert.equal((await notices()).length, sent.length);
     answer = { outcome: 'ok' };
     const again = await pm.request('POST', url(`/${id}/check`), { reason: 'Looking again' });
     assert.equal(again.body.check.outcome, 'ok');
@@ -177,7 +191,7 @@ describe('project AI connections over HTTP', { skip: SKIP_NO_DB }, () => {
     answer = { outcome: 'unreachable' };
     assert.equal((await pm.request('POST', url(`/${id}/check`), { reason: 'x' })).body.connection.state, 'ready');
     const events = await rows(`SELECT action, detail FROM ai_connection_events WHERE connection_id = $1 AND action = 'checked' ORDER BY at, id`, [id]);
-    assert.equal(events.length, 4);
+    assert.equal(events.length, 5);
     assert.ok(!JSON.stringify(events).includes(KEY_A));
   });
 
