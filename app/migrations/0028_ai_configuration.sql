@@ -160,7 +160,7 @@ CREATE INDEX ai_spend_entries_project_actor_idx ON ai_spend_entries (project_id,
 -- ---------------------------------------------------------------------------
 CREATE TABLE ai_call_slots (
   slot          smallint PRIMARY KEY CHECK (slot BETWEEN 1 AND 10),
-  holder        uuid,
+  holder        text,
   leased_until  timestamptz
 );
 INSERT INTO ai_call_slots (slot) SELECT generate_series(1, 10);
