@@ -1,7 +1,7 @@
 # V1.0 sub-project 6: AI configuration — providers, project keys, fallback and spending caps — design
 
 **Date:** 18 November 2026
-**Status:** Draft for the Product Owner's approval. Each section was agreed in conversation on 18 November 2026.
+**Status:** Approved by the Product Owner on 18 November 2026, after section-by-section agreement in conversation and a builder check.
 **Builds on:** branch `TheLord/design-ai-config-b6a1dc`, cut from the sub-project 5 branch `TheLord/dreamy-perlman-c11354` (PR #15, not yet merged). Rebase onto `main` once #15 merges. Next migration: `0028_ai_configuration.sql`.
 **Authority:**
 - Intent Card principle 6.
