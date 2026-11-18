@@ -2,6 +2,7 @@ import { OpenAiModelClient } from '../extraction/model';
 import type { ProtectedKey, Sealed } from '../quarantine/protected-key';
 import { AnthropicModelClient, type ProviderClient } from './anthropic-model';
 import { type KeyBinding, openApiKey, type Provider } from './keys';
+import { OPENAI_BASE } from './provider-clients';
 
 export type { ProviderClient } from './anthropic-model';
 
@@ -12,7 +13,7 @@ export interface ModelClientFactory {
 
 export const realClientFactory: ModelClientFactory = {
   forAttempt({ provider, apiKey, timeoutMs }) {
-    return provider === 'anthropic' ? new AnthropicModelClient(apiKey, timeoutMs) : new OpenAiModelClient(apiKey);
+    return provider === 'anthropic' ? new AnthropicModelClient(apiKey, timeoutMs) : new OpenAiModelClient(apiKey, `${OPENAI_BASE}/v1`);
   },
 };
 

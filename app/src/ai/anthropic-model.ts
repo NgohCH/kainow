@@ -12,6 +12,7 @@ import {
   parseAnswer,
 } from '../extraction/model';
 import type { Usage } from '../spend/cost';
+import { anthropicSdk } from './provider-clients';
 
 export interface ProviderClient extends ModelClient, MinutesModel, JsonSchemaModel {}
 
@@ -28,7 +29,7 @@ export class AnthropicModelClient implements ProviderClient {
   private readonly sdk: Pick<Anthropic, 'messages'>;
 
   constructor(apiKey: string, private readonly timeoutMs: number, sdk?: Pick<Anthropic, 'messages'>) {
-    this.sdk = sdk ?? new Anthropic({ apiKey, maxRetries: 0, timeout: timeoutMs });
+    this.sdk = sdk ?? anthropicSdk(apiKey, timeoutMs);
   }
 
   async extract(req: ModelRequest): Promise<ModelResult> {

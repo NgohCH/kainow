@@ -1,11 +1,11 @@
 import Anthropic from '@anthropic-ai/sdk';
 import type { ProtectedKey, Sealed } from '../quarantine/protected-key';
 import { type KeyBinding, KeyUnreadableError, type Provider, openApiKey } from './keys';
+import { ANTHROPIC_BASE, OPENAI_BASE, anthropicSdk } from './provider-clients';
 
 export type KeyCheck = { outcome: 'ok' } | { outcome: 'refused'; status: 401 | 403 } | { outcome: 'no_model' } | { outcome: 'unreachable' };
 
-export const OPENAI_BASE = 'https://api.openai.com';
-export const ANTHROPIC_BASE = 'https://api.anthropic.com';
+export { ANTHROPIC_BASE, OPENAI_BASE };
 export const DEFAULT_CHECK_TIMEOUT_MS = 10_000;
 
 /** The one SDK call the check makes; tests pass a fake. */
@@ -50,8 +50,8 @@ async function openAiStatus(apiKey: string, modelId: string, timeoutMs: number, 
 }
 
 async function anthropicStatus(apiKey: string, modelId: string, timeoutMs: number, sdk?: ModelLister): Promise<number> {
-  // baseURL is explicit so ANTHROPIC_BASE_URL in the environment is never used; the SDK never retries.
-  const client = sdk ?? new Anthropic({ apiKey, baseURL: ANTHROPIC_BASE, maxRetries: 0, timeout: timeoutMs });
+  // Built with every option explicit, so nothing comes from the environment (P19); the SDK never retries.
+  const client = sdk ?? anthropicSdk(apiKey, timeoutMs);
   try {
     await client.models.retrieve(modelId, undefined, { maxRetries: 0, timeout: timeoutMs });
     return 200;
