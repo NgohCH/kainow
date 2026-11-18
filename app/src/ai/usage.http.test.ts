@@ -17,6 +17,7 @@ const ORG = {
   maxAttempts: 3,
   timeoutSeconds: 120,
   concurrency: 2,
+  reason: 'Organisation AI settings.',
 };
 
 const FORBIDDEN_KEYS = new Set(['question', 'text', 'title', 'prompt', 'body', 'apiKey']);

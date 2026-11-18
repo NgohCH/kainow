@@ -24,6 +24,7 @@ const MVP_BODY = {
   maxAttempts: 3,
   timeoutSeconds: 120,
   concurrency: 2,
+  reason: 'Approved MVP settings.',
 };
 
 describe('spend settings over HTTP', { skip: SKIP_NO_DB }, () => {
@@ -119,6 +120,31 @@ describe('spend settings over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.equal(view.mine.limitMyr, '2.500000');
     assert.equal(view.mine.usedMyr, '0.000000');
     assert.equal((await call('PUT', '/ai/spend-settings', { ...MVP_BODY, userMonthly: { mode: 'unlimited' } })).status, 400);
+  });
+
+  test('a change needs a reason and is recorded with the previous and new values and the reason (spec 7.1, final review I3)', async () => {
+    const { reason: _r, ...withoutReason } = MVP_BODY;
+    for (const body of [withoutReason, { ...MVP_BODY, reason: '   ' }, { ...MVP_BODY, reason: 'x'.repeat(1001) }, { ...MVP_BODY, reason: `key sk-test-${'x'.repeat(40)}` }]) {
+      assert.equal((await call('PUT', '/ai/spend-settings', body)).status, 400, JSON.stringify(body));
+    }
+    assert.equal((await call('GET', '/ai/spend')).body.configured, false, 'nothing is saved without a reason');
+
+    assert.equal((await call('PUT', '/ai/spend-settings', MVP_BODY)).status, 200);
+    assert.equal((await call('PUT', '/ai/spend-settings', { ...MVP_BODY, monthlyLimitMyr: 25, projectsMaySetLimits: true, reason: 'More work this month.' })).status, 200);
+    const pool = new Pool({ connectionString: testDatabaseUrl() });
+    try {
+      const rows = (await pool.query(`SELECT detail FROM audit_events WHERE action = 'ai.spend_settings_changed' ORDER BY occurred_at, id`)).rows;
+      assert.equal(rows.length, 2);
+      assert.equal(rows[0].detail.previous, null);
+      assert.equal(rows[0].detail.reason, 'Approved MVP settings.');
+      assert.equal(rows[0].detail.new.monthlyLimitMyr, '20.000000');
+      const second = rows[1].detail;
+      assert.deepEqual([second.previous.monthlyLimitMyr, second.previous.projectsMaySetLimits], ['20.000000', false]);
+      assert.deepEqual([second.new.monthlyLimitMyr, second.new.projectsMaySetLimits], ['25.000000', true]);
+      assert.equal(second.reason, 'More work this month.');
+    } finally {
+      await pool.end();
+    }
   });
 
   test('nothing is defaulted: a missing or malformed field is a 400 and saves nothing', async () => {

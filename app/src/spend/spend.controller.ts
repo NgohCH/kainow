@@ -2,6 +2,7 @@ import { Body, Controller, ForbiddenException, Get, HttpCode, NotFoundException,
 import { AnySignedInUser, RequireAction } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import { can } from '../auth/permissions';
+import { readReason } from '../common/reason';
 import { ProjectAccess } from '../projects/access.service';
 import { decide } from '../projects/matrix';
 import { formatMicro } from './money';
@@ -77,13 +78,14 @@ export class SpendController {
     };
   }
 
-  /** Saves the approved model, prices, exchange rate and limits. Every field must be given. */
+  /** Saves the exchange rate, limits, delegation switches and policy. Every field must be given, with a reason (spec 7.1). */
   @Put('spend-settings')
   @RequireAction('ai.settings.manage')
   @HttpCode(200)
   async save(@Body() body: unknown, @Req() req: HttpRequest) {
     const input = parseSettingsBody(body);
-    await this.settings.apply(input, req.auth?.user.id ?? null);
+    const reason = readReason((body as { reason?: unknown }).reason, 'a reason for the change');
+    await this.settings.apply(input, req.auth?.user.id ?? null, reason);
     return { settings: describeSettings(input) };
   }
 }

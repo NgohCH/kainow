@@ -322,17 +322,39 @@ describe('AI spend cap', { skip: SKIP_NO_DB }, () => {
     await assert.rejects(pool.query(`UPDATE ai_spend_entries SET estimate_micro_myr = 0, amount_micro_myr = 0 WHERE id = $1`, [id]), /estimate_micro_myr_check/);
   });
 
-  test('changing the settings is recorded with the new values', async () => {
+  test('changing the settings is recorded with the previous and new values and the reason', async () => {
     await configure();
     clock.advanceSeconds(1); // events at the same instant have no guaranteed order
-    await configure({ monthlyLimitMicroMyr: myr('25.5') });
+    await settings.apply({ ...MVP_SPEND_SETTINGS, monthlyLimitMicroMyr: myr('25.5') }, actorId, 'A bigger month.');
     const rows = await pool.query(`SELECT actor_user_id, detail FROM audit_events WHERE action = 'ai.spend_settings_changed' ORDER BY occurred_at, id`);
     assert.equal(rows.rows.length, 2);
     assert.equal(rows.rows[0].actor_user_id, actorId);
-    assert.equal(rows.rows[0].detail.settings.myrPerUsd, '4.100000');
-    assert.equal(rows.rows[0].detail.settings.monthlyLimitMyr, '20.000000');
-    assert.deepEqual(rows.rows[0].detail.settings.daily, { mode: 'not_applied' });
-    assert.equal(rows.rows[1].detail.settings.monthlyLimitMyr, '25.500000');
+    assert.equal(rows.rows[0].detail.previous, null);
+    assert.equal(rows.rows[0].detail.new.myrPerUsd, '4.100000');
+    assert.equal(rows.rows[0].detail.new.monthlyLimitMyr, '20.000000');
+    assert.deepEqual(rows.rows[0].detail.new.daily, { mode: 'not_applied' });
+    assert.equal(rows.rows[1].detail.previous.monthlyLimitMyr, '20.000000');
+    assert.equal(rows.rows[1].detail.new.monthlyLimitMyr, '25.500000');
+    assert.equal(rows.rows[1].detail.reason, 'A bigger month.');
+  });
+
+  test('insertIfAbsent saves only when nothing is saved, so the install command never resets later changes (final review I3, T4a)', async () => {
+    assert.equal(await settings.insertIfAbsent(MVP_SPEND_SETTINGS, null, 'Install.'), true);
+    clock.advanceSeconds(1); // events at the same instant have no guaranteed order
+    await settings.apply(
+      { ...MVP_SPEND_SETTINGS, projectsMaySetLimits: true, projectsMayManageConnections: true, projectCeiling: { mode: 'limit', limitMicroMyr: myr('50') }, maxAttempts: 5, timeoutSeconds: 60, concurrency: 4 },
+      actorId,
+      'Delegated.',
+    );
+    clock.advanceSeconds(1);
+    assert.equal(await settings.insertIfAbsent(MVP_SPEND_SETTINGS, null, 'Install again.'), false);
+    const now = await settings.get();
+    assert.deepEqual(
+      [now?.projectsMaySetLimits, now?.projectsMayManageConnections, now?.projectCeiling, now?.maxAttempts, now?.timeoutSeconds, now?.concurrency],
+      [true, true, { mode: 'limit', limitMicroMyr: myr('50') }, 5, 60, 4],
+    );
+    const rows = (await pool.query(`SELECT detail FROM audit_events WHERE action = 'ai.spend_settings_changed' ORDER BY occurred_at, id`)).rows;
+    assert.deepEqual(rows.map((r) => r.detail.reason), ['Install.', 'Delegated.'], 'the refused re-run records nothing');
   });
 
   test('the database does not accept a daily limit amount when no daily limit applies', async () => {

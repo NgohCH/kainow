@@ -23,6 +23,7 @@ export const ORG = {
   maxAttempts: 3,
   timeoutSeconds: 120,
   concurrency: 2,
+  reason: 'Organisation AI settings.',
 };
 
 export const modelBody = (provider: 'openai' | 'anthropic', modelId: string) => ({

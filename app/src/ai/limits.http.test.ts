@@ -15,6 +15,7 @@ const ORG = {
   maxAttempts: 3,
   timeoutSeconds: 120,
   concurrency: 2,
+  reason: 'Organisation AI settings.',
 };
 
 const LIMITS = {

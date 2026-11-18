@@ -117,7 +117,7 @@ describe('per-person monthly limit', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(describeSettings(withLimit).userMonthly, { mode: 'limit', limitMyr: '2.500000' });
     await settings.apply(withLimit, ann);
     const { rows } = await pool.query("SELECT detail FROM audit_events WHERE action = 'ai.spend_settings_changed'");
-    assert.deepEqual(rows[0].detail.settings.userMonthly, { mode: 'limit', limitMyr: '2.500000' });
+    assert.deepEqual(rows[0].detail.new.userMonthly, { mode: 'limit', limitMyr: '2.500000' });
   });
 
   test('a malformed personal limit is refused', () => {

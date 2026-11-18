@@ -215,14 +215,34 @@ export class SpendSettingsService {
   }
 
   /**
-   * Saves the approved settings and records the change with the new values.
+   * Saves the approved settings and records the change with the previous and new values and the reason (spec 7.1, Q01).
+   * The HTTP route requires the reason; internal callers that seed settings may leave it null.
    * Requests already reserved keep the prices they were reserved at.
    */
-  async apply(input: SpendSettingsInput, actorUserId: string | null): Promise<void> {
+  async apply(input: SpendSettingsInput, actorUserId: string | null, reason: string | null = null): Promise<void> {
+    await this.write(input, actorUserId, reason, 'replace');
+  }
+
+  /**
+   * Saves the settings only when none are saved yet; otherwise changes nothing and returns false. For the install command,
+   * so running it again never resets what an Administrator has since changed (delegation, ceiling, policy).
+   */
+  insertIfAbsent(input: SpendSettingsInput, actorUserId: string | null, reason: string): Promise<boolean> {
+    return this.write(input, actorUserId, reason, 'insert_only');
+  }
+
+  private async write(input: SpendSettingsInput, actorUserId: string | null, reason: string | null, how: 'replace' | 'insert_only'): Promise<boolean> {
     const now = this.clock();
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      // The row is locked (when it exists) so the previous values recorded are the ones this change replaces.
+      await client.query(`SELECT 1 FROM ai_spend_settings WHERE id = 1 FOR UPDATE`);
+      const previous = await readSettings(client);
+      if (previous && how === 'insert_only') {
+        await client.query('ROLLBACK');
+        return false;
+      }
       await client.query(
         `INSERT INTO ai_spend_settings
            (id, myr_per_usd_micro, monthly_limit_micro_myr, daily_mode, daily_limit_micro_myr,
@@ -270,9 +290,10 @@ export class SpendSettingsService {
         actorUserId,
         subjectType: 'ai_spend_settings',
         subjectId: '1',
-        detail: { settings: describeSettings(input) },
+        detail: { previous: previous ? describeSettings(previous) : null, new: describeSettings(input), reason },
       });
       await client.query('COMMIT');
+      return true;
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
       throw err;

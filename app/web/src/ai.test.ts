@@ -158,7 +158,8 @@ test('organisation settings round trip with the new fields', () => {
   assert.equal(d.rate, '4.5');
   assert.equal(d.ceilingMode, 'limit');
   assert.equal(d.ceiling, '300');
-  assert.deepEqual(orgBody(d), {
+  assert.equal(d.reason, '', 'the reason box starts empty');
+  assert.deepEqual(orgBody({ ...d, reason: ' New quarter ' }), {
     myrPerUsd: '4.5',
     monthlyLimitMyr: '1000',
     daily: { mode: 'limit', limitMyr: '50' },
@@ -169,6 +170,7 @@ test('organisation settings round trip with the new fields', () => {
     maxAttempts: 3,
     timeoutSeconds: 120,
     concurrency: 2,
+    reason: 'New quarter',
   });
 });
 

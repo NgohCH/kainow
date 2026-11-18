@@ -274,6 +274,8 @@ function LimitsPanel() {
   async function save(e: FormEvent) {
     e.preventDefault();
     if (!f) return;
+    const problem = reasonProblem(f.reason);
+    if (problem) return setError(problem);
     setBusy(true);
     setError(null);
     setSaved(false);
@@ -290,7 +292,7 @@ function LimitsPanel() {
 
   if (!view) return error ? <p role="alert" className="error">{error}</p> : <p className="loading" role="status">Loading</p>;
   // Nothing saved yet: the form starts from the defaults of D87 and no allowance.
-  const form: OrgForm = f ?? { rate: '', monthly: '', dailyMode: 'not_applied', daily: '', userMode: 'not_applied', user: '', ceilingMode: 'not_applied', ceiling: '', maySetLimits: false, mayManageConnections: false, attempts: '3', timeout: '120', concurrency: '2' };
+  const form: OrgForm = f ?? { rate: '', monthly: '', dailyMode: 'not_applied', daily: '', userMode: 'not_applied', user: '', ceilingMode: 'not_applied', ceiling: '', maySetLimits: false, mayManageConnections: false, attempts: '3', timeout: '120', concurrency: '2', reason: '' };
   const set = (patch: Partial<OrgForm>) => setF({ ...form, ...patch });
   const text = (k: keyof OrgForm) => (e: { target: { value: string } }) => set({ [k]: e.target.value } as Partial<OrgForm>);
   return (
@@ -335,6 +337,11 @@ function LimitsPanel() {
           <label className="check"><input type="checkbox" checked={form.mayManageConnections} onChange={(e) => set({ mayManageConnections: e.target.checked })} />Projects may manage AI connections</label>
           <span className="hint">Turning one off keeps what projects already set. They stay in force, but only an Administrator can change them.</span>
         </fieldset>
+        <label>
+          Reason
+          <input required maxLength={1000} value={form.reason} onChange={text('reason')} />
+          <span className="hint">Recorded with the old and new values.</span>
+        </label>
         {error && <p role="alert" className="error">{error}</p>}
         {saved && <p role="status" className="ok">Saved. The change is in the audit trail.</p>}
         <button className="primary" disabled={busy}>Save limits and policy</button>

@@ -339,6 +339,8 @@ export interface OrgForm {
   attempts: string;
   timeout: string;
   concurrency: string;
+  /** Every change needs one; it is recorded with the previous and new values (spec 7.1). */
+  reason: string;
 }
 
 export function orgDraft(s: OrgSettings): OrgForm {
@@ -356,6 +358,7 @@ export function orgDraft(s: OrgSettings): OrgForm {
     attempts: String(s.maxAttempts),
     timeout: String(s.timeoutSeconds),
     concurrency: String(s.concurrency),
+    reason: '',
   };
 }
 
@@ -370,6 +373,7 @@ export const orgBody = (f: OrgForm) => ({
   maxAttempts: Number(f.attempts),
   timeoutSeconds: Number(f.timeout),
   concurrency: Number(f.concurrency),
+  reason: f.reason.trim(),
 });
 
 // ---------------------------------------------------------------------------------------------------------------
