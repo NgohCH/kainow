@@ -1,5 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ApiError } from '../api.ts';
+import { BLOCKED_PREFIX } from '../ai.ts';
+import { AiSettingsLink } from './AiLink.tsx';
 import { FeedbackButton } from './Feedback.tsx';
 import { analyseNow, analyseSelected, analysisBox, analysisStatus, type AnalysisStatusView } from '../discussion.ts';
 
@@ -69,6 +71,7 @@ export function AnalysisStatus({
       {lines.map((l, i) => (
         <p key={i} className={i === 0 ? 'analysis-line' : 'meta'}>{l}</p>
       ))}
+      <AiSettingsLink projectId={projectId} show={!!status && status.line.startsWith(BLOCKED_PREFIX)} />
       {canRequest && (
         <div className="actions">
           <button disabled={busy} onClick={() => request(() => analyseNow(threadId), 'Analysis requested.')}>Analyse now</button>

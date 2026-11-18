@@ -32,6 +32,8 @@ import { DeliveryHistory } from './Deliveries.tsx';
 import { DigestSend, EscalationFlags } from './DigestSend.tsx';
 import { Feedback } from './Feedback.tsx';
 import { ProjectSettings } from './NotificationSettings.tsx';
+import { ProjectAi } from './ProjectAi.tsx';
+import { mayViewAiTab, mayViewAiUsage } from '../ai.ts';
 import { ProjectCalendarProvider } from './ProjectCalendar.tsx';
 import { DeletedItemsList } from './DeletedItems.tsx';
 import { DeletionDelegationPanel } from './DeleteRestore.tsx';
@@ -39,7 +41,7 @@ import { DeletionsList } from './HistoryList.tsx';
 import { CopiesAwaitingList, HeldForReviewList } from './HeldReview.tsx';
 import { type Act, ArchivePanel, DepartmentMove, GrantsSection, HandoverForm, HoldActions } from './ProjectAccessPanels.tsx';
 
-type Tab = 'overview' | 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'feedback' | 'closing' | 'deadline-review' | 'deleted';
+type Tab = 'overview' | 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted';
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
@@ -104,6 +106,7 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
     ...(contentAllowed ? ([['feedback', 'Feedback']] as Array<[Tab, string]>) : []),
     ...(project.inspectDeleted ? ([['deleted', 'Deleted items']] as Array<[Tab, string]>) : []),
     ['settings', 'Settings'],
+    ...(mayViewAiTab(roles, project.isAdmin) ? ([['ai', 'AI']] as Array<[Tab, string]>) : []),
   ];
   // The project's current people, for choosing assignees, requesters and responsible people.
   const people = [
@@ -172,6 +175,7 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
       {tab === 'review' && contentAllowed && <AssistReview projectId={project.id} roles={roles} />}
       {tab === 'feedback' && contentAllowed && <Feedback projectId={project.id} />}
       {tab === 'settings' && <ProjectSettings projectId={project.id} />}
+      {tab === 'ai' && mayViewAiTab(roles, project.isAdmin) && <ProjectAi projectId={project.id} mayViewUsage={mayViewAiUsage(roles)} />}
       {tab === 'deleted' && project.inspectDeleted && <DeletedItemsList projectId={project.id} />}
       {tab === 'closing' && <Closing project={project} act={act} />}
       {tab === 'deadline-review' && <DeadlineReview project={project} />}

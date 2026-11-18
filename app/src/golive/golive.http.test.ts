@@ -60,6 +60,15 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual([body.closedAt, body.notDoneAtClose], [null, []]);
   });
 
+  test('the AI item is for information only: shown after the steps, not counted, never blocking', async () => {
+    const body = await get();
+    assert.deepEqual(body.information.map((i: any) => [i.key, i.text, i.link]), [
+      ['ai', 'AI: at least one approved model; projects need their own connection and limits before AI runs', '#/ai'],
+    ]);
+    assert.equal(body.steps.length, 11);
+    assert.ok(!body.steps.some((s: any) => s.key === 'ai'));
+  });
+
   test('the organisation step ticks itself once the organisation is registered', async () => {
     await t.close();
     t = await startTestApp(undefined, { organisation: false });

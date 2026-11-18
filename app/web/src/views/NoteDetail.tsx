@@ -9,6 +9,7 @@ import { DeleteAction } from './DeleteRestore.tsx';
 import { runFailureText } from '../quarantine.ts';
 import { QuarantineNote, ReportSecret } from './ReportSecret.tsx';
 import { AudiencePanel } from './AudiencePanel.tsx';
+import { AiSettingsLink } from './AiLink.tsx';
 import { SummaryRequest } from './SummaryView.tsx';
 import { Intake } from './Intake.tsx';
 import { SubmissionReview } from './Submissions.tsx';
@@ -200,6 +201,7 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
             {active ? 'Reading the notes' : runs.length ? 'Run again' : 'Find decisions and actions'}
           </button>
           {error && <p role="alert" className="error">{error}</p>}
+          <AiSettingsLink projectId={src.projectId} show={runs[0]?.status === 'blocked'} />
           {runs.length === 0 && <p className="hint">Kainow sends this version to an AI model, then shows each proposal beside the passage it quoted. Nothing is saved as approved until you approve it.</p>}
           <ul className="list runs">
             {runs.map((r) => (

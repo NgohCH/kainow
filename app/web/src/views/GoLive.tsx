@@ -166,6 +166,21 @@ export function GoLive() {
               <Step key={s.key} s={s} closed={!!data.closedAt} onAction={(k, a, n) => void act(k, a, n)} busy={busy} />
             ))}
           </ol>
+          {data.information && data.information.length > 0 && (
+            <section aria-labelledby="golive-info-heading" className="golive-info">
+              <h2 id="golive-info-heading">For information</h2>
+              <p className="meta">These are not steps. They do not hold up go-live.</p>
+              <ul className="plain">
+                {data.information.map((i) => (
+                  <li key={i.key}>
+                    <p><strong>{i.text}</strong></p>
+                    <p>{i.explanation}</p>
+                    <p><a href={i.link}>Open the page for this item</a></p>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
         </>
       )}
     </main>

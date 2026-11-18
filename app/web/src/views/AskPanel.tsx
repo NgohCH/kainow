@@ -20,6 +20,7 @@ import {
 import { type DiscussionItem, listDiscussion, threadPath } from '../discussion.ts';
 import { formatWhen } from '../format.ts';
 import { AnswerBody } from './AiAnswer.tsx';
+import { AiSettingsLink } from './AiLink.tsx';
 import { QuarantineNote, ReportSecret } from './ReportSecret.tsx';
 import { FeedbackButton } from './Feedback.tsx';
 
@@ -233,6 +234,7 @@ function AskCard({ a, projectId, threads, onNew, onChanged }: { a: AnswerView; p
       <p className={a.status === 'failed' || a.status === 'blocked' ? 'warn' : 'meta'} role={isActive(a) ? 'status' : undefined}>
         {done ? ANSWER_LABEL : statusText(a)}
       </p>
+      <AiSettingsLink projectId={projectId} show={a.status === 'blocked'} />
       {a.status === 'not_found' && a.searchedWords.length > 0 && <p className="meta">Searched for: {a.searchedWords.join(', ')}</p>}
       <QuarantineNote text={a.quarantineLabel} />
       {a.notice && done && <p className="notice">{a.notice}</p>}

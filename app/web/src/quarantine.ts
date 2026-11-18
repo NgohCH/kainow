@@ -4,6 +4,7 @@
  * forms send; the server decides every change again. The marked text is never kept: forms clear it after sending, and
  * nothing here ever builds a line from it.
  */
+import { blockedRunText, isBlockedCode } from './ai.ts';
 import { api } from './api.ts';
 import { formatDay } from './format.ts';
 
@@ -132,9 +133,10 @@ export const decisionBody = (places: Array<{ kind: ItemKind; id: string }>, deci
 // Runner failure codes
 // ---------------------------------------------------------------------------------------------------------------
 
-/** What a failed or blocked run says: the code `held` is worded; any other code shows the server's detail. */
+/** What a failed or blocked run says: `held` and the AI-not-available codes are worded; any other code shows the server's detail. */
 export function runFailureText(code: string | null, detail: string | null): string {
   if (code === 'held') return HELD_LABEL;
+  if (isBlockedCode(code)) return blockedRunText(code, detail);
   return detail ?? '';
 }
 
