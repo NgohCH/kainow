@@ -48,8 +48,12 @@ export async function registerAiWorker(boss: PgBoss, runners: AiRunners, pool: P
   });
 }
 
-async function run(runners: AiRunners, data: AiJob): Promise<RunOutcome | 'wait'> {
-  const job = { resume: data.resume };
+/**
+ * Runs the job's request. `resume` is honoured only on the job's first delivery: a pg-boss retry of a resumed job follows
+ * an attempt that was sent (and may hold a spend entry), so the retry counts the next attempt (final review I1).
+ */
+async function run(runners: AiRunners, data: AiJob, retryCount: number): Promise<RunOutcome | 'wait'> {
+  const job = { resume: retryCount === 0 ? data.resume : undefined };
   if (isAssistJob(data)) {
     if (!runners.assist) throw new Error('AI assist requests are not handled by this worker');
     return runners.assist.process(data.assistRequestId, job);
@@ -63,7 +67,7 @@ async function handle(boss: PgBoss, runners: AiRunners, pool: Pool, job: JobWith
   // pg-boss will not try this job again after this try.
   const finalTry = job.retryCount >= job.retryLimit;
   try {
-    const outcome = await run(runners, job.data);
+    const outcome = await run(runners, job.data, job.retryCount);
     if (outcome === 'wait') {
       // No AI place was free: the same attempt resumes later, and this job completes (spec 6.5).
       await sendAgain(boss, pool, job, kind, id, 'wait');
