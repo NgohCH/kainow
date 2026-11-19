@@ -1,7 +1,7 @@
 # V1.0 sub-project 9: external outputs — output register, generated files, exports, SharePoint/OneDrive filing and the managed source area — design
 
 **Date:** 20 November 2026
-**Status:** Draft for Product Owner review. Scope and approach were agreed in conversation on 20 November 2026 (§2), including the builder-check answers on directory lookup and folder sharing.
+**Status:** Approved by the Product Owner on 20 November 2026, including the design calls in §16 and the bench aims in §15. Scope and approach were agreed in conversation on 20 November 2026 (§2), including the builder-check answers on directory lookup and folder sharing.
 **Builds on:** `main` at 3df1dc1 (sub-projects 1–7 merged). Branch `TheLord/subproject-9-external-outputs-56227e`. Migration `0031_external_outputs.sql` (0030 is sub-project 8's). Decision Register D100 onward; Configuration Catalogue C85 onward.
 **Runs alongside:** sub-project 8 (shared resources and budget), built at the same time. Its migration 0030 rebuilds the `change_requests` kind and target CHECK lists; this sub-project's migration must rebuild them as the union of both lists (§13.3).
 **Authority:**
