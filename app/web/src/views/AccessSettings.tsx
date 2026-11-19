@@ -68,6 +68,8 @@ export function AccessSettings() {
   const months = form?.archiveAfterMonths;
 
   useEffect(() => {
+    // Every change of the delay drops the old preview, so Save always waits for one made for the value being saved.
+    setPreview(null);
     setPreviewError(null);
     if (!archiveChanged || months === undefined || (data && settingsProblem({ ...data.settings, archiveAfterMonths: months }, data.bounds))) return;
     let stale = false;

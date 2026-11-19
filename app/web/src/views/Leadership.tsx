@@ -3,7 +3,7 @@ import { ApiError, api } from '../api.ts';
 import { awaitingLabel, cancelledLabel, completionLabel, dayLabel, onTimeLabel, plannedEndLabel, updatedLabel } from '../dashboard.ts';
 import { plural } from '../format.ts';
 import { DEFAULT_STATUSES, LEADERSHIP_FIELDS, type LeadershipCard, type LeadershipSummary, leadershipQuery, visibleFields } from '../leadership.ts';
-import { defaultPrefs, expansionDefault, type Prefs } from '../prefs.ts';
+import { defaultPrefs, openChoice, type Prefs } from '../prefs.ts';
 import { STATUS_LABEL } from '../projects.ts';
 import { Customise } from './Customise.tsx';
 
@@ -90,14 +90,14 @@ function FieldRow({ k, c }: { k: string; c: LeadershipCard }) {
 
 const HEADER_KEYS = ['name', 'attentionFlags', 'refresh'];
 
-function Card({ c, keys, open, canSave, onToggle }: { c: LeadershipCard; keys: string[]; open: boolean; canSave: boolean; onToggle: () => void }) {
+function Card({ c, keys, open, onToggle }: { c: LeadershipCard; keys: string[]; open: boolean; onToggle: () => void }) {
   const flags = flagsOf(c);
   const panel = `leadership-${c.id}`;
   const body = keys.filter((k) => !HEADER_KEYS.includes(k));
   return (
     <li className="home-project">
       <h3>
-        <button type="button" className="disclosure" aria-expanded={open} aria-controls={open ? panel : undefined} disabled={!canSave} onClick={onToggle}>
+        <button type="button" className="disclosure" aria-expanded={open} aria-controls={open ? panel : undefined} onClick={onToggle}>
           {c.name ?? 'Project'}
         </button>
       </h3>
@@ -125,6 +125,7 @@ export function Leadership({ prefs, ready, failed, onChange }: { prefs: Prefs; r
   const [data, setData] = useState<LeadershipSummary | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [local, setLocal] = useState<Record<string, boolean>>({});
   const [fieldsOpen, setFieldsOpen] = useState(false);
   const fieldsKey = JSON.stringify(ready ? prefs.leadership.fields : null);
 
@@ -154,8 +155,13 @@ export function Leadership({ prefs, ready, failed, onChange }: { prefs: Prefs; r
   const keys = visibleFields(ready ? prefs : defaultPrefs(), LEADERSHIP_FIELDS).map((f) => f.key);
   const cards = data?.cards ?? [];
   const ids = cards.map((c) => c.id);
-  const isOpen = (id: string) => expansionDefault(cards.length, prefs.expanded[id]);
-  const setAll = (open: boolean) => save({ ...prefs, expanded: { ...prefs.expanded, ...Object.fromEntries(ids.map((id) => [id, open])) } });
+  const isOpen = (id: string) => openChoice(local, prefs.expanded, cards.length, id);
+  // A choice always works on the page; it is saved only once the saved preferences have loaded (saving earlier would overwrite them).
+  const choose = (patch: Record<string, boolean>) => {
+    setLocal((l) => ({ ...l, ...patch }));
+    if (ready) void save({ ...prefs, expanded: { ...prefs.expanded, ...patch } });
+  };
+  const setAll = (open: boolean) => choose(Object.fromEntries(ids.map((id) => [id, open])));
 
   return (
     <main className="page narrow home">
@@ -192,8 +198,8 @@ export function Leadership({ prefs, ready, failed, onChange }: { prefs: Prefs; r
       </form>
 
       <div className="inline-form">
-        <button type="button" className="quiet" disabled={!ready || ids.length === 0} onClick={() => setAll(true)}>Expand all</button>
-        <button type="button" className="quiet" disabled={!ready || ids.length === 0} onClick={() => setAll(false)}>Collapse all</button>
+        <button type="button" className="quiet" disabled={ids.length === 0} onClick={() => setAll(true)}>Expand all</button>
+        <button type="button" className="quiet" disabled={ids.length === 0} onClick={() => setAll(false)}>Collapse all</button>
         <button type="button" className="quiet" aria-expanded={fieldsOpen} onClick={() => setFieldsOpen((o) => !o)}>Choose fields</button>
       </div>
       {fieldsOpen && <Customise prefs={prefs} ready={ready} onChange={onChange} onClose={() => setFieldsOpen(false)} show={['leadership']} />}
@@ -202,7 +208,7 @@ export function Leadership({ prefs, ready, failed, onChange }: { prefs: Prefs; r
       {data && cards.length === 0 && <p className="empty">No projects in your leadership scope match these filters.</p>}
       <ul className="plain home-projects">
         {cards.map((c) => (
-          <Card key={c.id} c={c} keys={keys.filter((k) => k in c)} open={isOpen(c.id)} canSave={ready} onToggle={() => save({ ...prefs, expanded: { ...prefs.expanded, [c.id]: !isOpen(c.id) } })} />
+          <Card key={c.id} c={c} keys={keys.filter((k) => k in c)} open={isOpen(c.id)} onToggle={() => choose({ [c.id]: !isOpen(c.id) })} />
         ))}
       </ul>
     </main>

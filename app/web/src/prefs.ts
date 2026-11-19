@@ -64,6 +64,11 @@ export function expansionDefault(shownCount: number, saved: boolean | undefined)
   return saved ?? shownCount <= 5;
 }
 
+/** Open or closed: this session's own choice first (it works even when saved preferences did not load), then the saved one, then the default. */
+export function openChoice(local: Record<string, boolean>, saved: Record<string, boolean>, shownCount: number, id: string): boolean {
+  return local[id] ?? expansionDefault(shownCount, saved[id]);
+}
+
 /** Moves one key a place up or down. An unknown key, or one already at the end, leaves the list as it was. */
 export function moveItem<T extends string>(list: readonly T[], key: T, dir: 'up' | 'down'): T[] {
   const i = list.indexOf(key);

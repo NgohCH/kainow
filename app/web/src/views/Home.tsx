@@ -17,7 +17,7 @@ import {
   visibleHomeSections,
 } from '../dashboard.ts';
 import { formatWhen, plural } from '../format.ts';
-import { HOME_SECTION_LABELS, expansionDefault, type HomeSection, type Prefs } from '../prefs.ts';
+import { HOME_SECTION_LABELS, openChoice, type HomeSection, type Prefs } from '../prefs.ts';
 import { STATUS_LABEL, roleLabel } from '../projects.ts';
 
 type Save = (next: Prefs) => Promise<void>;
@@ -123,6 +123,7 @@ export function Home({ prefs, ready, failed, onChange }: { prefs: Prefs; ready: 
   const [d, setD] = useState<PersonalDashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
+  const [local, setLocal] = useState<Record<string, boolean>>({});
   const { includeArchived, showCompleted } = prefs.home;
 
   useEffect(() => {
@@ -151,7 +152,12 @@ export function Home({ prefs, ready, failed, onChange }: { prefs: Prefs; ready: 
   const sections = visibleHomeSections(prefs.home.order, prefs.home.hidden);
   const projects = d?.projects ?? [];
   const shownIds = projects.map((p) => p.id);
-  const isOpen = (id: string) => expansionDefault(projects.length, prefs.expanded[id]);
+  const isOpen = (id: string) => openChoice(local, prefs.expanded, projects.length, id);
+  // Open and closed always work on the page; they are saved only once the saved preferences have loaded.
+  const choose = (patch: Record<string, boolean>) => {
+    setLocal((l) => ({ ...l, ...patch }));
+    if (ready) void save({ ...prefs, expanded: { ...prefs.expanded, ...patch } });
+  };
 
   const render: Record<HomeSection, () => React.ReactNode> = {
     needsYou: () => (
@@ -200,17 +206,17 @@ export function Home({ prefs, ready, failed, onChange }: { prefs: Prefs; ready: 
             <input type="checkbox" checked={includeArchived} disabled={!ready} onChange={(e) => save({ ...prefs, home: { ...prefs.home, includeArchived: e.target.checked } })} />
             Include archived
           </label>
-          <button type="button" className="quiet" disabled={!ready || shownIds.length === 0} onClick={() => save({ ...prefs, expanded: expandAllPatch(prefs.expanded, shownIds, true) })}>
+          <button type="button" className="quiet" disabled={shownIds.length === 0} onClick={() => choose(expandAllPatch({}, shownIds, true))}>
             Expand all
           </button>
-          <button type="button" className="quiet" disabled={!ready || shownIds.length === 0} onClick={() => save({ ...prefs, expanded: expandAllPatch(prefs.expanded, shownIds, false) })}>
+          <button type="button" className="quiet" disabled={shownIds.length === 0} onClick={() => choose(expandAllPatch({}, shownIds, false))}>
             Collapse all
           </button>
         </div>
         {d && projects.length === 0 && <p className="empty">You are not in any project yet. Create one, or accept an invitation from its Project Manager, Owner or a Sponsor.</p>}
         <ul className="plain home-projects">
           {projects.map((p) => (
-            <ProjectSection key={p.id} p={p} open={isOpen(p.id)} onToggle={() => save({ ...prefs, expanded: { ...prefs.expanded, [p.id]: !isOpen(p.id) } })} />
+            <ProjectSection key={p.id} p={p} open={isOpen(p.id)} onToggle={() => choose({ [p.id]: !isOpen(p.id) })} />
           ))}
         </ul>
       </section>

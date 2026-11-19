@@ -136,8 +136,3 @@ export function leadershipQuery(f: { statuses: readonly string[]; department: st
   const s = q.toString();
   return s ? `?${s}` : '';
 }
-
-/** Today's calendar day in UTC+8 as YYYY-MM-DD. */
-export function todayUtc8(now: Date = new Date()): string {
-  return new Date(now.getTime() + 8 * 3_600_000).toISOString().slice(0, 10);
-}

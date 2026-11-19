@@ -182,3 +182,12 @@ test('saver: saves run in order, the last response wins, and a rollback never un
   assert.equal(await cSettled, 'failed');
   assert.equal(shown.at(-1), 'plum');
 });
+
+test('openChoice: a session choice beats the saved one, which beats the default', async () => {
+  const { openChoice } = await import('./prefs.ts');
+  assert.equal(openChoice({}, {}, 6, 'a'), false);
+  assert.equal(openChoice({ a: true }, {}, 6, 'a'), true);
+  assert.equal(openChoice({}, { a: true }, 6, 'a'), true);
+  assert.equal(openChoice({ a: false }, { a: true }, 3, 'a'), false);
+  assert.equal(openChoice({}, {}, 5, 'a'), true);
+});

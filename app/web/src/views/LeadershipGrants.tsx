@@ -2,7 +2,8 @@ import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { ApiError, api, type AdminProjectRow, type Department } from '../api.ts';
 import { formatWhen } from '../format.ts';
 import { dayLabel } from '../dashboard.ts';
-import { type Grant, type ScopeKind, grantStateLabel, reasonProblem, scopeLabel, todayUtc8 } from '../leadership.ts';
+import { type Grant, type ScopeKind, grantStateLabel, reasonProblem, scopeLabel } from '../leadership.ts';
+import { todayUtc8 } from '../changes.ts';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 
