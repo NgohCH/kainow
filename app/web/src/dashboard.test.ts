@@ -12,6 +12,7 @@ import {
   plannedEndLabel,
   updatedLabel,
   visibleHomeSections,
+  homeQuery,
   withTodayMarker,
 } from './dashboard.ts';
 
@@ -79,4 +80,10 @@ test('bar width never shows a missing value as a bar', () => {
   assert.equal(barWidth(null, 100), null);
   assert.equal(barWidth(0, 100), 0);
   assert.equal(barWidth(150, 100), 100);
+});
+
+test('home query uses defaults until preferences are loaded', () => {
+  const home = { includeArchived: true, showCompleted: true };
+  assert.equal(homeQuery(home, false), 'includeArchived=0&showCompleted=0');
+  assert.equal(homeQuery(home, true), 'includeArchived=1&showCompleted=1');
 });

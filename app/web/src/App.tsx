@@ -224,10 +224,12 @@ export function App() {
   // Personal display preferences: loaded once signed in, saved at once on each change, and applied to <html>.
   const [prefs, setPrefs] = useState<Prefs>(DEFAULT_PREFS);
   const [prefsLoaded, setPrefsLoaded] = useState(false);
+  const [prefsFailed, setPrefsFailed] = useState(false);
   const [customising, setCustomising] = useState(false);
   const saver = useRef(createPrefsSaver((next) => api.put<Prefs>('/me/preferences', next), setPrefs)).current;
   useEffect(() => {
     setPrefsLoaded(false);
+    setPrefsFailed(false);
     if (!user) {
       saver.loaded(DEFAULT_PREFS);
       setCustomising(false);
@@ -240,7 +242,7 @@ export function App() {
         saver.loaded(p);
         setPrefsLoaded(true);
       },
-      () => undefined,
+      () => !stale && setPrefsFailed(true),
     );
     return () => {
       stale = true;
@@ -338,7 +340,7 @@ export function App() {
   else if (note) page = <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} />;
   else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | 'timeline' | undefined) ?? 'overview'} itemId={project[3]} prefs={prefs} prefsReady={prefsLoaded} onPrefs={savePrefs} />;
   else if (hash === '#/projects') page = <Projects isAdmin={isAdmin} />;
-  else page = <Home prefs={prefs} ready={prefsLoaded} onChange={savePrefs} />;
+  else page = <Home prefs={prefs} ready={prefsLoaded} failed={prefsFailed} onChange={savePrefs} />;
 
   return (
     <>

@@ -3,6 +3,7 @@
  * (app/src/dashboards/measures.ts, personal.service.ts, project-dashboard.service.ts, timeline.ts): the web cannot import
  * server code. The web never works out a figure; it only words and orders what the server gave.
  */
+import { plural } from './format.ts';
 import { HOME_SECTIONS, type HomeSection } from './prefs.ts';
 
 export type Completion =
@@ -118,8 +119,6 @@ export const TIMELINE_KIND_LABELS: Record<TimelineLineKind, string> = {
   planned_end: 'Planned end',
 };
 
-const plural = (n: number, one: string): string => `${n} ${n === 1 ? one : `${one}s`}`;
-
 /** "62% task completion (31 of 50 tasks)", or "Progress not yet measurable" when no task counts. */
 export function completionLabel(c: Completion): string {
   if (c.state === 'not_measurable') return 'Progress not yet measurable';
@@ -160,6 +159,12 @@ export function updatedLabel(iso: string): string {
 
 export function overdueDaysLabel(n: number): string {
   return `overdue ${plural(n, 'day')}`;
+}
+
+/** The query for `GET /dashboard/me`: the saved toggles once preferences are loaded, otherwise the defaults. */
+export function homeQuery(home: { includeArchived: boolean; showCompleted: boolean }, ready: boolean): string {
+  const on = (v: boolean) => (ready && v ? 1 : 0);
+  return `includeArchived=${on(home.includeArchived)}&showCompleted=${on(home.showCompleted)}`;
 }
 
 /** The sections to draw, in saved order. "Needs you" is first and is never hidden. */

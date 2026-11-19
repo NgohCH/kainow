@@ -9,6 +9,7 @@ import {
   completionLabel,
   dayLabel,
   expandAllPatch,
+  homeQuery,
   onTimeLabel,
   overdueDaysLabel,
   plannedEndLabel,
@@ -73,7 +74,7 @@ function ProjectSection({ p, open, onToggle }: { p: PersonalProject; open: boole
   return (
     <li className="home-project">
       <h3>
-        <button type="button" className="disclosure" aria-expanded={open} aria-controls={panel} onClick={onToggle}>
+        <button type="button" className="disclosure" aria-expanded={open} aria-controls={open && x ? panel : undefined} onClick={onToggle}>
           {p.name}
         </button>
         {p.archived && <span className="meta"> (archived)</span>}
@@ -113,30 +114,30 @@ function ProjectSection({ p, open, onToggle }: { p: PersonalProject; open: boole
           <p><a href={x.link}>Open the project dashboard</a></p>
         </div>
       )}
-      {open && !x && <div id={panel} />}
     </li>
   );
 }
 
 /** The personal dashboard (spec section 4): Needs you, My tasks and My projects, in the saved order. */
-export function Home({ prefs, ready, onChange }: { prefs: Prefs; ready: boolean; onChange: Save }) {
+export function Home({ prefs, ready, failed, onChange }: { prefs: Prefs; ready: boolean; failed: boolean; onChange: Save }) {
   const [d, setD] = useState<PersonalDashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const { includeArchived, showCompleted } = prefs.home;
 
   useEffect(() => {
-    if (!ready) return;
+    // The dashboard loads with the default toggles when preferences could not be loaded, and again with the saved ones.
+    if (!ready && !failed) return;
     let stale = false;
     setError(null);
-    api.get<PersonalDashboard>(`/dashboard/me?includeArchived=${includeArchived ? 1 : 0}&showCompleted=${showCompleted ? 1 : 0}`).then(
+    api.get<PersonalDashboard>(`/dashboard/me?${homeQuery(prefs.home, ready)}`).then(
       (r) => !stale && setD(r),
       (e: Error) => !stale && setError(e.message),
     );
     return () => {
       stale = true;
     };
-  }, [ready, includeArchived, showCompleted]);
+  }, [ready, failed, includeArchived, showCompleted]);
 
   async function save(next: Prefs) {
     setSaveError(null);
@@ -224,6 +225,7 @@ export function Home({ prefs, ready, onChange }: { prefs: Prefs; ready: boolean;
       </div>
       {error && <p role="alert" className="error">{error}</p>}
       {saveError && <p role="alert" className="error">{saveError}</p>}
+      {failed && !ready && <p role="alert" className="error">Your saved display choices could not be loaded, so the defaults are shown and the toggles are off until they load.</p>}
       {!d && !error && <p className="loading">Loading</p>}
       {sections.map((s) => (
         <div key={s}>{render[s]()}</div>

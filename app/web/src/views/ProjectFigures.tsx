@@ -11,7 +11,7 @@ import {
   plannedEndLabel,
   updatedLabel,
 } from '../dashboard.ts';
-import { formatWhen } from '../format.ts';
+import { formatWhen, plural } from '../format.ts';
 import { Bars } from './Bars.tsx';
 
 const SEVERITIES = ['critical', 'high', 'medium', 'low'] as const;
@@ -44,7 +44,7 @@ export function ProjectFigures({ projectId, canReadWork }: { projectId: string; 
   const late = lateLabel(o);
   // The Work tab does not filter yet, so these link to the tab itself.
   const count = (n: number, label: string) =>
-    canReadWork && n > 0 ? <a href={`#/projects/${projectId}/work`}>{n} {label}</a> : <>{n} {label}</>;
+    canReadWork && n > 0 ? <a href={`#/projects/${projectId}/work`}>{plural(n, label)}</a> : <>{plural(n, label)}</>;
 
   return (
     <section aria-labelledby="figures-heading" className="figures">
@@ -62,15 +62,15 @@ export function ProjectFigures({ projectId, canReadWork }: { projectId: string; 
 
       <dl className="facts">
         <dt>Stage</dt>
-        <dd>{m.stage ? `${m.stage.stage}${m.stage.substage ? `, ${m.stage.substage}` : ''}, ${m.stage.days} ${m.stage.days === 1 ? 'day' : 'days'} in stage` : 'No stage recorded'}</dd>
+        <dd>{m.stage ? `${m.stage.stage}${m.stage.substage ? `, ${m.stage.substage}` : ''}, ${plural(m.stage.days, 'day')} in stage` : 'No stage recorded'}</dd>
         <dt>Planned end</dt>
         <dd>{plannedEndLabel(m.plannedEnd)}</dd>
         <dt>Overdue</dt>
-        <dd>{count(m.overdue, m.overdue === 1 ? 'task' : 'tasks')}</dd>
+        <dd>{count(m.overdue, 'task')}</dd>
         <dt>Blocked</dt>
-        <dd>{count(m.blocked, m.blocked === 1 ? 'task' : 'tasks')}</dd>
+        <dd>{count(m.blocked, 'task')}</dd>
         <dt>Due in the next 7 days</dt>
-        <dd>{count(m.dueSoon, m.dueSoon === 1 ? 'task' : 'tasks')}</dd>
+        <dd>{count(m.dueSoon, 'task')}</dd>
         <dt>Pending invitations</dt>
         <dd>
           {d.invitations.count}
@@ -124,7 +124,7 @@ export function ProjectFigures({ projectId, canReadWork }: { projectId: string; 
           ))}
         </tbody>
       </table>
-      <p className="meta">{m.risks.overdueReviews} {m.risks.overdueReviews === 1 ? 'review' : 'reviews'} overdue</p>
+      <p className="meta">{plural(m.risks.overdueReviews, 'review')} overdue</p>
       {d.risks.significant.length > 0 && (
         <ul className="plain">
           {d.risks.significant.map((r) => (
