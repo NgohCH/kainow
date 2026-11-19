@@ -278,13 +278,13 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['revoked', 'A leadership grant was revoked, with a reason.'],
   ]),
   ...group('access_settings_changes', 'Organisation', ADMIN, 'access settings', [['changed', 'Access and records settings changed: previous and new values, with a reason.']]),
-  ...group('resource_line_events', 'resources', PERSON, 'resource line', [
+  ...group('resource_line_events', 'Resources', PERSON, 'resource line', [
     ['created', 'A resource line was added to a project.'],
     ['edited', 'A resource line was edited: previous and new values.'],
     ['status_changed', 'A resource line moved to another status.'],
     ['cancelled', 'A resource line was cancelled, with a reason.'],
   ]),
-  ...group('resource_catalogue_events', 'resources', PERSON, 'resource catalogue entry or maintainer', [
+  ...group('resource_catalogue_events', 'Resources', PERSON, 'resource catalogue entry or maintainer', [
     ['added', 'A catalogue item or category was added.'],
     ['edited', 'A catalogue item was edited.'],
     ['renamed', 'A catalogue category was renamed.'],
@@ -292,8 +292,9 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['maintainer_added', 'A person was made a catalogue maintainer, with a reason.'],
     ['maintainer_removed', 'A person stopped being a catalogue maintainer, with a reason.'],
   ]),
-  ...group('resource_settings_changes', 'resources', ADMIN, 'resource and finance settings', [['changed', 'An organisation resource or finance setting changed: previous and new values, with a reason.']]),
-  ...group('project_finance_changes', 'finance', PERSON, 'project financial tracking', [['changed', 'A project’s financial tracking setting changed: previous and new values, with a reason.']]),
+  ...audit('Resources', ADMIN, 'resource and finance settings', [['resources.settings_changed', 'Organisation resource and finance settings were changed, with a reason (D94).']]),
+  ...group('resource_settings_changes', 'Resources', ADMIN, 'resource and finance settings', [['changed', 'An organisation resource or finance setting changed: previous and new values, with a reason.']]),
+  ...group('project_finance_changes', 'Finance', PERSON, 'project financial tracking', [['changed', 'A project’s financial tracking setting changed: previous and new values, with a reason.']]),
   ...group('approval_policy_changes', 'Proposals and changes', PERSON, 'approval policy', [['changed', 'An approval policy field changed, with a reason.']]),
   ...group('notification_settings_changes', 'Notifications', PERSON, 'notification settings', [['changed', 'A notification setting changed, with a reason.']]),
   ...group('analysis_settings_changes', 'AI', PERSON, 'analysis settings', [['changed', 'An analysis setting changed, with a reason.']]),

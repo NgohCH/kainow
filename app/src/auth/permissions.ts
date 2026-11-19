@@ -9,6 +9,8 @@ export const ACTIONS = [
   'spend.view',
   'analytics.view',
   'organisation.manage',
+  'resources.catalogue.manage',
+  'resources.settings.manage',
 ] as const;
 
 export type Action = (typeof ACTIONS)[number];

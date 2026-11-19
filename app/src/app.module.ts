@@ -21,6 +21,7 @@ import { DiscussionModule } from './discussion/discussion.module';
 import type { AutomaticAnalysis } from './discussion/automatic-analysis';
 import type { MeetingEndHook } from './discussion/meetings.service';
 import { OrganisationModule } from './organisation/organisation.module';
+import { ResourcesModule } from './resources/resources.module';
 import { ProjectsModule } from './projects/projects.module';
 import { ProtectedKeyModule } from './quarantine/protected-key.module';
 import { QuarantineModule } from './quarantine/quarantine.module';
@@ -75,6 +76,7 @@ export class AppModule {
         SpendModule,
         AiModule,
         OrganisationModule,
+        ResourcesModule,
         ProjectsModule,
         NotesModule,
         EmailModule.register(options.emailNudge),
