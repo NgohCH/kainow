@@ -2,6 +2,7 @@ import { Body, Controller, Get, NotFoundException, Param, Put, Query, Req } from
 import { AnySignedInUser } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
+import { PersonalDashboardService } from './personal.service';
 import { PreferencesService } from './preferences.service';
 import { ProjectDashboardService } from './project-dashboard.service';
 import { TimelineService } from './timeline.service';
@@ -19,7 +20,15 @@ export class DashboardsController {
     private readonly projectDashboard: ProjectDashboardService,
     private readonly timeline: TimelineService,
     private readonly preferences: PreferencesService,
+    private readonly personal: PersonalDashboardService,
   ) {}
+
+  /** The personal dashboard (spec §4). The web passes its saved home toggles as `?includeArchived=1` and `?showCompleted=1`. */
+  @Get('dashboard/me')
+  @AnySignedInUser()
+  me(@Query('includeArchived') includeArchived: string | undefined, @Query('showCompleted') showCompleted: string | undefined, @Req() req: HttpRequest) {
+    return this.personal.get(who(req), { includeArchived: includeArchived === '1', showCompleted: showCompleted === '1' });
+  }
 
   @Get('me/preferences')
   @AnySignedInUser()

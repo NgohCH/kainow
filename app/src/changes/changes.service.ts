@@ -99,6 +99,53 @@ export const eligibleApprovers = (ctx: ProjectContext): string[] => [
   ...new Set(ctx.rows.filter((m) => (m.role === 'owner' || m.role === 'sponsor') && membershipState(m, ctx.today) === 'active').map((m) => m.userId)),
 ];
 
+/** Why nobody can approve this request now (null when they can, subject to who is asking). */
+function approvalBlocked(ctx: ProjectContext, request: RequestRow): string | null {
+  if (request.status !== 'pending') return null;
+  if (ctx.missingAccountability) return MISSING_ACCOUNTABILITY;
+  if (!kindAllowedIn(request.kind, ctx.project.status, 'approve', { closureBatch: isClosureBatch(request.batchId, request.projectId) })) {
+    return `This change cannot be approved while the project is ${STATUS_LABEL[ctx.project.status]}.`;
+  }
+  const eligible = eligibleApprovers(ctx).length;
+  if (eligible < request.requiredApprovals) return notEnough(request.requiredApprovals, eligible);
+  return null;
+}
+
+/**
+ * Whether `userId` may approve the request now: it is pending, they are an eligible approver, nothing blocks approval,
+ * and they have not already approved its current version (`givenApproverIds`). The list view and the personal
+ * dashboard's "Needs you" both use this one check.
+ */
+export function changeMayApprove(ctx: ProjectContext, request: RequestRow, givenApproverIds: string[], userId: string): boolean {
+  return (
+    request.status === 'pending' &&
+    eligibleApprovers(ctx).includes(userId) &&
+    approvalBlocked(ctx, request) === null &&
+    !givenApproverIds.includes(userId)
+  );
+}
+
+/**
+ * The rows of `change_requests` (unaliased) a viewer may see listed: not about a Deleted record or a held human
+ * proposal, and a proposal from a note only when the viewer can read that note. `readable` is canReadContent for the
+ * project; `userParam` and `todayParam` are placeholders for the viewer's id and today (UTC+8). Used by the list view
+ * and by the personal dashboard.
+ */
+export function listedRequestSql(readable: boolean, userParam: string, todayParam: string): string {
+  return `${liveRecordRefSql('change_requests.target_kind', 'change_requests.target_id')}
+          -- Nor do requests about a held human proposal (history spec 7.2).
+          AND (target_kind <> 'human_proposal' OR EXISTS (SELECT 1 FROM human_proposals hp WHERE hp.id = change_requests.target_id AND ${notHeldSql('hp')}))
+          -- A proposal from a note the viewer cannot see is not listed (the same rule as AudienceService.canSeeSource).
+          AND (target_kind <> 'extraction_item' OR (${readable ? 'true' : 'false'} AND EXISTS (
+                 SELECT 1 FROM extraction_items xi
+                   JOIN source_versions xv ON xv.id = xi.source_version_id
+                   JOIN sources xs ON xs.id = xv.source_id
+                   LEFT JOIN audiences xa ON xa.id = xs.audience_id
+                  WHERE xi.id = change_requests.target_id AND ${notHeldSql('xi')}
+                    AND CASE WHEN xs.publication = 'published' THEN COALESCE(${audienceVisibleSql('xa', userParam, todayParam)}, false)
+                             ELSE xs.submitted_by = ${userParam}::uuid OR ${activeManagerSql('xs.project_id', userParam, todayParam)} END)))`;
+}
+
 /**
  * Change requests: anything that needs Owner/Sponsor authorisation is submitted as a request, approved by a
  * configurable number of distinct approvers in any order, and applied by the approval that completes the count, in
@@ -196,14 +243,7 @@ export class ChangesService {
 
   /** Why nobody can approve this request now (null when they can, subject to who is asking). */
   private static blocked(ctx: ProjectContext, request: RequestRow): string | null {
-    if (request.status !== 'pending') return null;
-    if (ctx.missingAccountability) return MISSING_ACCOUNTABILITY;
-    if (!kindAllowedIn(request.kind, ctx.project.status, 'approve', { closureBatch: isClosureBatch(request.batchId, request.projectId) })) {
-      return `This change cannot be approved while the project is ${STATUS_LABEL[ctx.project.status]}.`;
-    }
-    const eligible = eligibleApprovers(ctx).length;
-    if (eligible < request.requiredApprovals) return notEnough(request.requiredApprovals, eligible);
-    return null;
+    return approvalBlocked(ctx, request);
   }
 
   private async audit(c: PoolClient, at: Date, action: string, actor: string, request: { id: string; projectId: string }, detail: Record<string, unknown> = {}) {
@@ -457,18 +497,7 @@ export class ChangesService {
       `SELECT ${REQUEST_COLUMNS} FROM change_requests
         WHERE project_id = $1 AND ($2::text IS NULL OR status = $2)
           -- Requests about a Deleted record leave the list with it (history spec 4.3).
-          AND ${liveRecordRefSql('change_requests.target_kind', 'change_requests.target_id')}
-          -- Nor do requests about a held human proposal (history spec 7.2).
-          AND (target_kind <> 'human_proposal' OR EXISTS (SELECT 1 FROM human_proposals hp WHERE hp.id = change_requests.target_id AND ${notHeldSql('hp')}))
-          -- A proposal from a note the viewer cannot see is not listed (the same rule as AudienceService.canSeeSource).
-          AND (target_kind <> 'extraction_item' OR (${canReadContent(ctx) ? 'true' : 'false'} AND EXISTS (
-                 SELECT 1 FROM extraction_items xi
-                   JOIN source_versions xv ON xv.id = xi.source_version_id
-                   JOIN sources xs ON xs.id = xv.source_id
-                   LEFT JOIN audiences xa ON xa.id = xs.audience_id
-                  WHERE xi.id = change_requests.target_id AND ${notHeldSql('xi')}
-                    AND CASE WHEN xs.publication = 'published' THEN COALESCE(${audienceVisibleSql('xa', '$3', '$4')}, false)
-                             ELSE xs.submitted_by = $3::uuid OR ${activeManagerSql('xs.project_id', '$3', '$4')} END)))
+          AND ${listedRequestSql(canReadContent(ctx), '$3', '$4')}
         ORDER BY submitted_at DESC, id DESC`,
       [projectId, status ?? null, user.id, ctx.today],
     );
@@ -518,7 +547,6 @@ export class ChangesService {
         )
       ).rows) offers.set(o.riskId, { fromProject: { id: o.projectId, name: o.name }, risk: { id: o.riskId, description: o.description, severity: o.severity } });
     }
-    const eligible = eligibleApprovers(ctx).includes(user.id);
     return rows.map((r) => {
       const version = versions.get(r.id) as { terms: Record<string, unknown>; reason: string | null };
       const given = approvals.get(r.id) ?? [];
@@ -539,7 +567,7 @@ export class ChangesService {
         submittedBy: names.get(r.submittedBy) as string,
         submittedAt: r.submittedAt,
         ...(offer ? { offer } : {}),
-        mayApprove: pending && eligible && why === null && !given.some((a) => a.userId === user.id),
+        mayApprove: changeMayApprove(ctx, r, given.map((a) => a.userId), user.id),
         mayRevise: pending && r.submittedBy === user.id,
         // The receiving project declines a hand-over (an Owner or Sponsor rejects it); only the offerer withdraws it.
         mayWithdraw: pending && (r.submittedBy === user.id || (r.kind !== 'risk_handover' && ctx.roles.includes('pm'))),
