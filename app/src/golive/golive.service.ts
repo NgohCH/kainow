@@ -4,7 +4,7 @@ import type { Pool } from 'pg';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
-import { MSG, STEPS, TOTAL, custodianRecorded, refreshChecklist } from './checklist';
+import { INFORMATION, MSG, STEPS, TOTAL, custodianRecorded, refreshChecklist } from './checklist';
 
 export interface StepView {
   key: string; position: number; text: string; explanation: string; link: string; mode: string; done: boolean;
@@ -48,7 +48,7 @@ export class GoLiveService {
     const notDoneAtClose = closedAt
       ? rows.filter((r) => r.ticked_at === null || (r.ticked_at as Date).getTime() > closedAt.getTime()).map((r) => r.key as string)
       : [];
-    return { closedAt: closedAt ? closedAt.toISOString() : null, steps, notDoneAtClose };
+    return { closedAt: closedAt ? closedAt.toISOString() : null, steps, notDoneAtClose, information: INFORMATION };
   }
 
   async summary(user: AuthUser) {

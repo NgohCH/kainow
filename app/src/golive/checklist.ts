@@ -28,6 +28,19 @@ export const STEPS: readonly StepDef[] = [
 ];
 
 export const TOTAL = STEPS.length;
+
+/**
+ * Items shown after the steps that are not steps: no tick, no position, no part of the count or of the closing rule.
+ * AI needs approved models and per-project connections and limits, which only exist once real projects do, so it cannot block go-live.
+ */
+export const INFORMATION: ReadonlyArray<{ key: string; text: string; explanation: string; link: string }> = [
+  {
+    key: 'ai',
+    text: 'AI: at least one approved model; projects need their own connection and limits before AI runs',
+    explanation: 'Approve a model under AI, then each project adds its own connection and limits. Until then AI requests are blocked, and nothing else in Kainow depends on them.',
+    link: '#/ai',
+  },
+];
 export const CLOSING_KEYS = ['department', 'users', 'project'] as const;
 export const MSG = {
   autoStep: 'Kainow ticks this step itself.',

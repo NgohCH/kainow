@@ -21,6 +21,7 @@ import { HELD } from '../history/deleted-sql';
 import { CANCELLED_REASON, MAX_PLACES, POSSIBLE_COPY_TEXT, TOO_COMMON, cleanWaitingCases } from './cases.service';
 import { MARKER } from './clean-text';
 import { loadProtectedKey } from './protected-key';
+import { aiDeps, aiReady, byAttempt } from '../testing/ai-runners';
 
 const USAGE: Usage = { inputTokens: 2_000, cachedInputTokens: 0, outputTokens: 300 };
 /** A secret the credential check does not know: only a person can mark it. */
@@ -78,6 +79,7 @@ describe('reporting, holding and possible copies', { skip: SKIP_NO_DB }, () => {
         { userId: ids.ben, role: 'member' },
       ],
     });
+    await aiReady(t.pool, project);
     await t.pool.query(
       `INSERT INTO access_grants (id, project_id, user_id, kind, purpose, scope, starts_on, expires_on, requested_by, requested_at, decision, decided_by, decided_at)
        VALUES ($1, $2, $3, 'audit', 'Annual audit', 'Everything', '2026-11-01', '2026-11-30', $4, now(), 'approved', $5, now())`,
@@ -126,7 +128,7 @@ describe('reporting, holding and possible copies', { skip: SKIP_NO_DB }, () => {
     assert.equal(r.status, 201, JSON.stringify(r.body));
     const plant = (r.body.sources as Array<{ marker: string; location: string | null }>).find((s) => s.location?.startsWith('Plant room'));
     assert.ok(plant, JSON.stringify(r.body.sources));
-    const runner = new AssistRunner({ pool: t.pool, spend: spend(), model: new AnswerModel(plant.marker), clock: t.clock.now });
+    const runner = byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend: spend(), ...aiDeps(new AnswerModel(plant.marker)), clock: t.clock.now }));
     assert.equal(await runner.process(r.body.id, 1, false), 'succeeded');
     t.clock.advanceSeconds(1);
     return r.body.id as string;
@@ -291,7 +293,7 @@ describe('reporting, holding and possible copies', { skip: SKIP_NO_DB }, () => {
     await restrict(original, [ids.ada]);
     const asked = await dep.request('POST', `/sources/${original}/summaries`, { intendedAudience: { mode: 'project' }, leaveOut: '' });
     assert.equal(asked.status, 201, JSON.stringify(asked.body));
-    const runner = new AssistRunner({ pool: t.pool, spend: spend(), model: new SummaryModel('The turbine is replaced next month.'), clock: t.clock.now });
+    const runner = byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend: spend(), ...aiDeps(new SummaryModel('The turbine is replaced next month.')), clock: t.clock.now }));
     assert.equal(await runner.process(queued[queued.length - 1], 1, false), 'succeeded');
     t.clock.advanceSeconds(1);
     const approved = await pm.request('POST', `/summaries/${asked.body.id}/approve`, { versionNo: 1, reason: 'Fine to share' });
@@ -627,7 +629,7 @@ describe('reporting, holding and possible copies', { skip: SKIP_NO_DB }, () => {
         throw new Error('the AI must not be called');
       },
     };
-    assert.equal(await new AssistRunner({ pool: t.pool, spend: spend(), model, clock: t.clock.now }).process(held, 1, false), 'blocked');
+    assert.equal(await byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend: spend(), ...aiDeps(model), clock: t.clock.now })).process(held, 1, false), 'blocked');
     assert.equal(calls, 0);
     assert.equal(await count(`SELECT count(*) AS n FROM ai_spend_entries`), before);
     // Sharing it is refused as held.
@@ -672,7 +674,7 @@ describe('reporting, holding and possible copies', { skip: SKIP_NO_DB }, () => {
     await restrict(original, [ids.ada]);
     const asked = await dep.request('POST', `/sources/${original}/summaries`, { intendedAudience: { mode: 'project' }, leaveOut: '' });
     assert.equal(asked.status, 201, JSON.stringify(asked.body));
-    const runner = new AssistRunner({ pool: t.pool, spend: spend(), model: new SummaryModel(`The turbine is replaced next month; portal ${SECRET}.`), clock: t.clock.now });
+    const runner = byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend: spend(), ...aiDeps(new SummaryModel(`The turbine is replaced next month; portal ${SECRET}.`)), clock: t.clock.now }));
     assert.equal(await runner.process(queued[queued.length - 1], 1, false), 'succeeded');
     t.clock.advanceSeconds(1);
     const approved = await pm.request('POST', `/summaries/${asked.body.id}/approve`, { versionNo: 1, reason: 'Fine to share' });

@@ -14,6 +14,7 @@ import { SpendSettingsService } from '../spend/spend.settings';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
+import { aiDeps, aiReady, byAttempt } from '../testing/ai-runners';
 
 const USAGE: Usage = { inputTokens: 2_000, cachedInputTokens: 0, outputTokens: 300 };
 const KEY = `sk-${'a1B2c3D4e5'.repeat(3)}`;
@@ -129,6 +130,7 @@ describe('deleting and restoring authorised records', { skip: SKIP_NO_DB }, () =
         { userId: ids.ben, role: 'member' },
       ],
     });
+    await aiReady(t.pool, project);
     await t.pool.query(
       `INSERT INTO access_grants (id, project_id, user_id, kind, purpose, scope, starts_on, expires_on, requested_by, requested_at, decision, decided_by, decided_at)
        VALUES ($1, $2, $3, 'audit', 'Annual audit', 'Everything', '2026-11-01', '2026-11-30', $4, now(), 'approved', $5, now())`,
@@ -352,7 +354,7 @@ describe('deleting and restoring authorised records', { skip: SKIP_NO_DB }, () =
       assert.equal(r.status, 201, JSON.stringify(r.body));
       const rec = (r.body.sources as Source[]).find((s) => s.location?.includes('Pump service booking')) as Source;
       assert.ok(rec, JSON.stringify(r.body.sources));
-      const runner = new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), model: new AnswerModel(rec.marker), clock: t.clock.now });
+      const runner = byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), ...aiDeps(new AnswerModel(rec.marker)), clock: t.clock.now }));
       assert.equal(await runner.process(r.body.id, 1, false), 'succeeded');
       t.clock.advanceSeconds(1);
       return r.body.id as string;

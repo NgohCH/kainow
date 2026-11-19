@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import { uuidv7 } from '../common/uuid7';
 import { loadDatabaseConfig } from '../config';
 import { runMigrations } from '../db/migrate';
+import { seedSpendTarget } from '../testing/ai-connections';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { FakeClock } from '../testing/fakes';
 import { UsersService } from '../users/users.service';
@@ -23,6 +24,7 @@ describe('AI spend cap', { skip: SKIP_NO_DB }, () => {
   let spend: SpendService;
   let settings: SpendSettingsService;
   let actorId: string;
+  let target: Awaited<ReturnType<typeof seedSpendTarget>>;
   const migrationsDir = loadDatabaseConfig({ DATABASE_URL: 'x' }).migrationsDir;
 
   before(() => {
@@ -38,6 +40,7 @@ describe('AI spend cap', { skip: SKIP_NO_DB }, () => {
     spend = new SpendService(pool, clock.now);
     settings = new SpendSettingsService(pool, clock.now);
     actorId = (await new UsersService(pool, clock.now).create({ email: 'admin@example.org', displayName: 'Admin' })).id;
+    target = await seedSpendTarget(pool, actorId);
   });
 
   /** Approves the Product Owner's settings with any changes for the test. */
@@ -46,7 +49,7 @@ describe('AI spend cap', { skip: SKIP_NO_DB }, () => {
 
   let attempt = 0;
   const reserve = (estimate: bigint, requestId: string = uuidv7()): Promise<ReserveResult> =>
-    spend.reserve({ requestId, attemptNo: ++attempt, estimateMicroMyr: estimate, purpose: 'extraction', actorUserId: actorId });
+    spend.reserve({ ...target, requestId, attemptNo: ++attempt, estimateMicroMyr: estimate, purpose: 'extraction', actorUserId: actorId });
 
   const reserved = async (estimate: bigint): Promise<string> => {
     const result = await reserve(estimate);
@@ -130,7 +133,7 @@ describe('AI spend cap', { skip: SKIP_NO_DB }, () => {
     await configure();
     const id = await reserved(500_000n);
     await configure({
-      prices: { ...MVP_SPEND_SETTINGS.prices, inputMicroUsdPerMillion: 20_000_000n, outputMicroUsdPerMillion: 100_000_000n, myrPerUsdMicro: 9_000_000n },
+      prices: { myrPerUsdMicro: 9_000_000n }, // the model's own prices move to the catalogue (Task 5)
     });
     await spend.settle(id, EXAMPLE_USAGE);
     assert.equal((await spend.getEntry(id))?.amountMicroMyr, EXAMPLE_COST);
@@ -287,11 +290,11 @@ describe('AI spend cap', { skip: SKIP_NO_DB }, () => {
   test('a second attempt of the same request is its own entry, but the same attempt cannot be reserved twice', async () => {
     await configure();
     const requestId = uuidv7();
-    const first = await spend.reserve({ requestId, attemptNo: 1, estimateMicroMyr: 100_000n, purpose: 'extraction' });
+    const first = await spend.reserve({ ...target, requestId, attemptNo: 1, estimateMicroMyr: 100_000n, purpose: 'extraction' });
     assert.equal(first.status, 'reserved');
-    const retry = await spend.reserve({ requestId, attemptNo: 2, estimateMicroMyr: 100_000n, purpose: 'extraction' });
+    const retry = await spend.reserve({ ...target, requestId, attemptNo: 2, estimateMicroMyr: 100_000n, purpose: 'extraction' });
     assert.equal(retry.status, 'reserved');
-    await assert.rejects(spend.reserve({ requestId, attemptNo: 2, estimateMicroMyr: 100_000n, purpose: 'extraction' }), /ai_spend_request_attempt_key/);
+    await assert.rejects(spend.reserve({ ...target, requestId, attemptNo: 2, estimateMicroMyr: 100_000n, purpose: 'extraction' }), /ai_spend_request_attempt_key/);
     assert.equal((await spend.summary()).monthly?.usedMicroMyr, 200_000n, 'every attempt counts');
   });
 
@@ -300,7 +303,7 @@ describe('AI spend cap', { skip: SKIP_NO_DB }, () => {
     for (const bad of [0n, -1n]) {
       await assert.rejects(reserve(bad), RangeError);
     }
-    await assert.rejects(spend.reserve({ requestId: uuidv7(), attemptNo: 0, estimateMicroMyr: 1n, purpose: 'x' }), RangeError);
+    await assert.rejects(spend.reserve({ ...target, requestId: uuidv7(), attemptNo: 0, estimateMicroMyr: 1n, purpose: 'x' }), RangeError);
   });
 
   test('spend rows can never be deleted', async () => {
@@ -319,25 +322,46 @@ describe('AI spend cap', { skip: SKIP_NO_DB }, () => {
     await assert.rejects(pool.query(`UPDATE ai_spend_entries SET estimate_micro_myr = 0, amount_micro_myr = 0 WHERE id = $1`, [id]), /estimate_micro_myr_check/);
   });
 
-  test('changing the settings is recorded with the new values', async () => {
+  test('changing the settings is recorded with the previous and new values and the reason', async () => {
     await configure();
     clock.advanceSeconds(1); // events at the same instant have no guaranteed order
-    await configure({ monthlyLimitMicroMyr: myr('25.5') });
+    await settings.apply({ ...MVP_SPEND_SETTINGS, monthlyLimitMicroMyr: myr('25.5') }, actorId, 'A bigger month.');
     const rows = await pool.query(`SELECT actor_user_id, detail FROM audit_events WHERE action = 'ai.spend_settings_changed' ORDER BY occurred_at, id`);
     assert.equal(rows.rows.length, 2);
     assert.equal(rows.rows[0].actor_user_id, actorId);
-    assert.equal(rows.rows[0].detail.settings.modelId, 'gpt-6.1-sol');
-    assert.equal(rows.rows[0].detail.settings.monthlyLimitMyr, '20.000000');
-    assert.deepEqual(rows.rows[0].detail.settings.daily, { mode: 'not_applied' });
-    assert.equal(rows.rows[1].detail.settings.monthlyLimitMyr, '25.500000');
+    assert.equal(rows.rows[0].detail.previous, null);
+    assert.equal(rows.rows[0].detail.new.myrPerUsd, '4.100000');
+    assert.equal(rows.rows[0].detail.new.monthlyLimitMyr, '20.000000');
+    assert.deepEqual(rows.rows[0].detail.new.daily, { mode: 'not_applied' });
+    assert.equal(rows.rows[1].detail.previous.monthlyLimitMyr, '20.000000');
+    assert.equal(rows.rows[1].detail.new.monthlyLimitMyr, '25.500000');
+    assert.equal(rows.rows[1].detail.reason, 'A bigger month.');
+  });
+
+  test('insertIfAbsent saves only when nothing is saved, so the install command never resets later changes (final review I3, T4a)', async () => {
+    assert.equal(await settings.insertIfAbsent(MVP_SPEND_SETTINGS, null, 'Install.'), true);
+    clock.advanceSeconds(1); // events at the same instant have no guaranteed order
+    await settings.apply(
+      { ...MVP_SPEND_SETTINGS, projectsMaySetLimits: true, projectsMayManageConnections: true, projectCeiling: { mode: 'limit', limitMicroMyr: myr('50') }, maxAttempts: 5, timeoutSeconds: 60, concurrency: 4 },
+      actorId,
+      'Delegated.',
+    );
+    clock.advanceSeconds(1);
+    assert.equal(await settings.insertIfAbsent(MVP_SPEND_SETTINGS, null, 'Install again.'), false);
+    const now = await settings.get();
+    assert.deepEqual(
+      [now?.projectsMaySetLimits, now?.projectsMayManageConnections, now?.projectCeiling, now?.maxAttempts, now?.timeoutSeconds, now?.concurrency],
+      [true, true, { mode: 'limit', limitMicroMyr: myr('50') }, 5, 60, 4],
+    );
+    const rows = (await pool.query(`SELECT detail FROM audit_events WHERE action = 'ai.spend_settings_changed' ORDER BY occurred_at, id`)).rows;
+    assert.deepEqual(rows.map((r) => r.detail.reason), ['Install.', 'Delegated.'], 'the refused re-run records nothing');
   });
 
   test('the database does not accept a daily limit amount when no daily limit applies', async () => {
     await assert.rejects(
       pool.query(
-        `INSERT INTO ai_spend_settings (id, model_id, input_usd_per_million_micro, cached_input_usd_per_million_micro,
-           output_usd_per_million_micro, myr_per_usd_micro, monthly_limit_micro_myr, daily_mode, daily_limit_micro_myr, updated_at)
-         VALUES (1, 'm', 1, 1, 1, 1, 1, 'not_applied', 5, now())`,
+        `INSERT INTO ai_spend_settings (id, myr_per_usd_micro, monthly_limit_micro_myr, daily_mode, daily_limit_micro_myr, updated_at)
+         VALUES (1, 1, 1, 'not_applied', 5, now())`,
       ),
       /ai_spend_daily_limit_only_with_limit_mode/,
     );

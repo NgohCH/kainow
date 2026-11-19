@@ -7,9 +7,13 @@ import { uuidv7 } from '../common/uuid7';
 import type { SpendService } from '../spend/spend.service';
 import { locateQuote } from '../notes/text';
 import { findCredentials } from './credentials';
-import { guardedAiCall, markStaleReservations } from '../ai/guarded-call';
-import type { ModelClient, ModelAnswer } from './model';
-import { DISCUSSION_PREAMBLE, EXTRACTION_SYSTEM_PROMPT, MAX_OUTPUT_TOKENS, REQUEST_TIMEOUT_MS } from './prompt';
+import { type GuardedDeps, WAITING_FOR_PLACE, guardedAiCall, markStaleReservations } from '../ai/guarded-call';
+import type { ModelAnswer } from './model';
+import type { ModelClientFactory } from '../ai/client-factory';
+import { effectivePolicy } from '../ai/policy';
+import { sourceRestrictedSql } from '../ai/restricted';
+import type { ProtectedKey } from '../quarantine/protected-key';
+import { DISCUSSION_PREAMBLE, EXTRACTION_SYSTEM_PROMPT, MAX_OUTPUT_TOKENS } from './prompt';
 import { type Span, placeItem } from '../analysis/transcript';
 import { type KainowReporter, type OwnedText, messagesOfVersions, reportOwned } from '../quarantine/kainow-report';
 import { HELD_DURING_RUN, sweepMarkSql, sweptSince } from '../quarantine/sweep-lock';
@@ -18,14 +22,35 @@ const OPEN_STATES: ProjectStatus[] = ['draft', 'planned', 'active'];
 
 export type RunOutcome = 'succeeded' | 'failed' | 'blocked' | 'retry' | 'skipped';
 
+/** What a runner reads from its job: `resume` is the attempt number already counted when the job waited for an AI place. */
+export interface RunJob {
+  resume?: number;
+}
+
+/**
+ * The claim of one attempt, shared by the runners (spec 6.6): the request row's `attempts` is the counter. It goes up by
+ * one in the statement that sets the row running, unless the job resumes that same attempt after waiting for an AI place.
+ */
+export const CLAIM_ATTEMPTS_SQL = `attempts = CASE WHEN $2::int = attempts THEN attempts ELSE attempts + 1 END`;
+
+/** Whether `attemptNo` is the project's last attempt now (its effective attempts, spec 6.6). */
+export async function isLastAttempt(pool: Pool, projectId: string | null, attemptNo: number): Promise<boolean> {
+  if (!projectId) return true;
+  return attemptNo >= (await effectivePolicy(pool, projectId)).maxAttempts;
+}
+
 /** The failure code of a run or request blocked at start because its source was deleted (history spec 4.2). */
 export const SOURCE_DELETED = 'source_deleted';
 
 export interface RunnerDeps {
   pool: Pool;
   spend: SpendService;
-  /** null when no API key is configured: runs then fail without any charge. */
-  model: ModelClient | null;
+  /** Builds the client for each attempt's chosen connection, with its decrypted key (spec 6.3). */
+  factory: ModelClientFactory;
+  /** The protected key that opens the connections' keys; without it requests end blocked protected_key_missing. */
+  key: ProtectedKey | null;
+  /** Waiting for a free AI place; tests shorten it (spec 6.5). */
+  slotWait?: GuardedDeps['slotWait'];
   clock: Clock;
   log?: (message: string) => void;
   /** Opens a quarantine case on the item holding a secret found in stored text (history spec 7.1); without it the run only blocks. */
@@ -52,6 +77,8 @@ interface RunRow {
   text: string;
   /** The project's sweep marker, read in the same statement as `text` (history spec 7.4; final review C1). */
   sweep_mark: string;
+  /** The text is restricted material (spec 6.3), read in the same statement as `text`. */
+  restricted: boolean;
 }
 
 /**
@@ -88,12 +115,12 @@ export class ExtractionRunner {
     return decide({ action: 'extraction.run', roles, status: project.status }).allowed;
   }
 
-  async process(runId: string, attemptNo: number, isLastAttempt: boolean): Promise<RunOutcome> {
+  async process(runId: string, job: RunJob = {}): Promise<RunOutcome | 'wait'> {
     const { pool, spend } = this.d;
     const { rows } = await pool.query<RunRow>(
       `SELECT r.id, r.status, r.source_version_id, s.id AS source_id, s.project_id, r.requested_by, r.trigger, s.kind AS source_kind, s.status AS source_status, s.held_case_id IS NOT NULL AS source_held,
               u.status AS user_status, u.role AS user_role,
-              v.text_content AS text, ${sweepMarkSql('s.project_id')} AS sweep_mark
+              v.text_content AS text, ${sweepMarkSql('s.project_id')} AS sweep_mark, ${sourceRestrictedSql('s')} AS restricted
          FROM extraction_runs r
          JOIN source_versions v ON v.id = r.source_version_id
          JOIN sources s ON s.id = v.source_id
@@ -106,11 +133,14 @@ export class ExtractionRunner {
       return 'skipped';
     }
 
-    const claimed = await pool.query(
-      `UPDATE extraction_runs SET status = 'running', attempts = $2, started_at = COALESCE(started_at, $3) WHERE id = $1 AND status IN ('queued', 'running')`,
-      [runId, attemptNo, this.d.clock()],
+    const claimed = await pool.query<{ attempts: number }>(
+      `UPDATE extraction_runs SET status = 'running', ${CLAIM_ATTEMPTS_SQL}, started_at = COALESCE(started_at, $3),
+              failure_detail = NULLIF(failure_detail, $4)
+        WHERE id = $1 AND status IN ('queued', 'running') RETURNING attempts`,
+      [runId, job.resume ?? null, this.d.clock(), WAITING_FOR_PLACE],
     );
     if (claimed.rowCount === 0) return 'skipped';
+    const attemptNo = claimed.rows[0].attempts;
 
     await markStaleReservations(pool, spend, runId, attemptNo);
 
@@ -148,29 +178,33 @@ export class ExtractionRunner {
     }
 
 
-    const model = this.d.model;
     const discussion = run.source_kind === 'discussion';
     const system = discussion ? `${DISCUSSION_PREAMBLE} ${EXTRACTION_SYSTEM_PROMPT}` : EXTRACTION_SYSTEM_PROMPT;
     const outcome = await guardedAiCall(
-      { pool, spend, clock: this.d.clock, log: this.d.log, modelConfigured: model !== null },
+      { pool, spend, clock: this.d.clock, log: this.d.log, key: this.d.key, factory: this.d.factory, slotWait: this.d.slotWait },
       {
         requestId: runId,
         attemptNo,
-        isLastAttempt,
         purpose: discussion ? 'discussion_analysis' : 'extraction',
         actorUserId: run.requested_by,
+        // mayStillRun above refuses a run whose source has no project.
+        projectId: run.project_id as string,
+        // Worked out again at every attempt: an audience may have been narrowed while the run waited.
+        carriesRestricted: run.restricted !== false,
         promptBytes: Buffer.byteLength(system, 'utf8') + Buffer.byteLength(run.text, 'utf8'),
         maxOutputTokens: MAX_OUTPUT_TOKENS,
-        call: (modelId) =>
-          model!.extract({
+        call: (client, modelId, timeoutMs) =>
+          client.extract({
             modelId,
             system,
             user: run.text,
             maxOutputTokens: MAX_OUTPUT_TOKENS,
-            timeoutMs: REQUEST_TIMEOUT_MS,
+            timeoutMs,
           }),
       },
     );
+    // No AI place was free: nothing was reserved or sent, and the worker sends the job again with `resume`.
+    if (outcome.kind === 'wait') return this.waiting(run);
     if (outcome.kind === 'retry') return this.requeue(run);
     if (outcome.kind !== 'ok') return this.finish(run, outcome.kind, outcome.code, outcome.detail);
     try {
@@ -178,12 +212,12 @@ export class ExtractionRunner {
       if (saved !== 'swept') return saved;
       // A report swept this project while the AI call ran: nothing was saved. Asked again, the run reads the cleaned
       // text (or finds its source held and blocks); on its last attempt it ends blocked (C1).
-      if (!isLastAttempt) return this.requeue(run);
+      if (!(await isLastAttempt(pool, run.project_id, attemptNo))) return this.requeue(run);
       return this.finish(run, 'blocked', HELD_DURING_RUN.code, HELD_DURING_RUN.detail);
     } catch (err) {
       // The cost is already settled; saving failed, so the run is retried or ends as an internal error.
       this.d.log?.(`extraction ${run.id}: unexpected error: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
-      if (!isLastAttempt) return this.requeue(run);
+      if (!(await isLastAttempt(pool, run.project_id, attemptNo))) return this.requeue(run);
       return this.finish(run, 'failed', 'internal_error', `An unexpected error stopped the ${discussion ? 'analysis' : 'extraction'}.`);
     }
   }
@@ -201,6 +235,12 @@ export class ExtractionRunner {
       owned = [{ kind: 'source', id: run.source_id, text: run.text }];
     }
     await reportOwned(this.d.quarantine, run.project_id, owned, this.d.log);
+  }
+
+  /** Back to queued, showing that it waits for a free AI place; the attempt stays counted for the resumed job. */
+  private async waiting(run: RunRow): Promise<'wait'> {
+    await this.d.pool.query(`UPDATE extraction_runs SET status = 'queued', failure_detail = $2 WHERE id = $1 AND status IN ('queued', 'running')`, [run.id, WAITING_FOR_PLACE]);
+    return 'wait';
   }
 
   private async requeue(run: RunRow): Promise<RunOutcome> {

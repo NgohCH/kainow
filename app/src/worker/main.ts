@@ -8,7 +8,7 @@ import { AssistRunner } from '../assist/assist-runner';
 import '../assist/reports.service';
 import '../assist/summaries.service';
 import { ExtractionRunner } from '../extraction/runner';
-import { OpenAiModelClient } from '../extraction/model';
+import { realClientFactory } from '../ai/client-factory';
 import { SpendService } from '../spend/spend.service';
 import { type AppConfig, loadWorkerConfig } from '../config';
 import { AI_CONCURRENCY, registerAiWorker } from './ai-worker';
@@ -47,21 +47,20 @@ async function main(): Promise<void> {
   // Kainow's own reports of a secret found in stored text (history spec 7.1): the runners open the case themselves.
   const access = new ProjectAccess(pool, clock);
   const quarantine = new CasesService(pool, clock, key, { appUrl: config.appUrl } as AppConfig, nudge, access, new AudienceService(pool, clock, access));
-  const model = config.openAiApiKey ? new OpenAiModelClient(config.openAiApiKey) : null;
+  // No model client is built here: each attempt builds the client for its project connection, opening that connection's
+  // key with the protected key (spec 6.3). Without the protected key every AI request ends blocked protected_key_missing.
   const extraction = new ExtractionRunner({
     pool,
     spend,
-    model,
+    factory: realClientFactory,
+    key,
     clock,
     log: (m) => console.error(m),
     quarantine,
   });
-  const minutes = new MinutesRunner({ pool, spend, model, clock, quarantine, log: (m) => console.error(m) });
+  const minutes = new MinutesRunner({ pool, spend, factory: realClientFactory, key, clock, quarantine, log: (m) => console.error(m) });
   const analysisRunner = new AnalysisRunner({ pool, clock, extraction, minutes, quarantine, log: (m) => console.error(m) });
-  const assist = new AssistRunner({ pool, spend, model, clock, quarantine, log: (m) => console.error(m) });
-  if (!config.openAiApiKey) {
-    console.warn('OPENAI_API_KEY is not set: extraction runs will fail without sending anything.');
-  }
+  const assist = new AssistRunner({ pool, spend, factory: realClientFactory, key, clock, quarantine, log: (m) => console.error(m) });
 
   boss = await startQueues(config.databaseUrl, undefined, { schedule: true });
   await registerAiWorker(boss, { extraction, analysis: analysisRunner, assist }, pool);
@@ -76,11 +75,11 @@ async function main(): Promise<void> {
     clock,
     log,
   });
-  const analysis = new AnalysisTick({ pool, clock, queue: bossAnalysisQueue(boss), spend: new SpendService(pool, clock) });
+  const analysis = new AnalysisTick({ pool, clock, queue: bossAnalysisQueue(boss), spend: new SpendService(pool, clock), key });
   const quarantineLog = new Logger('Quarantine');
   const quarantineJob = key ? { cleanWaiting: () => cleanWaitingCases(pool, key, clock(), (m) => quarantineLog.warn(m)) } : undefined;
   await registerSchedules(boss, { sweep, dispatcher, analysis, quarantine: quarantineJob });
-  console.log(`kainow worker started (AI requests at once: ${AI_CONCURRENCY})`);
+  console.log(`kainow worker started (at most ${AI_CONCURRENCY} AI jobs at once in this process; the AI places setting is the real limit)`);
 
   const stop = async (): Promise<void> => {
     await boss.stop({ graceful: true, timeout: 10000 });

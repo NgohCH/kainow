@@ -20,6 +20,7 @@ import {
 import { type DiscussionItem, listDiscussion } from '../discussion.ts';
 import { formatWhen } from '../format.ts';
 import { DraftDetail } from './DraftView.tsx';
+import { AiSettingsLink } from './AiLink.tsx';
 import { QuarantineNote } from './ReportSecret.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
@@ -67,6 +68,7 @@ function DraftList({ projectId }: { projectId: string }) {
       {error && <p role="alert" className="error">{error}</p>}
       {items === null && !error && <p className="loading">Loading</p>}
       {items?.length === 0 && <p className="empty">There are no drafts yet.</p>}
+      <AiSettingsLink projectId={projectId} show={!!items?.some((d) => d.status === 'blocked')} />
       <ul className="ask-list">
         {items?.map((d) => (
           <li key={d.id} className="ask-card ai-proposed">

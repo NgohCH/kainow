@@ -25,7 +25,20 @@ export interface ThreadFacts {
 export interface Readiness {
   spendApproved: boolean;
   allowanceLeft: boolean;
+  /** Why this project cannot run automatic analysis, from its own connections and allowance (spec 6.1). Absent when it can. */
+  blockedReason?: ProjectBlock;
 }
+
+export type ProjectBlock = 'ai_not_set_up' | 'no_eligible_connection' | 'protected_key_missing' | 'project_no_allowance' | 'project_allowance_used';
+
+/** The words after "Blocked — " for each project-level reason. */
+export const PROJECT_BLOCK_TEXT: Record<ProjectBlock, string> = {
+  ai_not_set_up: 'AI is not set up for this project',
+  no_eligible_connection: 'no AI connection in this project can be used for analysis right now',
+  protected_key_missing: 'the protected key is not installed, so no AI key can be opened',
+  project_no_allowance: 'this project has no AI allowance',
+  project_allowance_used: 'no AI allowance is left for this project',
+};
 
 export type AnalysisStatus =
   | { state: 'up_to_date'; lastAnalysedAt: Date | null }
@@ -55,6 +68,7 @@ export function analysisState(t: ThreadFacts, s: EffectiveAnalysisSettings, r: R
     if (t.finalDraftRequested) return show({ state: 'paused', reason: 'The final draft was requested after the meeting ended; use Draft minutes for anything newer.' });
     if (!r.spendApproved) return show({ state: 'blocked', reason: 'The AI spend settings have not been approved yet.' });
     if (!r.allowanceLeft) return show({ state: 'blocked', reason: 'There is no AI allowance left.' });
+    if (r.blockedReason) return show({ state: 'blocked', reason: PROJECT_BLOCK_TEXT[r.blockedReason] });
     return { status: { state: 'waiting', at: now, reason: 'quiet' }, due: true, trigger: 'meeting_end' };
   }
   if (!s.automatic) return show({ state: 'paused', reason: 'Automatic analysis is off for this project.' });
@@ -74,6 +88,7 @@ export function analysisState(t: ThreadFacts, s: EffectiveAnalysisSettings, r: R
   }
   if (!r.spendApproved) return show({ state: 'blocked', reason: 'The AI spend settings have not been approved yet.' });
   if (!r.allowanceLeft) return show({ state: 'blocked', reason: 'There is no AI allowance left.' });
+  if (r.blockedReason) return show({ state: 'blocked', reason: PROJECT_BLOCK_TEXT[r.blockedReason] });
   return { status: { state: 'waiting', at: now, reason: 'quiet' }, due: true, trigger: 'quiet_period' };
 }
 

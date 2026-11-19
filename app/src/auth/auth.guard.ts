@@ -54,7 +54,7 @@ export class AuthGuard implements CanActivate {
       throw new UnauthorizedException();
     }
     await gate();
-    if (access.kind === 'action' && !can(auth.user.role, access.action)) {
+    if (access.kind === 'action' && ![access.action, ...(access.alsoAllowed ?? [])].some((a) => can(auth.user.role, a))) {
       throw new ForbiddenException();
     }
     // Anti-forgery: a request that changes anything must carry the token that only this page was given.

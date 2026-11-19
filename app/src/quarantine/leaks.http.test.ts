@@ -25,6 +25,7 @@ import { readOriginals } from './clean';
 import { MARKER } from './clean-text';
 import { loadProtectedKey } from './protected-key';
 import { TEXT_COLUMNS } from './registry';
+import { aiDeps, aiReady, byAttempt } from '../testing/ai-runners';
 
 /**
  * Leak tests for held items (history spec 10): an item held in a quarantine case never appears to a Member, an Audit
@@ -121,6 +122,7 @@ function harness(mode: Mode) {
         { userId: ids.ben, role: 'member' },
       ],
     });
+    await aiReady(t.pool, h.project);
     for (const [user, scoped] of [[ids.auditor, false], [ids.holder, true]] as const) {
       await t.pool.query(
         `INSERT INTO access_grants (id, project_id, user_id, kind, purpose, scope, starts_on, expires_on, requested_by, requested_at, decision, decided_by, decided_at, inspect_deleted)
@@ -254,7 +256,7 @@ for (const mode of ['waiting', 'cleaned'] as const) {
             const model = new CapturingModel();
             const r = await ok(h.ben.request('POST', `/projects/${h.project}/questions`, { question: QUESTION }), 201);
             if (r.status === 'queued') {
-              const runner = new AssistRunner({ pool: h.t.pool, spend: new SpendService(h.t.pool, h.t.clock.now), model, clock: h.t.clock.now });
+              const runner = byAttempt(h.t.pool, 'ai_requests', new AssistRunner({ pool: h.t.pool, spend: new SpendService(h.t.pool, h.t.clock.now), ...aiDeps(model), clock: h.t.clock.now }));
               await runner.process(r.id, 1, false);
             }
             return { model, view: await ok(h.ben.request('GET', `/questions/${r.id}`)) };
@@ -455,7 +457,7 @@ describe('after a report, the marked text is nowhere in the project', { skip: SK
     // An AI request whose material snapshots the task and the passages.
     const asked = await ok(h.ben.request('POST', `/projects/${project}/questions`, { question: 'What is the kestrel vault code?' }), 201);
     if (asked.status === 'queued') {
-      await new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), model: new CapturingModel(), clock: t.clock.now }).process(asked.id, 1, false);
+      await byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), ...aiDeps(new CapturingModel()), clock: t.clock.now })).process(asked.id, 1, false);
     }
     t.clock.advanceSeconds(1);
     return { source, thread, m1, m2, task };

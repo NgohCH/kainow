@@ -81,7 +81,6 @@ services:
     command: ["node", "dist/worker/main.js"]
     environment:
       <<: *kainow-env
-      OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       SMTP_URL: ${SMTP_URL:-}
       SMTP_FROM: ${SMTP_FROM:-}
       LOG_SIGN_IN_CODES: ${LOG_SIGN_IN_CODES:-}

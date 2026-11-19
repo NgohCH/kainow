@@ -4,12 +4,15 @@ import { uuidv7 } from '../common/uuid7';
 import type { JsonSchemaModel, ModelRequest } from '../extraction/model';
 import type { Usage } from '../spend/cost';
 import { MVP_SPEND_SETTINGS } from '../spend/mvp-settings';
+/** The model the run's connection uses (Task 11 seeds the project connection with it). */
+const RUN_MODEL = 'gpt-6.1-sol';
 import { SpendService } from '../spend/spend.service';
 import { SpendSettingsService } from '../spend/spend.settings';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 import { AssistRunner } from './assist-runner';
+import { aiDeps, aiReady, byAttempt } from '../testing/ai-runners';
 
 const KEY = `sk-${'a1B2c3D4e5'.repeat(3)}`;
 const USAGE: Usage = { inputTokens: 2_000, cachedInputTokens: 0, outputTokens: 300 };
@@ -41,7 +44,7 @@ describe('AI questions', { skip: SKIP_NO_DB }, () => {
   const ask = (c: Client, question: unknown, projectId = project) => c.request('POST', `/projects/${projectId}/questions`, { question });
   const settings = () => new SpendSettingsService(t.pool, t.clock.now);
   const run = async (id: string, model: JsonSchemaModel = new FakeModel()) =>
-    new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), model, clock: t.clock.now }).process(id, 1, false);
+    byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), ...aiDeps(model), clock: t.clock.now })).process(id, 1, false);
   const grant = (projectId: string, userId: string) =>
     t.pool.query(
       `INSERT INTO access_grants (id, project_id, user_id, kind, purpose, scope, starts_on, expires_on, requested_by, requested_at, decision, decided_by, decided_at)
@@ -64,6 +67,7 @@ describe('AI questions', { skip: SKIP_NO_DB }, () => {
         { userId: ids.ben, role: 'member' },
       ],
     });
+    await aiReady(t.pool, project);
     closed = await seedProject(t.pool, {
       name: 'Beta Project',
       status: 'closed',
@@ -131,7 +135,7 @@ describe('AI questions', { skip: SKIP_NO_DB }, () => {
     const done = (await ada.request('GET', `/questions/${v.id}`)).body;
     assert.equal(done.status, 'answered');
     assert.equal(done.answerMarkdown, 'The pump service is on Thursday [P1].');
-    assert.equal(done.model, MVP_SPEND_SETTINGS.modelId);
+    assert.equal(done.model, RUN_MODEL);
     assert.ok(done.answeredAt);
     assert.equal(done.sources[0].cited, true);
 
@@ -291,6 +295,6 @@ describe('AI questions', { skip: SKIP_NO_DB }, () => {
     const escalated = await pm.request('POST', `/feedback/${r.body.id}/escalate`, { note: 'Please check the answer.' });
     assert.equal(escalated.status, 200, JSON.stringify(escalated.body));
     const listed = (await admin.request('GET', '/admin/feedback')).body.feedback;
-    assert.deepEqual(listed.map((f: { runRef: string; model: string }) => [f.runRef, f.model]), [[mine.body.id, MVP_SPEND_SETTINGS.modelId]]);
+    assert.deepEqual(listed.map((f: { runRef: string; model: string }) => [f.runRef, f.model]), [[mine.body.id, RUN_MODEL]]);
   });
 });

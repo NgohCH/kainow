@@ -280,7 +280,7 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
     ['departments', '#/departments'],
     ['domains', '#/domains'],
     ['organisation (name and logos)', '#/organisation'],
-    ['spending', '#/spending'],
+    ['AI (models, limits and policy, usage)', '#/ai'],
     ['approvals settings (organisation count, override, history)', '#/approvals'],
     ['closing, not ready', `#/projects/${closeA}/closing`],
     ['closing, ready (the Project Manager allowed to close)', `#/projects/${closeB}/closing`],

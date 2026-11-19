@@ -25,6 +25,7 @@ import { ProjectsModule } from './projects/projects.module';
 import { ProtectedKeyModule } from './quarantine/protected-key.module';
 import { QuarantineModule } from './quarantine/quarantine.module';
 import { SearchModule } from './search/search.module';
+import { AiModule } from './ai/ai.module';
 import { SpendModule } from './spend/spend.module';
 
 @Global()
@@ -69,6 +70,7 @@ export class AppModule {
         ProtectedKeyModule,
         AuthModule.register({ codeSender: options.codeSender }),
         SpendModule,
+        AiModule,
         OrganisationModule,
         ProjectsModule,
         NotesModule,

@@ -10,6 +10,7 @@ import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 import { CasesService } from '../quarantine/cases.service';
 import { projectHolding, standaloneCases } from '../testing/quarantine';
+import { aiDeps, aiReady, byAttempt } from '../testing/ai-runners';
 import { AnalysisRunner } from './analysis-runner';
 import { MinutesRunner } from './minutes-runner';
 import type { MinutesAnswer } from './minutes';
@@ -59,7 +60,7 @@ describe('minutes runner', { skip: SKIP_NO_DB }, () => {
       coversThroughNo: null,
       at: t.clock.now(),
     });
-  const runner = (model: MinutesModel | null) => new MinutesRunner({ pool: t.pool, spend, model, clock: t.clock.now });
+  const runner = (model: MinutesModel | null) => byAttempt(t.pool, 'analysis_runs', new MinutesRunner({ pool: t.pool, spend, ...aiDeps(model), clock: t.clock.now }));
   const run = async (id: string) => (await t.pool.query(`SELECT * FROM analysis_runs WHERE id = $1`, [id])).rows[0];
   const drafts = async () => (await t.pool.query(`SELECT * FROM minutes_drafts WHERE thread_id = $1 ORDER BY version_no`, [meeting])).rows;
   const entries = async () => (await t.pool.query(`SELECT * FROM ai_spend_entries ORDER BY created_at, id`)).rows;
@@ -89,6 +90,7 @@ describe('minutes runner', { skip: SKIP_NO_DB }, () => {
     });
     await new SpendSettingsService(t.pool, t.clock.now).apply(MVP_SPEND_SETTINGS, ids.admin);
     spend = new SpendService(t.pool, t.clock.now);
+    await aiReady(t.pool, project);
     ada = await t.signIn('ada@example.org');
     const r = await ada.request('POST', `/projects/${project}/threads`, { kind: 'meeting', title: 'Weekly check-in', meetingDate: '2026-11-11' });
     assert.equal(r.status, 201, JSON.stringify(r.body));
@@ -273,7 +275,7 @@ describe('minutes runner', { skip: SKIP_NO_DB }, () => {
     await t.pool.query(`INSERT INTO message_versions (id, message_id, version_no, body, body_sha256, created_at) VALUES ($1, $2, 2, $3, 'x', $4)`, [uuidv7(), m, `Use ${key} for the vendor`, t.clock.now()]);
     const model = new FakeModel();
     const id = await queueRun();
-    const withCases = new MinutesRunner({ pool: t.pool, spend, model, clock: t.clock.now, quarantine: t.app.get(CasesService) });
+    const withCases = byAttempt(t.pool, 'analysis_runs', new MinutesRunner({ pool: t.pool, spend, ...aiDeps(model), clock: t.clock.now, quarantine: t.app.get(CasesService) }));
     assert.equal(await withCases.process(id, 1, false), 'blocked');
     assert.equal((await run(id)).failure_code, 'secret_found');
     assert.equal(model.calls.length, 0);
@@ -304,12 +306,13 @@ describe('minutes runner', { skip: SKIP_NO_DB }, () => {
     assert.equal((await entries()).length, 0);
   });
 
-  test('the analysis runner hands minutes runs over, and no key fails without a charge', async () => {
+  test('the analysis runner hands minutes runs over, and no protected key blocks without a charge', async () => {
     await post(ada, 'Shall we ship on Friday?');
     const id = await queueRun();
-    const dispatcher = new AnalysisRunner({ pool: t.pool, clock: t.clock.now, extraction: { process: async () => 'skipped' }, minutes: runner(null) });
-    assert.equal(await dispatcher.process(id, 1, true), 'failed');
-    assert.equal((await run(id)).failure_code, 'model_not_configured');
+    const minutes = new MinutesRunner({ pool: t.pool, spend, ...aiDeps(new FakeModel()), key: null, clock: t.clock.now });
+    const dispatcher = new AnalysisRunner({ pool: t.pool, clock: t.clock.now, extraction: { process: async () => 'skipped' }, minutes });
+    assert.equal(await dispatcher.process(id, {}), 'blocked');
+    assert.deepEqual([(await run(id)).failure_code, (await run(id)).attempts], ['protected_key_missing', 1]);
     assert.equal((await entries()).length, 0);
   });
 });

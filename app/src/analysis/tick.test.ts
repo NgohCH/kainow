@@ -5,11 +5,15 @@ import { SpendService } from '../spend/spend.service';
 import { SpendSettingsService } from '../spend/spend.settings';
 import { MVP_SPEND_SETTINGS } from '../spend/mvp-settings';
 import { SKIP_NO_DB } from '../testing/db';
+import { seedProjectAllowance, seedSpendTarget } from '../testing/ai-connections';
+import { aiReady, testProtectedKey } from '../testing/ai-runners';
+import type { Pool } from 'pg';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 import type { AnalysisQueue } from './queue';
 import { unavailableReason } from '../assist/questions.service';
-import { AnalysisTick } from './tick';
+import { AnalysisTick, readinessMany } from './tick';
+import { analysisState, statusLine } from './state';
 
 describe('analysis tick', { skip: SKIP_NO_DB }, () => {
   let t: TestApp;
@@ -26,8 +30,8 @@ describe('analysis tick', { skip: SKIP_NO_DB }, () => {
     assert.equal(r.status, 201, JSON.stringify(r.body));
     return r.body.id as string;
   };
-  const start = async (c: Client, kind: 'discussion' | 'meeting', title = 'Release plan') => {
-    const r = await c.request('POST', `/projects/${project}/threads`, { kind, title });
+  const start = async (c: Client, kind: 'discussion' | 'meeting', title = 'Release plan', inProject = project) => {
+    const r = await c.request('POST', `/projects/${inProject}/threads`, { kind, title });
     assert.equal(r.status, 201, JSON.stringify(r.body));
     return r.body.id as string;
   };
@@ -52,10 +56,11 @@ describe('analysis tick', { skip: SKIP_NO_DB }, () => {
         { userId: ids.ada, role: 'member' },
       ],
     });
+    await aiReady(t.pool, project);
     await new SpendSettingsService(t.pool, t.clock.now).apply(MVP_SPEND_SETTINGS, ids.admin);
     ada = await t.signIn('ada@example.org');
     pm = await t.signIn('pm@example.org');
-    tick = new AnalysisTick({ pool: t.pool, clock: t.clock.now, queue, spend: new SpendService(t.pool, t.clock.now) });
+    tick = new AnalysisTick({ pool: t.pool, clock: t.clock.now, queue, spend: new SpendService(t.pool, t.clock.now), key: testProtectedKey() });
   });
   afterEach(async () => {
     await t.close();
@@ -165,7 +170,7 @@ describe('analysis tick', { skip: SKIP_NO_DB }, () => {
     const running = await insertRequest('running');
     const withJob = await insertRequest('queued');
     const spend = new SpendService(t.pool, t.clock.now);
-    const reserved = await spend.reserve({ requestId: running, attemptNo: 3, estimateMicroMyr: 1000n, purpose: 'question_answer', actorUserId: null });
+    const reserved = await spend.reserve({ ...(await seedSpendTarget(t.pool, ids.ada)), requestId: running, attemptNo: 3, estimateMicroMyr: 1000n, purpose: 'question_answer', actorUserId: null });
     assert.equal(reserved.status, 'reserved');
     await t.pool.query(`CREATE SCHEMA IF NOT EXISTS pgboss`);
     await t.pool.query(`CREATE TABLE pgboss.job (name text NOT NULL, singleton_key text, state text NOT NULL)`);
@@ -201,7 +206,7 @@ describe('analysis tick', { skip: SKIP_NO_DB }, () => {
     const second = start(ada, 'discussion', 'Another');
     await post(ada, await second);
     t.clock.advanceMinutes(5);
-    const both = await Promise.all([tick.run(), new AnalysisTick({ pool: t.pool, clock: t.clock.now, queue, spend: new SpendService(t.pool, t.clock.now) }).run()]);
+    const both = await Promise.all([tick.run(), new AnalysisTick({ pool: t.pool, clock: t.clock.now, queue, spend: new SpendService(t.pool, t.clock.now), key: testProtectedKey() }).run()]);
     assert.equal(both[0].started + both[1].started, 1);
     assert.equal((await runs()).length, 2);
     assert.equal(jobs.length, 2);
@@ -353,7 +358,7 @@ describe('analysis tick', { skip: SKIP_NO_DB }, () => {
     await t.pool.query(`CREATE TRIGGER fail_first BEFORE INSERT ON analysis_runs FOR EACH ROW EXECUTE FUNCTION fail_first()`);
     t.clock.advanceMinutes(5);
     const logs: string[] = [];
-    const guarded = new AnalysisTick({ pool: t.pool, clock: t.clock.now, queue, spend: new SpendService(t.pool, t.clock.now), log: (m) => logs.push(m) });
+    const guarded = new AnalysisTick({ pool: t.pool, clock: t.clock.now, queue, spend: new SpendService(t.pool, t.clock.now), key: testProtectedKey(), log: (m) => logs.push(m) });
     assert.deepEqual(await guarded.run(), { started: 1 });
     assert.deepEqual((await runs()).map((r) => r.thread_id), [second]);
     assert.deepEqual(logs, ['An analysis could not be started for one thread; the other threads continue.']);
@@ -363,7 +368,7 @@ describe('analysis tick', { skip: SKIP_NO_DB }, () => {
     const thread = await start(ada, 'discussion');
     await post(ada, thread);
     t.clock.advanceMinutes(5);
-    const broken = new AnalysisTick({ pool: t.pool, clock: t.clock.now, queue: { enqueue: async () => Promise.reject(new Error('down')) }, spend: new SpendService(t.pool, t.clock.now) });
+    const broken = new AnalysisTick({ pool: t.pool, clock: t.clock.now, queue: { enqueue: async () => Promise.reject(new Error('down')) }, spend: new SpendService(t.pool, t.clock.now), key: testProtectedKey() });
     assert.deepEqual(await broken.run(), { started: 0 });
     const [run] = await runs();
     assert.deepEqual([run.status, run.failure_code], ['failed', 'queue_unavailable']);
@@ -372,5 +377,107 @@ describe('analysis tick', { skip: SKIP_NO_DB }, () => {
     await post(ada, thread, 'One more point.');
     t.clock.advanceMinutes(5);
     assert.deepEqual(await tick.run(), { started: 1 }, 'a new message lets the next tick start it again');
+  });
+  /** A second active project the same people belong to; with `ai` it is made AI-ready. */
+  const otherProject = async (name: string, ai: boolean) => {
+    const id = await seedProject(t.pool, {
+      name,
+      status: 'active',
+      members: [
+        { userId: ids.pm, role: 'pm' },
+        { userId: ids.pm, role: 'owner' },
+        { userId: ids.ada, role: 'member' },
+      ],
+    });
+    if (ai) await aiReady(t.pool, id);
+    return id;
+  };
+  const blockedOf = async (id: string, keyId: string | null = testProtectedKey().id) => (await readinessMany(t.pool, [id], t.clock.now(), keyId)).get(id)?.blockedReason;
+
+  test('a project without connections gets no run and shows Blocked — AI is not set up for this project', async () => {
+    const bare = await otherProject('Bare Project', false);
+    const thread = await start(ada, 'discussion', 'Release plan', bare);
+    await post(ada, thread);
+    t.clock.advanceMinutes(5);
+    assert.deepEqual(await tick.run(), { started: 0 });
+    assert.equal((await runs()).length, 0);
+    assert.equal(await blockedOf(bare), 'ai_not_set_up');
+    // The shown status is the same rule: the app under test has no protected key installed, so its own line names that.
+    const status = await ada.request('GET', `/threads/${thread}/analysis`);
+    assert.equal(status.status, 200, JSON.stringify(status.body));
+    assert.match(status.body.line, /^Blocked — the protected key/);
+    const facts = { kind: 'discussion' as const, projectStatus: 'active' as const, meetingState: null, newestVisibleAt: new Date(0), unanalysedCount: 1, activeRun: null, recentAutoStarts: [], hasHumanDraft: false, lastAnalysedAt: null, lastFailure: null, lastAutoFailedAt: null, finalDraftRequested: false };
+    const shown = analysisState(facts, { automatic: true, quietMinutes: 5 } as Parameters<typeof analysisState>[1], (await readinessMany(t.pool, [bare], t.clock.now(), testProtectedKey().id)).get(bare) as never, new Date(3_600_000));
+    assert.equal(statusLine(shown.status), 'Blocked — AI is not set up for this project');
+  });
+
+  test('a project whose monthly allowance is used gets no run', async () => {
+    const thread = await start(ada, 'discussion');
+    await post(ada, thread);
+    await seedProjectAllowance(t.pool, project, { monthlyMicroMyr: 5_000_000n });
+    await t.pool.query(
+      `INSERT INTO ai_spend_entries (id, request_id, attempt_no, created_at, updated_at, status, purpose, model_id, input_usd_per_million_micro,
+         cached_input_usd_per_million_micro, cache_write_usd_per_million_micro, output_usd_per_million_micro, myr_per_usd_micro, estimate_micro_myr,
+         amount_micro_myr, project_id, ruled)
+       VALUES ($1, $2, 1, $3, $3, 'confirmed', 'discussion_analysis', 'm', 1, 1, 1, 1, 1, 5000000, 5000000, $4, true)`,
+      [uuidv7(), uuidv7(), t.clock.now(), project],
+    );
+    t.clock.advanceMinutes(5);
+    assert.deepEqual(await tick.run(), { started: 0 });
+    assert.equal((await runs()).length, 0);
+    assert.equal(await blockedOf(project), 'project_allowance_used');
+    await seedProjectAllowance(t.pool, project, { monthlyMicroMyr: null });
+    assert.equal(await blockedOf(project), 'project_no_allowance');
+    await seedProjectAllowance(t.pool, project, { monthlyMicroMyr: 6_000_000n });
+    assert.equal(await blockedOf(project), undefined);
+    assert.equal(await blockedOf(project, null), 'protected_key_missing');
+    await t.pool.query(`UPDATE ai_connections SET state = 'disabled' WHERE project_id = $1`, [project]);
+    assert.equal(await blockedOf(project), 'no_eligible_connection');
+  });
+
+  test('a ready project gets its run while an unready one in the same tick does not', async () => {
+    const bare = await otherProject('Bare Project', false);
+    const ready = await start(ada, 'discussion');
+    const unready = await start(ada, 'discussion', 'Other plan', bare);
+    await post(ada, ready);
+    await post(ada, unready);
+    t.clock.advanceMinutes(5);
+    assert.deepEqual(await tick.run(), { started: 1 });
+    assert.deepEqual((await runs()).map((r) => r.thread_id), [ready]);
+  });
+
+  test('no ai.request_blocked audit rows are written by the tick', async () => {
+    const bare = await otherProject('Bare Project', false);
+    await post(ada, await start(ada, 'discussion', 'Other plan', bare));
+    await post(ada, await start(ada, 'discussion'));
+    t.clock.advanceMinutes(5);
+    await tick.run();
+    await new AnalysisTick({ pool: t.pool, clock: t.clock.now, queue, spend: new SpendService(t.pool, t.clock.now), key: null }).run();
+    assert.equal((await t.pool.query(`SELECT 1 FROM audit_events WHERE action = 'ai.request_blocked'`)).rowCount, 0);
+  });
+
+  test('readinessMany uses at most three queries for 50 projects', async () => {
+    const many: string[] = [];
+    for (let i = 0; i < 50; i++) many.push(await otherProject(`Many ${i}`, i % 2 === 0));
+    let queries = 0;
+    const counting = new Proxy(t.pool, {
+      get: (target, prop) => (prop === 'query' ? (...a: unknown[]) => (queries++, (target.query as (...x: unknown[]) => unknown)(...a)) : (target as unknown as Record<string | symbol, unknown>)[prop]),
+    }) as Pool;
+    const got = await readinessMany(counting, many, t.clock.now(), testProtectedKey().id);
+    assert.ok(queries <= 3, `${queries} queries`);
+    assert.equal(got.size, 50);
+    assert.deepEqual(many.map((id) => got.get(id)?.blockedReason), many.map((_, i) => (i % 2 === 0 ? undefined : 'ai_not_set_up')));
+  });
+
+  test('the blocked wording for each project reason', () => {
+    const facts = { kind: 'discussion' as const, projectStatus: 'active' as const, meetingState: null, newestVisibleAt: new Date(0), unanalysedCount: 1, activeRun: null, recentAutoStarts: [], hasHumanDraft: false, lastAnalysedAt: null, lastFailure: null, lastAutoFailedAt: null, finalDraftRequested: false };
+    const settings = { automatic: true, quietMinutes: 5 } as Parameters<typeof analysisState>[1];
+    const line = (blockedReason: NonNullable<Parameters<typeof analysisState>[2]['blockedReason']>) =>
+      statusLine(analysisState(facts, settings, { spendApproved: true, allowanceLeft: true, blockedReason }, new Date(3_600_000)).status);
+    assert.equal(line('ai_not_set_up'), 'Blocked — AI is not set up for this project');
+    assert.match(line('no_eligible_connection'), /^Blocked — no AI connection/);
+    assert.match(line('protected_key_missing'), /^Blocked — the protected key/);
+    assert.match(line('project_no_allowance'), /^Blocked — this project has no AI allowance/);
+    assert.match(line('project_allowance_used'), /^Blocked — no AI allowance is left for this project/);
   });
 });

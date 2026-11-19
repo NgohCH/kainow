@@ -14,6 +14,7 @@ import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 import { AssistRunner } from './assist-runner';
+import { aiDeps, aiReady, byAttempt } from '../testing/ai-runners';
 
 const USAGE: Usage = { inputTokens: 2_000, cachedInputTokens: 0, outputTokens: 300 };
 const QUESTION = 'When is the pump service?';
@@ -52,7 +53,7 @@ describe('sharing AI answers into threads', { skip: SKIP_NO_DB }, () => {
   const count = async (sql: string, params: unknown[] = []) => Number((await t.pool.query(sql, params)).rows[0].n);
   const ask = (c: Client, question = QUESTION) => c.request('POST', `/projects/${project}/questions`, { question });
   const run = (id: string, model: JsonSchemaModel = new FakeModel()) =>
-    new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), model, clock: t.clock.now }).process(id, 1, false);
+    byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), ...aiDeps(model), clock: t.clock.now })).process(id, 1, false);
   const share = (c: Client, id: string, threadId = thread) => c.request('POST', `/questions/${id}/share`, { threadId });
   const reanswer = (c: Client, id: string, threadId = thread) => c.request('POST', `/questions/${id}/reanswer`, { threadId });
   const note = async (title: string, text: string) => {
@@ -99,6 +100,7 @@ describe('sharing AI answers into threads', { skip: SKIP_NO_DB }, () => {
         { userId: ids.ben, role: 'member' },
       ],
     });
+    await aiReady(t.pool, project);
     await t.pool.query(
       `INSERT INTO access_grants (id, project_id, user_id, kind, purpose, scope, starts_on, expires_on, requested_by, requested_at, decision, decided_by, decided_at)
        VALUES ($1, $2, $3, 'audit', 'Annual audit', 'Everything', '2026-11-01', '2026-11-30', $4, now(), 'approved', $5, now())`,
@@ -319,7 +321,7 @@ describe('sharing AI answers into threads', { skip: SKIP_NO_DB }, () => {
     // Discussion analysis: the transcript stored for extraction holds the message only.
     const analysis = await insertRun(t.pool, { threadId: thread, kind: 'proposals', trigger: 'button', requestedBy: ids.ada, coversFromNo: 1, coversThroughNo: null, at: t.clock.now() });
     const dispatcher = new AnalysisRunner({ pool: t.pool, clock: t.clock.now, extraction: { process: async () => 'skipped' } });
-    await dispatcher.process(analysis, 1, false);
+    await dispatcher.process(analysis, {});
     const transcript = (
       await t.pool.query(`SELECT v.text_content AS text FROM analysis_runs r JOIN source_versions v ON v.id = r.source_version_id WHERE r.id = $1`, [analysis])
     ).rows[0].text as string;
@@ -336,7 +338,7 @@ describe('sharing AI answers into threads', { skip: SKIP_NO_DB }, () => {
       },
     };
     const minutes = await insertRun(t.pool, { threadId: meeting, kind: 'minutes', trigger: 'button', requestedBy: ids.ada, coversFromNo: 1, coversThroughNo: null, at: t.clock.now() });
-    const runner = new MinutesRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), model: minutesModel, clock: t.clock.now });
+    const runner = byAttempt(t.pool, 'analysis_runs', new MinutesRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), ...aiDeps(minutesModel), clock: t.clock.now }));
     assert.equal(await runner.process(minutes, 1, false), 'succeeded');
     assert.equal(calls.length, 1);
     assert.match(calls[0].user, /Shall we move the filter order\?/);

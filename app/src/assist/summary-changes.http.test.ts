@@ -12,6 +12,7 @@ import { uuidv7 } from '../common/uuid7';
 import { NotesService } from '../notes/notes.service';
 import { AssistRunner } from './assist-runner';
 import { onMaterialRemoved } from './removal';
+import { aiDeps, aiReady, byAttempt } from '../testing/ai-runners';
 
 const USAGE: Usage = { inputTokens: 2_000, cachedInputTokens: 0, outputTokens: 300 };
 const REVIEW_LABEL = 'Access review required';
@@ -56,7 +57,7 @@ describe('shareable summaries when the original changes', { skip: SKIP_NO_DB }, 
   let queued: string[];
 
   const run = (id: string, model: JsonSchemaModel) =>
-    new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), model, clock: t.clock.now }).process(id, 1, false);
+    byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), ...aiDeps(model), clock: t.clock.now })).process(id, 1, false);
   const lastRequest = () => queued[queued.length - 1];
   const state = async (id: string) => (await t.pool.query(`SELECT state, review_reason FROM summaries WHERE id = $1`, [id])).rows[0];
   const answerState = async (id: string) => (await t.pool.query(`SELECT review_state, review_reason FROM ai_answers WHERE request_id = $1`, [id])).rows[0];
@@ -141,6 +142,7 @@ describe('shareable summaries when the original changes', { skip: SKIP_NO_DB }, 
         { userId: ids.ben, role: 'member' },
       ],
     });
+    await aiReady(t.pool, project);
     await new SpendSettingsService(t.pool, t.clock.now).apply(MVP_SPEND_SETTINGS, ids.admin);
     [pm, dep, spo, ada, ben] = [
       await t.signIn('pm@example.org'),

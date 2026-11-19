@@ -98,3 +98,11 @@ test("reveal shows the item's own columns first and marks the removed spans", ()
   assert.deepEqual(lines[0].segments.filter((s) => s.removed).map((s) => s.text), ['Xy7!pass']);
   assert.deepEqual(lines[1].segments, [{ text: 'Event note', removed: false }]);
 });
+
+import { protectedKeyLines } from './quarantine.ts';
+test('the missing-key warning names AI keys; a loaded key only counts waiting cases', () => {
+  const missing = protectedKeyLines({ loaded: false, casesWaiting: 2 });
+  assert.ok(missing.some((l) => l.startsWith('AI keys cannot be saved')));
+  assert.match(missing[0], /2 cases are held/);
+  assert.deepEqual(protectedKeyLines({ loaded: true, casesWaiting: 1 }), ['1 case is held and waiting to be cleaned.']);
+});

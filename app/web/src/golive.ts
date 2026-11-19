@@ -21,6 +21,8 @@ export interface GoLive {
   closedAt: string | null;
   steps: GoLiveStep[];
   notDoneAtClose: string[];
+  /** Items that are shown for information and are not steps: they cannot be ticked and never hold up closing. */
+  information?: Array<{ key: string; text: string; explanation: string; link: string }>;
 }
 
 export interface GoLiveSummary {

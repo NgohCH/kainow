@@ -384,3 +384,33 @@ mark.credential-removed { background: var(--marker-wash); color: inherit; font-w
 .cleaned-text { white-space: pre-wrap; overflow-wrap: anywhere; }
 .cleaned-text:focus-visible { outline: 3px solid var(--teal); outline-offset: 2px; }
 .check { display: flex; gap: 0.4rem; align-items: baseline; font-weight: 400; }
+
+/* AI configuration (sub-project 6) */
+.project-ai section + section { margin-top: 2rem; }
+.project-ai h3, .page h3 { font-size: 1.05rem; margin: 1rem 0 0.5rem; }
+.connection-list, .model-list { list-style: none; margin: 1rem 0; padding: 0; border-top: 1px solid var(--rule); }
+.connection, .model { border-bottom: 1px solid var(--rule); padding: 0.85rem 0.25rem; overflow-wrap: anywhere; }
+.connection .row p, .model .row p { margin: 0; }
+.actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin: 0.5rem 0; }
+.state-badge { font-size: 0.85rem; font-weight: 600; border: 1px solid currentColor; border-radius: 999px; padding: 0.1rem 0.7rem; }
+.tone-ok { color: var(--teal-deep); background: var(--teal-wash); }
+.tone-quiet { color: var(--muted); }
+.tone-warn { color: #6e1020; background: var(--rust-wash); }
+.chips-list { list-style: none; margin: 0.25rem 0 0.5rem; padding: 0; display: flex; flex-wrap: wrap; gap: 0.35rem; }
+.chip-quiet { border: 1px solid var(--rule); border-radius: 999px; padding: 0.1rem 0.6rem; font-size: 0.85rem; background: var(--surface); }
+.chip-restricted { border-color: var(--ink); font-weight: 600; }
+.terms-text { white-space: pre-wrap; overflow-wrap: anywhere; margin: 0.35rem 0; }
+.quad { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 0.75rem; }
+@media (max-width: 720px) { .quad { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 560px) { .quad { grid-template-columns: 1fr; } }
+fieldset.plain-fieldset { border: 0; padding: 0; margin: 0; min-width: 0; }
+fieldset { min-width: 0; }
+.replace-key { margin: 0.5rem 0; padding: 0.75rem; border: 1px solid var(--rule); border-radius: 4px; background: var(--paper); }
+.table-scroll { overflow-x: auto; max-width: 100%; }
+.tabs[role='tablist'] button { color: var(--muted); }
+.tabs[role='tablist'] button[aria-selected='true'] { color: var(--ink); }
+a.meter { text-decoration: underline; }
+@media (max-width: 40rem) {
+  .usage-table th[scope='row'], .usage-table td { display: block; }
+  .usage-table td[data-label]::before, .usage-table th[scope='row'][data-label]::before { content: attr(data-label) ': '; color: var(--muted); font-weight: 600; font-size: 0.85rem; }
+}

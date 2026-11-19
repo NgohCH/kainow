@@ -18,13 +18,15 @@ export const DELETED_KINDS: readonly DeletedKind[] = ['message', 'note', 'minute
 /** One line of the project's "Deletions and restorations" (history spec 4.6). */
 export interface HistoryLine {
   at: string;
-  kind: DeletedKind | 'credential_report';
-  action: 'deleted' | 'restored' | 'reported';
+  kind: DeletedKind | 'credential_report' | 'ai_connection';
+  action: 'deleted' | 'restored' | 'reported' | 'key_rejected';
   /** Who acted; for a credential report, the reporter only for PM, Owner, Sponsor and Administrators (else null). */
   actor: string | null;
   reason: string | null;
   /** For a credential report: the kind of item it was reported in ("A suspected credential was reported in a [kind]"). */
   itemKind?: string;
+  /** For an AI connection line: the connection's label (never its key). */
+  label?: string;
   /** Only for a holder of Inspect Deleted Content, and only for an item that is Deleted now and that they may open. */
   title?: string;
   href?: string;
@@ -79,28 +81,32 @@ export class HistoryService {
     const { rows } = await this.pool.query(
       `SELECT * FROM (
          SELECT e.at, CASE s.kind WHEN 'notes' THEN 'note' ELSE s.kind END AS kind, e.kind AS action, u.display_name AS actor, e.reason,
-                s.id AS "itemId", NULL::text AS "itemKind", e.id AS "eventId"
+                s.id AS "itemId", NULL::text AS "itemKind", e.id AS "eventId", NULL::text AS label
            FROM source_events e JOIN sources s ON s.id = e.source_id JOIN users u ON u.id = e.actor_id
           WHERE e.project_id = $1
          UNION ALL
-         SELECT e.at, 'task', e.kind, u.display_name, e.note, t.id, NULL, e.id
+         SELECT e.at, 'task', e.kind, u.display_name, e.note, t.id, NULL, e.id, NULL
            FROM task_events e JOIN tasks t ON t.id = e.task_id JOIN users u ON u.id = e.actor_id
           WHERE t.project_id = $1 AND e.kind IN ('deleted', 'restored')
          UNION ALL
-         SELECT e.at, e.record_kind, e.kind, u.display_name, e.note, e.record_id, NULL, e.id
+         SELECT e.at, e.record_kind, e.kind, u.display_name, e.note, e.record_id, NULL, e.id, NULL
            FROM record_events e JOIN users u ON u.id = e.actor_id
            LEFT JOIN decisions d ON e.record_kind = 'decision' AND d.id = e.record_id
            LEFT JOIN questions q ON e.record_kind = 'question' AND q.id = e.record_id
            LEFT JOIN risks r ON e.record_kind = 'risk' AND r.id = e.record_id
           WHERE e.kind IN ('deleted', 'restored') AND COALESCE(d.project_id, q.project_id, r.project_id) = $1
          UNION ALL
-         SELECT e.at, 'message', e.action, u.display_name, e.reason, e.message_id, NULL, e.id
+         SELECT e.at, 'message', e.action, u.display_name, e.reason, e.message_id, NULL, e.id, NULL
            FROM discussion_events e JOIN discussion_threads th ON th.id = e.thread_id JOIN users u ON u.id = e.actor_id
           WHERE th.project_id = $1 AND e.message_id IS NOT NULL AND e.action IN ('deleted', 'restored')
          UNION ALL
-         SELECT c.reported_at, 'credential_report', 'reported', CASE WHEN $2::boolean THEN u.display_name END, NULL, c.item_id, c.item_kind, c.id
+         SELECT c.reported_at, 'credential_report', 'reported', CASE WHEN $2::boolean THEN u.display_name END, NULL, c.item_id, c.item_kind, c.id, NULL
            FROM quarantine_cases c LEFT JOIN users u ON u.id = c.reporter_id
           WHERE c.project_id = $1
+         UNION ALL
+         SELECT e.at, 'ai_connection', e.action, u.display_name, NULL, e.connection_id, NULL, e.id, e.detail->>'label'
+           FROM ai_connection_events e JOIN ai_connections c ON c.id = e.connection_id LEFT JOIN users u ON u.id = e.actor_id
+          WHERE c.project_id = $1 AND e.action = 'key_rejected'
        ) lines ORDER BY at DESC, "eventId" DESC`,
       [ctx.project.id, seesReporter],
     );
@@ -110,6 +116,8 @@ export class HistoryService {
     return rows.map((r) => {
       const line: HistoryLine = { at: iso(r.at), kind: r.kind, action: r.action, actor: r.actor ?? null, reason: r.action === 'reported' ? null : r.reason };
       if (r.kind === 'credential_report') return { ...line, itemKind: r.itemKind };
+      // A rejected AI key (spec 5.4): the label only; a null actor is Kainow itself.
+      if (r.kind === 'ai_connection') return { ...line, label: r.label };
       const item = openable.get(`${r.kind}:${r.itemId}`);
       const out: HistoryLine = item ? { ...line, title: item.title, href: item.href } : line;
       // Only the newest `deleted` line of an item that is still Deleted offers Restore.

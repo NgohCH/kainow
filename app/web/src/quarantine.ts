@@ -4,6 +4,7 @@
  * forms send; the server decides every change again. The marked text is never kept: forms clear it after sending, and
  * nothing here ever builds a line from it.
  */
+import { blockedRunText, isBlockedCode } from './ai.ts';
 import { api } from './api.ts';
 import { formatDay } from './format.ts';
 
@@ -132,9 +133,10 @@ export const decisionBody = (places: Array<{ kind: ItemKind; id: string }>, deci
 // Runner failure codes
 // ---------------------------------------------------------------------------------------------------------------
 
-/** What a failed or blocked run says: the code `held` is worded; any other code shows the server's detail. */
+/** What a failed or blocked run says: `held` and the AI-not-available codes are worded; any other code shows the server's detail. */
 export function runFailureText(code: string | null, detail: string | null): string {
   if (code === 'held') return HELD_LABEL;
+  if (isBlockedCode(code)) return blockedRunText(code, detail);
   return detail ?? '';
 }
 
@@ -308,3 +310,14 @@ export const revealOriginal = (caseId: string, kind: ItemKind, itemId: string) =
   api.post<Revealed>(`/security/cases/${caseId}/items/${kind}/${itemId}/reveal`, { confirm: true });
 export const releaseUnchanged = (caseId: string, reason: string) =>
   api.post<{ caseId: string; state: 'released_unchanged'; restored: number; changed: Array<{ table: string }> }>(`/security/cases/${caseId}/release-unchanged`, { reason });
+
+/** The lines under the persistent protected-key warning. The key also seals AI keys, so the warning names them (spec 5.2). */
+export function protectedKeyLines(status: { loaded: boolean; casesWaiting: number }): string[] {
+  const cases = `${status.casesWaiting} ${status.casesWaiting === 1 ? 'case is' : 'cases are'} held and waiting`;
+  const ai = 'AI keys cannot be saved, checked or used until it is installed, so every AI request ends blocked.';
+  if (status.loaded) return [`${cases} to be cleaned.`];
+  return [
+    `The protected key file is missing or unreadable.${status.casesWaiting > 0 ? ` ${cases}.` : ''} Reported items stay hidden, including authorised records, until it is back.`,
+    ai,
+  ];
+}

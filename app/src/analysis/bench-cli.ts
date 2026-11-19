@@ -7,6 +7,7 @@ import { MVP_SPEND_SETTINGS } from '../spend/mvp-settings';
 import { createApp } from '../bootstrap';
 import { loadConfig } from '../config';
 import { NO_MEETING_END_HOOK } from '../discussion/meetings.service';
+import { aiReady, testProtectedKey } from '../testing/ai-runners';
 import { CaptureSender } from '../testing/fakes';
 import type { AnalysisQueue } from './queue';
 import { AnalysisTick } from './tick';
@@ -263,7 +264,10 @@ export interface BenchResult {
 
 async function measureTick(pool: Pool, now: Date): Promise<BenchResult['tick']> {
   const queue: AnalysisQueue = { enqueue: async () => undefined };
-  const tick = new AnalysisTick({ pool, clock: () => now, queue, spend: new SpendService(pool, () => now), log: () => undefined });
+  // Automatic runs need the project to be AI-ready (spec 6.1): every seeded project gets a connection and an allowance.
+  const benchKey = testProtectedKey();
+  for (let p = 0; p < PROJECTS; p++) await aiReady(pool, (await pool.query<{ id: string }>(`SELECT md5('bench-project-' || $1::int)::uuid AS id`, [p])).rows[0].id);
+  const tick = new AnalysisTick({ pool, clock: () => now, queue, spend: new SpendService(pool, () => now), key: benchKey, log: () => undefined });
   const { loadThreadFacts } = await import('./facts');
   const candidates = (await loadThreadFacts(pool, now)).length;
   // Runs queued by a tick are deleted again after every iteration, so each one starts from the same state and does the same work.

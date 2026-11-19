@@ -4,6 +4,7 @@ import { Pool } from 'pg';
 import { uuidv7 } from '../common/uuid7';
 import { loadDatabaseConfig } from '../config';
 import { runMigrations } from '../db/migrate';
+import { seedSpendTarget } from '../testing/ai-connections';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { FakeClock } from '../testing/fakes';
 import { UsersService } from '../users/users.service';
@@ -20,6 +21,7 @@ describe('per-person monthly limit', { skip: SKIP_NO_DB }, () => {
   let settings: SpendSettingsService;
   let ann: string;
   let bob: string;
+  let target: Awaited<ReturnType<typeof seedSpendTarget>>;
   const migrationsDir = loadDatabaseConfig({ DATABASE_URL: 'x' }).migrationsDir;
 
   before(() => {
@@ -37,10 +39,11 @@ describe('per-person monthly limit', { skip: SKIP_NO_DB }, () => {
     const users = new UsersService(pool, clock.now);
     ann = (await users.create({ email: 'ann@example.org', displayName: 'Ann' })).id;
     bob = (await users.create({ email: 'bob@example.org', displayName: 'Bob' })).id;
+    target = await seedSpendTarget(pool, ann);
   });
 
   const ask = (actor: string | null, estimate: number) =>
-    spend.reserve({ requestId: uuidv7(), attemptNo: 1, estimateMicroMyr: MYR(estimate), purpose: 'extraction', actorUserId: actor });
+    spend.reserve({ ...target, requestId: uuidv7(), attemptNo: 1, estimateMicroMyr: MYR(estimate), purpose: 'extraction', actorUserId: actor });
 
   test('with no per-person limit (the default) nobody is limited beyond the organisation', async () => {
     await settings.apply(MVP_SPEND_SETTINGS, ann);
@@ -108,17 +111,17 @@ describe('per-person monthly limit', { skip: SKIP_NO_DB }, () => {
   });
 
   test('saving the setting is audited, and leaving it out of a request means no personal limit', async () => {
-    const body = { modelId: 'm', inputUsdPerMillion: '1', cachedInputUsdPerMillion: '1', outputUsdPerMillion: '1', myrPerUsd: 4, monthlyLimitMyr: 20, daily: { mode: 'not_applied' } };
+    const body = { myrPerUsd: 4, monthlyLimitMyr: 20, daily: { mode: 'not_applied' }, projectsMaySetLimits: false, projectsMayManageConnections: false, projectCeiling: { mode: 'not_applied' }, maxAttempts: 3, timeoutSeconds: 120, concurrency: 2 };
     assert.deepEqual(parseSettingsBody(body).userMonthly, { mode: 'not_applied' });
     const withLimit = parseSettingsBody({ ...body, userMonthly: { mode: 'limit', limitMyr: '2.5' } });
     assert.deepEqual(describeSettings(withLimit).userMonthly, { mode: 'limit', limitMyr: '2.500000' });
     await settings.apply(withLimit, ann);
     const { rows } = await pool.query("SELECT detail FROM audit_events WHERE action = 'ai.spend_settings_changed'");
-    assert.deepEqual(rows[0].detail.settings.userMonthly, { mode: 'limit', limitMyr: '2.500000' });
+    assert.deepEqual(rows[0].detail.new.userMonthly, { mode: 'limit', limitMyr: '2.500000' });
   });
 
   test('a malformed personal limit is refused', () => {
-    const body = { modelId: 'm', inputUsdPerMillion: '1', cachedInputUsdPerMillion: '1', outputUsdPerMillion: '1', myrPerUsd: 4, monthlyLimitMyr: 20, daily: { mode: 'not_applied' } };
+    const body = { myrPerUsd: 4, monthlyLimitMyr: 20, daily: { mode: 'not_applied' }, projectsMaySetLimits: false, projectsMayManageConnections: false, projectCeiling: { mode: 'not_applied' }, maxAttempts: 3, timeoutSeconds: 120, concurrency: 2 };
     for (const userMonthly of [null, 'x', [], {}, { mode: 'unlimited' }, { mode: 'limit' }, { mode: 'not_applied', limitMyr: 1 }, { mode: 'limit', limitMyr: '-1' }]) {
       assert.throws(() => parseSettingsBody({ ...body, userMonthly }), /userMonthly|limitMyr/, JSON.stringify(userMonthly));
     }

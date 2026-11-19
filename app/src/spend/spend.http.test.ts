@@ -15,13 +15,16 @@ import { UsersService } from '../users/users.service';
 const EMAIL = 'admin@example.org';
 
 const MVP_BODY = {
-  modelId: 'gpt-6.1-sol',
-  inputUsdPerMillion: '2.00',
-  cachedInputUsdPerMillion: '0.10',
-  outputUsdPerMillion: '10.00',
   myrPerUsd: 4.1,
   monthlyLimitMyr: 20,
   daily: { mode: 'not_applied' },
+  projectsMaySetLimits: false,
+  projectsMayManageConnections: false,
+  projectCeiling: { mode: 'not_applied' },
+  maxAttempts: 3,
+  timeoutSeconds: 120,
+  concurrency: 2,
+  reason: 'Approved MVP settings.',
 };
 
 describe('spend settings over HTTP', { skip: SKIP_NO_DB }, () => {
@@ -84,10 +87,9 @@ describe('spend settings over HTTP', { skip: SKIP_NO_DB }, () => {
 
     const view = (await call('GET', '/ai/spend')).body;
     assert.equal(view.configured, true);
-    assert.equal(view.settings.modelId, 'gpt-6.1-sol');
-    assert.equal(view.settings.inputUsdPerMillion, '2.000000');
-    assert.equal(view.settings.cachedInputUsdPerMillion, '0.100000');
-    assert.equal(view.settings.outputUsdPerMillion, '10.000000');
+    assert.equal(view.settings.myrPerUsd, '4.100000');
+    assert.equal(view.settings.maxAttempts, 3);
+    assert.deepEqual(view.settings.projectCeiling, { mode: 'not_applied' });
     assert.deepEqual(view.settings.daily, { mode: 'not_applied' });
     assert.equal(view.month.limitMyr, '20.000000');
     assert.equal(view.month.usedMyr, '0.000000');
@@ -120,6 +122,32 @@ describe('spend settings over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.equal((await call('PUT', '/ai/spend-settings', { ...MVP_BODY, userMonthly: { mode: 'unlimited' } })).status, 400);
   });
 
+  test('a change needs a reason and is recorded with the previous and new values and the reason (spec 7.1, final review I3)', async () => {
+    const { reason: _r, ...withoutReason } = MVP_BODY;
+    for (const body of [withoutReason, { ...MVP_BODY, reason: '   ' }, { ...MVP_BODY, reason: 'x'.repeat(1001) }, { ...MVP_BODY, reason: `key sk-test-${'x'.repeat(40)}` }]) {
+      assert.equal((await call('PUT', '/ai/spend-settings', body)).status, 400, JSON.stringify(body));
+    }
+    assert.equal((await call('GET', '/ai/spend')).body.configured, false, 'nothing is saved without a reason');
+
+    assert.equal((await call('PUT', '/ai/spend-settings', MVP_BODY)).status, 200);
+    assert.equal((await call('PUT', '/ai/spend-settings', { ...MVP_BODY, monthlyLimitMyr: 25, projectsMaySetLimits: true, reason: 'More work this month.' })).status, 200);
+    const pool = new Pool({ connectionString: testDatabaseUrl() });
+    try {
+      // Both saves happen at the same fake instant, so the rows are told apart by their reasons, not their order.
+      const rows = (await pool.query(`SELECT detail FROM audit_events WHERE action = 'ai.spend_settings_changed'`)).rows.map((r) => r.detail);
+      assert.equal(rows.length, 2);
+      const first = rows.find((d) => d.reason === 'Approved MVP settings.');
+      const second = rows.find((d) => d.reason === 'More work this month.');
+      assert.ok(first && second, JSON.stringify(rows));
+      assert.equal(first.previous, null);
+      assert.equal(first.new.monthlyLimitMyr, '20.000000');
+      assert.deepEqual([second.previous.monthlyLimitMyr, second.previous.projectsMaySetLimits], ['20.000000', false]);
+      assert.deepEqual([second.new.monthlyLimitMyr, second.new.projectsMaySetLimits], ['25.000000', true]);
+    } finally {
+      await pool.end();
+    }
+  });
+
   test('nothing is defaulted: a missing or malformed field is a 400 and saves nothing', async () => {
     const { monthlyLimitMyr: _m, ...withoutMonthly } = MVP_BODY;
     const { daily: _d, ...withoutDaily } = MVP_BODY;
@@ -129,12 +157,23 @@ describe('spend settings over HTTP', { skip: SKIP_NO_DB }, () => {
       'text',
       withoutMonthly,
       withoutDaily,
-      { ...MVP_BODY, modelId: '' },
-      { ...MVP_BODY, modelId: 5 },
       { ...MVP_BODY, myrPerUsd: 0 },
       { ...MVP_BODY, myrPerUsd: '-4.1' },
-      { ...MVP_BODY, inputUsdPerMillion: '1e1' },
-      { ...MVP_BODY, outputUsdPerMillion: undefined },
+      { ...MVP_BODY, maxAttempts: undefined },
+      { ...MVP_BODY, maxAttempts: 6 },
+      { ...MVP_BODY, maxAttempts: 0 },
+      { ...MVP_BODY, timeoutSeconds: undefined },
+      { ...MVP_BODY, timeoutSeconds: 29 },
+      { ...MVP_BODY, timeoutSeconds: 301 },
+      { ...MVP_BODY, concurrency: undefined },
+      { ...MVP_BODY, concurrency: 11 },
+      { ...MVP_BODY, concurrency: 2.5 },
+      { ...MVP_BODY, projectsMaySetLimits: undefined },
+      { ...MVP_BODY, projectsMayManageConnections: 'yes' },
+      { ...MVP_BODY, projectCeiling: undefined },
+      { ...MVP_BODY, projectCeiling: { mode: 'limit' } },
+      { ...MVP_BODY, projectCeiling: { mode: 'limit', limitMyr: null } },
+      { ...MVP_BODY, projectCeiling: { mode: 'not_applied', limitMyr: 5 } },
       { ...MVP_BODY, monthlyLimitMyr: '20.1234567' },
       { ...MVP_BODY, daily: { mode: 'unlimited' } },
       { ...MVP_BODY, daily: { mode: 'limit' } },

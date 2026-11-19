@@ -5,7 +5,7 @@ const SAMPLE = 'Sam will send the revised budget to Priya by Friday.';
 
 const HINTS: Record<number, string> = {
   400: 'the request was malformed: check the model name and the request fields (max_completion_tokens, response_format)',
-  401: 'the key was not accepted: check OPENAI_API_KEY',
+  401: 'the key was not accepted: check the API key for this provider',
   403: 'the key has no access to this model or project',
   404: 'the model name was not found: check the model id',
   429: 'rate limit or quota reached',

@@ -6,6 +6,16 @@ import { ProjectAccess } from '../projects/access.service';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { guardedAiCall } from '../ai/guarded-call';
+import { ModelCallError } from '../extraction/model';
+import { type ProtectedKey, loadProtectedKey } from '../quarantine/protected-key';
+import { MVP_SPEND_SETTINGS } from '../spend/mvp-settings';
+import { SpendService } from '../spend/spend.service';
+import { SpendSettingsService } from '../spend/spend.settings';
+import { KEY_A, fakeFactory, keyFile, seedAiConnection, seedAiModel, seedProjectAllowance } from '../testing/ai-connections';
 
 const PLANT = 'The kestrel pump service is booked for Thursday morning.';
 
@@ -18,6 +28,7 @@ interface Line {
   title?: string;
   href?: string;
   itemKind?: string;
+  label?: string;
 }
 
 describe('project history and Inspect Deleted Content', { skip: SKIP_NO_DB }, () => {
@@ -142,6 +153,41 @@ describe('project history and Inspect Deleted Content', { skip: SKIP_NO_DB }, ()
     // Outside the project (an Administrator with no role included) it does not exist.
     for (const c of [await t.signIn('outsider@example.org'), admin]) assert.equal((await c.request('GET', `/projects/${project}/history/deletions`)).status, 404);
     assert.equal((await ada.request('GET', `/projects/${uuidv7()}/history/deletions`)).status, 404);
+  });
+
+  test('a key rejected on a real call (401) shows in project History with the connection label, never the key', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'kainow-history-ai-'));
+    try {
+      const key = loadProtectedKey(keyFile(dir), () => undefined) as ProtectedKey;
+      await new SpendSettingsService(t.pool, t.clock.now).apply(MVP_SPEND_SETTINGS, ids.admin);
+      await seedProjectAllowance(t.pool, project);
+      const model = await seedAiModel(t.pool);
+      await seedAiConnection(t.pool, { projectId: project, model, position: 1, label: 'Main connection', protectedKey: key, apiKey: KEY_A });
+      const out = await guardedAiCall(
+        { pool: t.pool, spend: new SpendService(t.pool, t.clock.now), clock: t.clock.now, key, factory: fakeFactory(), slotWait: { maxWaitMs: 0 } },
+        {
+          requestId: uuidv7(),
+          attemptNo: 1,
+          purpose: 'extraction',
+          actorUserId: ids.pm,
+          projectId: project,
+          carriesRestricted: false,
+          promptBytes: 1_000,
+          maxOutputTokens: 1_000,
+          call: async () => {
+            throw new ModelCallError('The AI service refused the request (401)', 'rejected', false, 401);
+          },
+        },
+      );
+      assert.equal(out.kind, 'failed');
+      for (const c of [ada, pm]) {
+        const seen = (await lines(c)).filter((l) => l.kind === 'ai_connection');
+        assert.deepEqual(seen.map((l) => [l.action, l.actor, l.reason, l.label]), [['key_rejected', null, null, 'Main connection']]);
+      }
+      assert.ok(!JSON.stringify(await lines(pm)).includes(KEY_A));
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 
   test('Restore is offered on a deleted line only to those who may restore it, with no title', async () => {

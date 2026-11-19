@@ -169,3 +169,13 @@ test('draftMinutes sends the minutes schema and returns the parsed sections with
   const bad = new OpenAiModelClient('key', 'https://example.test/v1', reply(ok({ summary: 's' })));
   await assert.rejects(bad.draftMinutes(REQ), (e: unknown) => e instanceof ModelBadResponse && e.usage.inputTokens === 100);
 });
+
+test('OpenAI: 401 and 403 set keyRejected, other statuses do not', async () => {
+  for (const [status, rejected] of [[401, true], [403, true], [500, false], [429, false], [400, false]] as const) {
+    const fetchImpl = (async () => new Response('{}', { status })) as typeof fetch;
+    await assert.rejects(
+      new OpenAiModelClient('sk-test-xxxxxxxxxxxxxxxxxxxx', 'http://x', fetchImpl).callJson(REQ, {}),
+      (e: unknown) => e instanceof ModelCallError && e.keyRejected === rejected && e.status === status,
+    );
+  }
+});

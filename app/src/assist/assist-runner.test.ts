@@ -8,6 +8,8 @@ import { SpendService } from '../spend/spend.service';
 import { SpendSettingsService } from '../spend/spend.settings';
 import { MVP_SPEND_SETTINGS } from '../spend/mvp-settings';
 import { SKIP_NO_DB } from '../testing/db';
+import { seedSpendTarget } from '../testing/ai-connections';
+import { RUN_MODEL, aiDeps, aiReady, byAttempt } from '../testing/ai-runners';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 import { CasesService } from '../quarantine/cases.service';
@@ -63,7 +65,7 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     await t.pool.query(`INSERT INTO ai_answers (request_id, project_id, question) VALUES ($1, $2, $3)`, [id, project, question]);
     return id;
   };
-  const runner = (model: JsonSchemaModel | null) => new AssistRunner({ pool: t.pool, spend, model, clock: t.clock.now });
+  const runner = (model: JsonSchemaModel | null) => byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend, ...aiDeps(model), clock: t.clock.now }));
   const request = async (id: string) => (await t.pool.query(`SELECT * FROM ai_requests WHERE id = $1`, [id])).rows[0];
   const answer = async (id: string) => (await t.pool.query(`SELECT * FROM ai_answers WHERE request_id = $1`, [id])).rows[0];
   const material = async (id: string) => (await t.pool.query(`SELECT * FROM ai_request_material WHERE request_id = $1 ORDER BY ordinal`, [id])).rows;
@@ -83,6 +85,7 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     });
     await new SpendSettingsService(t.pool, t.clock.now).apply(MVP_SPEND_SETTINGS, ids.admin);
     spend = new SpendService(t.pool, t.clock.now);
+    await aiReady(t.pool, project);
     pm = await t.signIn('pm@example.org');
   });
   afterEach(async () => {
@@ -97,7 +100,7 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     assert.equal(await runner(model).process(id, 1, false), 'succeeded');
 
     const r = await request(id);
-    assert.deepEqual([r.status, r.attempts, r.failure_code, r.model_id], ['succeeded', 1, null, MVP_SPEND_SETTINGS.modelId]);
+    assert.deepEqual([r.status, r.attempts, r.failure_code, r.model_id], ['succeeded', 1, null, RUN_MODEL]);
     assert.ok(r.started_at && r.finished_at);
     const a = await answer(id);
     assert.deepEqual([a.answer_markdown, a.not_found], ['The pump is booked [P1].', false]);
@@ -254,7 +257,7 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     await note('Plant room', 'The pump service is booked for Thursday morning.');
     const id = await ask('When is the pump service?');
     // Attempt 1 reserved and then its worker stopped: the entry stays reserved.
-    const reserved = await spend.reserve({ requestId: id, attemptNo: 1, estimateMicroMyr: 1_000n, purpose: 'question_answer', actorUserId: ids.ada });
+    const reserved = await spend.reserve({ ...(await seedSpendTarget(t.pool, ids.ada)), requestId: id, attemptNo: 1, estimateMicroMyr: 1_000n, purpose: 'question_answer', actorUserId: ids.ada });
     assert.equal(reserved.status, 'reserved');
     await t.pool.query(`UPDATE projects SET status = 'deferred' WHERE id = $1`, [project]);
     assert.equal(await runner(new FakeModel()).process(id, 2, false), 'blocked');
@@ -304,7 +307,7 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     const id = await ask('pump portal key');
     assert.deepEqual((await material(id)).map((m) => [m.record_kind, m.record_id]), [['task', taskId]]);
     const model = new FakeModel();
-    const withCases = new AssistRunner({ pool: t.pool, spend, model, clock: t.clock.now, quarantine: t.app.get(CasesService) });
+    const withCases = byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend, ...aiDeps(model), clock: t.clock.now, quarantine: t.app.get(CasesService) }));
     assert.equal(await withCases.process(id, 1, false), 'blocked');
     assert.equal((await request(id)).failure_code, 'secret_found');
     assert.equal(model.calls.length, 0);
@@ -332,7 +335,7 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     const id = await ask('When is the pump service?');
     assert.equal((await material(id)).length, 1);
     const model = new FakeModel();
-    const withCases = new AssistRunner({ pool: t.pool, spend, model, clock: t.clock.now, quarantine: t.app.get(CasesService) });
+    const withCases = byAttempt(t.pool, 'ai_requests', new AssistRunner({ pool: t.pool, spend, ...aiDeps(model), clock: t.clock.now, quarantine: t.app.get(CasesService) }));
     assert.equal(await withCases.process(id, 1, false), 'blocked');
     assert.equal(model.calls.length, 0);
     assert.equal((await entries()).length, 0);
@@ -358,11 +361,11 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     assert.equal((await request(id)).attempts, 2);
   });
 
-  test('no key fails without a charge; not found is saved as an answer', async () => {
+  test('no protected key blocks without a charge; not found is saved as an answer', async () => {
     await note('Plant room', 'The pump service is booked for Thursday morning.');
     const id = await ask('When is the pump service?');
-    assert.equal(await runner(null).process(id, 1, true), 'failed');
-    assert.equal((await request(id)).failure_code, 'model_not_configured');
+    assert.equal(await new AssistRunner({ pool: t.pool, spend, ...aiDeps(new FakeModel()), key: null, clock: t.clock.now }).process(id, {}), 'blocked');
+    assert.equal((await request(id)).failure_code, 'protected_key_missing');
     assert.equal((await entries()).length, 0);
 
     const again = await ask('When is the pump service?');

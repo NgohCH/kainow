@@ -23,9 +23,11 @@ import { NotificationsSettings } from './views/NotificationSettings.tsx';
 import { Projects } from './views/Projects.tsx';
 import { Review } from './views/Review.tsx';
 import { HeaderSearch, isSearchHash, Search } from './views/Search.tsx';
-import { Spending } from './views/Spending.tsx';
+import { AiAdmin } from './views/AiAdmin.tsx';
+import { MyAiUsage } from './views/AiUsage.tsx';
 import { SummaryPage } from './views/SummaryView.tsx';
 import { Thread } from './views/Thread.tsx';
+import { type Meter, formatMyr, meterText, projectIdFromHash, usableMeter } from './ai.ts';
 import { answerIdFromHash } from './assist.ts';
 import { parseThreadHash } from './discussion.ts';
 
@@ -45,22 +47,39 @@ export function go(path: string): void {
 
 interface Spend {
   configured: boolean;
-  month: { limitMyr: string | null; usedMyr: string; remainingMyr: string } | null;
+  month?: { limitMyr: string | null; usedMyr: string; remainingMyr: string } | null;
+  /** With a project: the project's monthly figures for those who manage its AI use, otherwise the person's own remaining allowance. Null when no personal limit applies. */
+  meter?: Meter | null;
 }
 
-const myr = (v: string): string => `MYR ${Number(v).toFixed(2)}`;
-
-function SpendMeter() {
+/**
+ * Inside a project the meter is the viewer's own remaining allowance there, or the project's monthly remaining for those who
+ * manage its AI use. Outside a project only the Administrator has one: the organisation's month.
+ */
+function SpendMeter({ hash, isAdmin }: { hash: string; isAdmin: boolean }) {
+  const projectId = projectIdFromHash(hash);
   const [spend, setSpend] = useState<Spend | null>(null);
   useEffect(() => {
-    api.get<Spend>('/ai/spend').then(setSpend, () => setSpend(null));
-  }, []);
+    if (!projectId && !isAdmin) return setSpend(null);
+    let stale = false;
+    api.get<Spend>(projectId ? `/ai/spend?projectId=${projectId}` : '/ai/spend').then(
+      (s) => !stale && setSpend(s),
+      () => !stale && setSpend(null),
+    );
+    return () => {
+      stale = true;
+    };
+  }, [projectId, isAdmin]);
   if (!spend) return null;
+  if (projectId && usableMeter(spend.meter)) {
+    return <a className="meter" href="#/my-ai-usage" title="Counted from the start of the calendar month, UTC+8">{meterText(spend.meter)}</a>;
+  }
+  if (!isAdmin) return null;
   if (!spend.configured || !spend.month) return <span className="meter meter-warn">AI spending is not set up, so extraction is off</span>;
   const { limitMyr, usedMyr } = spend.month;
   return (
     <span className="meter" title="Counted from the start of the calendar month, UTC+8">
-      AI spend this month {myr(usedMyr)} of {limitMyr === null ? 'no allowance' : myr(limitMyr)}
+      AI spend this month {formatMyr(usedMyr)} of {limitMyr === null ? 'no allowance' : formatMyr(limitMyr)}
     </span>
   );
 }
@@ -255,19 +274,19 @@ export function App() {
   }
   const note = /^#\/notes\/([0-9a-f-]{36})(?:\/v\/(\d+))?$/i.exec(hash);
   const run = /^#\/runs\/([0-9a-f-]{36})$/i.exec(hash);
-  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work|drafts|review|settings|feedback|closing|deadline-review|deleted)(?:\/([0-9a-f-]{36}))?)?$/i.exec(hash);
+  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work|drafts|review|settings|ai|feedback|closing|deadline-review|deleted)(?:\/([0-9a-f-]{36}))?)?$/i.exec(hash);
   const deletedItem = /^#\/projects\/([0-9a-f-]{36})\/deleted\/([a-z]+)\/([0-9a-f-]{36})$/i.exec(hash);
   const quarantineCase = /^#\/quarantine\/cases\/([0-9a-f-]{36})(?:\/copies)?$/i.exec(hash);
   const securityPage = /^#\/security\/(cases|grants)$/.test(hash);
   const summary = /^#\/summaries\/([0-9a-f-]{36})$/i.exec(hash);
   const thread = parseThreadHash(hash);
   const searching = isSearchHash(hash);
-  const adminPage = /^#\/(people|spending|departments|domains|organisation|approvals|notifications-settings|deliveries|go-live|escalated-feedback)$/.exec(hash)?.[1];
+  const adminPage = /^#\/(people|ai|departments|domains|organisation|approvals|notifications-settings|deliveries|go-live|escalated-feedback)$/.exec(hash)?.[1];
 
   let page;
   if (invitation) page = <Invitation token={invitation[1]} user={user} onSignedIn={setUser} />;
   else if (isAdmin && adminPage === 'people') page = <People meId={user.id} />;
-  else if (isAdmin && adminPage === 'spending') page = <Spending />;
+  else if (isAdmin && adminPage === 'ai') page = <AiAdmin />;
   else if (isAdmin && adminPage === 'departments') page = <Departments />;
   else if (isAdmin && adminPage === 'domains') page = <Domains />;
   else if (isAdmin && adminPage === 'organisation') page = <OrganisationScreen onBrandingChanged={loadBranding} meId={user.id} />;
@@ -279,13 +298,14 @@ export function App() {
   else if (quarantineCase) page = <CasePage key={quarantineCase[1]} caseId={quarantineCase[1]} />;
   else if (securityPage) page = <SecurityReviewPage />;
   else if (hash === '#/notifications') page = <Notifications />;
+  else if (hash === '#/my-ai-usage') page = <MyAiUsage />;
   else if (searching) page = <Search hash={hash} />;
   else if (summary) page = <SummaryPage key={summary[1]} summaryId={summary[1]} />;
   else if (thread) page = <Thread key={thread.threadId} projectId={thread.projectId} threadId={thread.threadId} meId={user.id} messageNo={thread.messageNo} answerId={answerIdFromHash(hash)} />;
   else if (deletedItem) page = <DeletedItemPage key={deletedItem[3]} projectId={deletedItem[1]} kind={deletedItem[2]} itemId={deletedItem[3]} />;
   else if (run) page = <Review runId={run[1]} meId={user.id} />;
   else if (note) page = <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} />;
-  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | undefined) ?? 'overview'} itemId={project[3]} />;
+  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | undefined) ?? 'overview'} itemId={project[3]} />;
   else page = <Projects isAdmin={isAdmin} />;
 
   return (
@@ -295,7 +315,8 @@ export function App() {
         {branding && <Letterhead branding={branding} place="header" />}
         <a className="wordmark" href="#/">Kainow</a>
         <nav aria-label="Main" className="mainnav">
-          <a href="#/" aria-current={!adminPage && !securityPage ? 'page' : undefined}>My Projects</a>
+          <a href="#/" aria-current={!adminPage && !securityPage && hash !== '#/my-ai-usage' ? 'page' : undefined}>My Projects</a>
+          <a href="#/my-ai-usage" aria-current={hash === '#/my-ai-usage' ? 'page' : undefined}>My AI use</a>
           {reviewer && <a href="#/security/cases" aria-current={securityPage ? 'page' : undefined}>Security review</a>}
           {isAdmin && (
             <>
@@ -309,13 +330,13 @@ export function App() {
               <a href="#/go-live" aria-current={adminPage === 'go-live' ? 'page' : undefined}>Go-live</a>
               <a href="#/domains" aria-current={adminPage === 'domains' ? 'page' : undefined}>Domains</a>
               <a href="#/escalated-feedback" aria-current={adminPage === 'escalated-feedback' ? 'page' : undefined}>Escalated feedback</a>
-              <a href="#/spending" aria-current={adminPage === 'spending' ? 'page' : undefined}>AI spending</a>
+              <a href="#/ai" aria-current={adminPage === 'ai' ? 'page' : undefined}>AI</a>
             </>
           )}
         </nav>
         <HeaderSearch hash={hash} />
         <Bell hash={hash} />
-        <SpendMeter />
+        <SpendMeter hash={hash} isAdmin={isAdmin} />
         <span className="who">
           {user.displayName}
           <button className="quiet" onClick={signOut}>Sign out</button>
