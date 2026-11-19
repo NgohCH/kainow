@@ -294,6 +294,7 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
   ]),
   ...audit('Resources', ADMIN, 'resource and finance settings', [['resources.settings_changed', 'Organisation resource and finance settings were changed, with a reason (D94).']]),
   ...group('resource_settings_changes', 'Resources', ADMIN, 'resource and finance settings', [['changed', 'An organisation resource or finance setting changed: previous and new values, with a reason.']]),
+  ...audit('Finance', PERSON, 'project financial tracking', [['finance.project_settings_changed', 'A project’s finance settings were changed, with a reason (D94).']]),
   ...group('project_finance_changes', 'Finance', PERSON, 'project financial tracking', [['changed', 'A project’s financial tracking setting changed: previous and new values, with a reason.']]),
   ...group('approval_policy_changes', 'Proposals and changes', PERSON, 'approval policy', [['changed', 'An approval policy field changed, with a reason.']]),
   ...group('notification_settings_changes', 'Notifications', PERSON, 'notification settings', [['changed', 'A notification setting changed, with a reason.']]),
