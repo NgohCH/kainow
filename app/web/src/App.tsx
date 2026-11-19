@@ -32,6 +32,9 @@ import { type Meter, formatMyr, meterText, projectIdFromHash, usableMeter } from
 import { answerIdFromHash } from './assist.ts';
 import { parseThreadHash } from './discussion.ts';
 import { Customise } from './views/Customise.tsx';
+import { Leadership } from './views/Leadership.tsx';
+import { LeadershipGrants } from './views/LeadershipGrants.tsx';
+import { AccessSettings } from './views/AccessSettings.tsx';
 import { DEFAULT_PREFS, applyAppearance, createPrefsSaver, type Prefs } from './prefs.ts';
 
 function useHash(): string {
@@ -258,6 +261,17 @@ export function App() {
     api.get('/security/cases').then(() => setReviewer(true), () => setReviewer(false));
   }, [user]);
 
+  // "Leadership" shows only for someone holding an Active leadership grant.
+  const [hasGrant, setHasGrant] = useState(false);
+  useEffect(() => {
+    if (!user) return setHasGrant(false);
+    let stale = false;
+    api.get<{ hasGrant: boolean }>('/leadership/me').then((r) => !stale && setHasGrant(r.hasGrant), () => !stale && setHasGrant(false));
+    return () => {
+      stale = true;
+    };
+  }, [user, hash === '#/leadership']);
+
   const signOut = useCallback(async () => {
     await api.post('/auth/logout').catch(() => undefined);
     setUser(null);
@@ -314,7 +328,7 @@ export function App() {
   const summary = /^#\/summaries\/([0-9a-f-]{36})$/i.exec(hash);
   const thread = parseThreadHash(hash);
   const searching = isSearchHash(hash);
-  const adminPage = /^#\/(people|ai|departments|domains|organisation|approvals|notifications-settings|deliveries|go-live|escalated-feedback)$/.exec(hash)?.[1];
+  const adminPage = /^#\/(people|ai|departments|domains|organisation|approvals|notifications-settings|deliveries|go-live|escalated-feedback|leadership-grants|access-settings)$/.exec(hash)?.[1];
 
   let page;
   if (invitation) page = <Invitation token={invitation[1]} user={user} onSignedIn={setUser} />;
@@ -328,6 +342,9 @@ export function App() {
   else if (isAdmin && adminPage === 'deliveries') page = <Deliveries />;
   else if (isAdmin && adminPage === 'go-live') page = <GoLive />;
   else if (isAdmin && adminPage === 'escalated-feedback') page = <EscalatedFeedback />;
+  else if (isAdmin && adminPage === 'leadership-grants') page = <LeadershipGrants meId={user.id} />;
+  else if (isAdmin && adminPage === 'access-settings') page = <AccessSettings />;
+  else if (hash === '#/leadership' && hasGrant) page = <Leadership prefs={prefs} ready={prefsLoaded} failed={prefsFailed} onChange={savePrefs} />;
   else if (quarantineCase) page = <CasePage key={quarantineCase[1]} caseId={quarantineCase[1]} />;
   else if (securityPage) page = <SecurityReviewPage />;
   else if (hash === '#/notifications') page = <Notifications />;
@@ -349,8 +366,9 @@ export function App() {
         {branding && <Letterhead branding={branding} place="header" />}
         <a className="wordmark" href="#/">Kainow</a>
         <nav aria-label="Main" className="mainnav">
-          <a href="#/" aria-current={!adminPage && !securityPage && hash !== '#/my-ai-usage' ? 'page' : undefined}>My Projects</a>
+          <a href="#/" aria-current={!adminPage && !securityPage && hash !== '#/my-ai-usage' && !(hash === '#/leadership' && hasGrant) ? 'page' : undefined}>My Projects</a>
           <a href="#/my-ai-usage" aria-current={hash === '#/my-ai-usage' ? 'page' : undefined}>My AI use</a>
+          {hasGrant && <a href="#/leadership" aria-current={hash === '#/leadership' ? 'page' : undefined}>Leadership</a>}
           {reviewer && <a href="#/security/cases" aria-current={securityPage ? 'page' : undefined}>Security review</a>}
           {isAdmin && (
             <>
@@ -364,6 +382,8 @@ export function App() {
               <a href="#/go-live" aria-current={adminPage === 'go-live' ? 'page' : undefined}>Go-live</a>
               <a href="#/domains" aria-current={adminPage === 'domains' ? 'page' : undefined}>Domains</a>
               <a href="#/escalated-feedback" aria-current={adminPage === 'escalated-feedback' ? 'page' : undefined}>Escalated feedback</a>
+              <a href="#/leadership-grants" aria-current={adminPage === 'leadership-grants' ? 'page' : undefined}>Leadership access</a>
+              <a href="#/access-settings" aria-current={adminPage === 'access-settings' ? 'page' : undefined}>Access and records</a>
               <a href="#/ai" aria-current={adminPage === 'ai' ? 'page' : undefined}>AI</a>
             </>
           )}
