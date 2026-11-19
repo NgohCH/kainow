@@ -57,8 +57,8 @@ describe('analytics progress and problems panels', { skip: SKIP_NO_DB }, () => {
     assert.equal((await get('panel=problems', member)).status, 403);
   });
 
-  test('only progress and problems for now; bad filters are 400 with the text', async () => {
-    for (const q of ['', 'panel=system', 'panel=trends', 'panel=nope']) assert.equal((await get(q)).status, 400, q);
+  test('only the four panels; bad filters are 400 with the text', async () => {
+    for (const q of ['', 'panel=nope']) assert.equal((await get(q)).status, 400, q);
     const bad = await get('panel=progress&period=last_5w');
     assert.equal(bad.status, 400);
     assert.match(JSON.stringify(bad.body), /Choose a period from the list\./);
