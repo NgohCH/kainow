@@ -145,3 +145,40 @@ test('no colour is hard-coded outside the token blocks, and the AI-proposed rule
   assert.match(css, /\.ai-answer \{[^}]*border: 1px dashed var\(--ink\)/);
   assert.match(css, /\.ai-label\.approved \{[^}]*border-style: solid/);
 });
+
+test('saver: saves run in order, the last response wins, and a rollback never undoes a later success', async () => {
+  const { createPrefsSaver } = await import('./prefs.ts');
+  const shown: string[] = [];
+  const calls: string[] = [];
+  const gates: Record<string, () => void> = {};
+  const fail = new Set<string>();
+  const put = (p: typeof DEFAULT_PREFS) =>
+    new Promise<typeof DEFAULT_PREFS>((resolve, reject) => {
+      calls.push(p.accent);
+      gates[p.accent] = () => (fail.has(p.accent) ? reject(new Error('no')) : resolve(p));
+    });
+  const saver = createPrefsSaver(put, (p) => shown.push(p.accent));
+  saver.loaded(DEFAULT_PREFS);
+  fail.add('blue');
+  const a = saver.save({ ...DEFAULT_PREFS, accent: 'blue' });
+  const b = saver.save({ ...DEFAULT_PREFS, accent: 'plum' });
+  const aSettled = a.catch(() => 'failed');
+  await new Promise((r) => setImmediate(r));
+  assert.deepEqual(calls, ['blue'], 'the second save waits for the first');
+  gates.blue();
+  assert.equal(await aSettled, 'failed');
+  await new Promise((r) => setImmediate(r));
+  gates.plum();
+  await b;
+  assert.deepEqual(calls, ['blue', 'plum']);
+  assert.equal(shown.at(-1), 'plum', 'the failed first save did not roll back over the later one');
+
+  // A failure of the latest save puts back the last saved copy.
+  fail.add('slate');
+  const c = saver.save({ ...DEFAULT_PREFS, accent: 'slate' });
+  const cSettled = c.catch(() => 'failed');
+  await new Promise((r) => setImmediate(r));
+  gates.slate();
+  assert.equal(await cSettled, 'failed');
+  assert.equal(shown.at(-1), 'plum');
+});

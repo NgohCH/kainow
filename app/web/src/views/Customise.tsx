@@ -53,10 +53,10 @@ function OrderList({
               />
               <span>{r.label}</span>
             </label>
-            <button type="button" disabled={r.key === 'needsYou' || i === 0 || rows[i - 1].key === 'needsYou'} onClick={() => onMove(r.key, 'up')} aria-label={`Move ${r.label} up`}>
+            <button type="button" disabled={r.key === 'needsYou' || i === 0 || rows[i - 1].key === 'needsYou'} onClick={() => onMove(r.key, 'up')} aria-label={`Move up: ${r.label}`}>
               Move up
             </button>
-            <button type="button" disabled={r.key === 'needsYou' || i === rows.length - 1} onClick={() => onMove(r.key, 'down')} aria-label={`Move ${r.label} down`}>
+            <button type="button" disabled={r.key === 'needsYou' || i === rows.length - 1} onClick={() => onMove(r.key, 'down')} aria-label={`Move down: ${r.label}`}>
               Move down
             </button>
           </li>
@@ -74,11 +74,14 @@ export function Customise({
   prefs,
   onChange,
   onClose,
+  ready = true,
   show = ['appearance', 'home', 'leadership'],
 }: {
   prefs: Prefs;
   onChange: (next: Prefs) => Promise<void>;
   onClose?: () => void;
+  /** False until the saved preferences have loaded: saving then would overwrite them with defaults. */
+  ready?: boolean;
   show?: ('appearance' | 'home' | 'leadership')[];
 }) {
   const [status, setStatus] = useState('');
@@ -114,6 +117,8 @@ export function Customise({
         )}
       </div>
       <p className="hint">These choices change only how Kainow looks for you. They are saved as you make them.</p>
+      {!ready && <p role="alert" className="error">Your saved preferences have not loaded, so they cannot be changed now. Reload the page to try again.</p>}
+      <fieldset className="plain-fieldset" disabled={!ready}>
       <div className="stack">
         {show.includes('appearance') && (
           <>
@@ -169,6 +174,7 @@ export function Customise({
           </span>
         </div>
       </div>
+      </fieldset>
     </section>
   );
 }

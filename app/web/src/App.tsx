@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { ApiError, api, setCsrfToken, type User } from './api.ts';
 import type { Branding } from './branding.ts';
 import { Invitation } from './views/Invitation.tsx';
@@ -31,7 +31,7 @@ import { type Meter, formatMyr, meterText, projectIdFromHash, usableMeter } from
 import { answerIdFromHash } from './assist.ts';
 import { parseThreadHash } from './discussion.ts';
 import { Customise } from './views/Customise.tsx';
-import { DEFAULT_PREFS, applyAppearance, type Prefs } from './prefs.ts';
+import { DEFAULT_PREFS, applyAppearance, createPrefsSaver, type Prefs } from './prefs.ts';
 
 function useHash(): string {
   const [hash, setHash] = useState(window.location.hash || '#/');
@@ -222,33 +222,31 @@ export function App() {
 
   // Personal display preferences: loaded once signed in, saved at once on each change, and applied to <html>.
   const [prefs, setPrefs] = useState<Prefs>(DEFAULT_PREFS);
+  const [prefsLoaded, setPrefsLoaded] = useState(false);
   const [customising, setCustomising] = useState(false);
+  const saver = useRef(createPrefsSaver((next) => api.put<Prefs>('/me/preferences', next), setPrefs)).current;
   useEffect(() => {
+    setPrefsLoaded(false);
     if (!user) {
-      setPrefs(DEFAULT_PREFS);
+      saver.loaded(DEFAULT_PREFS);
       setCustomising(false);
       return;
     }
     let stale = false;
     api.get<Prefs>('/me/preferences').then(
-      (p) => !stale && setPrefs(p),
+      (p) => {
+        if (stale) return;
+        saver.loaded(p);
+        setPrefsLoaded(true);
+      },
       () => undefined,
     );
     return () => {
       stale = true;
     };
-  }, [user]);
+  }, [user, saver]);
   useEffect(() => applyAppearance(prefs), [prefs]);
-  const savePrefs = useCallback(async (next: Prefs) => {
-    const before = prefs;
-    setPrefs(next);
-    try {
-      setPrefs(await api.put<Prefs>('/me/preferences', next));
-    } catch (e) {
-      setPrefs(before);
-      throw e;
-    }
-  }, [prefs]);
+  const savePrefs = saver.save;
 
   // A designated security reviewer gets the Security review page; anyone else is refused, so the link stays hidden.
   const [reviewer, setReviewer] = useState(false);
@@ -378,7 +376,7 @@ export function App() {
       </header>
       {customising && (
         <div className="page narrow">
-          <Customise prefs={prefs} onChange={savePrefs} onClose={() => setCustomising(false)} />
+          <Customise prefs={prefs} ready={prefsLoaded} onChange={savePrefs} onClose={() => setCustomising(false)} />
         </div>
       )}
       <div id="main">

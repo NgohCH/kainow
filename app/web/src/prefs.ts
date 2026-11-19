@@ -187,3 +187,37 @@ export function applyAppearance(prefs: Pick<Prefs, 'theme' | 'accent'>, root: HT
   root.setAttribute('data-theme', prefs.theme);
   root.setAttribute('data-accent', prefs.accent);
 }
+
+/**
+ * Saves preference documents one at a time, in the order they were made. Each change shows at once; a failed save puts
+ * back the last saved copy only when no later change has been made, so a rollback can never undo a later success.
+ */
+export function createPrefsSaver(put: (next: Prefs) => Promise<Prefs>, onChange: (p: Prefs) => void) {
+  let confirmed: Prefs = DEFAULT_PREFS;
+  let seq = 0;
+  let tail: Promise<unknown> = Promise.resolve();
+  return {
+    /** The copy the server gave at load. */
+    loaded(p: Prefs): void {
+      confirmed = p;
+      seq++;
+      onChange(p);
+    },
+    save(next: Prefs): Promise<void> {
+      const mine = ++seq;
+      onChange(next);
+      const run = tail.then(async () => {
+        try {
+          const saved = await put(next);
+          confirmed = saved;
+          if (mine === seq) onChange(saved);
+        } catch (e) {
+          if (mine === seq) onChange(confirmed);
+          throw e;
+        }
+      });
+      tail = run.catch(() => undefined);
+      return run;
+    },
+  };
+}
