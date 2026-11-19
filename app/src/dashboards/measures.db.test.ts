@@ -118,6 +118,15 @@ describe('loadProjectMeasures', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual((await measures()).completion, { state: 'measurable', done: 3, total: 4, cancelled: 1, percent: 75 });
   });
 
+  test('a parent whose only subtask is held and uncleaned is a leaf; a cleaned held subtask keeps it from being one', async () => {
+    const heldParent = await task({ status: 'completed' });
+    await hold('tasks', await task({ parent: heldParent, status: 'not_started' }), 'held');
+    const cleanedParent = await task({ status: 'completed' });
+    await hold('tasks', await task({ parent: cleanedParent, status: 'not_started' }), 'cleaned');
+    // Leaves: the held subtask's parent (completed) and the cleaned subtask (not started).
+    assert.deepEqual((await measures()).completion, { state: 'measurable', done: 1, total: 2, cancelled: 0, percent: 50 });
+  });
+
   test('Deleted and uncleaned held tasks are not counted; cleaned held are', async () => {
     await task({ status: 'completed' });
     await remove('tasks', await task({ status: 'not_started', dueOn: '2026-11-01' }));

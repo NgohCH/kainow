@@ -102,7 +102,7 @@ export interface ProjectMeasures {
   nextRiskReview: string | null;
 }
 
-/** Whole percent, rounded down: 100 only when all are done and 0 only when none is. 0 for an empty total. */
+/** Whole percent, rounded down: 100 only when all are done (1 of 300 is 0). 0 for an empty total. */
 export function percent(done: number, total: number): number {
   return total === 0 ? 0 : Math.floor((done * 100) / total);
 }
@@ -188,12 +188,12 @@ export async function loadProjectMeasures(
     stage: string | null; substage: string | null; stageStartedOn: string | null;
   }>;
 
-  // Every live task; a leaf has no subtask that is not Deleted.
+  // Every live task; a leaf has no live subtask (Deleted and uncleaned held subtasks do not count).
   const tasks = (
     await db.query(
       `SELECT t.project_id AS "projectId", t.status, to_char(t.due_on, 'YYYY-MM-DD') AS "dueOn",
               ${dayUtc8('t.completed_at')} AS "completedOn", t.deadline_review_required AS "deadlineReviewRequired",
-              NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_id = t.id AND c.deleted_at IS NULL) AS leaf
+              NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_id = t.id AND ${liveRecordSql('c')}) AS leaf
          FROM tasks t
         WHERE t.project_id = ANY($1::uuid[]) AND ${liveRecordSql('t')}`,
       [ids],
@@ -244,7 +244,11 @@ export async function loadProjectMeasures(
 
   const group = <T extends { projectId: string }>(rows: T[]): Map<string, T[]> => {
     const m = new Map<string, T[]>();
-    for (const r of rows) m.set(r.projectId, [...(m.get(r.projectId) ?? []), r]);
+    for (const r of rows) {
+      const list = m.get(r.projectId);
+      if (list) list.push(r);
+      else m.set(r.projectId, [r]);
+    }
     return m;
   };
   const tasksBy = group(tasks);
