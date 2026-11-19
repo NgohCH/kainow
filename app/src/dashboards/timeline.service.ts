@@ -97,7 +97,7 @@ export class TimelineService {
       await this.pool.query(
         `SELECT r.id, ${shown('r', 'risk', 'description')} AS description, r.severity, to_char(r.review_on, 'YYYY-MM-DD') AS day
            FROM risks r
-          WHERE r.project_id = $1 AND r.status IN ('open', 'mitigating') AND r.review_on IS NOT NULL AND ${liveRecordSql('r')}
+          WHERE r.project_id = $1 AND r.status IN ('open', 'mitigating', 'accepted') AND r.review_on IS NOT NULL AND ${liveRecordSql('r')}
           ORDER BY r.review_on, r.id`,
         [projectId],
       )

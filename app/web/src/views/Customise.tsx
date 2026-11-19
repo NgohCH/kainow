@@ -75,6 +75,7 @@ export function Customise({
   onChange,
   onClose,
   ready = true,
+  failed = false,
   show = ['appearance', 'home', 'leadership'],
 }: {
   prefs: Prefs;
@@ -82,6 +83,8 @@ export function Customise({
   onClose?: () => void;
   /** False until the saved preferences have loaded: saving then would overwrite them with defaults. */
   ready?: boolean;
+  /** True when loading the saved preferences failed: only then is the reload alert shown. */
+  failed?: boolean;
   show?: ('appearance' | 'home' | 'leadership')[];
 }) {
   const [status, setStatus] = useState('');
@@ -117,7 +120,7 @@ export function Customise({
         )}
       </div>
       <p className="hint">These choices change only how Kainow looks for you. They are saved as you make them.</p>
-      {!ready && <p role="alert" className="error">Your saved preferences have not loaded, so they cannot be changed now. Reload the page to try again.</p>}
+      {failed && !ready && <p role="alert" className="error">Your saved preferences have not loaded, so they cannot be changed now. Reload the page to try again.</p>}
       <fieldset className="plain-fieldset" disabled={!ready}>
       <div className="stack">
         {show.includes('appearance') && (

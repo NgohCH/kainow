@@ -202,7 +202,7 @@ export function Leadership({ prefs, ready, failed, onChange }: { prefs: Prefs; r
         <button type="button" className="quiet" disabled={ids.length === 0} onClick={() => setAll(false)}>Collapse all</button>
         <button type="button" className="quiet" aria-expanded={fieldsOpen} onClick={() => setFieldsOpen((o) => !o)}>Choose fields</button>
       </div>
-      {fieldsOpen && <Customise prefs={prefs} ready={ready} onChange={onChange} onClose={() => setFieldsOpen(false)} show={['leadership']} />}
+      {fieldsOpen && <Customise prefs={prefs} ready={ready} failed={failed} onChange={onChange} onClose={() => setFieldsOpen(false)} show={['leadership']} />}
 
       {!data && !error && <p className="loading">Loading</p>}
       {data && cards.length === 0 && <p className="empty">No projects in your leadership scope match these filters.</p>}

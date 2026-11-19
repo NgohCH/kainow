@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api } from '../api.ts';
+import { ApiError, api } from '../api.ts';
 import {
   type ProjectDashboard,
   awaitingLabel,
@@ -21,19 +21,27 @@ const SEVERITY_LABEL: Record<string, string> = { critical: 'Critical', high: 'Hi
 export function ProjectFigures({ projectId, canReadWork }: { projectId: string; canReadWork: boolean }) {
   const [d, setD] = useState<ProjectDashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [hidden, setHidden] = useState(false);
   useEffect(() => {
     let stale = false;
     setD(null);
     setError(null);
+    setHidden(false);
     api.get<ProjectDashboard>(`/projects/${projectId}/dashboard`).then(
       (r) => !stale && setD(r),
-      (e: Error) => !stale && setError(e.message),
+      (e: Error) => {
+        if (stale) return;
+        // A 404 means the figures are not for this viewer; show nothing rather than a false "not found".
+        if (e instanceof ApiError && e.status === 404) setHidden(true);
+        else setError(e.message);
+      },
     );
     return () => {
       stale = true;
     };
   }, [projectId]);
 
+  if (hidden) return null;
   if (error) return <p role="alert" className="error">{error}</p>;
   if (!d) return <p className="loading">Loading figures</p>;
   const m = d.measures;

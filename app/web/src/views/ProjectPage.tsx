@@ -104,7 +104,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
   const tabs: Array<[Tab, string]> = [
     ['overview', 'Overview'],
     ['people', 'People'],
-    ['timeline', 'Timeline'],
+    ...(contentAllowed ? ([['timeline', 'Timeline']] as Array<[Tab, string]>) : []),
     ...(contentAllowed ? ([['notes', 'Notes & discussion'], ['work', 'Work'], ['drafts', 'Drafts']] as Array<[Tab, string]>) : []),
     ...(contentAllowed && (mayReviewAnswers(roles) || mayReviewSummaries(roles)) ? ([['review', 'Review']] as Array<[Tab, string]>) : []),
     ...(contentAllowed ? ([['feedback', 'Feedback']] as Array<[Tab, string]>) : []),
@@ -175,7 +175,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
       {tab === 'overview' && <Overview project={project} act={act} contentAllowed={contentAllowed} />}
-      {tab === 'timeline' && <Timeline projectId={project.id} prefs={prefs} ready={prefsReady} onChange={onPrefs} />}
+      {tab === 'timeline' && contentAllowed && <Timeline projectId={project.id} prefs={prefs} ready={prefsReady} onChange={onPrefs} />}
       {tab === 'drafts' && contentAllowed && <Drafts projectId={project.id} draftId={itemId} />}
       {tab === 'review' && contentAllowed && <AssistReview projectId={project.id} roles={roles} />}
       {tab === 'feedback' && contentAllowed && <Feedback projectId={project.id} />}
@@ -289,7 +289,7 @@ function Overview({ project, act, contentAllowed }: { project: Project; act: Act
           </dl>
         )}
       </section>
-      <ProjectFigures projectId={project.id} canReadWork={contentAllowed} />
+      {contentAllowed && <ProjectFigures projectId={project.id} canReadWork={contentAllowed} />}
 
       {atClosure && (atClosure.kept.length > 0 || atClosure.unresolved.length > 0) && (
         <section aria-labelledby="at-closure-heading">

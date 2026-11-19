@@ -406,7 +406,7 @@ export function App() {
       </header>
       {customising && (
         <div className="page narrow">
-          <Customise prefs={prefs} ready={prefsLoaded} onChange={savePrefs} onClose={() => setCustomising(false)} />
+          <Customise prefs={prefs} ready={prefsLoaded} failed={prefsFailed} onChange={savePrefs} onClose={() => setCustomising(false)} />
         </div>
       )}
       <div id="main">

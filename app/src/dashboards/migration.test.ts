@@ -5,7 +5,7 @@ import { loadDatabaseConfig } from '../config';
 import { uuidv7 } from '../common/uuid7';
 import { runMigrations } from '../db/migrate';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
-import { seedUser } from '../testing/projects';
+import { seedDepartment, seedProject, seedUser } from '../testing/projects';
 
 const migrationsDir = loadDatabaseConfig({ DATABASE_URL: 'x' }).migrationsDir;
 
@@ -139,6 +139,18 @@ describe('migration 0029 (dashboards, leadership, preferences, access settings)'
     const id = await grant(adaId, boId);
     assert.equal(await sqlState(pool, `DELETE FROM leadership_grants WHERE id = $1`, [id]), '23001');
     assert.equal(await sqlState(pool, `TRUNCATE leadership_grants CASCADE`), '23001');
+  });
+
+  test('scope link rows are never deleted', async () => {
+    const id = await grant(adaId, boId, 'departments');
+    const dept = await seedDepartment(pool, 'Scope test dept');
+    const project = await seedProject(pool, { members: [{ userId: adaId, role: 'pm' }] });
+    assert.equal(await sqlState(pool, `INSERT INTO leadership_grant_departments (grant_id, department_id) VALUES ($1, $2)`, [id, dept]), 'ok');
+    assert.equal(await sqlState(pool, `DELETE FROM leadership_grant_departments WHERE grant_id = $1`, [id]), '23001');
+    assert.equal(await sqlState(pool, `TRUNCATE leadership_grant_departments`), '23001');
+    assert.equal(await sqlState(pool, `INSERT INTO leadership_grant_projects (grant_id, project_id) VALUES ($1, $2)`, [id, project]), 'ok');
+    assert.equal(await sqlState(pool, `DELETE FROM leadership_grant_projects WHERE grant_id = $1`, [id]), '23001');
+    assert.equal(await sqlState(pool, `TRUNCATE leadership_grant_projects`), '23001');
   });
 
   test('revocation fields travel together', async () => {

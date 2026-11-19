@@ -120,3 +120,11 @@ CREATE TRIGGER leadership_grants_no_delete BEFORE DELETE ON leadership_grants
   FOR EACH ROW EXECUTE FUNCTION leadership_grants_never_removed();
 CREATE TRIGGER leadership_grants_no_truncate BEFORE TRUNCATE ON leadership_grants
   FOR EACH STATEMENT EXECUTE FUNCTION leadership_grants_never_removed();
+CREATE TRIGGER leadership_grant_departments_no_delete BEFORE DELETE ON leadership_grant_departments
+  FOR EACH ROW EXECUTE FUNCTION leadership_grants_never_removed();
+CREATE TRIGGER leadership_grant_departments_no_truncate BEFORE TRUNCATE ON leadership_grant_departments
+  FOR EACH STATEMENT EXECUTE FUNCTION leadership_grants_never_removed();
+CREATE TRIGGER leadership_grant_projects_no_delete BEFORE DELETE ON leadership_grant_projects
+  FOR EACH ROW EXECUTE FUNCTION leadership_grants_never_removed();
+CREATE TRIGGER leadership_grant_projects_no_truncate BEFORE TRUNCATE ON leadership_grant_projects
+  FOR EACH STATEMENT EXECUTE FUNCTION leadership_grants_never_removed();

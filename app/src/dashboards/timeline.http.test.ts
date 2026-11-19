@@ -133,6 +133,17 @@ describe('project timeline endpoint', { skip: SKIP_NO_DB }, () => {
        VALUES ($1, $2, 'Supplier may slip', 'low', '2026-12-05', $3, $4, now())`,
       [uuidv7(), projectId, proposal, ids.pm],
     );
+    const proposal2 = uuidv7();
+    await t.pool.query(
+      `INSERT INTO human_proposals (id, project_id, kind, text, proposed_by, proposed_at, review_status, reviewed_by, reviewed_at)
+       VALUES ($1, $2, 'risk', 'P2', $3, now(), 'approved', $3, now())`,
+      [proposal2, projectId, ids.pm],
+    );
+    await t.pool.query(
+      `INSERT INTO risks (id, project_id, description, severity, status, review_on, origin_proposal_id, authorised_by, authorised_at)
+       VALUES ($1, $2, 'Vendor lock-in accepted', 'low', 'accepted', '2026-12-20', $3, $4, now())`,
+      [uuidv7(), projectId, proposal2, ids.pm],
+    );
     const r = lines((await get()).body);
     assert.deepEqual(
       r.filter((l) => l.kind === 'stage').map((l) => [l.day, l.label]),
@@ -144,8 +155,10 @@ describe('project timeline endpoint', { skip: SKIP_NO_DB }, () => {
     );
     assert.deepEqual(r.filter((l) => l.kind === 'planned_end').map((l) => [l.day, l.label]), [['2027-01-31', 'Planned end']]);
     const rr = r.filter((l) => l.kind === 'risk_review');
-    assert.deepEqual(rr.map((l) => [l.day, l.label]), [['2026-12-05', '1 risk review due']]);
+    assert.deepEqual(rr.map((l) => [l.day, l.label]), [['2026-12-05', '1 risk review due'], ['2026-12-20', '1 risk review due']]);
     assert.equal((rr[0].detail as { risks: { description: string }[] }).risks[0].description, 'Supplier may slip');
+    // An Accepted risk's review date shows too, as measures.ts counts it.
+    assert.deepEqual(rr.map((l) => l.day), ['2026-12-05', '2026-12-20']);
   });
 
   test('Deleted task drops out of a due-day count', async () => {

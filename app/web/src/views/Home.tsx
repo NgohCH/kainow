@@ -231,7 +231,7 @@ export function Home({ prefs, ready, failed, onChange }: { prefs: Prefs; ready: 
       </div>
       {error && <p role="alert" className="error">{error}</p>}
       {saveError && <p role="alert" className="error">{saveError}</p>}
-      {failed && !ready && <p role="alert" className="error">Your saved display choices could not be loaded, so the defaults are shown and the toggles are off until they load.</p>}
+      {failed && !ready && <p role="alert" className="error">Your saved display choices could not be loaded, so the defaults are shown and the toggles are off. Reload the page to try again.</p>}
       {!d && !error && <p className="loading">Loading</p>}
       {sections.map((s) => (
         <div key={s}>{render[s]()}</div>

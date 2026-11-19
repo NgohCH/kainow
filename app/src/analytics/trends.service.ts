@@ -20,7 +20,7 @@ export interface TrendsPanel {
   computedAt: string;
 }
 
-const TZ = 'Asia/Singapore';
+const TZ = 'Asia/Kuala_Lumpur';
 
 /** Dashboards spec 7.2 item 4: weekly counts (Monday 00:00 UTC+8) worked out from current records, for the projects the filters select. */
 @Injectable()
