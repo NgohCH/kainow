@@ -30,6 +30,8 @@ import { Thread } from './views/Thread.tsx';
 import { type Meter, formatMyr, meterText, projectIdFromHash, usableMeter } from './ai.ts';
 import { answerIdFromHash } from './assist.ts';
 import { parseThreadHash } from './discussion.ts';
+import { Customise } from './views/Customise.tsx';
+import { DEFAULT_PREFS, applyAppearance, type Prefs } from './prefs.ts';
 
 function useHash(): string {
   const [hash, setHash] = useState(window.location.hash || '#/');
@@ -218,6 +220,36 @@ export function App() {
     );
   }, []);
 
+  // Personal display preferences: loaded once signed in, saved at once on each change, and applied to <html>.
+  const [prefs, setPrefs] = useState<Prefs>(DEFAULT_PREFS);
+  const [customising, setCustomising] = useState(false);
+  useEffect(() => {
+    if (!user) {
+      setPrefs(DEFAULT_PREFS);
+      setCustomising(false);
+      return;
+    }
+    let stale = false;
+    api.get<Prefs>('/me/preferences').then(
+      (p) => !stale && setPrefs(p),
+      () => undefined,
+    );
+    return () => {
+      stale = true;
+    };
+  }, [user]);
+  useEffect(() => applyAppearance(prefs), [prefs]);
+  const savePrefs = useCallback(async (next: Prefs) => {
+    const before = prefs;
+    setPrefs(next);
+    try {
+      setPrefs(await api.put<Prefs>('/me/preferences', next));
+    } catch (e) {
+      setPrefs(before);
+      throw e;
+    }
+  }, [prefs]);
+
   // A designated security reviewer gets the Security review page; anyone else is refused, so the link stays hidden.
   const [reviewer, setReviewer] = useState(false);
   useEffect(() => {
@@ -339,10 +371,16 @@ export function App() {
         <SpendMeter hash={hash} isAdmin={isAdmin} />
         <span className="who">
           {user.displayName}
+          <button className="quiet" aria-expanded={customising} onClick={() => setCustomising((c) => !c)}>Customise</button>
           <button className="quiet" onClick={signOut}>Sign out</button>
           <button className="quiet" onClick={signOutEverywhere}>Sign out everywhere</button>
         </span>
       </header>
+      {customising && (
+        <div className="page narrow">
+          <Customise prefs={prefs} onChange={savePrefs} onClose={() => setCustomising(false)} />
+        </div>
+      )}
       <div id="main">
         {page}
       </div>
