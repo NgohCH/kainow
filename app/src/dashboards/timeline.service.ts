@@ -1,0 +1,123 @@
+import { BadRequestException, Inject, Injectable } from '@nestjs/common';
+import type { Pool } from 'pg';
+import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
+import { PG_POOL } from '../db/database.module';
+import { liveRecordSql } from '../history/deleted-sql';
+import { ProjectAccess } from '../projects/access.service';
+import { shown } from './project-dashboard.service';
+import { type TimelineLine, daysBetween, groupByMonth, timelineRange } from './timeline';
+
+export interface ProjectTimeline {
+  range: { from: string; to: string };
+  today: string;
+  months: { month: string; lines: TimelineLine[] }[];
+  computedAt: string;
+}
+
+const UTC8 = `'Asia/Kuala_Lumpur'`;
+const dayOf = (column: string): string => `to_char(${column} AT TIME ZONE ${UTC8}, 'YYYY-MM-DD')`;
+const STATUS_LABEL: Record<string, string> = { draft: 'Draft', planned: 'Planned', active: 'Active', deferred: 'Deferred', closed: 'Closed' };
+const plural = (n: number, one: string, many: string): string => `${n} ${n === 1 ? one : many}`;
+
+/** The wording of a status change: leaving Deferred is "Resumed", leaving Closed is "Reopened". */
+export function transitionLabel(from: string, to: string): string {
+  if (from === 'closed') return 'Reopened';
+  if (from === 'deferred' && to === 'active') return 'Resumed';
+  return STATUS_LABEL[to] ?? to;
+}
+
+/** `GET /projects/:id/timeline` (spec 5.2): recorded dates only, for anyone with project.view. */
+@Injectable()
+export class TimelineService {
+  constructor(
+    @Inject(PG_POOL) private readonly pool: Pool,
+    @Inject(CLOCK) private readonly clock: Clock,
+    private readonly access: ProjectAccess,
+  ) {}
+
+  async get(user: AuthUser, projectId: string, query: { from?: string; to?: string }): Promise<ProjectTimeline> {
+    const ctx = await this.access.authorize(user, 'project.view', projectId);
+    const range = timelineRange(query, ctx.today);
+    if ('error' in range) throw new BadRequestException(range.error);
+    const { from, to } = range;
+    const lines: TimelineLine[] = [];
+
+    const stages = (
+      await this.pool.query(
+        `SELECT stage, substage, ${dayOf('started_at')} AS "startedOn", ${dayOf('ended_at')} AS "endedOn"
+           FROM project_stage_periods WHERE project_id = $1 ORDER BY started_at, id`,
+        [projectId],
+      )
+    ).rows;
+    for (const s of stages) {
+      const base = { stage: s.stage, substage: s.substage ?? null, startedOn: s.startedOn, endedOn: s.endedOn ?? null };
+      lines.push({ day: s.startedOn, kind: 'stage', label: `${s.stage} started`, detail: base });
+      if (s.endedOn) {
+        lines.push({ day: s.endedOn, kind: 'stage', label: `${s.stage} ended`, detail: { ...base, durationDays: daysBetween(s.startedOn, s.endedOn) } });
+      }
+    }
+
+    const transitions = (
+      await this.pool.query(`SELECT from_status, to_status, ${dayOf('at')} AS day FROM project_transitions WHERE project_id = $1 ORDER BY at, id`, [projectId])
+    ).rows;
+    for (const x of transitions) {
+      lines.push({ day: x.day, kind: 'status', label: transitionLabel(x.from_status, x.to_status), detail: { from: x.from_status, to: x.to_status } });
+    }
+
+    const archives = (
+      await this.pool.query(`SELECT kind, ${dayOf('at')} AS day FROM project_archive_events WHERE project_id = $1 ORDER BY at, id`, [projectId])
+    ).rows;
+    for (const a of archives) lines.push({ day: a.day, kind: 'archive', label: a.kind === 'archived' ? 'Archived' : 'Unarchived' });
+
+    const planned = (await this.pool.query(`SELECT to_char(planned_end, 'YYYY-MM-DD') AS day FROM projects WHERE id = $1`, [projectId])).rows[0]?.day;
+    if (planned) lines.push({ day: planned, kind: 'planned_end', label: 'Planned end' });
+
+    // One line per due day: live tasks only; a Cancelled task is not due.
+    const tasks = (
+      await this.pool.query(
+        `SELECT t.id, ${shown('t', 'task', 'title')} AS title, t.status, to_char(t.due_on, 'YYYY-MM-DD') AS day
+           FROM tasks t
+          WHERE t.project_id = $1 AND t.status <> 'cancelled' AND t.due_on BETWEEN $2::date AND $3::date AND ${liveRecordSql('t')}
+          ORDER BY t.due_on, t.title, t.id`,
+        [projectId, from, to],
+      )
+    ).rows;
+    const byDay = new Map<string, typeof tasks>();
+    for (const t of tasks) byDay.set(t.day, [...(byDay.get(t.day) ?? []), t]);
+    for (const [day, list] of byDay) {
+      lines.push({
+        day,
+        kind: 'tasks_due',
+        label: `${plural(list.length, 'task', 'tasks')} due`,
+        detail: { done: list.filter((t) => t.status === 'completed').length, tasks: list.map((t) => ({ id: t.id, title: t.title, status: t.status })) },
+      });
+    }
+
+    const risks = (
+      await this.pool.query(
+        `SELECT r.id, ${shown('r', 'risk', 'description')} AS description, r.severity, to_char(r.review_on, 'YYYY-MM-DD') AS day
+           FROM risks r
+          WHERE r.project_id = $1 AND r.status IN ('open', 'mitigating') AND r.review_on IS NOT NULL AND ${liveRecordSql('r')}
+          ORDER BY r.review_on, r.id`,
+        [projectId],
+      )
+    ).rows;
+    const riskDays = new Map<string, typeof risks>();
+    for (const r of risks) riskDays.set(r.day, [...(riskDays.get(r.day) ?? []), r]);
+    for (const [day, list] of riskDays) {
+      lines.push({
+        day,
+        kind: 'risk_review',
+        label: `${plural(list.length, 'risk review', 'risk reviews')} due`,
+        detail: { risks: list.map((r) => ({ id: r.id, description: r.description, severity: r.severity })) },
+      });
+    }
+
+    return {
+      range,
+      today: ctx.today,
+      months: groupByMonth(lines.filter((l) => l.day >= from && l.day <= to)),
+      computedAt: this.clock().toISOString(),
+    };
+  }
+}

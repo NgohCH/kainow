@@ -11,7 +11,7 @@ import { COVERAGE_NOTE, type ProjectMeasures, loadProjectMeasures } from './meas
 const NAME_ROLES = ['pm', 'deputy_pm', 'owner', 'sponsor'];
 
 /** The text a dashboard shows for a record: a cleaned held record shows the existing label, never its text. */
-const shown = (alias: string, kind: 'decision' | 'question' | 'risk', column: string): string =>
+export const shown = (alias: string, kind: 'decision' | 'question' | 'risk' | 'task', column: string): string =>
   `CASE WHEN ${alias}.held_case_id IS NOT NULL THEN '${UNDER_REVIEW_TEXT}'
         WHEN ${possibleCopySql(kind, `${alias}.id`)} THEN '${POSSIBLE_COPY_TEXT}'
         ELSE ${alias}.${column} END`;
