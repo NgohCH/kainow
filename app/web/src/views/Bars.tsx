@@ -12,8 +12,8 @@ export function Bars({ items, caption }: { items: BarItem[]; caption: string }) 
   return (
     <div className="bars">
       <ul className="plain bars-list" aria-hidden="true">
-        {drawn.map((i) => (
-          <li key={i.label}>
+        {drawn.map((i, n) => (
+          <li key={`${n}-${i.label}`}>
             <span className="bar-label">{i.label}</span>
             <span className="bar-track">
               <span className="bar-fill" style={{ width: `${barWidth(i.value, i.max)}%` }} />
@@ -31,8 +31,8 @@ export function Bars({ items, caption }: { items: BarItem[]; caption: string }) 
           </tr>
         </thead>
         <tbody>
-          {items.map((i) => (
-            <tr key={i.label}>
+          {items.map((i, n) => (
+            <tr key={`${n}-${i.label}`}>
               <th scope="row">{i.label}</th>
               <td>{i.text}</td>
             </tr>
@@ -41,8 +41,8 @@ export function Bars({ items, caption }: { items: BarItem[]; caption: string }) 
       </table>
       {missing.length > 0 && (
         <ul className="plain bars-missing">
-          {missing.map((i) => (
-            <li key={i.label} className="meta">
+          {missing.map((i, n) => (
+            <li key={`${n}-${i.label}`} className="meta">
               {i.label}: {i.text}
             </li>
           ))}

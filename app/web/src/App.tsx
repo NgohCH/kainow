@@ -35,6 +35,8 @@ import { Customise } from './views/Customise.tsx';
 import { Leadership } from './views/Leadership.tsx';
 import { LeadershipGrants } from './views/LeadershipGrants.tsx';
 import { AccessSettings } from './views/AccessSettings.tsx';
+import { Analytics } from './views/Analytics.tsx';
+import { Definitions } from './views/Definitions.tsx';
 import { DEFAULT_PREFS, applyAppearance, createPrefsSaver, type Prefs } from './prefs.ts';
 
 function useHash(): string {
@@ -328,12 +330,13 @@ export function App() {
   const summary = /^#\/summaries\/([0-9a-f-]{36})$/i.exec(hash);
   const thread = parseThreadHash(hash);
   const searching = isSearchHash(hash);
-  const adminPage = /^#\/(people|ai|departments|domains|organisation|approvals|notifications-settings|deliveries|go-live|escalated-feedback|leadership-grants|access-settings)$/.exec(hash)?.[1];
+  const adminPage = /^#\/(people|ai|departments|domains|organisation|approvals|notifications-settings|deliveries|go-live|escalated-feedback|leadership-grants|access-settings|ai\/usage|admin\/analytics|admin\/analytics\/definitions)$/.exec(hash)?.[1];
 
   let page;
   if (invitation) page = <Invitation token={invitation[1]} user={user} onSignedIn={setUser} />;
   else if (isAdmin && adminPage === 'people') page = <People meId={user.id} />;
-  else if (isAdmin && adminPage === 'ai') page = <AiAdmin />;
+  else if (isAdmin && adminPage === 'ai') page = <AiAdmin key="ai" />;
+  else if (isAdmin && adminPage === 'ai/usage') page = <AiAdmin key="ai-usage" initialTab="usage" />;
   else if (isAdmin && adminPage === 'departments') page = <Departments />;
   else if (isAdmin && adminPage === 'domains') page = <Domains />;
   else if (isAdmin && adminPage === 'organisation') page = <OrganisationScreen onBrandingChanged={loadBranding} meId={user.id} />;
@@ -344,6 +347,8 @@ export function App() {
   else if (isAdmin && adminPage === 'escalated-feedback') page = <EscalatedFeedback />;
   else if (isAdmin && adminPage === 'leadership-grants') page = <LeadershipGrants meId={user.id} />;
   else if (isAdmin && adminPage === 'access-settings') page = <AccessSettings />;
+  else if (isAdmin && adminPage === 'admin/analytics') page = <Analytics />;
+  else if (isAdmin && adminPage === 'admin/analytics/definitions') page = <Definitions />;
   else if (hash === '#/leadership' && hasGrant) page = <Leadership prefs={prefs} ready={prefsLoaded} failed={prefsFailed} onChange={savePrefs} />;
   else if (quarantineCase) page = <CasePage key={quarantineCase[1]} caseId={quarantineCase[1]} />;
   else if (securityPage) page = <SecurityReviewPage />;
@@ -384,7 +389,8 @@ export function App() {
               <a href="#/escalated-feedback" aria-current={adminPage === 'escalated-feedback' ? 'page' : undefined}>Escalated feedback</a>
               <a href="#/leadership-grants" aria-current={adminPage === 'leadership-grants' ? 'page' : undefined}>Leadership access</a>
               <a href="#/access-settings" aria-current={adminPage === 'access-settings' ? 'page' : undefined}>Access and records</a>
-              <a href="#/ai" aria-current={adminPage === 'ai' ? 'page' : undefined}>AI</a>
+              <a href="#/admin/analytics" aria-current={adminPage === 'admin/analytics' || adminPage === 'admin/analytics/definitions' ? 'page' : undefined}>Analytics</a>
+              <a href="#/ai" aria-current={adminPage === 'ai' || adminPage === 'ai/usage' ? 'page' : undefined}>AI</a>
             </>
           )}
         </nav>

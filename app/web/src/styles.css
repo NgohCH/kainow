@@ -523,3 +523,6 @@ a.meter { text-decoration: underline; }
 .timeline-today { padding: 0.3rem 0.5rem; border-left: 4px solid var(--accent); background: var(--accent-wash); color: var(--accent-deep); }
 @media (max-width: 30rem) { .timeline-line { grid-template-columns: 1fr; gap: 0; } }
 .about-figures { margin: 0.75rem 0; }
+/* Analytics definitions */
+.definitions dt { font-weight: 600; margin-top: 0.75rem; }
+.definitions dd { margin: 0.25rem 0 0; overflow-wrap: anywhere; }

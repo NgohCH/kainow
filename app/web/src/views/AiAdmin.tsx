@@ -354,8 +354,8 @@ type Tab = 'models' | 'limits' | 'usage';
 const TABS: Array<[Tab, string]> = [['models', 'Models'], ['limits', 'Limits and policy'], ['usage', 'Usage']];
 
 /** Administration → AI: approved models, organisation limits and policy, and usage. */
-export function AiAdmin() {
-  const [tab, setTab] = useState<Tab>('models');
+export function AiAdmin({ initialTab = 'models' }: { initialTab?: Tab } = {}) {
+  const [tab, setTab] = useState<Tab>(initialTab);
   return (
     <main className="page">
       <h1>AI</h1>
