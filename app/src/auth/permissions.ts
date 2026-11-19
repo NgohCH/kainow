@@ -7,7 +7,7 @@ export const ACTIONS = [
   'user.manage',
   'ai.settings.manage',
   'spend.view',
-  'audit.view',
+  'analytics.view',
   'organisation.manage',
 ] as const;
 

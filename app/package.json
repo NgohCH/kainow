@@ -17,6 +17,7 @@
     "bench-ai": "node dist/ai/bench-cli.js",
     "bench-assist": "node dist/assist/bench-cli.js",
     "bench-history": "node dist/quarantine/bench-cli.js",
+    "bench-dashboards": "node dist/dashboards/bench-cli.js",
     "probe-assist": "node dist/assist/probe-assist-cli.js",
     "backfill-passages": "node dist/assist/backfill-cli.js",
     "setup-invite": "node dist/users/setup-invite-cli.js",

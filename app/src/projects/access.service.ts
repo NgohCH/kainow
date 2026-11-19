@@ -57,6 +57,37 @@ export function managesRoles(ctx: ProjectContext): boolean {
   return ctx.isAdmin || ctx.roles.some((r) => r === 'pm' || r === 'owner' || r === 'sponsor');
 }
 
+/**
+ * A project context from rows already loaded (memberships with their people, ordered by start and id; grants ordered
+ * by request time and id): the one rule `ProjectAccess.load` applies, for callers that load many projects at once.
+ */
+export function buildProjectContext(input: {
+  project: ProjectContext['project'];
+  rows: MembershipRecord[];
+  grants: GrantRow[];
+  user: AuthUser;
+  today: string;
+}): ProjectContext {
+  const { project, rows, grants, user, today } = input;
+  const required = requiredRolesCheck(rows, today, 'active');
+  const missing = project.status === 'active' && !required.ok;
+  const mine = grants.filter((g) => g.userId === user.id && grantGivesAccess(g, today, rows));
+  return {
+    project,
+    roles: effectiveRoles(rows, user.id, today),
+    isAdmin: user.role === 'enterprise_administrator',
+    rows,
+    today,
+    missingAccountability: missing,
+    missingRoles: missing ? required.missing : [],
+    onHold: rows.some((r) => membershipState(r, today) === 'on_hold'),
+    grants,
+    viewerId: user.id,
+    grantKinds: [...new Set(mine.map((g) => g.kind))],
+    inspectDeleted: mine.some((g) => g.inspectDeleted === true),
+  };
+}
+
 type Db = Pool | PoolClient;
 
 /**
@@ -102,25 +133,7 @@ export class ProjectAccess {
         [projectId],
       )
     ).rows as GrantRow[];
-    const today = this.today();
-    const status = p.rows[0].status as ProjectStatus;
-    const required = requiredRolesCheck(rows, today, 'active');
-    const missing = status === 'active' && !required.ok;
-    const mine = grants.filter((g) => g.userId === user.id && grantGivesAccess(g, today, rows));
-    return {
-      project: { id: p.rows[0].id, status, createdOn: p.rows[0].createdOn },
-      roles: effectiveRoles(rows, user.id, today),
-      isAdmin: user.role === 'enterprise_administrator',
-      rows,
-      today,
-      missingAccountability: missing,
-      missingRoles: missing ? required.missing : [],
-      onHold: rows.some((r) => membershipState(r, today) === 'on_hold'),
-      grants,
-      viewerId: user.id,
-      grantKinds: [...new Set(mine.map((g) => g.kind))],
-      inspectDeleted: mine.some((g) => g.inspectDeleted === true),
-    };
+    return buildProjectContext({ project: { id: p.rows[0].id, status: p.rows[0].status as ProjectStatus, createdOn: p.rows[0].createdOn }, rows, grants, user, today: this.today() });
   }
 
   /** A participant, or an administrator (who may manage appointments and see the details, never content). */

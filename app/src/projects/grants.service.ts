@@ -6,11 +6,12 @@ import { readOptionalReason, readReason } from '../common/reason';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { isCalendarDate } from '../extraction/due';
+import { loadAccessSettings } from '../organisation/access-settings';
 import { type ProjectContext, ProjectAccess, managesGrants } from './access.service';
 import { GRANT_KINDS, type GrantKind, type GrantRow, defaultGrantEnd, grantSpanOk, grantState, mayDecide } from './grants';
 
 const NOT_MANAGER = 'Only an Enterprise Administrator, the Owner or a Sponsor can manage Audit and Oversight access.';
-const SPAN = 'Access can be granted for at most 90 days at a time.';
+const spanMessage = (max: number) => `Access can be granted for at most ${max} days at a time.`;
 const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
 export const SCOPE_FIXED = 'Inspect Deleted Content is chosen when access is requested and cannot be changed; record a new request instead.';
 const SCOPE_CHOICE = 'Say whether the access includes Inspect Deleted Content (true or false).';
@@ -71,9 +72,6 @@ export class GrantsService {
     const scope = readReason(input.scope, 'the requested scope', { max: 2000, refusal: 'Give the requested scope (up to 2000 characters).' });
     if (!isCalendarDate(input.startsOn)) throw new BadRequestException('Dates must be in the form YYYY-MM-DD.');
     const startsOn = input.startsOn as string;
-    const expiresOn = input.expiresOn === undefined || input.expiresOn === null || input.expiresOn === '' ? defaultGrantEnd(startsOn) : input.expiresOn;
-    if (!isCalendarDate(expiresOn)) throw new BadRequestException('Dates must be in the form YYYY-MM-DD.');
-    if (!grantSpanOk(startsOn, expiresOn)) throw new BadRequestException(SPAN);
     if (typeof input.userId !== 'string' || !UUID.test(input.userId)) throw new BadRequestException('Choose the person the access is for.');
     const inspectDeleted = input.inspectDeleted === undefined ? false : input.inspectDeleted;
     if (typeof inspectDeleted !== 'boolean') throw new BadRequestException(SCOPE_CHOICE);
@@ -81,6 +79,10 @@ export class GrantsService {
     return this.tx(async (c) => {
       const ctx = await this.access.context(user, projectId, c, true);
       this.mustManage(ctx);
+      const limits = await loadAccessSettings(c);
+      const expiresOn = input.expiresOn === undefined || input.expiresOn === null || input.expiresOn === '' ? defaultGrantEnd(startsOn, limits.grantDefaultDays) : input.expiresOn;
+      if (!isCalendarDate(expiresOn)) throw new BadRequestException('Dates must be in the form YYYY-MM-DD.');
+      if (!grantSpanOk(startsOn, expiresOn, limits.grantMaxDays)) throw new BadRequestException(spanMessage(limits.grantMaxDays));
       if (startsOn < ctx.project.createdOn) throw new BadRequestException('Access cannot start before the project was created.');
       const target = (await c.query(`SELECT id FROM users WHERE id = $1 AND status <> 'disabled'`, [input.userId])).rows[0];
       if (!target) throw new BadRequestException('Choose an enabled account.');
@@ -150,7 +152,8 @@ export class GrantsService {
       if (!isCalendarDate(input.expiresOn)) throw new BadRequestException('Dates must be in the form YYYY-MM-DD.');
       const next = input.expiresOn as string;
       if (next <= g.expiresOn) throw new BadRequestException('The new end must be later than the current one.');
-      if (!grantSpanOk(g.expiresOn, next)) throw new BadRequestException(SPAN);
+      const maxDays = (await loadAccessSettings(c)).grantMaxDays;
+      if (!grantSpanOk(g.expiresOn, next, maxDays)) throw new BadRequestException(spanMessage(maxDays));
       await c.query(`UPDATE access_grants SET expires_on = $2 WHERE id = $1`, [g.id, next]);
       await this.event(c, g.id, 'extended', user.id, at, null, g.expiresOn, next);
       await writeAudit(c, { at, action: 'grant.extended', actorUserId: user.id, subjectType: 'project', subjectId: g.projectId, detail: { grantId: g.id } });

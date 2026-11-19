@@ -15,7 +15,8 @@ export const NOT_MARKED = 'This task is not waiting for a deadline review.';
 const DATE_FORM = 'Dates must be in the form YYYY-MM-DD.';
 const TOO_LONG = 'Keep the evidence to 2000 characters or fewer.';
 
-const isManager = (roles: readonly string[]) => roles.includes('pm') || roles.includes('deputy_pm');
+/** The Project Manager or a Deputy: who prepares a deadline review (and reconciles for others). */
+export const isManager = (roles: readonly string[]) => roles.includes('pm') || roles.includes('deputy_pm');
 const finished = (target: Row) => target.status === 'completed' || target.status === 'cancelled';
 
 const dateOf = (v: unknown): string => {

@@ -38,6 +38,43 @@ KAINOW_TEST_DATABASE_URL=postgres://.../kainow_test npm test
 
 The test database is throwaway: the suite drops and recreates its `public` schema. Without `KAINOW_TEST_DATABASE_URL` the database tests skip and report as skipped, not passed.
 
+## Dashboards and analytics (V1.0 sub-project 7)
+
+Design: [`docs/superpowers/specs/2026-11-18-v1-dashboards-design.md`](../docs/superpowers/specs/2026-11-18-v1-dashboards-design.md); decisions D88 (On-time completion), D89 (leadership summary scopes) and D90 (access-setting bounds).
+
+| Screen | Route | Who |
+| --- | --- | --- |
+| Home (personal dashboard) | `#/` | Any signed-in account |
+| Projects | `#/projects` | Any signed-in account (own projects; the Administrator sees all) |
+| Project Figures (Overview tab) and Timeline | `#/projects/<id>` and `#/projects/<id>/timeline` | Anyone with `project.view` |
+| Leadership summary | `#/leadership` | Holder of an Active leadership grant; summary fields only, no project access |
+| Leadership access (grants) | `#/leadership-grants` | Enterprise Administrator |
+| Access and records (access settings) | `#/access-settings` | Enterprise Administrator (`organisation.manage`) |
+| Administrator analytics | `#/admin/analytics` | Enterprise Administrator (`analytics.view`) |
+| Analytics definitions (event catalogue) | `#/admin/analytics/definitions` | Enterprise Administrator (`analytics.view`) |
+| Customise panel (button in the page header) | opens over any page | Any signed-in user: theme (light or dark) and accent (teal, blue, plum or slate), which Home sections and Leadership card fields show; presentation only |
+
+**Access settings** (Enterprise Administrator, with a reason; each change is kept in an append-only history):
+
+| Setting | Default | Bounds |
+| --- | --- | --- |
+| Automatic archive delay after closing | 12 months | 1 to 60 |
+| Audit/Oversight default grant length | 30 days | 1 to 90, and not above the maximum |
+| Audit/Oversight maximum length per grant or extension | 90 days | 1 to 365 |
+| Project invitation validity | 7 days | 1 to 30 |
+| Analytics export allowed | On | On or Off |
+
+A change applies to invitations sent and grants requested or extended afterwards. Changing the archive delay shows, before saving, which Closed projects would be archived or unarchived.
+
+**Bench.** `npm run bench-dashboards` times the dashboard and analytics requests against aims (spec section 14). It needs its own database whose name ends in `_bench`, migrated first:
+
+```
+DATABASE_URL=postgres://.../kainow_bench npm run migrate
+DATABASE_URL=postgres://.../kainow_bench npm run bench-dashboards
+```
+
+`node dist/dashboards/bench-cli.js --seed-only` seeds a `_bench` or `_smoke` database and stops, for a browser smoke test. All seeded names are dummy and the e-mail addresses are at `@example.org`.
+
 ## Milestones
 
 | # | Milestone | Status |

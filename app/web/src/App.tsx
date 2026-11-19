@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import { ApiError, api, setCsrfToken, type User } from './api.ts';
 import type { Branding } from './branding.ts';
 import { Invitation } from './views/Invitation.tsx';
@@ -21,6 +21,7 @@ import { Deliveries } from './views/Deliveries.tsx';
 import { Notifications } from './views/Notifications.tsx';
 import { NotificationsSettings } from './views/NotificationSettings.tsx';
 import { Projects } from './views/Projects.tsx';
+import { Home } from './views/Home.tsx';
 import { Review } from './views/Review.tsx';
 import { HeaderSearch, isSearchHash, Search } from './views/Search.tsx';
 import { AiAdmin } from './views/AiAdmin.tsx';
@@ -30,6 +31,13 @@ import { Thread } from './views/Thread.tsx';
 import { type Meter, formatMyr, meterText, projectIdFromHash, usableMeter } from './ai.ts';
 import { answerIdFromHash } from './assist.ts';
 import { parseThreadHash } from './discussion.ts';
+import { Customise } from './views/Customise.tsx';
+import { Leadership } from './views/Leadership.tsx';
+import { LeadershipGrants } from './views/LeadershipGrants.tsx';
+import { AccessSettings } from './views/AccessSettings.tsx';
+import { Analytics } from './views/Analytics.tsx';
+import { Definitions } from './views/Definitions.tsx';
+import { DEFAULT_PREFS, applyAppearance, createPrefsSaver, type Prefs } from './prefs.ts';
 
 function useHash(): string {
   const [hash, setHash] = useState(window.location.hash || '#/');
@@ -218,12 +226,53 @@ export function App() {
     );
   }, []);
 
+  // Personal display preferences: loaded once signed in, saved at once on each change, and applied to <html>.
+  const [prefs, setPrefs] = useState<Prefs>(DEFAULT_PREFS);
+  const [prefsLoaded, setPrefsLoaded] = useState(false);
+  const [prefsFailed, setPrefsFailed] = useState(false);
+  const [customising, setCustomising] = useState(false);
+  const saver = useRef(createPrefsSaver((next) => api.put<Prefs>('/me/preferences', next), setPrefs)).current;
+  useEffect(() => {
+    setPrefsLoaded(false);
+    setPrefsFailed(false);
+    if (!user) {
+      saver.loaded(DEFAULT_PREFS);
+      setCustomising(false);
+      return;
+    }
+    let stale = false;
+    api.get<Prefs>('/me/preferences').then(
+      (p) => {
+        if (stale) return;
+        saver.loaded(p);
+        setPrefsLoaded(true);
+      },
+      () => !stale && setPrefsFailed(true),
+    );
+    return () => {
+      stale = true;
+    };
+  }, [user, saver]);
+  useEffect(() => applyAppearance(prefs), [prefs]);
+  const savePrefs = saver.save;
+
   // A designated security reviewer gets the Security review page; anyone else is refused, so the link stays hidden.
   const [reviewer, setReviewer] = useState(false);
   useEffect(() => {
     if (!user) return setReviewer(false);
     api.get('/security/cases').then(() => setReviewer(true), () => setReviewer(false));
   }, [user]);
+
+  // "Leadership" shows only for someone holding an Active leadership grant.
+  const [hasGrant, setHasGrant] = useState(false);
+  useEffect(() => {
+    if (!user) return setHasGrant(false);
+    let stale = false;
+    api.get<{ hasGrant: boolean }>('/leadership/me').then((r) => !stale && setHasGrant(r.hasGrant), () => !stale && setHasGrant(false));
+    return () => {
+      stale = true;
+    };
+  }, [user, hash === '#/leadership']);
 
   const signOut = useCallback(async () => {
     await api.post('/auth/logout').catch(() => undefined);
@@ -274,19 +323,20 @@ export function App() {
   }
   const note = /^#\/notes\/([0-9a-f-]{36})(?:\/v\/(\d+))?$/i.exec(hash);
   const run = /^#\/runs\/([0-9a-f-]{36})$/i.exec(hash);
-  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work|drafts|review|settings|ai|feedback|closing|deadline-review|deleted)(?:\/([0-9a-f-]{36}))?)?$/i.exec(hash);
+  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work|drafts|review|settings|ai|feedback|closing|deadline-review|deleted|timeline)(?:\/([0-9a-f-]{36}))?)?$/i.exec(hash);
   const deletedItem = /^#\/projects\/([0-9a-f-]{36})\/deleted\/([a-z]+)\/([0-9a-f-]{36})$/i.exec(hash);
   const quarantineCase = /^#\/quarantine\/cases\/([0-9a-f-]{36})(?:\/copies)?$/i.exec(hash);
   const securityPage = /^#\/security\/(cases|grants)$/.test(hash);
   const summary = /^#\/summaries\/([0-9a-f-]{36})$/i.exec(hash);
   const thread = parseThreadHash(hash);
   const searching = isSearchHash(hash);
-  const adminPage = /^#\/(people|ai|departments|domains|organisation|approvals|notifications-settings|deliveries|go-live|escalated-feedback)$/.exec(hash)?.[1];
+  const adminPage = /^#\/(people|ai|departments|domains|organisation|approvals|notifications-settings|deliveries|go-live|escalated-feedback|leadership-grants|access-settings|ai\/usage|admin\/analytics|admin\/analytics\/definitions)$/.exec(hash)?.[1];
 
   let page;
   if (invitation) page = <Invitation token={invitation[1]} user={user} onSignedIn={setUser} />;
   else if (isAdmin && adminPage === 'people') page = <People meId={user.id} />;
-  else if (isAdmin && adminPage === 'ai') page = <AiAdmin />;
+  else if (isAdmin && adminPage === 'ai') page = <AiAdmin key="ai" />;
+  else if (isAdmin && adminPage === 'ai/usage') page = <AiAdmin key="ai-usage" initialTab="usage" />;
   else if (isAdmin && adminPage === 'departments') page = <Departments />;
   else if (isAdmin && adminPage === 'domains') page = <Domains />;
   else if (isAdmin && adminPage === 'organisation') page = <OrganisationScreen onBrandingChanged={loadBranding} meId={user.id} />;
@@ -295,6 +345,11 @@ export function App() {
   else if (isAdmin && adminPage === 'deliveries') page = <Deliveries />;
   else if (isAdmin && adminPage === 'go-live') page = <GoLive />;
   else if (isAdmin && adminPage === 'escalated-feedback') page = <EscalatedFeedback />;
+  else if (isAdmin && adminPage === 'leadership-grants') page = <LeadershipGrants meId={user.id} />;
+  else if (isAdmin && adminPage === 'access-settings') page = <AccessSettings />;
+  else if (isAdmin && adminPage === 'admin/analytics') page = <Analytics />;
+  else if (isAdmin && adminPage === 'admin/analytics/definitions') page = <Definitions />;
+  else if (hash === '#/leadership' && hasGrant) page = <Leadership prefs={prefs} ready={prefsLoaded} failed={prefsFailed} onChange={savePrefs} />;
   else if (quarantineCase) page = <CasePage key={quarantineCase[1]} caseId={quarantineCase[1]} />;
   else if (securityPage) page = <SecurityReviewPage />;
   else if (hash === '#/notifications') page = <Notifications />;
@@ -305,8 +360,9 @@ export function App() {
   else if (deletedItem) page = <DeletedItemPage key={deletedItem[3]} projectId={deletedItem[1]} kind={deletedItem[2]} itemId={deletedItem[3]} />;
   else if (run) page = <Review runId={run[1]} meId={user.id} />;
   else if (note) page = <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} />;
-  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | undefined) ?? 'overview'} itemId={project[3]} />;
-  else page = <Projects isAdmin={isAdmin} />;
+  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | 'timeline' | undefined) ?? 'overview'} itemId={project[3]} prefs={prefs} prefsReady={prefsLoaded} onPrefs={savePrefs} />;
+  else if (hash === '#/projects') page = <Projects isAdmin={isAdmin} />;
+  else page = <Home prefs={prefs} ready={prefsLoaded} failed={prefsFailed} onChange={savePrefs} />;
 
   return (
     <>
@@ -315,8 +371,9 @@ export function App() {
         {branding && <Letterhead branding={branding} place="header" />}
         <a className="wordmark" href="#/">Kainow</a>
         <nav aria-label="Main" className="mainnav">
-          <a href="#/" aria-current={!adminPage && !securityPage && hash !== '#/my-ai-usage' ? 'page' : undefined}>My Projects</a>
+          <a href="#/" aria-current={!adminPage && !securityPage && hash !== '#/my-ai-usage' && !(hash === '#/leadership' && hasGrant) ? 'page' : undefined}>My Projects</a>
           <a href="#/my-ai-usage" aria-current={hash === '#/my-ai-usage' ? 'page' : undefined}>My AI use</a>
+          {hasGrant && <a href="#/leadership" aria-current={hash === '#/leadership' ? 'page' : undefined}>Leadership</a>}
           {reviewer && <a href="#/security/cases" aria-current={securityPage ? 'page' : undefined}>Security review</a>}
           {isAdmin && (
             <>
@@ -330,7 +387,10 @@ export function App() {
               <a href="#/go-live" aria-current={adminPage === 'go-live' ? 'page' : undefined}>Go-live</a>
               <a href="#/domains" aria-current={adminPage === 'domains' ? 'page' : undefined}>Domains</a>
               <a href="#/escalated-feedback" aria-current={adminPage === 'escalated-feedback' ? 'page' : undefined}>Escalated feedback</a>
-              <a href="#/ai" aria-current={adminPage === 'ai' ? 'page' : undefined}>AI</a>
+              <a href="#/leadership-grants" aria-current={adminPage === 'leadership-grants' ? 'page' : undefined}>Leadership access</a>
+              <a href="#/access-settings" aria-current={adminPage === 'access-settings' ? 'page' : undefined}>Access and records</a>
+              <a href="#/admin/analytics" aria-current={adminPage === 'admin/analytics' || adminPage === 'admin/analytics/definitions' ? 'page' : undefined}>Analytics</a>
+              <a href="#/ai" aria-current={adminPage === 'ai' || adminPage === 'ai/usage' ? 'page' : undefined}>AI</a>
             </>
           )}
         </nav>
@@ -339,10 +399,16 @@ export function App() {
         <SpendMeter hash={hash} isAdmin={isAdmin} />
         <span className="who">
           {user.displayName}
+          <button className="quiet" aria-expanded={customising} onClick={() => setCustomising((c) => !c)}>Customise</button>
           <button className="quiet" onClick={signOut}>Sign out</button>
           <button className="quiet" onClick={signOutEverywhere}>Sign out everywhere</button>
         </span>
       </header>
+      {customising && (
+        <div className="page narrow">
+          <Customise prefs={prefs} ready={prefsLoaded} failed={prefsFailed} onChange={savePrefs} onClose={() => setCustomising(false)} />
+        </div>
+      )}
       <div id="main">
         {page}
       </div>

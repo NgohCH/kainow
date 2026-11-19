@@ -63,7 +63,7 @@ const registered = async (pool: Pool): Promise<boolean> =>
 const activeAdministrators = async (pool: Pool): Promise<Array<{ displayName: string; email: string }>> =>
   (
     await pool.query(
-      `SELECT display_name AS "displayName", email FROM users WHERE role = 'enterprise_administrator' AND status = 'active' ORDER BY id`,
+      `SELECT display_name AS "displayName", email FROM users WHERE role = 'enterprise_administrator' AND status = 'active' ORDER BY email, id`,
     )
   ).rows;
 

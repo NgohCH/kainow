@@ -35,7 +35,7 @@ Every action also checks account, organisation/project, membership or independen
 | Read own account/session state; sign out | Authenticated person | Current/all-session sign-out; no personal policy override. |
 | Grant/extend/revoke Audit/Oversight | EA or O/S | Recorded request, scope, start/end; no self-approval; 30-day default/90-day default maximum. |
 | Suspend/restore independent grant | EA or authorised grant manager | Reason, explicit restoration; expiry continues; O07. |
-| Grant leadership summary scope | EA | Explicit project/organisation summary scope, start and optional expiry; D48. |
+| Grant leadership summary scope | EA | Explicit project/organisation summary scope, start and optional expiry; D48. Sub-project 7 sets the scopes: organisation, departments (owned projects now and later) or named projects; never to themselves; D89. |
 | Inspect investigation details | Explicitly authorised investigators/role managers | Separate restricted record, minimum disclosure; leadership excluded by default; O07. |
 | Designate/undesignate security reviewer | EA, never for themselves | Reason recorded in security-reviewer history; Organisation page; D82. |
 | Request quarantined-original access | Designated security reviewer | Names cases by reference, project and item kind (never content), with a purpose and duration (default 24 hours); D82. |
@@ -136,8 +136,11 @@ Self-approval is allowed by default for an eligible O/S, including a valid combi
 | Approve deliverable/report/spec version | O/S | Exact version; external edit cannot inherit approval. |
 | Transfer owning department | EA | Reason, explicit relocate or retain-approved-location decision; no duplicate project counts. |
 | Send manual action-item digest | PM or O/S | Enabled channels; recipient/content rechecked. |
-| View personal/project dashboard; adjust own colour/layout/filter | Participant | Direct view controls, supported accessible options; no separate user-settings page. |
-| View/configure own leadership summary layout | Explicit leadership grant | Approved summary fields only within granted scope; PM name, departments, scope and progress included by default. |
+| View personal dashboard | Any signed-in Active account | Only own items and projects visible today; D88. |
+| View project dashboard and timeline | `project.view` (participants and Audit/Oversight holders) | Pending invitation names shown to PM, Deputy, Owner and Sponsor; D88. |
+| Change own display preferences (theme, accent, layout, filters) | Any signed-in user | Presentation only; no reason, no audit row; cannot change rights, metric meaning or hidden warnings. |
+| Grant, change or revoke leadership access | EA, never to themselves | Reason, start date, optional end date and scope (whole organisation, departments now and later, or named projects); gives no matrix action and no project access; revoking ends access at once; D89. |
+| View/configure own leadership summary layout | Holder of an Active leadership grant | Approved summary fields only within granted scope, never project content, discussions, minutes, quotes or management actions; PM name, departments, scope and progress included by default; D89. |
 | View own AI usage | User | Does not disclose source or credentials. |
 | View project/person AI usage | PM or O/S | Project scope; DPM not default merely by role. |
 | View organisation AI usage | EA | No automatic raw source/secret access. |
@@ -183,7 +186,9 @@ For work actually completed during the pause, use the accepted reconciliation ex
 | --- | --- | --- |
 | Open Administrator analytics; configure system analytics/report definitions | Enterprise Administrator | Supported event/metric catalogue, organisation/department/project permitted aggregates; no blanket source read. |
 | Drill into named person, record/source, finance or investigation detail | Person with the relevant current additional permission | Analytics scope alone is insufficient; recheck every level, cached result and export. |
-| Export analytics/report | Current permitted reader with enabled export policy | Recheck at job execution and retrieval; preserve period/filters/definitions/coverage. |
+| Export analytics/report | Current permitted reader with enabled export policy | Recheck at job execution and retrieval; preserve period/filters/definitions/coverage. Sub-project 7: Enterprise Administrator while "Analytics export allowed" is On; each export recorded. |
+| Save own analytics views; read the event definitions | Enterprise Administrator (`analytics.view`) | Counts only below project level unless also a participant; saved views never expand rights. |
+| Change access settings (archive delay, Audit/Oversight grant lengths, invitation validity, analytics export) | Enterprise Administrator (`organisation.manage`) | Reason; bounds of D90; applies to invitations sent and grants requested or extended afterwards. |
 | Approve/install or schedule a release update | Enterprise Administrator | Explicit approval for each release; pre-update backup/compatibility and integrity checks require verified design. |
 | Configure installation-wide AI concurrency | Enterprise Administrator | Default two across all projects and workers; 1 to 10, held in the database so it holds across every worker process; changed with a reason, recorded with the previous and new values. |
 | Configure automatic backups/retention and initiate protected restore | Enterprise Administrator under approved operational procedure | Daily encrypted/30-day default; restore authority never grants ordinary access to credential values or restricted sources. |
