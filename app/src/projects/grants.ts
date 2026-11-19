@@ -23,9 +23,6 @@ export interface GrantRow {
 
 export type GrantState = 'requested' | 'declined' | 'scheduled' | 'active' | 'suspended' | 'expired' | 'revoked';
 
-export const GRANT_DEFAULT_DAYS = 30;
-export const GRANT_MAX_DAYS = 90;
-
 const DAY_MS = 86_400_000;
 const dayNumber = (day: string) => Date.parse(`${day}T00:00:00Z`) / DAY_MS;
 export const addDays = (day: string, n: number): string => new Date(Date.parse(`${day}T00:00:00Z`) + n * DAY_MS).toISOString().slice(0, 10);
@@ -40,15 +37,15 @@ export function grantState(g: GrantRow, today: string): GrantState {
   return 'active';
 }
 
-/** The default end: thirty days after the start. */
-export function defaultGrantEnd(startsOn: string): string {
-  return addDays(startsOn, GRANT_DEFAULT_DAYS);
+/** The default end: the default grant length after the start. */
+export function defaultGrantEnd(startsOn: string, days: number): string {
+  return addDays(startsOn, days);
 }
 
-/** An end on or after `fromDay` and at most ninety days after it. */
-export function grantSpanOk(fromDay: string, toDay: string): boolean {
+/** An end on or after `fromDay` and at most `maxDays` after it. */
+export function grantSpanOk(fromDay: string, toDay: string, maxDays: number): boolean {
   const span = dayNumber(toDay) - dayNumber(fromDay);
-  return span >= 0 && span <= GRANT_MAX_DAYS;
+  return span >= 0 && span <= maxDays;
 }
 
 /** Nobody approves their own access, and the person who recorded a request does not decide it. */

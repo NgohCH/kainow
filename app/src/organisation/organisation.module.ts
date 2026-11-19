@@ -4,10 +4,12 @@ import { OrganisationProfileService } from './organisation.service';
 import { SetupController } from './setup.controller';
 import { SetupService } from './setup.service';
 import { LetterheadWiring } from './letterhead-wiring';
+import { AccessSettingsController } from './access-settings.controller';
+import { AccessSettingsService } from './access-settings.service';
 
 @Module({
-  controllers: [OrganisationProfileController, SetupController],
-  providers: [OrganisationProfileService, SetupService, LetterheadWiring],
-  exports: [OrganisationProfileService, SetupService],
+  controllers: [OrganisationProfileController, SetupController, AccessSettingsController],
+  providers: [OrganisationProfileService, SetupService, LetterheadWiring, AccessSettingsService],
+  exports: [OrganisationProfileService, SetupService, AccessSettingsService],
 })
 export class OrganisationModule {}

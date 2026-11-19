@@ -21,11 +21,11 @@ test('grant state follows decision, suspension and dates', () => {
 });
 
 test('grant spans', () => {
-  assert.equal(defaultGrantEnd('2026-11-09'), '2026-12-09');
-  assert.equal(grantSpanOk('2026-11-09', '2027-02-07'), true, '90 days');
-  assert.equal(grantSpanOk('2026-11-09', '2027-02-08'), false, '91 days');
-  assert.equal(grantSpanOk('2026-11-09', '2026-11-08'), false, 'end before start');
-  assert.equal(grantSpanOk('2026-11-09', '2026-11-09'), true, 'one day');
+  assert.equal(defaultGrantEnd('2026-11-09', 30), '2026-12-09');
+  assert.equal(grantSpanOk('2026-11-09', '2027-02-07', 90), true, '90 days');
+  assert.equal(grantSpanOk('2026-11-09', '2027-02-08', 90), false, '91 days');
+  assert.equal(grantSpanOk('2026-11-09', '2026-11-08', 90), false, 'end before start');
+  assert.equal(grantSpanOk('2026-11-09', '2026-11-09', 90), true, 'one day');
 });
 
 test('nobody decides their own grant or the one they recorded', () => {
@@ -42,4 +42,11 @@ test('a hold suspends the grant in that project', () => {
   assert.equal(grantGivesAccess(grant(), '2026-11-12', [m('x', true)]), false);
   assert.equal(grantGivesAccess(grant(), '2026-11-12', [m('y', true)]), true);
   assert.equal(grantGivesAccess(grant(), '2026-11-09', []), false, 'not yet started');
+});
+
+test('the length limits are the ones given', () => {
+  assert.equal(defaultGrantEnd('2026-11-09', 10), '2026-11-19');
+  assert.equal(grantSpanOk('2026-11-09', '2026-12-09', 30), true);
+  assert.equal(grantSpanOk('2026-11-09', '2026-12-10', 30), false);
+  assert.equal(grantSpanOk('2026-11-09', '2027-11-09', 365), true);
 });

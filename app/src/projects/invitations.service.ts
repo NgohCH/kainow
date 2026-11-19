@@ -6,6 +6,7 @@ import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { APP_CONFIG, type AppConfig } from '../config';
 import { PG_POOL } from '../db/database.module';
+import { loadAccessSettings } from '../organisation/access-settings';
 import { invitationEmail } from '../email/messages';
 import { EMAIL_NUDGE, type EmailNudge } from '../email/nudge';
 import { writeOutbox } from '../email/outbox';
@@ -15,7 +16,7 @@ import { type ProjectRole, membershipState } from './membership';
 import { MembershipsService, checkMembershipsAfter, checkNewAppointment, cleanDates, cleanRole } from './memberships.service';
 import { OrganisationService } from './organisation.service';
 
-const VALID_FOR_MS = 7 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
 const NO_LONGER_VALID = 'This invitation link is no longer valid.';
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
@@ -98,7 +99,7 @@ export class InvitationsService {
   ) {
     const token = randomBytes(32).toString('base64url');
     const id = uuidv7(at.getTime());
-    const expiresAt = new Date(at.getTime() + VALID_FOR_MS);
+    const expiresAt = new Date(at.getTime() + (await loadAccessSettings(c)).invitationValidDays * DAY_MS);
     await c.query(
       `INSERT INTO invitations (id, project_id, email, display_name, role, starts_on, expires_on, invited_by, token_hash, issued_at, expires_at,
                                 kind, outgoing_membership_id, outgoing_role)
