@@ -10,11 +10,13 @@ export interface SpanState {
   state: MessageState;
 }
 
-export type SourceFlag = 'deleted' | 'hidden';
+/** A message of the transcript hidden or deleted (4a), or the whole source Deleted (history spec 4.2). */
+export type SourceFlag = 'deleted' | 'hidden' | 'source_deleted';
 
 export const SOURCE_FLAG_TEXT: Record<SourceFlag, string> = {
   deleted: 'Source message deleted — review',
   hidden: 'Source message hidden — review',
+  source_deleted: 'Source deleted — review',
 };
 
 const MASK: Record<'deleted' | 'hidden', string> = { deleted: '[Message deleted]', hidden: '[Message hidden]' };
@@ -44,10 +46,16 @@ export function quoteSourceFlag(quoteStart: number | null, quoteEnd: number | nu
 
 type Db = Pool | PoolClient;
 
+/**
+ * A message's state as transcripts show it: a message held in a quarantine case (history spec 7.2) is masked like a
+ * hidden one, so neither its text nor a quote from it is shown.
+ */
+const SHOWN_STATE = `CASE WHEN m.held_case_id IS NOT NULL AND m.state = 'visible' THEN 'hidden' ELSE m.state END AS state`;
+
 /** The spans of one stored transcript with each message's current state. Empty for a source that is not a discussion transcript. */
 export async function loadSpanStates(db: Db, sourceVersionId: string): Promise<SpanState[]> {
   const { rows } = await db.query(
-    `SELECT sp.header_start AS "headerStart", sp.body_start AS "bodyStart", sp.body_end AS "bodyEnd", m.state
+    `SELECT sp.header_start AS "headerStart", sp.body_start AS "bodyStart", sp.body_end AS "bodyEnd", ${SHOWN_STATE}
        FROM transcript_spans sp
        JOIN source_versions v ON v.id = sp.source_version_id
        JOIN sources s ON s.id = v.source_id AND s.kind = 'discussion'
@@ -104,12 +112,22 @@ async function discussionItemPlaces(db: Db, itemIds: string[]): Promise<Map<stri
 }
 
 /**
- * The flag for each proposal (extraction item) whose quote lies in a message that is now hidden or deleted.
- * Items from any other kind of source, or with an unplaced quote, are absent from the result.
+ * The flag for each proposal (extraction item) whose evidence is no longer there, worked out when shown: the source of
+ * its version is Deleted (`source_deleted`, history spec 4.2; restoring clears it), or its quote lies in a message that
+ * is now hidden or deleted. Items with neither are absent from the result. Nothing about the proposal itself changes.
  */
 export async function itemSourceFlags(db: Db, itemIds: string[]): Promise<Map<string, SourceFlag>> {
   const flags = new Map<string, SourceFlag>();
-  const places = await discussionItemPlaces(db, itemIds);
+  if (itemIds.length === 0) return flags;
+  const { rows: gone } = await db.query<{ id: string }>(
+    `SELECT i.id FROM extraction_items i
+       JOIN source_versions v ON v.id = i.source_version_id
+       JOIN sources s ON s.id = v.source_id
+      WHERE i.id = ANY($1::uuid[]) AND s.status = 'deleted'`,
+    [itemIds],
+  );
+  for (const r of gone) flags.set(r.id, 'source_deleted');
+  const places = await discussionItemPlaces(db, itemIds.filter((id) => !flags.has(id)));
   const spansByVersion = new Map<string, SpanState[]>();
   for (const [id, place] of places) {
     if (!spansByVersion.has(place.versionId)) spansByVersion.set(place.versionId, await loadSpanStates(db, place.versionId));
@@ -146,7 +164,7 @@ export async function itemDiscussionEvidence(db: Db, itemIds: string[]): Promise
            FROM transcript_spans sp
            JOIN source_versions v ON v.id = sp.source_version_id
            JOIN sources s ON s.id = v.source_id AND s.kind = 'discussion'
-           JOIN discussion_messages m ON m.thread_id = s.thread_id AND m.message_no = sp.message_no AND m.state = 'visible'
+           JOIN discussion_messages m ON m.thread_id = s.thread_id AND m.message_no = sp.message_no AND m.state = 'visible' AND m.held_case_id IS NULL
            JOIN users u ON u.id = sp.author_id
           WHERE sp.source_version_id = $1 ORDER BY sp.header_start`,
         [place.versionId],
@@ -169,7 +187,7 @@ const LABEL_TIME = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Kuala_Lump
 export async function occurrenceLabels(db: Db, sourceVersionId: string, places: Array<{ start: number }>): Promise<Array<string | null>> {
   const { rows } = await db.query(
     `SELECT sp.message_no AS "no", sp.header_start AS "headerStart", sp.body_start AS "bodyStart", sp.body_end AS "bodyEnd", sp.is_context AS "ctx",
-            m.state, m.created_at AS "at", u.display_name AS "name"
+            ${SHOWN_STATE}, m.created_at AS "at", u.display_name AS "name"
        FROM transcript_spans sp
        JOIN source_versions v ON v.id = sp.source_version_id
        JOIN sources s ON s.id = v.source_id AND s.kind = 'discussion'

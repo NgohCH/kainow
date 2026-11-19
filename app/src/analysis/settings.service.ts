@@ -1,4 +1,5 @@
 import { BadRequestException, ForbiddenException, Inject, Injectable } from '@nestjs/common';
+import { refuseSecretsIn } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -77,6 +78,7 @@ export async function effectiveAnalysisSettings(db: Db, projectId: string): Prom
 const reasonOf = (v: unknown): string => {
   if (typeof v !== 'string' || v.trim() === '') throw new BadRequestException('Give a reason for the change.');
   if (v.trim().length > 500) throw new BadRequestException('The reason must be 500 characters or fewer.');
+  refuseSecretsIn(v.trim());
   return v.trim();
 };
 const quietOf = (v: unknown): number => {

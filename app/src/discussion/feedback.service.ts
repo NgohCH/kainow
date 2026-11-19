@@ -1,3 +1,4 @@
+import { possibleCopyLabelSql } from '../quarantine/labels';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { answerAccess, loadAnswerRow } from '../assist/questions.service';
@@ -8,6 +9,7 @@ import { can } from '../auth/permissions';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
+import { refuseHeld } from '../history/deleted-sql';
 import { NoteTextError, normaliseText, sha256Hex } from '../notes/text';
 import { ProjectAccess } from '../projects/access.service';
 import { AudienceService } from './audience.service';
@@ -38,6 +40,8 @@ export interface FeedbackView {
   reporterName: string;
   createdAt: Date;
   escalatedAt: Date | null;
+  /** "Possible credential removed — awaiting check" while the note is a possible copy masked at once (spec 7.4). */
+  quarantineLabel: string | null;
 }
 
 export interface AdminFeedbackRow {
@@ -118,7 +122,7 @@ export class FeedbackService {
       const { rows } = await db.query(
         `SELECT sv.source_id AS "sourceId", s.project_id AS "projectId"
            FROM extraction_items i JOIN source_versions sv ON sv.id = i.source_version_id JOIN sources s ON s.id = sv.source_id
-          WHERE i.id = $1`,
+          WHERE i.id = $1 AND i.held_case_id IS NULL`,
         [id],
       );
       if (!rows[0] || rows[0].projectId !== projectId) throw new NotFoundException();
@@ -172,7 +176,8 @@ export class FeedbackService {
   private async rows(db: Pool | PoolClient, where: string, params: unknown[]): Promise<FeedbackView[]> {
     const { rows } = await db.query(
       `SELECT f.id, f.project_id AS "projectId", f.target_kind AS "targetKind", f.target_id AS "targetId", f.category, f.note, f.status,
-              f.reporter_id AS "reporterId", u.display_name AS "reporterName", f.created_at AS "createdAt", f.escalated_at AS "escalatedAt"
+              f.reporter_id AS "reporterId", u.display_name AS "reporterName", f.created_at AS "createdAt", f.escalated_at AS "escalatedAt",
+              ${possibleCopyLabelSql('feedback', 'f.id')}
          FROM ai_feedback f JOIN users u ON u.id = f.reporter_id WHERE ${where} ORDER BY f.created_at DESC, f.id DESC`,
       params,
     );
@@ -183,15 +188,19 @@ export class FeedbackService {
   async list(user: AuthUser, projectId: string): Promise<{ feedback: FeedbackView[]; canReview: boolean }> {
     const ctx = await this.access.authorize(user, 'note.view', idOrNotFound(projectId));
     const canReview = this.threads.allowed(ctx, 'feedback.review');
-    const feedback = canReview ? await this.rows(this.pool, 'f.project_id = $1', [projectId]) : await this.rows(this.pool, 'f.project_id = $1 AND f.reporter_id = $2', [projectId, user.id]);
+    // A feedback note held in a quarantine case is listed for nobody (history spec 7.2).
+    const feedback = canReview
+      ? await this.rows(this.pool, 'f.project_id = $1 AND f.held_case_id IS NULL', [projectId])
+      : await this.rows(this.pool, 'f.project_id = $1 AND f.reporter_id = $2 AND f.held_case_id IS NULL', [projectId, user.id]);
     return { feedback, canReview };
   }
 
   /** Locks the feedback row and checks the caller may review it; a stranger to the project finds nothing. */
   private async reviewable(db: PoolClient, user: AuthUser, id: string) {
-    const { rows } = await db.query(`SELECT id, project_id AS "projectId", status, escalated_at AS "escalatedAt" FROM ai_feedback WHERE id = $1 FOR UPDATE`, [idOrNotFound(id)]);
+    const { rows } = await db.query(`SELECT id, project_id AS "projectId", status, escalated_at AS "escalatedAt", held_case_id AS "heldCaseId" FROM ai_feedback WHERE id = $1 FOR UPDATE`, [idOrNotFound(id)]);
     if (!rows[0]) throw new NotFoundException();
     await this.access.authorize(user, 'feedback.review', rows[0].projectId, db);
+    refuseHeld(rows[0]);
     return rows[0] as { id: string; projectId: string; status: Status; escalatedAt: Date | null };
   }
 
@@ -283,7 +292,7 @@ export class FeedbackService {
                     ELSE (SELECT a.extraction_run_id FROM minutes_drafts d JOIN analysis_runs a ON a.id = d.analysis_run_id WHERE d.id = f.target_id)
                   END AS extraction_ref
          ) r ON true
-        WHERE f.escalated_at IS NOT NULL ORDER BY f.escalated_at DESC, f.id DESC`,
+        WHERE f.escalated_at IS NOT NULL AND f.held_case_id IS NULL ORDER BY f.escalated_at DESC, f.id DESC`,
     );
     return { feedback: rows as AdminFeedbackRow[] };
   }

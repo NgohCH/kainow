@@ -25,7 +25,9 @@ import {
 } from '../discussion.ts';
 import { mayDraftSummary, mergeTimeline } from '../assist.ts';
 import { formatWhen } from '../format.ts';
+import { deletedLabel } from '../history.ts';
 import { ThreadAnswerItem } from './AiAnswer.tsx';
+import { ReportSecret } from './ReportSecret.tsx';
 import { AnalysisStatus } from './AnalysisStatus.tsx';
 import { MeetingControls } from './Meeting.tsx';
 import { MinutesPanel, useMinutes } from './MinutesPanel.tsx';
@@ -227,6 +229,8 @@ function ThreadBody({ first, projectId, meId, messageNo, answerId, project }: { 
             ) : (
               <MessageItem
                 key={item.message.id}
+                projectId={projectId}
+                onReported={() => void reloadThread()}
                 m={item.message}
                 s={s}
                 canPost={t.canPost}
@@ -281,6 +285,8 @@ const ACTION_LABEL: Record<MessageActionName, string> = {
 };
 
 function MessageItem({
+  projectId,
+  onReported,
   m,
   s,
   canPost,
@@ -293,6 +299,8 @@ function MessageItem({
   dispatch,
   onReply,
 }: {
+  projectId: string;
+  onReported: () => void;
   m: MessageView;
   s: ReturnType<typeof initialThread>;
   canPost: boolean;
@@ -393,7 +401,12 @@ function MessageItem({
         )}
       </p>
       {lines.replyLine && <p className="reply-quote">{lines.replyLine}</p>}
-      {lines.notice && <p className="notice">{lines.notice}</p>}
+      {m.deletedBy !== undefined && m.deletedAt !== undefined ? (
+        <p className="warn" role="note">{deletedLabel(m.deletedBy, m.deletedAt, m.deleteReason ?? '')}</p>
+      ) : (
+        lines.notice && <p className="notice">{lines.notice}</p>
+      )}
+      {m.quarantineLabel && <p className="warn" role="note">{m.quarantineLabel}</p>}
       {editing ? (
         <form className="stack" onSubmit={saveEdit}>
           <label>
@@ -427,6 +440,7 @@ function MessageItem({
           ))}
         </div>
       )}
+      {m.state === 'visible' && !editing && <ReportSecret projectId={projectId} kind="message" id={m.id} label={`message ${m.no}`} onReported={onReported} />}
       {reasonFor && (
         <form className="inline-form" onSubmit={runModeration}>
           <label>

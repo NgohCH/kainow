@@ -1,4 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import { QuarantineNote, ReportSecret } from './ReportSecret.tsx';
 import { ApiError } from '../api.ts';
 import {
   CATEGORIES,
@@ -88,7 +89,7 @@ export function FeedbackButton({ projectId, targetKind, targetId, label = 'Give 
   );
 }
 
-function Item({ f, canReview, onChanged }: { f: FeedbackView; canReview: boolean; onChanged: (f: FeedbackView) => void }) {
+function Item({ projectId, f, canReview, onChanged }: { projectId: string; f: FeedbackView; canReview: boolean; onChanged: (f: FeedbackView) => void }) {
   const [acting, setActing] = useState<{ kind: 'status'; to: FeedbackView['status']; label: string } | { kind: 'escalate' } | null>(null);
   const [note, setNote] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -118,6 +119,8 @@ function Item({ f, canReview, onChanged }: { f: FeedbackView; canReview: boolean
         {f.escalatedAt && <span className="badge"> Escalated to the Administrator</span>}
       </p>
       <p className="meta">{f.reporterName}, {formatWhen(f.createdAt)}</p>
+      <p><ReportSecret projectId={projectId} kind="feedback" id={f.id} label="this feedback note" /></p>
+      <QuarantineNote text={f.quarantineLabel} />
       <p>{f.note}</p>
       {canReview && (
         <span className="actions">
@@ -162,7 +165,7 @@ export function Feedback({ projectId }: { projectId: string }) {
       </p>
       {data.feedback.length === 0 && <p className="empty">No feedback yet.</p>}
       <ul className="plain stack">
-        {data.feedback.map((f) => <Item key={f.id} f={f} canReview={data.canReview} onChanged={changed} />)}
+        {data.feedback.map((f) => <Item key={f.id} projectId={projectId} f={f} canReview={data.canReview} onChanged={changed} />)}
       </ul>
     </section>
   );

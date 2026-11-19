@@ -1,4 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { QuarantineNote, ReportSecret } from './ReportSecret.tsx';
 import { ApiError, type Membership } from '../api.ts';
 import {
   AI_DRAFT_LABEL,
@@ -183,6 +184,7 @@ export function MinutesPanel({
       {shown && banner && mode === 'view' && (
         <div className={banner.className} tabIndex={0} aria-label={`Version ${shown.versionNo} of the draft minutes`}>
           <p className="badge ai-label">{banner.label}</p>
+          <QuarantineNote text={shown.quarantineLabel} />
           <p className="meta">
             Version {shown.versionNo}, {formatWhen(shown.createdAt)}, covers messages up to #{shown.coversThroughNo}
             {banner.fromLine ? ` · ${banner.fromLine}` : ''}
@@ -273,6 +275,7 @@ export function MinutesPanel({
         )}
         {minutes?.canPublish && shown && <button type="button" className="primary" disabled={busy} onClick={() => setConfirming('publish')}>Publish</button>}
         {canSubmit && shown && <button type="button" className="primary" disabled={busy} onClick={() => setConfirming('submit')}>Submit for publication</button>}
+        {shown && mode === 'view' && shown.id && <ReportSecret projectId={projectId} kind="minutes_draft" id={shown.id} label={`version ${shown.versionNo} of the draft minutes`} />}
         {shown && mode === 'view' && canFlagDraft(shown) && shown.id && (
           <FeedbackButton projectId={projectId} targetKind="minutes_draft" targetId={shown.id} label={`Give feedback on version ${shown.versionNo}`} />
         )}

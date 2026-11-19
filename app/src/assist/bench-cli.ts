@@ -186,7 +186,7 @@ function assistSeedSql(now: Date): string[] {
 }
 
 /** Adds the 4b data (no passages) once; a second run measures what is there. */
-async function seedAssist(pool: Pool, now: Date, log: (m: string) => void): Promise<void> {
+export async function seedAssist(pool: Pool, now: Date, log: (m: string) => void): Promise<void> {
   const prior = await pool.query(`SELECT value FROM bench_meta WHERE key = 'assist_seeded_at'`);
   if (prior.rows[0]) {
     log(`4b data already seeded at ${prior.rows[0].value}; measuring what is there`);
@@ -275,7 +275,7 @@ const QUESTIONS = [
 type Who = 'member' | 'pm' | 'thread';
 
 /** findMaterial over 200 varied questions (10 warm-up not counted), across Active projects and three kinds of asker. */
-async function measureSearch(pool: Pool): Promise<{ all: Stats; byWho: Record<Who, Stats>; items: { min: number; median: number; max: number; empty: number } }> {
+export async function measureSearch(pool: Pool): Promise<{ all: Stats; byWho: Record<Who, Stats>; items: { min: number; median: number; max: number; empty: number } }> {
   const access = new ProjectAccess(pool, () => new Date());
   const userOf = async (n: number): Promise<AuthUser> =>
     (await pool.query(`SELECT id, email, display_name AS "displayName", role FROM users WHERE email = $1`, [`bench-user-${n}@example.org`])).rows[0] as AuthUser;
@@ -393,7 +393,7 @@ export async function runAssistBench(databaseUrl: string, log: (m: string) => vo
   assertAssistBenchDatabase(databaseUrl);
   const pool = new Pool({ connectionString: databaseUrl, max: 10 });
   try {
-    const now = await seedBench(pool, log, assertAssistBenchDatabase);
+    const now = await seedBench(pool, log);
     await seedAssist(pool, now, log);
 
     log('back-fill: indexing every source and message version without passages ...');

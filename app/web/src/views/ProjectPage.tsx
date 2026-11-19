@@ -33,9 +33,13 @@ import { DigestSend, EscalationFlags } from './DigestSend.tsx';
 import { Feedback } from './Feedback.tsx';
 import { ProjectSettings } from './NotificationSettings.tsx';
 import { ProjectCalendarProvider } from './ProjectCalendar.tsx';
+import { DeletedItemsList } from './DeletedItems.tsx';
+import { DeletionDelegationPanel } from './DeleteRestore.tsx';
+import { DeletionsList } from './HistoryList.tsx';
+import { CopiesAwaitingList, HeldForReviewList } from './HeldReview.tsx';
 import { type Act, ArchivePanel, DepartmentMove, GrantsSection, HandoverForm, HoldActions } from './ProjectAccessPanels.tsx';
 
-type Tab = 'overview' | 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'feedback' | 'closing' | 'deadline-review';
+type Tab = 'overview' | 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'feedback' | 'closing' | 'deadline-review' | 'deleted';
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
@@ -98,6 +102,7 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
     ...(contentAllowed ? ([['notes', 'Notes & discussion'], ['work', 'Work'], ['drafts', 'Drafts']] as Array<[Tab, string]>) : []),
     ...(contentAllowed && (mayReviewAnswers(roles) || mayReviewSummaries(roles)) ? ([['review', 'Review']] as Array<[Tab, string]>) : []),
     ...(contentAllowed ? ([['feedback', 'Feedback']] as Array<[Tab, string]>) : []),
+    ...(project.inspectDeleted ? ([['deleted', 'Deleted items']] as Array<[Tab, string]>) : []),
     ['settings', 'Settings'],
   ];
   // The project's current people, for choosing assignees, requesters and responsible people.
@@ -167,6 +172,7 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
       {tab === 'review' && contentAllowed && <AssistReview projectId={project.id} roles={roles} />}
       {tab === 'feedback' && contentAllowed && <Feedback projectId={project.id} />}
       {tab === 'settings' && <ProjectSettings projectId={project.id} />}
+      {tab === 'deleted' && project.inspectDeleted && <DeletedItemsList projectId={project.id} />}
       {tab === 'closing' && <Closing project={project} act={act} />}
       {tab === 'deadline-review' && <DeadlineReview project={project} />}
       {tab === 'people' && <People project={project} act={act} />}
@@ -191,7 +197,16 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
         </>
       )}
       {tab === 'work' && contentAllowed && (
-        <Work projectId={project.id} people={people} canPropose={roles.length > 0} canClear={roles.some((r) => r === 'pm' || r === 'deputy_pm')} focusId={itemId} />
+        <Work
+          projectId={project.id}
+          people={people}
+          canPropose={roles.length > 0}
+          canClear={roles.some((r) => r === 'pm' || r === 'deputy_pm')}
+          focusId={itemId}
+          roles={roles}
+          status={project.status}
+          delegated={Boolean(project.recordDeletionDelegation)}
+        />
       )}
     </main>
     </ProjectCalendarProvider>
@@ -350,6 +365,12 @@ function Overview({ project, act }: { project: Project; act: Act }) {
         </section>
       )}
 
+      <DeletionDelegationPanel project={project} act={act} />
+
+      {project.myRoles.some((r) => r === 'pm' || r === 'owner' || r === 'sponsor') && <HeldForReviewList projectId={project.id} />}
+
+      {project.myRoles.some((r) => r === 'pm' || r === 'deputy_pm') && <CopiesAwaitingList projectId={project.id} />}
+
       <ProjectApprovals projectId={project.id} />
 
       {isEmailManager && project.status === 'active' && <DigestSend projectId={project.id} onSent={() => setDeliveriesKey((n) => n + 1)} />}
@@ -376,6 +397,7 @@ function Overview({ project, act }: { project: Project; act: Act }) {
             </li>
           ))}
         </ul>
+        <DeletionsList projectId={project.id} />
         <h3>Status changes</h3>
         {project.transitions.length === 0 ? (
           <p className="meta">None yet. The project was created as a Draft.</p>

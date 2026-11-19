@@ -453,7 +453,7 @@ describe('sharing AI answers into threads', { skip: SKIP_NO_DB }, () => {
     const seen = (await aiAnswers(ben))[0];
     assert.deepEqual(
       { ...seen, sharedAt: undefined },
-      { id: a.id, askedBy: { id: ids.ada, displayName: 'ada' }, question: null, answerMarkdown: null, sources: [], droppedCount: 0, sharedAt: undefined, hidden: true, notice },
+      { id: a.id, askedBy: { id: ids.ada, displayName: 'ada' }, question: null, answerMarkdown: null, sources: [], droppedCount: 0, sharedAt: undefined, hidden: true, notice, quarantineLabel: null },
     );
     const direct = await ben.request('GET', `/questions/${a.id}`);
     assert.equal(direct.status, 200);

@@ -131,6 +131,22 @@ docker compose exec -T db rm /tmp/kainow.dump
 
 This holds everything: notes, original files, proposals, decisions, the audit trail and AI spend records. Keep it somewhere other than this computer. **Restoring from a backup has not been rehearsed** (the full restore drill is deferred to January), so treat the backup as unproven until you have restored one into a spare copy.
 
+## Protected key
+
+When someone reports a pasted password or key, Kainow removes it from every copy in Kainow and keeps the originals encrypted, apart from the database. The encryption key is a 32-byte file that you create once and keep outside the database and its backups.
+
+1. Create it (on Mac or Linux, or inside the app folder): `npm run protected-key -- --create ./secrets/kainow-protected.key`. It refuses to overwrite an existing file and prints only the file path and a short key id, never the key.
+2. Mount it read-only for both `api` and `worker` and set `KAINOW_PROTECTED_KEY_FILE` to its path inside the container: the commented lines in `compose.yaml` show both. Then run `docker compose up -d` again.
+3. **Keep a recovery copy apart from the database backups** (for example on a locked USB drive or in your password manager's secure files). A backup of the database alone cannot give the originals back, and the key alone gives nothing; losing the key means quarantined originals can never be restored. Never email the key or put it in the repository.
+
+Without the key, nothing breaks: a report still opens its case and hides the item at once, but cleaning waits. The case shows "Waiting for the protected key", and the Administrator organisation view shows the same warning until the file is mounted and the services restart; the worker then cleans the waiting cases in the order they were reported.
+
+**Restart both `api` and `worker` once the key file appears.** Each reads the key only when it starts. Restarting only one leaves the other without it: the Administrator warning reflects the `api` process alone, so it can disappear while the `worker` still cannot clean waiting cases. `docker compose restart api worker` does both.
+
+**Do not log SQL statements with their parameters on the database server.** The reported text travels to the database as bound parameters of the cleaning statements, so statement logging or slow-query logging that includes parameters would write it to the database server's log. Leave `log_statement` at `none` (or `ddl`), and set `log_parameter_max_length = 0` and `log_parameter_max_length_on_error = 0` on the database server.
+
+**What "removed from future backups" means.** Cleaning replaces the stored values, but PostgreSQL keeps the old row versions on disk (dead tuples) and in its write-ahead log until vacuum and log recycling remove them. A logical backup (`pg_dump`, as in "Back up" above) taken after the report is clean. A physical backup (a copy of the database files or of the write-ahead log) taken soon after a report can still hold the old values. If you take physical backups, run `VACUUM` on the affected tables after a report (`docker compose exec -T db psql -U kainow -d kainow -c "VACUUM"` vacuums them all) before the next one.
+
 ## Remove everything
 
 `docker compose down` removes the containers and keeps your data. `docker compose down -v` also **deletes the database volume, and with it all your notes, decisions and the audit trail. It cannot be undone.**

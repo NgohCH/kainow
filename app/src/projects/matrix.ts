@@ -36,7 +36,15 @@ export type ProjectAction =
   | 'report.manage'
   | 'summary.request'
   | 'summary.approve'
-  | 'summary.review';
+  | 'summary.review'
+  | 'source.delete'
+  | 'source.restore'
+  | 'record.delete'
+  | 'record.restore'
+  | 'record.delegate_deletion'
+  | 'secret.report'
+  | 'quarantine.release'
+  | 'quarantine.copies';
 
 interface MatrixRow {
   roles: ReadonlyArray<ProjectRole | 'participant'>;
@@ -158,6 +166,48 @@ export const PROJECT_MATRIX: Readonly<Record<ProjectAction, MatrixRow>> = {
     states: ALL,
     refusal: 'Only the Project Manager, the Owner or a Sponsor can confirm or withdraw a summary in review.',
   },
+  // Deleting is open while the project is open; restoring, reporting and release are protective, so open in every state (Q04).
+  'source.delete': {
+    roles: ['pm', 'owner', 'sponsor'],
+    states: OPEN,
+    refusal: 'Only the Project Manager, the Owner or a Sponsor can delete a source, and not while the project is Deferred or Closed.',
+  },
+  'source.restore': {
+    roles: ['pm', 'owner', 'sponsor'],
+    states: ALL,
+    refusal: 'Only the Project Manager, the Owner or a Sponsor can restore a source.',
+  },
+  // The Project Manager deletes and restores records only under a delegation (D83), which the records service checks.
+  'record.delete': {
+    roles: ['owner', 'sponsor'],
+    states: OPEN,
+    refusal: 'Only the Owner or a Sponsor, or the Project Manager they delegated it to, can delete a record, and not while the project is Deferred or Closed.',
+  },
+  'record.restore': {
+    roles: ['owner', 'sponsor'],
+    states: ALL,
+    refusal: 'Only the Owner or a Sponsor, or the Project Manager they delegated it to, can restore a record.',
+  },
+  'record.delegate_deletion': {
+    roles: ['owner', 'sponsor'],
+    states: ALL,
+    refusal: 'Only the Owner or a Sponsor can delegate record deletion to the Project Manager or end it.',
+  },
+  'secret.report': {
+    roles: ['participant'],
+    states: ALL,
+    refusal: 'Only people who can read this can report a suspected secret.',
+  },
+  'quarantine.release': {
+    roles: ['pm', 'owner', 'sponsor'],
+    states: ALL,
+    refusal: 'Only the Project Manager, the Owner or a Sponsor can review and release an item held for a suspected credential.',
+  },
+  'quarantine.copies': {
+    roles: ['pm', 'deputy_pm'],
+    states: ALL,
+    refusal: 'Only the Project Manager or a Deputy can confirm or dismiss possible copies of a suspected credential.',
+  },
   'proposal.review': {
     roles: ['owner', 'sponsor'],
     states: ['planned', 'active'],
@@ -167,9 +217,10 @@ export const PROJECT_MATRIX: Readonly<Record<ProjectAction, MatrixRow>> = {
 
 /**
  * What an Active Audit or Oversight grant allows: reading only, plus asking the AI a private question within the
- * grant's scope (AI assist spec 5.1; an answer to a grant holder is never shared). The project state still applies.
+ * grant's scope (AI assist spec 5.1; an answer to a grant holder is never shared) and reporting a suspected secret in
+ * what they can read (history spec 6). The project state still applies.
  */
-export const GRANT_ACTIONS: readonly ProjectAction[] = ['project.view', 'note.view', 'assist.ask'];
+export const GRANT_ACTIONS: readonly ProjectAction[] = ['project.view', 'note.view', 'assist.ask', 'secret.report'];
 export const GRANT_READ_ONLY = 'Audit and Oversight access is read-only.';
 
 export function decide(input: { action: ProjectAction; roles: ProjectRole[]; status: ProjectStatus }): { allowed: true } | { allowed: false; reason: string } {

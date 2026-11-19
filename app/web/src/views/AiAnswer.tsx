@@ -12,6 +12,7 @@ import {
 import { formatWhen } from '../format.ts';
 import { FeedbackButton } from './Feedback.tsx';
 import { Markdown } from './Markdown.tsx';
+import { QuarantineNote, ReportSecret } from './ReportSecret.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
 
@@ -113,6 +114,7 @@ export function ThreadAnswerItem({
         Asked by {answer.askedBy.displayName} · shared {formatWhen(answer.sharedAt)}
       </p>
       {answer.question !== null && <p className="answer-question"><strong>Question:</strong> {answer.question}</p>}
+      <QuarantineNote text={answer.quarantineLabel} />
       {answer.notice && <p className="notice">{answer.notice}</p>}
       {answer.answerMarkdown !== null && <p className="meta">{ANSWER_LABEL}</p>}
       {(answer.answerMarkdown !== null || answer.sources.length > 0) && <AnswerBody id={answer.id} scope="thread" markdown={answer.answerMarkdown} sources={answer.sources} droppedCount={answer.droppedCount} />}
@@ -125,6 +127,7 @@ export function ThreadAnswerItem({
         {!answer.hidden && answer.answerMarkdown !== null && (
           <FeedbackButton projectId={projectId} targetKind="answer" targetId={answer.id} label="Give feedback on this AI answer" />
         )}
+        {!answer.hidden && answer.answerMarkdown !== null && <ReportSecret projectId={projectId} kind="answer" id={answer.id} label="this AI answer" onReported={onChanged} />}
       </div>
       {reasonFor && (
         <form className="inline-form" onSubmit={run}>

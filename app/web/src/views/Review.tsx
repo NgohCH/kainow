@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { QuarantineNote, ReportSecret } from './ReportSecret.tsx';
 import { ApiError, api, type Item, type Project, type Run } from '../api.ts';
 import { FeedbackButton } from './Feedback.tsx';
 import { AuthoriseForm, type Person } from './AuthoriseForm.tsx';
@@ -290,6 +291,7 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                 <span className="proposal-text">{item.text}</span>
                 {item.owner && <span className="meta">Owner: {item.owner}</span>}
               </button>
+              <QuarantineNote text={item.quarantineLabel} />
               {(() => {
                 const line = dueLine(item, view.run);
                 return line && <p id={`due-${item.id}`} role="note" className={line.tone === 'warn' ? 'warn due-line' : 'meta due-line'}>{line.text}</p>;
@@ -401,11 +403,13 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                     <>
                       <blockquote>{ev.quote}</blockquote>
                       {ev.flag && <p className="warn" role="note">{ev.flag}</p>}
+                      {item.quoteChanged && <p className="warn" role="note">{item.quoteChanged}</p>}
                       {ev.from && <p className="meta">{ev.href ? <a href={ev.href}>{ev.from}</a> : ev.from}</p>}
                     </>
                   )
                 );
               })()}
+              <ReportSecret projectId={view.projectId} kind="proposal" id={item.id} label="this proposal" />
               {item.quoteMatches === 0 && (
                 <p className="warn">This quote is not in the notes. The model may have made it up, so it cannot be approved.</p>
               )}

@@ -5,13 +5,17 @@ import { type MembershipRow, effectiveRoles, todayUtc8 } from '../projects/membe
 type Db = Pick<PoolClient, 'query'>;
 
 /** Why material stopped being readable (spec 5.5, 7.3). Kept in the event detail as `cause`; never any text. */
-export type RemovalReason = 'hidden' | 'deleted' | 'audience_tightened' | 'summary_withdrawn';
+export type RemovalReason = 'hidden' | 'deleted' | 'audience_tightened' | 'summary_withdrawn' | 'record_deleted' | 'quarantined';
 
-/** What was removed: messages hidden or deleted, sources deleted or withdrawn, or an audience that narrowed. */
+/**
+ * What was removed: messages hidden or deleted, sources deleted or withdrawn, an audience that narrowed, or authorised
+ * records deleted (history spec 4.3) or held (7.2), whose snapshots AI requests may have sent.
+ */
 export interface RemovedMaterial {
   messageIds?: string[];
   sourceIds?: string[];
   audienceId?: string;
+  records?: Array<{ kind: 'task' | 'decision' | 'question' | 'risk'; id: string }>;
 }
 
 /** The review_reason stored on every answer or draft this hook moves (spec 5.5). */
@@ -27,12 +31,15 @@ export const MATERIAL_REMOVED = 'material_removed';
  * first from the owners (message_versions (message_id, version_no), source_versions (source_id, version_no),
  * sources/discussion_threads by audience_id, passages (owner_kind, owner_id, ordinal)), then the material rows by
  * ai_request_material_passage_idx; records by the audience's project (ai_requests_project_idx, then the material key).
+ * Removed authorised records: the requests that sent a snapshot of one, by ai_request_material_record_idx
+ * (record_kind, record_id).
  */
 async function touchedRequests(db: Db, what: RemovedMaterial): Promise<string[]> {
   const messageIds = what.messageIds ?? [];
   const sourceIds = what.sourceIds ?? [];
   const audienceId = what.audienceId ?? null;
-  if (messageIds.length === 0 && sourceIds.length === 0 && audienceId === null) return [];
+  const records = what.records ?? [];
+  if (messageIds.length === 0 && sourceIds.length === 0 && audienceId === null && records.length === 0) return [];
   const passageIds = (
     await db.query<{ id: string }>(
       `WITH owners (kind, id) AS (
@@ -63,8 +70,12 @@ async function touchedRequests(db: Db, what: RemovedMaterial): Promise<string[]>
        JOIN ai_requests r ON r.project_id = au.project_id
        JOIN ai_request_material m ON m.request_id = r.id
       WHERE au.id = $2::uuid AND m.record_audience_id = au.id AND NOT m.dropped_at_start
+     UNION
+     SELECT m.request_id FROM unnest($3::text[], $4::uuid[]) AS rr(kind, id)
+       JOIN ai_request_material m ON m.record_kind = rr.kind AND m.record_id = rr.id
+      WHERE NOT m.dropped_at_start
      ORDER BY 1`,
-    [passageIds, audienceId],
+    [passageIds, audienceId, records.map((r) => r.kind), records.map((r) => r.id)],
   );
   return rows.map((r) => r.id);
 }

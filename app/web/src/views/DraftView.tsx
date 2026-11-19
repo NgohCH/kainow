@@ -24,6 +24,7 @@ import { formatDay } from '../due.ts';
 import { formatWhen } from '../format.ts';
 import { FeedbackButton } from './Feedback.tsx';
 import { Markdown } from './Markdown.tsx';
+import { QuarantineNote, ReportSecret } from './ReportSecret.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
 
@@ -208,6 +209,7 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
     <section aria-labelledby="draft-heading">
       <p><a href={`#/projects/${projectId}/drafts`}>All drafts</a></p>
       <h2 id="draft-heading" tabIndex={-1} ref={heading}>{draft.title}</h2>
+      <p><ReportSecret projectId={projectId} kind="report_draft" id={draftId} label="this draft" onReported={() => setTick((n) => n + 1)} /></p>
       <p className="meta">
         {draft.kindLabel} · requested by {draft.requestedBy.displayName} · {formatWhen(draft.createdAt)}
         {draft.period ? ` · period ${formatDay(draft.period.from)} to ${formatDay(draft.period.to)}` : ''}
@@ -215,6 +217,7 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
       </p>
       <div className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{info}</div>
       {active && <p className="meta" role="status">{draft.status === 'queued' ? 'Waiting to start' : 'Being drafted'}</p>}
+      <QuarantineNote text={draft.quarantineLabel} />
       {draft.notice && <p className="warn" role="alert">{draft.notice}</p>}
       {(error ?? loadError) && <p role="alert" className="error">{error ?? loadError}</p>}
 

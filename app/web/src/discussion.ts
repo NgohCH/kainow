@@ -27,6 +27,12 @@ export interface MessageView {
   state: MessageState;
   text: string | null;
   notice: string | null;
+  /** `Possible credential removed — awaiting check` while a masked copy is waiting for the Project Manager. */
+  quarantineLabel?: string | null;
+  /** Only for a holder of Inspect Deleted Content looking at a Deleted message (then `text` is the message's text). */
+  deletedBy?: string;
+  deletedAt?: string;
+  deleteReason?: string;
   replyTo: { id: string; no: number; quote: string | null; notice: string | null } | null;
 }
 
@@ -47,6 +53,8 @@ export interface ThreadView {
 }
 
 export interface DiscussionItem {
+  /** "Possible credential removed — awaiting check" while this is a possible copy masked at once (history spec 7.4). */
+  quarantineLabel?: string | null;
   kind: 'discussion' | 'meeting' | 'notes' | 'minutes' | 'submission';
   id: string;
   title: string;
@@ -246,6 +254,8 @@ export interface MinutesVersionSummary {
 }
 
 export interface DraftView {
+  /** "Possible credential removed — awaiting check" while this is a possible copy masked at once (history spec 7.4). */
+  quarantineLabel?: string | null;
   id: string;
   versionNo: number;
   origin: 'ai' | 'human';
@@ -426,8 +436,14 @@ export function accessChangedLabel(changedAt: string | null, now: Date = new Dat
   return age >= 0 && age <= 30 * 86_400_000 ? `Access changed ${formatDay(changedAt)}` : null;
 }
 
-export type SourceFlag = 'deleted' | 'hidden';
-const FLAG_TEXT: Record<SourceFlag, string> = { deleted: 'Source message deleted — review', hidden: 'Source message hidden — review' };
+/** A message of the transcript hidden or deleted, or the whole source Deleted. */
+export type SourceFlag = 'deleted' | 'hidden' | 'source_deleted';
+const FLAG_TEXT: Record<SourceFlag, string> = {
+  deleted: 'Source message deleted — review',
+  hidden: 'Source message hidden — review',
+  source_deleted: 'Source deleted — review',
+};
+const MASKED_QUOTE: Record<SourceFlag, string> = { deleted: '[Message deleted]', hidden: '[Message hidden]', source_deleted: '[Source deleted]' };
 export const sourceFlagText = (f: SourceFlag): string => FLAG_TEXT[f];
 
 export interface DiscussionEvidence {
@@ -440,7 +456,7 @@ export interface DiscussionEvidence {
 /** The supporting quote of a record or proposal as the server sends it: the text, or a marker that it is in a restricted source. */
 export type EvidenceSource =
   | { restricted: true }
-  | { quote: string | null; quoteMasked?: SourceFlag | null; sourceFlag?: SourceFlag | null; discussionEvidence?: DiscussionEvidence | null };
+  | { quote: string | null; quoteMasked?: SourceFlag | null; sourceFlag?: SourceFlag | null; discussionEvidence?: DiscussionEvidence | null; quoteChanged?: string | null };
 
 export type EvidenceShown =
   | { kind: 'restricted'; text: string }
@@ -451,8 +467,8 @@ export function evidenceView(source: EvidenceSource, projectId?: string): Eviden
   const ev = source.discussionEvidence ?? null;
   return {
     kind: 'quote',
-    // A quote whose message is now hidden or deleted is never sent; the marker stands in for it.
-    quote: source.quote ?? (source.quoteMasked === 'hidden' ? '[Message hidden]' : '[Message deleted]'),
+    // A quote whose message is now hidden or deleted, or whose source is Deleted, is never sent; the marker stands in for it.
+    quote: source.quote ?? MASKED_QUOTE[source.quoteMasked ?? 'deleted'],
     flag: source.sourceFlag ? sourceFlagText(source.sourceFlag) : null,
     from: ev ? `Message #${ev.messageNo} by ${ev.authorName}, ${formatDayTime(ev.at)}` : null,
     href: ev && projectId ? `${threadPath(projectId, ev.threadId)}?m=${ev.messageNo}` : null,

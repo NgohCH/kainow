@@ -1,5 +1,6 @@
 import { itemDiscussionEvidence, itemSourceFlags } from '../discussion/masking';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { readReason, refuseSecretsIn } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -21,12 +22,19 @@ import { InvitationsService } from '../projects/invitations.service';
 import { GRANT_READ_ONLY } from '../projects/matrix';
 import { checkNewAppointment } from '../projects/memberships.service';
 import { membershipState, todayUtc8 } from '../projects/membership';
+import { DELETED_LINK, liveRecordRefSql, liveRecordSql, notHeldSql, refuseHeld } from '../history/deleted-sql';
+import { QUOTE_CHANGED_TEXT, quoteChangedItems } from '../quarantine/clean';
+import { POSSIBLE_COPY_TEXT, UNDER_REVIEW_TEXT, possibleCopyLabelSql, possibleCopySql } from '../quarantine/labels';
 import { type QuestionAction, type RiskAction, SEVERITIES, type Severity, questionTransition, riskTransition } from './lifecycles';
 import { TASK_ACTIONS, type TaskAction, type TaskStatus, ancestorsToReopen, parentMayComplete, taskIndicators, taskTransition } from './tasks';
 
 export const MISSING_ACCOUNTABILITY = 'The project is missing a required role, so proposals cannot be approved until it is repaired.';
 export const NEEDS_ASSIGNEE = 'A task needs one assignee and a due date before it can be authorised.';
 export const HUMAN_LABEL = 'Human proposal — no discussion source';
+/** A cleaned record held in an open case (it is in view only once cleaned, see liveRecordSql): its label, or NULL. */
+/** A record held in a cleaned case is under review; a record masked at once as a possible copy awaits its check (I3). */
+const UNDER_REVIEW_SQL = (alias: string, kind: 'task' | 'decision' | 'question' | 'risk') =>
+  `CASE WHEN ${alias}.held_case_id IS NOT NULL THEN '${UNDER_REVIEW_TEXT}' WHEN ${possibleCopySql(kind, `${alias}.id`)} THEN '${POSSIBLE_COPY_TEXT}' END AS "quarantineLabel"`;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 
 export type RecordKind = 'task' | 'decision' | 'question' | 'risk';
@@ -111,12 +119,13 @@ export class RecordsService {
   async authoriseItem(user: AuthUser, runId: string, itemId: string, body: Record<string, unknown>): Promise<Authorised> {
     if (!UUID.test(itemId)) throw new NotFoundException();
     const projectId = await this.access.projectOfRun(runId);
-    const item = (await this.pool.query(`SELECT run_id, source_version_id AS "versionId" FROM extraction_items WHERE id = $1`, [itemId])).rows[0];
+    const item = (await this.pool.query(`SELECT run_id, source_version_id AS "versionId", held_case_id AS "heldCaseId" FROM extraction_items WHERE id = $1`, [itemId])).rows[0];
     if (!item || item.run_id !== runId) throw new NotFoundException();
     // Someone outside the note's audience finds nothing, before any other answer.
     const sourceId = (await this.pool.query(`SELECT source_id FROM source_versions WHERE id = $1`, [item.versionId])).rows[0]?.source_id;
     if (!sourceId) throw new NotFoundException();
     await this.audiences.assertSourceReadable(user, sourceId);
+    refuseHeld(item);
     return this.authoriseThrough(user, projectId, 'extraction_item', itemId, body);
   }
 
@@ -328,8 +337,9 @@ export class RecordsService {
     await this.access.authorize(user, 'project.view', projectId);
     const { rows } = await this.pool.query(
       `SELECT h.id, h.kind, h.text, h.owner, h.due, u.display_name AS "proposedBy", h.proposed_at AS "proposedAt",
-              h.review_status AS "reviewStatus", h.reject_reason AS "rejectReason", h.follows_task_id AS "followsTaskId"
-         FROM human_proposals h JOIN users u ON u.id = h.proposed_by WHERE h.project_id = $1 ORDER BY h.proposed_at, h.id`,
+              h.review_status AS "reviewStatus", h.reject_reason AS "rejectReason", h.follows_task_id AS "followsTaskId",
+              ${possibleCopyLabelSql('human_proposal', 'h.id')}
+         FROM human_proposals h JOIN users u ON u.id = h.proposed_by WHERE h.project_id = $1 AND ${notHeldSql('h')} ORDER BY h.proposed_at, h.id`,
       [projectId],
     );
     const out = [];
@@ -344,25 +354,29 @@ export class RecordsService {
   /** Locks a human proposal and returns it with its project (404 when unknown). */
   private async lockProposal(c: PoolClient, proposalId: string) {
     if (!UUID.test(proposalId)) throw new NotFoundException();
-    const p = (await c.query(`SELECT id, project_id, kind, text, owner, review_status FROM human_proposals WHERE id = $1`, [proposalId])).rows[0];
+    const p = (await c.query(`SELECT id, project_id, kind, text, owner, review_status, held_case_id FROM human_proposals WHERE id = $1`, [proposalId])).rows[0];
     if (!p) throw new NotFoundException();
-    return p as { id: string; project_id: string; kind: Content['kind']; text: string; owner: string | null; review_status: string };
+    // Held is refused by the caller once it has authorised (404 before 409 for an outsider; final review M3).
+    return p as { id: string; project_id: string; kind: Content['kind']; text: string; owner: string | null; review_status: string; held_case_id: string | null };
   }
 
   async authoriseProposal(user: AuthUser, proposalId: string, body: Record<string, unknown>): Promise<Authorised> {
     if (!UUID.test(proposalId)) throw new NotFoundException();
-    const p = (await this.pool.query(`SELECT project_id FROM human_proposals WHERE id = $1`, [proposalId])).rows[0];
+    const p = (await this.pool.query(`SELECT project_id, held_case_id FROM human_proposals WHERE id = $1`, [proposalId])).rows[0];
     if (!p) throw new NotFoundException();
+    await this.access.authorize(user, 'project.view', p.project_id);
+    refuseHeld(p);
     return this.authoriseThrough(user, p.project_id, 'human_proposal', proposalId, body);
   }
 
   async rejectProposal(user: AuthUser, proposalId: string, input: Record<string, unknown>) {
     const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
-    if (reason === '') throw new BadRequestException('A reason is required.');
+    readReason(reason, 'a reason', { refusal: 'A reason is required.' });
     const at = this.now();
     return this.tx(async (c) => {
       const peek = await this.lockProposal(c, proposalId);
       await this.access.authorize(user, 'proposal.review', peek.project_id, c, true);
+      refuseHeld(peek);
       await lockPendingAuthorisation(c, 'human_proposal', proposalId);
       const p = (await c.query(`SELECT review_status FROM human_proposals WHERE id = $1 FOR UPDATE`, [proposalId])).rows[0];
       if (p.review_status !== 'pending') throw new ConflictException('Only a proposal waiting for review can be rejected.');
@@ -383,16 +397,19 @@ export class RecordsService {
   /** Loads a task's project (a participant or grant holder may read it; changes are checked by the rules). */
   private async taskContext(c: PoolClient | Pool, user: AuthUser, taskId: string, lock: boolean) {
     if (!UUID.test(taskId)) throw new NotFoundException();
-    const row = (await c.query(`SELECT project_id FROM tasks WHERE id = $1`, [taskId])).rows[0];
+    // A Deleted (or held) task does not exist for direct requests and changes (history spec 4.3).
+    const row = (await c.query(`SELECT project_id FROM tasks t WHERE t.id = $1 AND ${liveRecordSql('t')}`, [taskId])).rows[0];
     if (!row) throw new NotFoundException();
     const ctx = await this.access.authorize(user, 'project.view', row.project_id, c, lock);
     const task = (
       await c.query(
         `SELECT id, parent_id AS "parentId", depth, assignee_id AS "assigneeId", status, to_char(due_on, 'YYYY-MM-DD') AS "dueOn"
-           FROM tasks WHERE id = $1 ${lock ? 'FOR UPDATE' : ''}`,
+           FROM tasks t WHERE t.id = $1 AND ${liveRecordSql('t')} ${lock ? 'FOR UPDATE' : ''}`,
         [taskId],
       )
-    ).rows[0] as { id: string; parentId: string | null; depth: number; assigneeId: string; status: TaskStatus; dueOn: string };
+    ).rows[0] as { id: string; parentId: string | null; depth: number; assigneeId: string; status: TaskStatus; dueOn: string } | undefined;
+    // Deleted between the two reads (the project lock is taken by then for a change).
+    if (!task) throw new NotFoundException();
     return { ctx, task };
   }
 
@@ -400,6 +417,7 @@ export class RecordsService {
   async taskAction(user: AuthUser, taskId: string, action: TaskAction, input: Record<string, unknown>) {
     const note = typeof input.note === 'string' ? input.note.trim() : null;
     const overrideReason = typeof input.overrideReason === 'string' && input.overrideReason.trim() !== '' ? input.overrideReason.trim() : null;
+    refuseSecretsIn([note, overrideReason]);
     const at = this.now();
     return this.tx(async (c) => {
       const { ctx, task } = await this.taskContext(c, user, taskId, true);
@@ -419,7 +437,8 @@ export class RecordsService {
       }
       let override = false;
       if (action === 'complete') {
-        const children = (await c.query(`SELECT status FROM tasks WHERE parent_id = $1`, [task.id])).rows.map((r) => r.status as TaskStatus);
+        // A Deleted subtask counts for nothing (history spec 4.3: out of progress counts).
+        const children = (await c.query(`SELECT status FROM tasks t WHERE t.parent_id = $1 AND ${liveRecordSql('t')}`, [task.id])).rows.map((r) => r.status as TaskStatus);
         const parentRule = parentMayComplete(children, overrideReason, ctx.roles);
         if (!parentRule.allowed) RecordsService.refusal(parentRule.reason);
         override = parentRule.override;
@@ -452,10 +471,11 @@ export class RecordsService {
   /** Loads a question or risk with its project under lock; anyone who may read the project gets this far. */
   private async recordContext(c: PoolClient, user: AuthUser, table: 'questions' | 'risks', id: string) {
     if (!UUID.test(id)) throw new NotFoundException();
-    const row = (await c.query(`SELECT project_id FROM ${table} WHERE id = $1`, [id])).rows[0];
+    const row = (await c.query(`SELECT project_id FROM ${table} x WHERE x.id = $1 AND ${liveRecordSql('x')}`, [id])).rows[0];
     if (!row) throw new NotFoundException();
     const ctx = await this.access.authorize(user, 'project.view', row.project_id, c, true);
-    const rec = (await c.query(`SELECT * FROM ${table} WHERE id = $1 FOR UPDATE`, [id])).rows[0];
+    const rec = (await c.query(`SELECT * FROM ${table} x WHERE x.id = $1 AND ${liveRecordSql('x')} FOR UPDATE`, [id])).rows[0];
+    if (!rec) throw new NotFoundException();
     return { ctx, rec };
   }
 
@@ -481,6 +501,7 @@ export class RecordsService {
   async questionAction(user: AuthUser, id: string, action: QuestionAction, input: Record<string, unknown>) {
     const text = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : null);
     const note = action === 'answer' ? text(input.text) : action === 'resolve' ? text(input.note) ?? '' : text(input.reason);
+    refuseSecretsIn(note);
     const at = this.now();
     return this.tx(async (c) => {
       const { ctx, rec } = await this.recordContext(c, user, 'questions', id);
@@ -507,6 +528,7 @@ export class RecordsService {
   /** Mitigate, update, accept, resolve or reopen a risk (V1.0 risks §5, §9). */
   async riskAction(user: AuthUser, id: string, action: RiskAction, input: Record<string, unknown>) {
     const note = typeof input.note === 'string' && input.note.trim() !== '' ? input.note.trim() : null;
+    refuseSecretsIn(note);
     const at = this.now();
     return this.tx(async (c) => {
       const { ctx, rec } = await this.recordContext(c, user, 'risks', id);
@@ -575,26 +597,29 @@ export class RecordsService {
                 CASE WHEN i.id IS NULL THEN NULL WHEN i.status = 'invited' AND i.expires_at <= $4 THEN 'expired' ELSE i.status END AS "invitationStatus",
                 x.quote, x.id AS "itemId",
                 COALESCE(${audienceVisibleSql('qa', '$2', '$3')}, true) AS "evidenceVisible", p.status AS "parentStatus",
-                CASE WHEN fo.id IS NULL THEN NULL ELSE json_build_object('id', fo.id, 'title', fo.title) END AS follows,
-                (SELECT json_build_object('id', n.id, 'title', n.title) FROM tasks n WHERE n.follows_task_id = t.id ORDER BY n.authorised_at, n.id LIMIT 1) AS "followedBy",
+                CASE WHEN fo.id IS NULL THEN NULL WHEN NOT ${liveRecordSql('fo')} THEN json_build_object('id', NULL, 'title', '${DELETED_LINK}')
+                     ELSE json_build_object('id', fo.id, 'title', fo.title) END AS follows,
+                (SELECT CASE WHEN ${liveRecordSql('n')} THEN json_build_object('id', n.id, 'title', n.title) ELSE json_build_object('id', NULL, 'title', '${DELETED_LINK}') END
+                   FROM tasks n WHERE n.follows_task_id = t.id ORDER BY n.authorised_at, n.id LIMIT 1) AS "followedBy",
                 EXISTS (SELECT 1 FROM change_requests r WHERE r.target_kind = 'task' AND r.target_id = t.id AND r.status = 'pending') AS "changeWaiting",
-                t.deadline_review_required AS "deadlineReviewRequired"
+                t.deadline_review_required AS "deadlineReviewRequired",
+                ${UNDER_REVIEW_SQL('t', 'task')}
            FROM tasks t JOIN users u ON u.id = t.assignee_id
            LEFT JOIN tasks p ON p.id = t.parent_id
            LEFT JOIN tasks fo ON fo.id = t.follows_task_id
            LEFT JOIN invitations i ON i.id = t.invitation_id
-           LEFT JOIN extraction_items x ON x.id = t.origin_item_id
+           LEFT JOIN extraction_items x ON x.id = t.origin_item_id AND x.held_case_id IS NULL
            LEFT JOIN extraction_runs xr ON xr.id = x.run_id
            LEFT JOIN source_versions xv ON xv.id = xr.source_version_id
            LEFT JOIN sources xs ON xs.id = xv.source_id
            LEFT JOIN audiences qa ON qa.id = xs.audience_id
-          WHERE t.project_id = $1
+          WHERE t.project_id = $1 AND ${liveRecordSql('t')}
           ORDER BY t.due_on, t.authorised_at, t.id`,
         [ctx.project.id, user.id, ctx.today, this.now()],
       )
     ).rows;
     const itemIds = tasks.filter((t) => t.itemId).map((t) => t.itemId as string);
-    const [flags, evidence] = await Promise.all([itemSourceFlags(this.pool, itemIds), itemDiscussionEvidence(this.pool, itemIds)]);
+    const [flags, evidence, quoteChanged] = await Promise.all([itemSourceFlags(this.pool, itemIds), itemDiscussionEvidence(this.pool, itemIds), quoteChangedItems(this.pool, itemIds)]);
     const view = tasks.map((t) => ({
       id: t.id,
       parentId: t.parentId,
@@ -614,8 +639,9 @@ export class RecordsService {
         deadlineReviewRequired: t.deadlineReviewRequired,
       }),
       // Outside a restricted source's audience the quote is withheld, and so is what it would reveal (spec 6.3).
-      source: t.quote ? (t.evidenceVisible && canReadContent(ctx) ? { quote: flags.get(t.itemId) ? null : (t.quote as string), quoteMasked: flags.get(t.itemId) ?? null, sourceFlag: flags.get(t.itemId) ?? null, discussionEvidence: evidence.get(t.itemId) ?? null } : { restricted: true as const }) : null,
+      source: t.quote ? (t.evidenceVisible && canReadContent(ctx) ? { quote: flags.get(t.itemId) ? null : (t.quote as string), quoteMasked: flags.get(t.itemId) ?? null, sourceFlag: flags.get(t.itemId) ?? null, discussionEvidence: evidence.get(t.itemId) ?? null, quoteChanged: quoteChanged.has(t.itemId) ? QUOTE_CHANGED_TEXT : null } : { restricted: true as const }) : null,
       changeWaiting: t.changeWaiting as boolean,
+      quarantineLabel: (t.quarantineLabel ?? null) as string | null,
       parentCancelled: t.parentStatus === 'cancelled' && t.status !== 'cancelled' && t.status !== 'completed',
       follows: (t.follows ?? null) as { id: string; title: string } | null,
       followedBy: (t.followedBy ?? null) as { id: string; title: string } | null,
@@ -646,12 +672,14 @@ export class RecordsService {
     walk(null);
     const decisions = (
       await this.pool.query(
-        `SELECT d.id, d.statement, d.rationale, d.status, u.display_name AS "authorisedBy", d.authorised_at AS "authorisedAt",
-                CASE WHEN o.id IS NULL THEN NULL ELSE json_build_object('id', o.id, 'statement', o.statement) END AS replaces,
-                (SELECT json_build_object('id', n.id, 'statement', n.statement) FROM decisions n WHERE n.replaces_id = d.id ORDER BY n.authorised_at, n.id LIMIT 1) AS "replacedBy",
+        `SELECT d.id, d.statement, d.rationale, d.status, u.display_name AS "authorisedBy", d.authorised_at AS "authorisedAt", ${UNDER_REVIEW_SQL('d', 'decision')},
+                CASE WHEN o.id IS NULL THEN NULL WHEN NOT ${liveRecordSql('o')} THEN json_build_object('id', NULL, 'statement', '${DELETED_LINK}')
+                     ELSE json_build_object('id', o.id, 'statement', o.statement) END AS replaces,
+                (SELECT CASE WHEN ${liveRecordSql('n')} THEN json_build_object('id', n.id, 'statement', n.statement) ELSE json_build_object('id', NULL, 'statement', '${DELETED_LINK}') END
+                   FROM decisions n WHERE n.replaces_id = d.id ORDER BY n.authorised_at, n.id LIMIT 1) AS "replacedBy",
                 EXISTS (SELECT 1 FROM change_requests r WHERE r.target_kind = 'decision' AND r.target_id = d.id AND r.status = 'pending') AS "changeWaiting"
            FROM decisions d JOIN users u ON u.id = d.authorised_by LEFT JOIN decisions o ON o.id = d.replaces_id
-          WHERE d.project_id = $1 ORDER BY d.authorised_at, d.id`,
+          WHERE d.project_id = $1 AND ${liveRecordSql('d')} ORDER BY d.authorised_at, d.id`,
         [ctx.project.id],
       )
     ).rows.map((d) => ({
@@ -661,10 +689,10 @@ export class RecordsService {
     }));
     const questions = (
       await this.pool.query(
-        `SELECT q.id, q.text, q.status, json_build_object('id', r.id, 'displayName', r.display_name) AS requester,
+        `SELECT q.id, q.text, q.status, json_build_object('id', r.id, 'displayName', r.display_name) AS requester, ${UNDER_REVIEW_SQL('q', 'question')},
                 COALESCE((SELECT json_agg(json_build_object('answer', a.answer, 'author', au.display_name, 'at', a.at) ORDER BY a.at, a.id)
                             FROM question_answers a JOIN users au ON au.id = a.author_id WHERE a.question_id = q.id), '[]') AS answers
-           FROM questions q JOIN users r ON r.id = q.requester_id WHERE q.project_id = $1 ORDER BY q.authorised_at, q.id`,
+           FROM questions q JOIN users r ON r.id = q.requester_id WHERE q.project_id = $1 AND ${liveRecordSql('q')} ORDER BY q.authorised_at, q.id`,
         [ctx.project.id],
       )
     ).rows.map((q) => {
@@ -674,13 +702,13 @@ export class RecordsService {
     });
     const risks = (
       await this.pool.query(
-        `SELECT k.id, k.description, k.severity, k.status, k.mitigation, to_char(k.review_on, 'YYYY-MM-DD') AS "reviewOn",
+        `SELECT k.id, k.description, k.severity, k.status, k.mitigation, to_char(k.review_on, 'YYYY-MM-DD') AS "reviewOn", ${UNDER_REVIEW_SQL('k', 'risk')},
                 CASE WHEN r.id IS NULL THEN NULL ELSE json_build_object('id', r.id, 'displayName', r.display_name) END AS responsible,
                 (SELECT json_build_object('projectId', e.detail->>'fromProjectId', 'name', e.detail->>'fromProjectName') FROM record_events e
                   WHERE e.record_kind = 'risk' AND e.record_id = k.id AND e.kind = 'handed_over_from' ORDER BY e.at DESC, e.id DESC LIMIT 1) AS "handedOverFrom",
                 (SELECT json_build_object('projectId', e.detail->>'toProjectId', 'name', e.detail->>'toProjectName') FROM record_events e
                   WHERE e.record_kind = 'risk' AND e.record_id = k.id AND e.kind = 'handed_over_to' ORDER BY e.at DESC, e.id DESC LIMIT 1) AS "handedOverTo"
-           FROM risks k LEFT JOIN users r ON r.id = k.responsible_id WHERE k.project_id = $1 ORDER BY k.authorised_at, k.id`,
+           FROM risks k LEFT JOIN users r ON r.id = k.responsible_id WHERE k.project_id = $1 AND ${liveRecordSql('k')} ORDER BY k.authorised_at, k.id`,
         [ctx.project.id],
       )
     ).rows.map((k) => {
@@ -694,9 +722,10 @@ export class RecordsService {
     const open = (
       await this.pool.query(
         `SELECT f.id, f.record_kind AS kind, f.record_id AS "recordId", f.raised_at AS "raisedAt",
-                json_build_object('id', d.id, 'statement', d.statement, 'status', d.status) AS decision
+                CASE WHEN ${liveRecordSql('d')} THEN json_build_object('id', d.id, 'statement', d.statement, 'status', d.status)
+                     ELSE json_build_object('id', NULL, 'statement', '${DELETED_LINK}', 'status', d.status) END AS decision
            FROM review_flags f JOIN decisions d ON d.id = f.decision_id
-          WHERE f.project_id = $1 AND f.cleared_at IS NULL ORDER BY f.raised_at, f.id`,
+          WHERE f.project_id = $1 AND f.cleared_at IS NULL AND ${liveRecordRefSql('f.record_kind', 'f.record_id')} ORDER BY f.raised_at, f.id`,
         [ctx.project.id],
       )
     ).rows;

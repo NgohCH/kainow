@@ -13,6 +13,7 @@ import { EmailModule, type EmailNudge } from './email/nudge';
 import { ExtractionModule } from './extraction/extraction.module';
 import type { ExtractionQueue } from './extraction/queue';
 import { GoLiveModule } from './golive/golive.module';
+import { HistoryModule } from './history/history.module';
 import { NotesModule } from './notes/notes.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { DigestsModule } from './digests/digests.module';
@@ -21,6 +22,8 @@ import type { AutomaticAnalysis } from './discussion/automatic-analysis';
 import type { MeetingEndHook } from './discussion/meetings.service';
 import { OrganisationModule } from './organisation/organisation.module';
 import { ProjectsModule } from './projects/projects.module';
+import { ProtectedKeyModule } from './quarantine/protected-key.module';
+import { QuarantineModule } from './quarantine/quarantine.module';
 import { SearchModule } from './search/search.module';
 import { SpendModule } from './spend/spend.module';
 
@@ -63,6 +66,7 @@ export class AppModule {
         ConfigModule.forRoot(config),
         ClockModule.forRoot(options.clock),
         DatabaseModule,
+        ProtectedKeyModule,
         AuthModule.register({ codeSender: options.codeSender }),
         SpendModule,
         OrganisationModule,
@@ -77,6 +81,8 @@ export class AppModule {
         SearchModule,
         DiscussionModule.register(options.meetingEndHook, options.automaticAnalysis, options.analysisQueue),
         AssistModule.register(options.assistQueue),
+        HistoryModule,
+        QuarantineModule,
       ],
       controllers: [HealthController],
     };

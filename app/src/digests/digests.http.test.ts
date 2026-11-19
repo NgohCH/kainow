@@ -97,7 +97,7 @@ describe('action-item digests over HTTP and the sweep', { skip: SKIP_NO_DB }, ()
     assert.deepEqual(rows.map((x) => x.to_address), ['ann@example.org', 'owner@example.org', 'pm@example.org']);
     for (const row of rows) {
       assert.deepEqual([row.digest_run_id, row.initiated_by, row.subject, row.status], [r.body.digestRunId, 'digest', 'Action items: Harbour Works', 'queued']);
-      assert.deepEqual(row.relevance, { kind: 'project_active', projectId, scope: 'project' });
+      assert.deepEqual(row.relevance, { kind: 'project_active', projectId, taskIds: [(await t.pool.query(`SELECT id FROM tasks`)).rows[0].id], appUrl: 'http://localhost:3000', scope: 'project' });
     }
     assert.match(rows[0].text_body, /Your open tasks\n- Write the report/);
     assert.equal((await t.pool.query(`SELECT 1 FROM notifications`)).rowCount, 0, 'digests create no in-app notices');

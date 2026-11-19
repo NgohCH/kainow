@@ -10,6 +10,8 @@ import { MVP_SPEND_SETTINGS } from '../spend/mvp-settings';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
+import { CasesService } from '../quarantine/cases.service';
+import { projectHolding, standaloneCases } from '../testing/quarantine';
 import { AssistRunner, registerCompletion, registerInputBuilder, unregisterKind } from './assist-runner';
 import { type MaterialItem, findMaterial } from './material';
 import { QUESTION_SYSTEM, SUMMARY_SYSTEM } from './prompts';
@@ -116,6 +118,31 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     assert.equal(model.calls.length, 1);
   });
 
+  test('a report filed while the AI call runs saves no answer and leaves no copy of the marked text (C1)', async () => {
+    const secret = 'Zq7vault-Hinge88';
+    const source = await note('Plant room', `The pump service is booked for Thursday morning. The panel code is ${secret}.`);
+    const reporter = standaloneCases(t.pool, t.clock.now);
+    for (const isLast of [false, true]) {
+      // The last attempt: the first note is held now, so the question finds a second one; the report is on a third.
+      if (isLast) await note('Pump room', 'The pump service is booked for Thursday morning.');
+      const id = await ask('When is the pump service?');
+      const model = new FakeModel(async () => {
+        if (!isLast) await reporter.report('kainow', { projectId: project, kind: 'source', id: source, marked: [secret], reason: null });
+        else {
+          const other = await note('Boiler room', `The boiler code is ${secret}.`);
+          await reporter.report('kainow', { projectId: project, kind: 'source', id: other, marked: [secret], reason: null });
+        }
+        return { answer_markdown: `Booked for Thursday; the code is ${secret} [P1].`, not_found: false, cited: ['P1'] };
+      });
+      assert.equal(await runner(model).process(id, 1, isLast), isLast ? 'blocked' : 'retry');
+      const r = await request(id);
+      assert.deepEqual([r.status, r.failure_code], isLast ? ['blocked', 'held'] : ['queued', null]);
+      assert.equal((await answer(id)).answer_markdown, null);
+      assert.ok((await material(id)).every((m) => !m.cited));
+      assert.deepEqual(await projectHolding(t.pool, project, secret), []);
+    }
+  });
+
   test('bad citation fails as bad_response, charged, nothing saved', async () => {
     await note('Plant room', 'The pump service is booked for Thursday morning.');
     const id = await ask('When is the pump service?');
@@ -140,7 +167,8 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     const hidden = await note('Pump costs', 'The pump service invoice was disputed with the vendor.');
     const id = await ask('pump service');
     assert.equal((await material(id)).length, 2);
-    await t.pool.query(`UPDATE sources SET status = 'deleted' WHERE id = $1`, [hidden]);
+    // Narrowed behind the hook's back (a deleted source now blocks the request outright, history spec 4.2).
+    await t.pool.query(`UPDATE audiences SET mode = 'restricted' WHERE id = (SELECT audience_id FROM sources WHERE id = $1)`, [hidden]);
 
     const model = new FakeModel((req) => {
       const marker = /marker="(P\d)" location="Plant room/.exec(req.user)?.[1] as string;
@@ -148,7 +176,7 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     });
     assert.equal(await runner(model).process(id, 1, false), 'succeeded');
     const user = model.calls[0].req.user;
-    assert.ok(!user.includes('disputed'), 'the deleted note never reaches the AI');
+    assert.ok(!user.includes('disputed'), 'the narrowed note never reaches the AI');
     const rows = await material(id);
     const gone = rows.find((m) => m.location.startsWith('Pump costs'));
     const kept = rows.find((m) => m.location.startsWith('Plant room'));
@@ -159,7 +187,7 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
   test('all material dropped at start blocks without an AI call or spend', async () => {
     const only = await note('Pump costs', 'The pump service invoice was disputed with the vendor.');
     const id = await ask('pump service');
-    await t.pool.query(`UPDATE sources SET status = 'deleted' WHERE id = $1`, [only]);
+    await t.pool.query(`UPDATE audiences SET mode = 'restricted' WHERE id = (SELECT audience_id FROM sources WHERE id = $1)`, [only]);
     const model = new FakeModel();
     assert.equal(await runner(model).process(id, 1, false), 'blocked');
     const r = await request(id);
@@ -263,6 +291,54 @@ describe('assist runner', { skip: SKIP_NO_DB }, () => {
     assert.ok(r.failure_detail.includes('API secret key') && !r.failure_detail.includes(key), r.failure_detail);
     assert.equal(model.calls.length, 0);
     assert.equal((await entries()).length, 0);
+  });
+
+  test('a snapshot hit opens the case on the record', async () => {
+    const key = `sk-${'a1B2c3D4e5F6g7H8i9J0'}kLmN`;
+    const taskId = uuidv7();
+    await t.pool.query(
+      `INSERT INTO tasks (id, project_id, depth, title, assignee_id, due_on, status, authorised_by, authorised_at)
+       VALUES ($1, $2, 0, $3, $4, '2026-11-20', 'in_progress', $5, now())`,
+      [taskId, project, `Rotate the pump portal key ${key}`, ids.ada, ids.pm],
+    );
+    const id = await ask('pump portal key');
+    assert.deepEqual((await material(id)).map((m) => [m.record_kind, m.record_id]), [['task', taskId]]);
+    const model = new FakeModel();
+    const withCases = new AssistRunner({ pool: t.pool, spend, model, clock: t.clock.now, quarantine: t.app.get(CasesService) });
+    assert.equal(await withCases.process(id, 1, false), 'blocked');
+    assert.equal((await request(id)).failure_code, 'secret_found');
+    assert.equal(model.calls.length, 0);
+    assert.equal((await entries()).length, 0);
+    const cases = (await t.pool.query(`SELECT * FROM quarantine_cases`)).rows;
+    assert.equal(cases.length, 1);
+    assert.deepEqual([cases[0].item_kind, cases[0].item_id, cases[0].reporter_id], ['task', taskId, null], 'the record, never the snapshot');
+    assert.equal((await t.pool.query(`SELECT held_case_id FROM tasks WHERE id = $1`, [taskId])).rows[0].held_case_id, cases[0].id);
+  });
+
+  test('assist finding a stored key in a note opens a case on the source and blocks without charge', async () => {
+    const key = `sk-${'a1B2c3D4e5F6g7H8i9J0'}kLmN`;
+    // Notes with a key are refused on the way in, so the key arrives in a later version, as a detector that learned a new pattern would find it.
+    const source = await note('Plant room', 'The pump service is booked for Thursday.');
+    const text = `The pump service is booked for Thursday. The portal key is ${key} until March.`;
+    const version = uuidv7();
+    await t.pool.query(
+      `INSERT INTO source_versions (id, source_id, version_no, origin, text_content, text_sha256, char_count, created_by, created_at) VALUES ($1, $2, 2, 'paste', $3, 'x', $4, $5, $6)`,
+      [version, source, text, text.length, ids.pm, t.clock.now()],
+    );
+    await t.pool.query(
+      `INSERT INTO passages (id, project_id, owner_kind, owner_id, ordinal, location, start_offset, end_offset, body) VALUES ($1, $2, 'source_version', $3, 0, 'Plant room — Paragraph 1', 0, $4, $5)`,
+      [uuidv7(), project, version, text.length, text],
+    );
+    const id = await ask('When is the pump service?');
+    assert.equal((await material(id)).length, 1);
+    const model = new FakeModel();
+    const withCases = new AssistRunner({ pool: t.pool, spend, model, clock: t.clock.now, quarantine: t.app.get(CasesService) });
+    assert.equal(await withCases.process(id, 1, false), 'blocked');
+    assert.equal(model.calls.length, 0);
+    assert.equal((await entries()).length, 0);
+    const cases = (await t.pool.query(`SELECT * FROM quarantine_cases`)).rows;
+    assert.equal(cases.length, 1);
+    assert.deepEqual([cases[0].item_kind, cases[0].item_id, cases[0].reporter_id], ['source', source, null], 'the source, never the passage');
   });
 
   test('timeout leaves the reservation uncertain and retries', async () => {

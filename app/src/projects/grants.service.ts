@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Inject, Inj
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
+import { readOptionalReason, readReason } from '../common/reason';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { isCalendarDate } from '../extraction/due';
@@ -11,6 +12,13 @@ import { GRANT_KINDS, type GrantKind, type GrantRow, defaultGrantEnd, grantSpanO
 const NOT_MANAGER = 'Only an Enterprise Administrator, the Owner or a Sponsor can manage Audit and Oversight access.';
 const SPAN = 'Access can be granted for at most 90 days at a time.';
 const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
+export const SCOPE_FIXED = 'Inspect Deleted Content is chosen when access is requested and cannot be changed; record a new request instead.';
+const SCOPE_CHOICE = 'Say whether the access includes Inspect Deleted Content (true or false).';
+
+/** Inspect Deleted Content is set only on the request (history spec 4.7): any later attempt to send it is refused. */
+function refuseScopeChange(input: Record<string, unknown>): void {
+  if (Object.prototype.hasOwnProperty.call(input, 'inspectDeleted')) throw new BadRequestException(SCOPE_FIXED);
+}
 
 type Kind = 'approved' | 'declined' | 'extended' | 'suspended' | 'restored' | 'revoked';
 
@@ -43,7 +51,10 @@ export class GrantsService {
   }
 
   private view(g: GrantRow & { purpose: string; scope: string }, today: string) {
-    return { id: g.id, userId: g.userId, kind: g.kind, purpose: g.purpose, scope: g.scope, startsOn: g.startsOn, expiresOn: g.expiresOn, state: grantState(g, today) };
+    return {
+      id: g.id, userId: g.userId, kind: g.kind, purpose: g.purpose, scope: g.scope, startsOn: g.startsOn, expiresOn: g.expiresOn,
+      inspectDeleted: g.inspectDeleted === true, state: grantState(g, today),
+    };
   }
 
   private async event(c: PoolClient, grantId: string, kind: Kind | 'requested', actorId: string, at: Date, reason: string | null, prev?: string, next?: string) {
@@ -56,16 +67,16 @@ export class GrantsService {
   async request(user: AuthUser, projectId: string, input: Record<string, unknown>) {
     const kind = input.kind as GrantKind;
     if (!GRANT_KINDS.includes(kind)) throw new BadRequestException('Choose audit or oversight.');
-    const purpose = text(input.purpose);
-    const scope = text(input.scope);
-    if (purpose === '' || purpose.length > 2000) throw new BadRequestException('Give the purpose (up to 2000 characters).');
-    if (scope === '' || scope.length > 2000) throw new BadRequestException('Give the requested scope (up to 2000 characters).');
+    const purpose = readReason(input.purpose, 'the purpose', { max: 2000, refusal: 'Give the purpose (up to 2000 characters).' });
+    const scope = readReason(input.scope, 'the requested scope', { max: 2000, refusal: 'Give the requested scope (up to 2000 characters).' });
     if (!isCalendarDate(input.startsOn)) throw new BadRequestException('Dates must be in the form YYYY-MM-DD.');
     const startsOn = input.startsOn as string;
     const expiresOn = input.expiresOn === undefined || input.expiresOn === null || input.expiresOn === '' ? defaultGrantEnd(startsOn) : input.expiresOn;
     if (!isCalendarDate(expiresOn)) throw new BadRequestException('Dates must be in the form YYYY-MM-DD.');
     if (!grantSpanOk(startsOn, expiresOn)) throw new BadRequestException(SPAN);
     if (typeof input.userId !== 'string' || !UUID.test(input.userId)) throw new BadRequestException('Choose the person the access is for.');
+    const inspectDeleted = input.inspectDeleted === undefined ? false : input.inspectDeleted;
+    if (typeof inspectDeleted !== 'boolean') throw new BadRequestException(SCOPE_CHOICE);
     const at = this.now();
     return this.tx(async (c) => {
       const ctx = await this.access.context(user, projectId, c, true);
@@ -75,14 +86,14 @@ export class GrantsService {
       if (!target) throw new BadRequestException('Choose an enabled account.');
       const id = uuidv7(at.getTime());
       await c.query(
-        `INSERT INTO access_grants (id, project_id, user_id, kind, purpose, scope, starts_on, expires_on, requested_by, requested_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)`,
-        [id, projectId, target.id, kind, purpose, scope, startsOn, expiresOn, user.id, at],
+        `INSERT INTO access_grants (id, project_id, user_id, kind, purpose, scope, starts_on, expires_on, requested_by, requested_at, inspect_deleted)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)`,
+        [id, projectId, target.id, kind, purpose, scope, startsOn, expiresOn, user.id, at, inspectDeleted],
       );
       await this.event(c, id, 'requested', user.id, at, null, undefined, expiresOn);
-      await writeAudit(c, { at, action: 'grant.requested', actorUserId: user.id, subjectType: 'project', subjectId: projectId, detail: { grantId: id, kind } });
+      await writeAudit(c, { at, action: 'grant.requested', actorUserId: user.id, subjectType: 'project', subjectId: projectId, detail: { grantId: id, kind, inspectDeleted } });
       const row: GrantRow & { purpose: string; scope: string } = {
-        id, userId: target.id, kind, purpose, scope, startsOn, expiresOn, requestedBy: user.id, decision: null, suspendedAt: null, revokedAt: null,
+        id, userId: target.id, kind, purpose, scope, startsOn, expiresOn, requestedBy: user.id, decision: null, suspendedAt: null, revokedAt: null, inspectDeleted,
       };
       return { grant: this.view(row, ctx.today) };
     });
@@ -94,7 +105,8 @@ export class GrantsService {
     const g = (
       await c.query(
         `SELECT id, project_id AS "projectId", user_id AS "userId", kind, purpose, scope, to_char(starts_on, 'YYYY-MM-DD') AS "startsOn",
-                to_char(expires_on, 'YYYY-MM-DD') AS "expiresOn", requested_by AS "requestedBy", decision, suspended_at AS "suspendedAt", revoked_at AS "revokedAt"
+                to_char(expires_on, 'YYYY-MM-DD') AS "expiresOn", requested_by AS "requestedBy", decision, suspended_at AS "suspendedAt", revoked_at AS "revokedAt",
+                inspect_deleted AS "inspectDeleted"
            FROM access_grants WHERE id = $1 FOR UPDATE`,
         [grantId],
       )
@@ -106,13 +118,13 @@ export class GrantsService {
   }
 
   private reasonOf(input: Record<string, unknown>): string {
-    const reason = text(input.reason);
-    if (reason === '') throw new BadRequestException('A reason is required.');
+    const reason = readReason(input.reason, 'a reason', { refusal: 'A reason is required.' });
     return reason;
   }
 
   async decide(user: AuthUser, grantId: string, decision: 'approved' | 'declined', input: Record<string, unknown>) {
-    const reason = decision === 'declined' ? this.reasonOf(input) : text(input.reason) || null;
+    refuseScopeChange(input);
+    const reason = decision === 'declined' ? this.reasonOf(input) : readOptionalReason(input.reason);
     const at = this.now();
     return this.tx(async (c) => {
       const { g, ctx } = await this.load(c, user, grantId);
@@ -128,6 +140,7 @@ export class GrantsService {
   }
 
   async extend(user: AuthUser, grantId: string, input: Record<string, unknown>) {
+    refuseScopeChange(input);
     const at = this.now();
     return this.tx(async (c) => {
       const { g, ctx } = await this.load(c, user, grantId);
@@ -146,6 +159,7 @@ export class GrantsService {
   }
 
   async suspend(user: AuthUser, grantId: string, input: Record<string, unknown>) {
+    refuseScopeChange(input);
     const reason = this.reasonOf(input);
     const at = this.now();
     return this.tx(async (c) => {
@@ -161,6 +175,7 @@ export class GrantsService {
   }
 
   async restore(user: AuthUser, grantId: string, input: Record<string, unknown>) {
+    refuseScopeChange(input);
     const reason = this.reasonOf(input);
     const at = this.now();
     return this.tx(async (c) => {
@@ -176,6 +191,7 @@ export class GrantsService {
   }
 
   async revoke(user: AuthUser, grantId: string, input: Record<string, unknown>) {
+    refuseScopeChange(input);
     const reason = this.reasonOf(input);
     const at = this.now();
     return this.tx(async (c) => {

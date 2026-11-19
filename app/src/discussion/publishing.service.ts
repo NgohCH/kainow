@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { readReason } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -8,6 +9,7 @@ import { ExtractionService } from '../extraction/extraction.service';
 import { type NewContent, NotesService, type SourceSummary } from '../notes/notes.service';
 import { sha256Hex } from '../notes/text';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
+import { refuseUnliveSource } from '../history/deleted-sql';
 import { effectiveRoles } from '../projects/membership';
 import { RESTRICTED_ROLES, parseAudienceChange } from './audience';
 import { AudienceService } from './audience.service';
@@ -87,11 +89,17 @@ export class PublishingService {
     const done = await this.threads.inTransaction(async (db) => {
       // Thread row first, as every write path does; then the meeting's minutes source.
       const t = await this.meeting(db, threadId);
-      await this.threads.readable(db, user, t);
+      await this.threads.readable(db, user, t, true);
       await this.access.authorize(user, 'minutes.publish', t.projectId, db);
       const draft = await this.draftOf(db, t.id, versionNo);
+      // Every version added is checked for credentials (D79), the AI's draft included; only the kind is named.
+      refuseSecrets(draft.body);
       const at = this.now();
-      const existing = (await db.query(`SELECT id, publication FROM sources WHERE thread_id = $1 AND kind = 'minutes' FOR UPDATE`, [t.id])).rows[0] as { id: string; publication: string } | undefined;
+      const existing = (
+        await db.query(`SELECT id, publication, status, held_case_id AS "heldCaseId" FROM sources WHERE thread_id = $1 AND kind = 'minutes' FOR UPDATE`, [t.id])
+      ).rows[0] as { id: string; publication: string; status: string; heldCaseId: string | null } | undefined;
+      // Deleted minutes are not published into (404 until restored); held ones are refused until the case is released.
+      if (existing) refuseUnliveSource(existing);
       let sourceId: string;
       if (existing) {
         sourceId = existing.id;
@@ -167,14 +175,20 @@ export class PublishingService {
   async submitDraft(user: AuthUser, threadId: string, versionNo: number): Promise<SourceSummary> {
     return this.threads.inTransaction(async (db) => {
       const t = await this.meeting(db, threadId);
-      const { ctx } = await this.threads.readable(db, user, t);
+      const { ctx } = await this.threads.readable(db, user, t, true);
       await this.access.authorize(user, 'notes.submit', t.projectId, db);
       const starter = (await db.query(`SELECT created_by FROM discussion_threads WHERE id = $1`, [t.id])).rows[0].created_by;
       if (starter !== user.id) throw new ForbiddenException('Only the person who started the meeting can submit its minutes.');
       const draft = await this.draftOf(db, t.id, versionNo);
       refuseSecrets(draft.body);
       const at = this.now();
-      const existing = (await db.query(`SELECT id, publication, submitted_by AS "submittedBy" FROM sources WHERE thread_id = $1 AND kind = 'minutes' FOR UPDATE`, [t.id])).rows[0];
+      const existing = (
+        await db.query(
+          `SELECT id, publication, submitted_by AS "submittedBy", status, held_case_id AS "heldCaseId" FROM sources WHERE thread_id = $1 AND kind = 'minutes' FOR UPDATE`,
+          [t.id],
+        )
+      ).rows[0];
+      if (existing) refuseUnliveSource(existing);
       let sourceId: string;
       if (!existing) {
         sourceId = uuidv7(at.getTime());
@@ -211,10 +225,13 @@ export class PublishingService {
     const thread = (await db.query(`SELECT thread_id AS "threadId" FROM sources WHERE id = $1`, [sourceId])).rows[0].threadId as string | null;
     if (thread) await this.threads.threadRow(db, thread, true);
     const { rows } = await db.query(
-      `SELECT id, title, project_id AS "projectId", thread_id AS "threadId", publication, submitted_by AS "submittedBy", intended_mode AS "intendedMode"
+      `SELECT id, title, project_id AS "projectId", thread_id AS "threadId", publication, submitted_by AS "submittedBy", intended_mode AS "intendedMode",
+              status, held_case_id AS "heldCaseId"
          FROM sources WHERE id = $1 FOR UPDATE`,
       [sourceId],
     );
+    // A Deleted submission is neither published nor returned (404); a held one waits for its case (409).
+    refuseUnliveSource(rows[0]);
     return rows[0] as { id: string; title: string; projectId: string; threadId: string | null; publication: string; submittedBy: string | null; intendedMode: string | null };
   }
 
@@ -258,8 +275,7 @@ export class PublishingService {
     return this.threads.inTransaction(async (db) => {
       const src = await this.lockedSubmission(db, user, sourceId);
       await this.access.authorize(user, 'minutes.publish', src.projectId, db);
-      const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
-      if (reason === '' || reason.length > 500) throw new BadRequestException(REASON_REQUIRED);
+      const reason = readReason(body.reason, 'a reason', { max: 500, refusal: REASON_REQUIRED });
       if (src.publication !== 'submitted') throw new ConflictException('Only a submission waiting for review can be returned.');
       const at = this.now();
       await db.query(`UPDATE sources SET publication = 'returned', returned_reason = $2 WHERE id = $1`, [sourceId, reason]);

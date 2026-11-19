@@ -1,3 +1,5 @@
+import { possibleCopyLabelSql } from '../quarantine/labels';
+import { notHeldSql, refuseHeld, unheldRecordSql } from '../history/deleted-sql';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -89,11 +91,15 @@ export interface DraftRow {
   shared: boolean;
   sharedAt: Date | null;
   reviewState: ReviewState;
+  /** Held in an open quarantine case (history spec 7.2): seen by nobody; a change is refused with HELD. */
+  heldCaseId: string | null;
+  quarantineLabel: string | null;
 }
 
 const DRAFT_ROW = `d.id, d.project_id AS "projectId", d.kind, d.title, to_char(d.period_from, 'YYYY-MM-DD') AS "periodFrom",
   to_char(d.period_to, 'YYYY-MM-DD') AS "periodTo", d.brief, d.chosen, d.created_by AS "createdBy", d.created_at AS "createdAt",
-  d.shared, d.shared_at AS "sharedAt", d.review_state AS "reviewState"`;
+  d.shared, d.shared_at AS "sharedAt", d.review_state AS "reviewState", d.held_case_id AS "heldCaseId",
+  ${possibleCopyLabelSql('report_draft', 'd.id')}`;
 
 /** A draft row, or undefined. With `lock`, the row is locked for the transaction. */
 export async function loadDraftRow(db: Db, id: string, lock = false): Promise<DraftRow | undefined> {
@@ -125,7 +131,7 @@ async function everyAiVersionReadable(db: Db, ctx: ProjectContext, draftId: stri
  */
 export async function draftAccess(db: Db, ctx: ProjectContext | null, row: DraftRow): Promise<DraftAccess> {
   if (!canReadContent(ctx) || ctx.project.id !== row.projectId) return 'none';
-  if (row.reviewState === 'withdrawn') return 'none';
+  if (row.reviewState === 'withdrawn' || row.heldCaseId) return 'none';
   const requester = row.createdBy === ctx.viewerId;
   const reviewer = mayReview(ctx);
   const inReview = row.reviewState === 'review_required';
@@ -145,25 +151,28 @@ export async function loadReportRecords(db: Db, projectId: string): Promise<Repo
   const tasks = await db.query(
       `SELECT t.id, t.title, u.display_name AS assignee, to_char(t.due_on, 'YYYY-MM-DD') AS "dueOn", t.status, t.authorised_at AS "authorisedAt",
               (SELECT max(e.at) FROM task_events e WHERE e.task_id = t.id AND e.kind = 'completed') AS "completedAt"
-         FROM tasks t JOIN users u ON u.id = t.assignee_id WHERE t.project_id = $1 ORDER BY t.due_on, t.id`,
+         FROM tasks t JOIN users u ON u.id = t.assignee_id WHERE t.project_id = $1 AND ${unheldRecordSql('t')} ORDER BY t.due_on, t.id`,
       [projectId],
     );
-  const decisions = await db.query(`SELECT id, statement, status, authorised_at AS "authorisedAt" FROM decisions WHERE project_id = $1 ORDER BY authorised_at, id`, [projectId]);
+  const decisions = await db.query(
+    `SELECT d.id, d.statement, d.status, d.authorised_at AS "authorisedAt" FROM decisions d WHERE d.project_id = $1 AND ${unheldRecordSql('d')} ORDER BY d.authorised_at, d.id`,
+    [projectId],
+  );
   const questions = await db.query(
       `SELECT q.id, q.text, q.status, u.display_name AS "askedBy", q.authorised_at AS "authorisedAt"
-         FROM questions q JOIN users u ON u.id = q.requester_id WHERE q.project_id = $1 ORDER BY q.authorised_at, q.id`,
+         FROM questions q JOIN users u ON u.id = q.requester_id WHERE q.project_id = $1 AND ${unheldRecordSql('q')} ORDER BY q.authorised_at, q.id`,
       [projectId],
     );
   const risks = await db.query(
       `SELECT r.id, r.description, r.severity, r.status, u.display_name AS responsible, to_char(r.review_on, 'YYYY-MM-DD') AS "reviewOn",
               r.authorised_at AS "authorisedAt"
-         FROM risks r LEFT JOIN users u ON u.id = r.responsible_id WHERE r.project_id = $1 ORDER BY r.authorised_at, r.id`,
+         FROM risks r LEFT JOIN users u ON u.id = r.responsible_id WHERE r.project_id = $1 AND ${unheldRecordSql('r')} ORDER BY r.authorised_at, r.id`,
       [projectId],
     );
   const riskChanges = await db.query(
       `SELECT e.record_id AS "riskId", r.description, e.from_status AS "fromStatus", e.to_status AS "toStatus", e.at
          FROM record_events e JOIN risks r ON r.id = e.record_id
-        WHERE e.record_kind = 'risk' AND r.project_id = $1 AND e.to_status IS NOT NULL AND e.from_status IS DISTINCT FROM e.to_status
+        WHERE e.record_kind = 'risk' AND r.project_id = $1 AND ${unheldRecordSql('r')} AND e.to_status IS NOT NULL AND e.from_status IS DISTINCT FROM e.to_status
         ORDER BY e.at, e.id`,
       [projectId],
     );
@@ -309,7 +318,7 @@ export async function completeReport(db: PoolClient, request: AssistRequest, out
   const draftId = await draftOfRequest(db, request);
   if (!draftId) throw new Error(`assist ${request.id}: no draft for this report request`);
   const draft = (await loadDraftRow(db, draftId, true)) as DraftRow;
-  if (draft.reviewState === 'withdrawn' || draft.reviewState === 'review_required') return;
+  if (draft.reviewState === 'withdrawn' || draft.reviewState === 'review_required' || draft.heldCaseId) return;
   const requester = (await db.query<{ name: string }>(`SELECT display_name AS name FROM users WHERE id = $1`, [request.requestedBy])).rows[0]?.name ?? 'someone';
   const period = periodOf(draft);
   const facts = period ? renderFacts(draft.kind, await loadReportRecords(db, draft.projectId), period) : {};
@@ -335,8 +344,9 @@ export async function completeReport(db: PoolClient, request: AssistRequest, out
 export async function reportRemoved(db: Db, request: AssistRequest): Promise<boolean> {
   const draftId = await draftOfRequest(db, request);
   if (!draftId) return false;
-  const state = (await db.query<{ state: ReviewState }>(`SELECT review_state AS state FROM report_drafts WHERE id = $1`, [draftId])).rows[0]?.state;
-  return state === 'withdrawn' || state === 'review_required';
+  const row = (await db.query<{ state: ReviewState; held: boolean }>(`SELECT review_state AS state, held_case_id IS NOT NULL AS held FROM report_drafts WHERE id = $1`, [draftId])).rows[0];
+  // A draft held in a quarantine case (history spec 7.2) does not run either.
+  return !!row && (row.state === 'withdrawn' || row.state === 'review_required' || row.held);
 }
 
 registerInputBuilder('report', reportInput);
@@ -388,6 +398,8 @@ export interface ReportView {
   versions: DraftVersionView[];
   /** The newest version and its text; null before the first version, or when the viewer can no longer read it. */
   current: (DraftVersionView & { body: string }) | null;
+  /** "Possible credential removed — awaiting check" while it is a possible copy masked at once (spec 7.4). */
+  quarantineLabel: string | null;
 }
 
 export interface ReportListItem {
@@ -403,6 +415,8 @@ export interface ReportListItem {
   versionCount: number;
   updatedAt: Date;
   notice: string | null;
+  /** "Possible credential removed — awaiting check" while it is a possible copy masked at once (spec 7.4). */
+  quarantineLabel: string | null;
 }
 
 interface LatestRequest {
@@ -483,7 +497,7 @@ async function readableChosen(db: Db, ctx: ProjectContext, chosen: { sourceIds: 
     threadIds: await keep(
       chosen.threadIds,
       `SELECT th.id FROM discussion_threads th JOIN audiences au ON au.id = th.audience_id
-        WHERE th.id = ANY($1::uuid[]) AND th.project_id = $2 AND ${audienceVisibleSql('au', '$3', '$4')}`,
+        WHERE th.id = ANY($1::uuid[]) AND th.project_id = $2 AND ${notHeldSql('th')} AND ${audienceVisibleSql('au', '$3', '$4')}`,
     ),
   };
 }
@@ -653,7 +667,7 @@ export class ReportsService {
               (SELECT count(*) FROM report_draft_versions v WHERE v.draft_id = d.id)::int AS "versionCount",
               coalesce((SELECT max(v.created_at) FROM report_draft_versions v WHERE v.draft_id = d.id), d.created_at) AS "updatedAt"
          FROM report_drafts d JOIN users u ON u.id = d.created_by
-        WHERE d.project_id = $1 AND d.review_state <> 'withdrawn' AND (d.created_by = $2 OR d.shared)
+        WHERE d.project_id = $1 AND d.review_state <> 'withdrawn' AND d.held_case_id IS NULL AND (d.created_by = $2 OR d.shared)
         ORDER BY d.created_at DESC, d.id DESC LIMIT 200`,
       [projectId, user.id],
     );
@@ -675,6 +689,7 @@ export class ReportsService {
         versionCount: row.versionCount,
         updatedAt: row.updatedAt,
         notice: seen === 'no_longer_readable' ? DRAFT_NO_LONGER_READABLE : null,
+        quarantineLabel: row.quarantineLabel ?? null,
       });
     }
     return out;
@@ -719,8 +734,9 @@ export class ReportsService {
   private async changeable(db: PoolClient, user: AuthUser, id: string, requesterOnly = false): Promise<{ row: DraftRow; ctx: ProjectContext }> {
     const row = await loadDraftRow(db, id, true);
     if (!row) throw new NotFoundException();
-    const seen = await draftAccess(db, await this.access.load(row.projectId, user, db), row);
+    const seen = await draftAccess(db, await this.access.load(row.projectId, user, db), { ...row, heldCaseId: null });
     if (seen === 'none') throw new NotFoundException();
+    refuseHeld(row);
     const own = row.createdBy === user.id;
     if (requesterOnly && !own) throw new ForbiddenException('Only the person who requested this draft can regenerate it.');
     const ctx = await this.access.authorize(user, own ? 'report.request' : 'report.manage', row.projectId, db);
@@ -846,6 +862,7 @@ export class ReportsService {
       canUnshare: editable && row.shared,
       versions: versions.map(versionView),
       current: readable && last ? { ...versionView(last), body: last.body } : null,
+      quarantineLabel: row.quarantineLabel ?? null,
     };
   }
 

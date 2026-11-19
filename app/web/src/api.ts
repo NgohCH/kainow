@@ -87,6 +87,8 @@ export interface VersionSummary {
   mediaType: string | null;
   charCount: number;
   createdAt: string;
+  /** Set (with the words to show) when the uploaded file is withheld because a credential was removed from its text. */
+  originalWithheld?: string | null;
 }
 
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'blocked';
@@ -133,6 +135,8 @@ export type Kind = 'decision' | 'action' | 'question' | 'risk';
 export type ReviewStatus = 'pending' | 'approved' | 'rejected';
 
 export interface Item {
+  /** "Possible credential removed — awaiting check" while this is a possible copy masked at once (history spec 7.4). */
+  quarantineLabel?: string | null;
   id: string;
   position: number;
   kind: Kind;
@@ -146,9 +150,9 @@ export interface Item {
   alternatives: string[];
   dueReading: DueReading;
   reviewerDue: ReviewerDue | null;
-  /** Null when the quote's message is now hidden or deleted (see quoteMasked). */
+  /** Null when the quote's message is now hidden or deleted, or its source is Deleted (see quoteMasked). */
   quote: string | null;
-  quoteMasked?: 'deleted' | 'hidden' | null;
+  quoteMasked?: 'deleted' | 'hidden' | 'source_deleted' | null;
   quoteStart: number | null;
   quoteEnd: number | null;
   quoteMatches: number;
@@ -161,8 +165,10 @@ export interface Item {
   record: { kind: 'task' | 'decision' | 'question' | 'risk'; id: string } | null;
   /** Approved before records existed: it still needs authorising to become a record. */
   approvedWithoutRecord: boolean;
-  /** Set when the quote lies in a discussion message that is now hidden or deleted. */
-  sourceFlag?: 'deleted' | 'hidden' | null;
+  /** Set when the quote lies in a discussion message that is now hidden or deleted, or the source is Deleted. */
+  sourceFlag?: 'deleted' | 'hidden' | 'source_deleted' | null;
+  /** Set when the quote was cleaned of a credential and needs a second look. */
+  quoteChanged?: string | null;
   /** Set when the quote lies in a discussion message: which message, by whom and when. */
   discussionEvidence?: { threadId: string; messageNo: number; authorName: string; at: string } | null;
   /** True when a reviewer has changed the wording. `original` is then what the model said. */
@@ -231,6 +237,8 @@ export interface Grant {
   decisionReason: string | null;
   suspendReason: string | null;
   revokeReason: string | null;
+  /** The grant includes Inspect Deleted Content (chosen when it was requested). */
+  inspectDeleted?: boolean;
   /** This viewer may approve or decline it (a manager who is neither the grantee nor the recorder). */
   mayDecide: boolean;
   /** The viewer's own access: they may not extend or restore it. */
@@ -301,4 +309,8 @@ export interface Project {
   archived: boolean;
   archivedAutomatically: boolean;
   openReviewFlags?: number;
+  /** The viewer's own Active grant includes Inspect Deleted Content. */
+  inspectDeleted?: boolean;
+  /** Set while an Owner or Sponsor lets the Project Manager delete and restore records (D83). */
+  recordDeletionDelegation?: { pm: string; by: string; reason: string; at: string } | null;
 }

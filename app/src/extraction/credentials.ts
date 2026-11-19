@@ -30,3 +30,14 @@ export function findCredentials(text: string): CredentialFinding[] {
   }
   return found;
 }
+
+/**
+ * The matched strings themselves, for the one caller that may hold them: Kainow's own report of a secret found in
+ * stored text (history spec 7.1), which hands them straight to the quarantine, where they are encrypted. Never log,
+ * store or return what this gives. Distinct strings, longest first within a pattern, in order of appearance.
+ */
+export function findCredentialMatches(text: string): string[] {
+  const out = new Set<string>();
+  for (const [, re] of PATTERNS) for (const m of text.matchAll(re)) out.add(m[0]);
+  return [...out];
+}

@@ -1,4 +1,5 @@
 import { BadRequestException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { readReason } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
 import { onMaterialRemoved } from '../assist/removal';
 import { writeAudit } from '../audit/audit';
@@ -111,6 +112,13 @@ export class AudienceService {
   async assertSourceReadable(user: AuthUser, sourceId: string, db: Db = this.pool): Promise<{ ctx: ProjectContext; row: SourceAccessRow }> {
     const projectId = await this.access.projectOfSource(sourceId, db);
     const ctx = await this.access.authorize(user, 'note.view', projectId, db);
+    const row = await this.sourceAccessRow(sourceId, db);
+    if (!this.canSeeSource(ctx, user, row)) throw new NotFoundException();
+    return { ctx, row };
+  }
+
+  /** What decides who may see one source (whatever its status: a Deleted source keeps its audience). 404 when there is none. */
+  async sourceAccessRow(sourceId: string, db: Db = this.pool): Promise<SourceAccessRow> {
     const { rows } = await db.query(
       `SELECT s.id, s.project_id AS "projectId", s.kind, s.publication, s.submitted_by AS "submittedBy", s.audience_id AS "audienceId",
               sm.state AS "summaryState", COALESCE(os.audience_id, ot.audience_id) AS "originalAudienceId"
@@ -123,13 +131,34 @@ export class AudienceService {
     );
     if (!rows[0]) throw new NotFoundException();
     const { audienceId, originalAudienceId, ...rest } = rows[0];
-    const row: SourceAccessRow = {
+    return {
       ...rest,
       audience: await this.load(audienceId, db),
       originalAudience: rest.summaryState === 'hidden' && originalAudienceId ? await this.load(originalAudienceId, db) : null,
     };
-    if (!this.canSeeSource(ctx, user, row)) throw new NotFoundException();
-    return { ctx, row };
+  }
+
+  /**
+   * Everyone among the project's current readers (Active roles and grants giving access today) who may see the source
+   * by canSeeSource, by display name: the audience a restore would show it to again (history spec 4.4).
+   */
+  async readersOf(ctx: ProjectContext, row: SourceAccessRow, db: Db = this.pool): Promise<Person[]> {
+    const ids = new Set<string>();
+    for (const r of ctx.rows) ids.add(r.userId);
+    for (const g of ctx.grants) ids.add(g.userId);
+    const people = await this.people([...ids], db);
+    return people.filter((p) => this.canSeeSource(this.asPerson(ctx, p.id), { id: p.id } as AuthUser, row));
+  }
+
+  /** The context as one of the project's people would have it today (their own roles and grants; never an Administrator). */
+  private asPerson(ctx: ProjectContext, userId: string): ProjectContext {
+    return {
+      ...ctx,
+      viewerId: userId,
+      isAdmin: false,
+      roles: effectiveRoles(ctx.rows, userId, ctx.today),
+      grantKinds: [...new Set(ctx.grants.filter((g) => g.userId === userId && grantGivesAccess(g, ctx.today, ctx.rows)).map((g) => g.kind))],
+    };
   }
 
   /** Named people must hold a valid membership or a grant giving access in the project today. */
@@ -179,13 +208,7 @@ export class AudienceService {
     const gain: Person[] = [];
     const lose: Person[] = [];
     for (const p of people as Person[]) {
-      const asThem: ProjectContext = {
-        ...ctx,
-        viewerId: p.id,
-        isAdmin: false,
-        roles: effectiveRoles(ctx.rows, p.id, ctx.today),
-        grantKinds: [...new Set(ctx.grants.filter((g) => g.userId === p.id && grantGivesAccess(g, ctx.today, ctx.rows)).map((g) => g.kind))],
-      };
+      const asThem = this.asPerson(ctx, p.id);
       const before = inAudience(asThem, a);
       const after = inAudience(asThem, next);
       if (!before && after) gain.push(p);
@@ -211,7 +234,7 @@ export class AudienceService {
       const ctx = await this.access.authorize(user, 'audience.change', current.projectId, client, true);
       const locked = await this.row(client, 'WHERE a.id = $1', audienceId, true);
       const text = typeof reason === 'string' ? reason.trim() : '';
-      if (text === '' || text.length > 500) throw new BadRequestException(REASON_REQUIRED);
+      readReason(text, 'a reason', { max: 500, refusal: REASON_REQUIRED });
       const talk = await client.query(
         `SELECT 1 FROM discussion_threads WHERE audience_id = $1 AND kind = 'discussion'
          UNION ALL SELECT 1 FROM sources WHERE audience_id = $1 AND kind = 'discussion' LIMIT 1`,

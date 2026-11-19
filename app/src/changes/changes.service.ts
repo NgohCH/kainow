@@ -1,7 +1,9 @@
+import { liveRecordRefSql, liveRecordSql, notHeldSql } from '../history/deleted-sql';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
+import { readOptionalReason, readReason, refuseSecretsIn } from '../common/reason';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { activeManagerSql, audienceVisibleSql } from '../discussion/audience';
@@ -34,11 +36,13 @@ export const TARGET_SQL: Record<TargetKind, string> = {
   extraction_item: `SELECT i.id, i.run_id AS "runId", i.kind, i.review_status AS "reviewStatus", s.project_id AS "projectId"
                       FROM extraction_items i JOIN extraction_runs r ON r.id = i.run_id
                       JOIN source_versions v ON v.id = r.source_version_id JOIN sources s ON s.id = v.source_id
-                     WHERE i.id = $1 FOR UPDATE OF i`,
-  human_proposal: `SELECT id, project_id AS "projectId", kind, text, owner, review_status AS "reviewStatus" FROM human_proposals WHERE id = $1 FOR UPDATE`,
-  task: `SELECT x.*, x.project_id AS "projectId", to_char(x.due_on, 'YYYY-MM-DD') AS "dueOn" FROM tasks x WHERE x.id = $1 FOR UPDATE`,
-  decision: `SELECT x.*, x.project_id AS "projectId" FROM decisions x WHERE x.id = $1 FOR UPDATE`,
-  risk: `SELECT x.*, x.project_id AS "projectId", to_char(x.review_on, 'YYYY-MM-DD') AS "reviewOn" FROM risks x WHERE x.id = $1 FOR UPDATE`,
+                     WHERE i.id = $1 AND ${notHeldSql('i')} FOR UPDATE OF i`,
+  human_proposal: `SELECT id, project_id AS "projectId", kind, text, owner, review_status AS "reviewStatus" FROM human_proposals h WHERE id = $1 AND ${notHeldSql('h')} FOR UPDATE`,
+  // A Deleted or held record (or a held proposal, history spec 7.2) is not a target: changes to it answer as for a
+  // missing record (history spec 4.3), as they always have for records.
+  task: `SELECT x.*, x.project_id AS "projectId", to_char(x.due_on, 'YYYY-MM-DD') AS "dueOn" FROM tasks x WHERE x.id = $1 AND ${liveRecordSql('x')} FOR UPDATE`,
+  decision: `SELECT x.*, x.project_id AS "projectId" FROM decisions x WHERE x.id = $1 AND ${liveRecordSql('x')} FOR UPDATE`,
+  risk: `SELECT x.*, x.project_id AS "projectId", to_char(x.review_on, 'YYYY-MM-DD') AS "reviewOn" FROM risks x WHERE x.id = $1 AND ${liveRecordSql('x')} FOR UPDATE`,
 };
 
 const REQUEST_COLUMNS = `id, project_id AS "projectId", kind, target_kind AS "targetKind", target_id AS "targetId", batch_id AS "batchId", version,
@@ -250,6 +254,8 @@ export class ChangesService {
     const handler = this.handler(input.kind);
     if (!handler || !(handler.targetKinds ?? [handler.targetKind]).includes(input.targetKind)) throw new BadRequestException('This kind of change cannot be proposed here.');
     const terms = clientTerms(objectOf(input.terms) ?? {});
+    refuseSecretsIn(terms);
+    const reason = readOptionalReason(input.reason);
     const at = this.now();
     const ctx = await this.actor(c, user, projectId);
     const target = await this.lockTarget(c, input.targetKind, input.targetId, projectId);
@@ -271,7 +277,7 @@ export class ChangesService {
       [id, projectId, input.kind, input.targetKind, target.id, input.batchId ?? null, required, user.id, at],
     );
     await c.query(`INSERT INTO change_request_versions (request_id, version, terms, reason, author_id, at) VALUES ($1, 1, $2, $3, $4, $5)`, [
-      id, JSON.stringify(normalised), text(input.reason) || null, user.id, at,
+      id, JSON.stringify(normalised), reason, user.id, at,
     ]);
     const request = await this.lockRequest(c, id);
     await this.audit(c, at, 'submitted', user.id, request, { kind: input.kind, targetKind: input.targetKind, targetId: target.id, required });
@@ -337,6 +343,7 @@ export class ChangesService {
   private async reviseOnApproval(c: PoolClient, ctx: ProjectContext, request: RequestRow, target: Row, handler: ChangeHandler, user: AuthUser, supplied: unknown, at: Date): Promise<RequestRow> {
     const given = objectOf(supplied);
     if (!given) throw new BadRequestException('Write the revised terms.');
+    refuseSecretsIn(given);
     const before = await this.termsOf(c, request.id, request.version);
     const normalised = await handler.validate(c, ctx, target, { ...before, ...given }, user, at);
     if (sameTerms(normalised, before)) return request;
@@ -384,8 +391,7 @@ export class ChangesService {
 
   /** { reason } by an Owner or Sponsor: ends the request. */
   async reject(user: AuthUser, requestId: string, input: { reason?: unknown }) {
-    const reason = text(input.reason);
-    if (reason === '') throw new BadRequestException('A reason is required.');
+    const reason = readReason(input.reason, 'a reason', { refusal: 'A reason is required.' });
     const at = this.now();
     return this.tx(async (c) => {
       const { ctx, request } = await this.load(c, user, requestId, false);
@@ -399,8 +405,7 @@ export class ChangesService {
 
   /** { reason } by the submitter or the project's PM while pending. */
   async withdraw(user: AuthUser, requestId: string, input: { reason?: unknown }) {
-    const reason = text(input.reason);
-    if (reason === '') throw new BadRequestException('A reason is required.');
+    const reason = readReason(input.reason, 'a reason', { refusal: 'A reason is required.' });
     const at = this.now();
     return this.tx(async (c) => {
       const { ctx, request } = await this.load(c, user, requestId, true);
@@ -420,8 +425,8 @@ export class ChangesService {
     const given = objectOf(input.terms);
     if (!given) throw new BadRequestException('Write the revised terms.');
     const terms = clientTerms(given);
-    const reason = text(input.reason);
-    if (reason === '') throw new BadRequestException('Write a reason for the change.');
+    const reason = readReason(input.reason, 'a reason', { refusal: 'Write a reason for the change.' });
+    refuseSecretsIn(terms);
     const at = this.now();
     return this.tx(async (c) => {
       const { ctx, request } = await this.load(c, user, requestId, true);
@@ -451,13 +456,17 @@ export class ChangesService {
     const { rows } = await this.pool.query(
       `SELECT ${REQUEST_COLUMNS} FROM change_requests
         WHERE project_id = $1 AND ($2::text IS NULL OR status = $2)
+          -- Requests about a Deleted record leave the list with it (history spec 4.3).
+          AND ${liveRecordRefSql('change_requests.target_kind', 'change_requests.target_id')}
+          -- Nor do requests about a held human proposal (history spec 7.2).
+          AND (target_kind <> 'human_proposal' OR EXISTS (SELECT 1 FROM human_proposals hp WHERE hp.id = change_requests.target_id AND ${notHeldSql('hp')}))
           -- A proposal from a note the viewer cannot see is not listed (the same rule as AudienceService.canSeeSource).
           AND (target_kind <> 'extraction_item' OR (${canReadContent(ctx) ? 'true' : 'false'} AND EXISTS (
                  SELECT 1 FROM extraction_items xi
                    JOIN source_versions xv ON xv.id = xi.source_version_id
                    JOIN sources xs ON xs.id = xv.source_id
                    LEFT JOIN audiences xa ON xa.id = xs.audience_id
-                  WHERE xi.id = change_requests.target_id
+                  WHERE xi.id = change_requests.target_id AND ${notHeldSql('xi')}
                     AND CASE WHEN xs.publication = 'published' THEN COALESCE(${audienceVisibleSql('xa', '$3', '$4')}, false)
                              ELSE xs.submitted_by = $3::uuid OR ${activeManagerSql('xs.project_id', '$3', '$4')} END)))
         ORDER BY submitted_at DESC, id DESC`,

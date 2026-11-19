@@ -16,6 +16,7 @@ import {
   withdrawSummary,
 } from '../assist.ts';
 import { formatWhen } from '../format.ts';
+import { QuarantineNote } from './ReportSecret.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
 
@@ -206,6 +207,7 @@ export function AssistReview({ projectId, roles }: { projectId: string; roles: s
                     <span className="ai-label">{inReview ? REVIEW_REQUIRED_LABEL : s.label}</span>{' '}
                     <a href={summaryPath(s.id)}><strong>{s.original.title}</strong></a>
                   </p>
+                  <QuarantineNote text={s.quarantineLabel} />
                   <p className="meta">
                     {s.original.kind === 'meeting' ? 'Meeting' : 'Source'} · requested by {s.requestedBy.displayName} · {formatWhen(s.createdAt)}
                     {s.latestVersionNo !== null ? ` · version ${s.latestVersionNo}` : ' · not drafted yet'}

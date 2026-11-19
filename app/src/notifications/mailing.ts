@@ -9,6 +9,8 @@ import { type Calendar, isWorkingDay, nextSlot, slotOn } from './calendar';
 import { inTransaction } from './fire';
 import { loadEffective } from './settings';
 import { emailLine } from './summaries';
+import { searchForms } from '../quarantine/clean-text';
+import { type ItemKind, TEXT_COLUMNS } from '../quarantine/registry';
 
 export type EmailChoice = 'daily_urgent_immediate' | 'immediate' | 'daily' | 'off';
 
@@ -161,4 +163,59 @@ export async function mailDue(pool: Pool, now: Date, appUrl: string): Promise<nu
     });
   }
   return written;
+}
+
+/** The reason stored on a queued email cancelled because it holds text reported as a suspected credential (history spec 7.2). */
+export const HELD_EMAIL_REASON = 'held: suspected credential';
+
+/** The outbox condition: the subject, text or HTML (also in its escaped form) holds one of the strings. $2 plain forms, $3 HTML forms. */
+const HOLDS_MARK = `(EXISTS (SELECT 1 FROM unnest($2::text[]) m WHERE strpos(o.subject, m) > 0 OR strpos(o.text_body, m) > 0)
+  OR EXISTS (SELECT 1 FROM unnest($3::text[]) m WHERE strpos(COALESCE(o.html_body, ''), m) > 0))`;
+
+/**
+ * The outbox rows a report on `kind` ($1 = the item id) may touch: the item's project, and rows outside a project that
+ * name the item, exactly as the sweep finds them (the registry's email_outbox item query). Never another project's
+ * emails (spec 1: no quarantine across projects; final review I2a).
+ */
+function itemScope(kind: ItemKind): string {
+  const sql = TEXT_COLUMNS.find((c) => c.table === 'email_outbox' && c.column === 'html_body')?.itemSql?.[kind];
+  if (!sql) throw new Error(`quarantine: no email scope for ${kind}`);
+  return `o.id IN (SELECT q.id FROM (${sql}) q)`;
+}
+
+/**
+ * Cancels every queued or waiting email of the reported item's project (or naming the item) whose subject, text or
+ * HTML holds a marked string (spec 7.2): the only content check on emails. Runs in the report's transaction, before the
+ * sweep cleans the stored copies. The reason names no text. Returns how many were cancelled.
+ */
+export async function cancelQueuedHolding(
+  db: Pick<Pool, 'query'>,
+  marks: string[],
+  item: { kind: ItemKind; id: string },
+): Promise<{ cancelled: number; digests: string[] }> {
+  const forms = searchForms(marks);
+  if (forms.length === 0) return { cancelled: 0, digests: [] };
+  const r = await db.query<{ id: string; kind: string }>(
+    `UPDATE email_outbox o SET status = 'cancelled', next_attempt_at = NULL, last_reason = $4
+      WHERE o.status IN ('queued', 'retry_wait') AND ${HOLDS_MARK} AND ${itemScope(item.kind)}
+      RETURNING o.id, o.kind`,
+    [item.id, forms, searchForms(marks, true), HELD_EMAIL_REASON],
+  );
+  return { cancelled: r.rows.length, digests: r.rows.filter((x) => x.kind === 'digest').map((x) => x.id) };
+}
+
+/**
+ * Emails of the reported item's project (or naming the item) already sent, or possibly sent, holding a marked string:
+ * when, and to how many, by send minute. Never the text.
+ */
+export async function sentHolding(db: Pick<Pool, 'query'>, marks: string[], item: { kind: ItemKind; id: string }): Promise<Array<{ at: string; recipients: number }>> {
+  const forms = searchForms(marks);
+  if (forms.length === 0) return [];
+  const { rows } = await db.query<{ at: Date; recipients: number }>(
+    `SELECT date_trunc('minute', COALESCE(o.sent_at, o.created_at)) AS at, count(*)::int AS recipients FROM email_outbox o
+      WHERE o.status IN ('sent', 'uncertain') AND ${HOLDS_MARK} AND ${itemScope(item.kind)}
+      GROUP BY 1 ORDER BY 1`,
+    [item.id, forms, searchForms(marks, true)],
+  );
+  return rows.map((r) => ({ at: r.at.toISOString(), recipients: r.recipients }));
 }

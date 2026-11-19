@@ -6,11 +6,14 @@ import { type AudienceMode, inAudience } from '../discussion/audience';
 import { findCredentials } from '../extraction/credentials';
 import { type JsonSchemaModel, ModelBadResponse } from '../extraction/model';
 import { REQUEST_TIMEOUT_MS } from '../extraction/prompt';
-import type { RunOutcome } from '../extraction/runner';
+import { type RunOutcome, SOURCE_DELETED } from '../extraction/runner';
 import { ProjectAccess, canReadContent } from '../projects/access.service';
 import { type ProjectStatus, decide } from '../projects/matrix';
 import type { Usage } from '../spend/cost';
 import type { SpendService } from '../spend/spend.service';
+import { type KainowReporter, type OwnedText, reportOwned } from '../quarantine/kainow-report';
+import { HELD_DURING_RUN, sweepMarkSql, sweptSince } from '../quarantine/sweep-lock';
+import type { ItemKind } from '../quarantine/registry';
 import { normalizeMarker, validateCitations } from './citations';
 import { type MaterialScope, readableMaterial } from './material';
 import {
@@ -168,7 +171,7 @@ export async function completeQuestion(db: PoolClient, request: AssistRequest, o
   if (!(await mayStillPost(db, request, at))) return;
   const shared = await db.query(
     `UPDATE ai_answers SET visibility = 'shared', shared_thread_id = $2, shared_by = $3, shared_at = $4
-      WHERE request_id = $1 AND visibility = 'private' AND review_state = 'none'`,
+      WHERE request_id = $1 AND visibility = 'private' AND review_state = 'none' AND held_case_id IS NULL`,
     [request.id, request.scopeThreadId, request.requestedBy, at],
   );
   if (shared.rowCount !== 1) return;
@@ -189,7 +192,7 @@ async function mayStillPost(db: PoolClient, request: AssistRequest, at: Date): P
       `SELECT t.audience_id AS "audienceId", t.state, a.mode,
               COALESCE((SELECT array_agg(m.user_id) FROM audience_members m WHERE m.audience_id = a.id), '{}') AS named
          FROM discussion_threads t JOIN audiences a ON a.id = t.audience_id
-        WHERE t.id = $1 AND t.project_id = $2
+        WHERE t.id = $1 AND t.project_id = $2 AND t.held_case_id IS NULL
         FOR NO KEY UPDATE OF t`,
       [request.scopeThreadId, request.projectId],
     )
@@ -210,10 +213,11 @@ async function mayStillPost(db: PoolClient, request: AssistRequest, at: Date): P
   return inAudience(ctx, { id: thread.audienceId, projectId: request.projectId, mode: thread.mode, namedUserIds: thread.named });
 }
 
-/** A question's answer is withdrawn (private) or in review (shared) once the removal hook touched its material. */
+/** A question's answer is withdrawn (private) or in review (shared) once the removal hook touched its material, or held. */
 export async function questionRemoved(db: Db, request: AssistRequest): Promise<boolean> {
-  const state = (await db.query<{ state: string }>(`SELECT review_state AS state FROM ai_answers WHERE request_id = $1`, [request.id])).rows[0]?.state;
-  return state !== undefined && state !== 'none';
+  const row = (await db.query<{ state: string; held: boolean }>(`SELECT review_state AS state, held_case_id IS NOT NULL AS held FROM ai_answers WHERE request_id = $1`, [request.id])).rows[0];
+  // Held in a quarantine case (history spec 7.2): not run, nothing sent or charged.
+  return row !== undefined && (row.state !== 'none' || row.held);
 }
 
 registerInputBuilder('question', questionInput);
@@ -226,6 +230,8 @@ export interface AssistRunnerDeps {
   /** null when no AI key is configured: the request then fails without sending or charging anything. */
   model: JsonSchemaModel | null;
   clock: Clock;
+  /** Opens a quarantine case on the item holding a secret found in stored material (history spec 7.1). */
+  quarantine?: KainowReporter;
   log?: (message: string) => void;
 }
 
@@ -246,8 +252,10 @@ export class AssistRunner {
 
   async process(requestId: string, attemptNo: number, isLastAttempt: boolean): Promise<RunOutcome> {
     const { pool } = this.d;
+    // The project's sweep marker, read before the request's material or any other text it sends or saves (C1).
+    const mark = (await pool.query<{ mark: string }>(`SELECT ${sweepMarkSql('r.project_id')} AS mark FROM ai_requests r WHERE r.id = $1`, [requestId])).rows[0]?.mark;
     const request = await loadRequest(pool, requestId);
-    if (!request || (request.status !== 'queued' && request.status !== 'running')) return 'skipped';
+    if (!request || mark === undefined || (request.status !== 'queued' && request.status !== 'running')) return 'skipped';
     // A request already ended is left alone (a late retry must not revive it).
     const claimed = await pool.query(
       `UPDATE ai_requests SET status = 'running', attempts = $2, started_at = COALESCE(started_at, $3) WHERE id = $1 AND status IN ('queued', 'running')`,
@@ -260,6 +268,10 @@ export class AssistRunner {
 
     const scope = await this.recheck(request);
     if ('code' in scope) return this.end(request, 'blocked', scope);
+    // A source this request used was deleted while it waited (history spec 4.2): no AI call, no charge.
+    if (await this.usedDeletedSource(request.id)) {
+      return this.end(request, 'blocked', { code: SOURCE_DELETED, detail: 'A source this request used was deleted, so the AI request did not run.' });
+    }
 
     const spec = KINDS[request.kind];
     const build = builders.get(request.kind);
@@ -287,6 +299,8 @@ export class AssistRunner {
     if ('code' in input) return this.end(request, 'blocked', input);
     const found = findCredentials(`${input.system}\n${input.user}`);
     if (found.length > 0) {
+      // Only secrets in stored material have an owning item; anything else in the prompt (the question as typed) is only refused.
+      await reportOwned(this.d.quarantine, request.projectId, await this.owners(kept), this.d.log);
       return this.end(request, 'blocked', {
         code: 'secret_found',
         detail: `Not sent to the AI: the material appears to contain ${found.map((f) => f.pattern).join(', ')}. Remove it first.`,
@@ -322,7 +336,12 @@ export class AssistRunner {
     if (outcome.kind === 'retry') return this.requeue(request);
     if (outcome.kind !== 'ok') return this.end(request, outcome.kind, outcome);
     try {
-      const saved = await this.save(request, complete, outcome.value.output, outcome.value.cited, outcome.modelId);
+      const saved = await this.save(request, complete, outcome.value.output, outcome.value.cited, outcome.modelId, mark);
+      if (saved === 'swept') {
+        // A report swept or held something in the project while the AI call ran: nothing saved (C1). Asked again, the
+        // request reads its material as it is now (or finds it held and blocks); on its last attempt it ends blocked.
+        return isLastAttempt ? this.end(request, 'blocked', HELD_DURING_RUN) : this.requeue(request);
+      }
       // The request ended (for example stalled) while the AI call ran: nothing saved. The spend stays settled.
       return saved ? 'succeeded' : 'skipped';
     } catch (err) {
@@ -358,10 +377,11 @@ export class AssistRunner {
       await pool.query<{ id: string; state: 'open' | 'ended' | null; mode: AudienceMode; named: string[] }>(
         `SELECT a.id, t.state, a.mode, COALESCE((SELECT array_agg(m.user_id) FROM audience_members m WHERE m.audience_id = a.id), '{}') AS named
            FROM discussion_threads t JOIN audiences a ON a.id = t.audience_id
-          WHERE t.id = $1 AND t.project_id = $2`,
+          WHERE t.id = $1 AND t.project_id = $2 AND t.held_case_id IS NULL`,
         [request.scopeThreadId, request.projectId],
       )
     ).rows[0];
+    // A thread held in a quarantine case (history spec 7.2) counts as gone: nothing is sent or charged.
     if (!thread) return { code: 'thread_not_found', detail: 'The thread for this request no longer exists, so the AI request did not run.' };
     if (thread.state === 'ended') return { code: 'meeting_ended', detail: 'The meeting has ended, so the answer could not be posted and the AI request did not run.' };
     if (!inAudience(ctx, { id: thread.id, projectId: request.projectId, mode: thread.mode, namedUserIds: thread.named })) {
@@ -370,11 +390,41 @@ export class AssistRunner {
     return { kind: 'thread', ctx, threadAudienceId: thread.id };
   }
 
-  /** Cited flags, the kind's output and the request's success are stored together. False when the request had already ended. */
-  private async save(request: AssistRequest, complete: Completion, output: unknown, cited: string[], modelId: string): Promise<boolean> {
+  /**
+   * Whether any material still to be sent comes from a Deleted source: a passage of one of its versions, or a pending
+   * proposal extracted from it. Through the material's primary key, then passages, versions and sources by primary key.
+   */
+  private async usedDeletedSource(requestId: string): Promise<boolean> {
+    const { rowCount } = await this.d.pool.query(
+      `SELECT 1 FROM ai_request_material m
+         JOIN passages p ON p.id = m.passage_id AND p.owner_kind = 'source_version'
+         JOIN source_versions v ON v.id = p.owner_id
+         JOIN sources s ON s.id = v.source_id
+        WHERE m.request_id = $1 AND NOT m.dropped_at_start AND s.status = 'deleted'
+       UNION ALL
+       SELECT 1 FROM ai_request_material m
+         JOIN extraction_items x ON x.id = m.record_id
+         JOIN source_versions v ON v.id = x.source_version_id
+         JOIN sources s ON s.id = v.source_id
+        WHERE m.request_id = $1 AND m.record_kind = 'ai_proposal' AND NOT m.dropped_at_start AND s.status = 'deleted'
+       LIMIT 1`,
+      [requestId],
+    );
+    return (rowCount ?? 0) > 0;
+  }
+
+  /**
+   * Cited flags, the kind's output and the request's success are stored together. False when the request had already
+   * ended; 'swept' when the project's sweep marker moved since `mark` (checked first, under the sweep lock shared).
+   */
+  private async save(request: AssistRequest, complete: Completion, output: unknown, cited: string[], modelId: string, mark: string): Promise<boolean | 'swept'> {
     const client = await this.d.pool.connect();
     try {
       await client.query('BEGIN');
+      if (await sweptSince(client, request.projectId, mark)) {
+        await client.query('ROLLBACK');
+        return 'swept';
+      }
       const live = await client.query(`SELECT 1 FROM ai_requests WHERE id = $1 AND status IN ('queued', 'running') FOR UPDATE`, [request.id]);
       if (live.rowCount === 0) {
         await client.query('ROLLBACK');
@@ -395,6 +445,37 @@ export class AssistRunner {
     } finally {
       client.release();
     }
+  }
+
+  /**
+   * The item that owns each piece of material sent (history spec 7.1): a passage belongs to its source (through the
+   * source version) or to its message (through the message version); a record snapshot belongs to its record. Never a
+   * derived row (the passage, the snapshot): the case is opened on the item the text came from.
+   */
+  private async owners(material: RequestMaterial[]): Promise<OwnedText[]> {
+    const passageIds = material.flatMap((m) => (m.passageId ? [m.passageId] : []));
+    const owner = new Map<string, { kind: ItemKind; id: string }>();
+    if (passageIds.length > 0) {
+      const { rows } = await this.d.pool.query<{ id: string; kind: 'source' | 'message'; owner: string }>(
+        `SELECT p.id, CASE p.owner_kind WHEN 'source_version' THEN 'source' ELSE 'message' END AS kind,
+                CASE p.owner_kind WHEN 'source_version' THEN (SELECT source_id FROM source_versions WHERE id = p.owner_id)
+                                  ELSE (SELECT message_id FROM message_versions WHERE id = p.owner_id) END AS owner
+           FROM passages p WHERE p.id = ANY($1::uuid[])`,
+        [passageIds],
+      );
+      for (const r of rows) if (r.owner) owner.set(r.id, { kind: r.kind, id: r.owner });
+    }
+    const out: OwnedText[] = [];
+    for (const m of material) {
+      if (m.passageId) {
+        const o = owner.get(m.passageId);
+        if (o) out.push({ ...o, text: m.text });
+      } else if (m.recordKind && m.recordId) {
+        const kind: ItemKind = m.recordKind === 'ai_proposal' ? 'proposal' : m.recordKind;
+        out.push({ kind, id: m.recordId, text: m.text });
+      }
+    }
+    return out;
   }
 
   private async requeue(request: AssistRequest): Promise<RunOutcome> {

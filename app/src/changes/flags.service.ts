@@ -1,9 +1,11 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { readReason } from '../common/reason';
 import type { Pool } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
+import { liveRecordRefSql } from '../history/deleted-sql';
 import { ProjectAccess } from '../projects/access.service';
 import { GRANT_READ_ONLY } from '../projects/matrix';
 import { NOT_ACTIVE } from '../records/lifecycles';
@@ -23,7 +25,8 @@ export class FlagsService {
 
   async clear(user: AuthUser, flagId: string, note: unknown): Promise<{ flag: { id: string; clearedAt: Date; note: string } }> {
     if (!UUID.test(flagId)) throw new NotFoundException();
-    const peek = (await this.pool.query(`SELECT project_id FROM review_flags WHERE id = $1`, [flagId])).rows[0];
+    // A flag on a Deleted record does not exist, like the record (final review M4).
+    const peek = (await this.pool.query(`SELECT f.project_id FROM review_flags f WHERE f.id = $1 AND ${liveRecordRefSql('f.record_kind', 'f.record_id')}`, [flagId])).rows[0];
     if (!peek) throw new NotFoundException();
     const text = typeof note === 'string' ? note.trim() : '';
     const at = this.now();
@@ -35,7 +38,7 @@ export class FlagsService {
       if (ctx.roles.length === 0) throw new ForbiddenException(GRANT_READ_ONLY);
       if (!ctx.roles.some((r) => r === 'pm' || r === 'deputy_pm')) throw new ForbiddenException(CANNOT_CLEAR);
       if (ctx.project.status !== 'active') throw new ConflictException(NOT_ACTIVE);
-      if (text === '') throw new BadRequestException(NOTE_NEEDED);
+      readReason(text, 'a note', { refusal: NOTE_NEEDED });
       const flag = (await client.query(`SELECT id, cleared_at, record_kind, record_id FROM review_flags WHERE id = $1 FOR UPDATE`, [flagId])).rows[0];
       if (flag.cleared_at) throw new ConflictException(FLAG_CLEARED);
       await client.query(`UPDATE review_flags SET cleared_by = $2, cleared_at = $3, note = $4 WHERE id = $1`, [flagId, user.id, at, text]);

@@ -1,6 +1,7 @@
 import type { PoolClient } from 'pg';
 import { UUID } from '../common/uuid7';
 import { audienceVisibleSql } from '../discussion/audience';
+import { liveMessageSql, liveSourceSql, notHeldSql, unheldRecordSql } from '../history/deleted-sql';
 import { type ProjectContext, canReadContent } from '../projects/access.service';
 import { hrefFor } from '../search/query';
 
@@ -104,9 +105,9 @@ export function summaryShownSql(s: string, viewer?: { user: string; today: strin
   return `(${s}.kind <> 'summary' OR EXISTS (SELECT 1 FROM summaries sm WHERE sm.id = ${s}.summary_id AND (sm.state IN ('approved', 'review_required')${hidden})))`;
 }
 
-/** A source whose current text may be material: not deleted, published, not a transcript, a summary only while approved. */
+/** A source whose current text may be material: not Deleted or held, published, not a transcript, a summary only while approved. */
 export function sourceOkSql(s: string): string {
-  return `${s}.status <> 'deleted' AND ${s}.publication = 'published' AND ${s}.kind <> 'discussion'
+  return `${liveSourceSql(s)} AND ${s}.publication = 'published' AND ${s}.kind <> 'discussion'
      AND ${summaryShownSql(s)}`;
 }
 
@@ -308,7 +309,7 @@ WITH c AS (
     JOIN discussion_threads th ON th.id = m.thread_id
     JOIN audiences au ON au.id = th.audience_id
    WHERE p.owner_kind = 'message_version' AND p.project_id = ${proj}::uuid AND th.project_id = ${proj}::uuid
-     AND m.state = 'visible'
+     AND ${liveMessageSql('m')} AND ${notHeldSql('th')}
      AND ${audienceSql(scope, p, 'au')}
      AND NOT EXISTS (SELECT 1 FROM message_versions v2 WHERE v2.message_id = mv.message_id AND v2.version_no > mv.version_no)
      AND ${match} ${messageOwner} ${within('mv.created_at')}
@@ -334,20 +335,20 @@ async function findRecords(db: Db, scope: MaterialScope, projectId: string, word
   const branches: string[] = [];
   if (kinds.includes('task')) {
     branches.push(`SELECT 'task' AS kind, t.id, NULL::uuid AS audience_id, t.authorised_at AS at, ${score('t.title')} AS r
-      FROM tasks t WHERE t.project_id = ${proj}::uuid AND ${hit('t.title')}`);
+      FROM tasks t WHERE t.project_id = ${proj}::uuid AND ${unheldRecordSql('t')} AND ${hit('t.title')}`);
   }
   if (kinds.includes('decision')) {
     const e = `d.statement || ' ' || coalesce(d.rationale, '')`;
-    branches.push(`SELECT 'decision', d.id, NULL::uuid, d.authorised_at, ${score(e)} FROM decisions d WHERE d.project_id = ${proj}::uuid AND ${hit(e)}`);
+    branches.push(`SELECT 'decision', d.id, NULL::uuid, d.authorised_at, ${score(e)} FROM decisions d WHERE d.project_id = ${proj}::uuid AND ${unheldRecordSql('d')} AND ${hit(e)}`);
   }
   if (kinds.includes('question')) {
-    branches.push(`SELECT 'question', q.id, NULL::uuid, q.authorised_at, ${score('q.text')} FROM questions q WHERE q.project_id = ${proj}::uuid AND ${hit('q.text')}`);
+    branches.push(`SELECT 'question', q.id, NULL::uuid, q.authorised_at, ${score('q.text')} FROM questions q WHERE q.project_id = ${proj}::uuid AND ${unheldRecordSql('q')} AND ${hit('q.text')}`);
     branches.push(`SELECT 'question', q.id, NULL::uuid, a.at, ${score('a.answer')}
-      FROM question_answers a JOIN questions q ON q.id = a.question_id WHERE q.project_id = ${proj}::uuid AND ${hit('a.answer')}`);
+      FROM question_answers a JOIN questions q ON q.id = a.question_id WHERE q.project_id = ${proj}::uuid AND ${unheldRecordSql('q')} AND ${hit('a.answer')}`);
   }
   if (kinds.includes('risk')) {
     const e = `r.description || ' ' || coalesce(r.mitigation, '')`;
-    branches.push(`SELECT 'risk', r.id, NULL::uuid, r.authorised_at, ${score(e)} FROM risks r WHERE r.project_id = ${proj}::uuid AND ${hit(e)}`);
+    branches.push(`SELECT 'risk', r.id, NULL::uuid, r.authorised_at, ${score(e)} FROM risks r WHERE r.project_id = ${proj}::uuid AND ${unheldRecordSql('r')} AND ${hit(e)}`);
   }
   // Pending proposals: personal scope only (the caller has removed them for thread scope), following their source's
   // audience as global search does. Matched on the wording in force, never on the quote.
@@ -358,12 +359,12 @@ async function findRecords(db: Db, scope: MaterialScope, projectId: string, word
       JOIN sources s ON s.id = v.source_id
       JOIN audiences au ON au.id = s.audience_id
       CROSS JOIN LATERAL (SELECT coalesce((SELECT e.text FROM extraction_item_edits e WHERE e.item_id = x.id ORDER BY e.edited_at DESC, e.id DESC LIMIT 1), x.text) AS wording) w
-     WHERE x.review_status = 'pending' AND s.project_id = ${proj}::uuid AND s.status <> 'deleted' AND s.publication = 'published'
+     WHERE x.review_status = 'pending' AND ${notHeldSql('x')} AND s.project_id = ${proj}::uuid AND ${liveSourceSql('s')} AND s.publication = 'published'
        AND ${audienceSql(scope, p, 'au')} AND ${hit('w.wording')}`);
   }
   if (scope.kind === 'personal' && kinds.includes('human_proposal')) {
     branches.push(`SELECT 'human_proposal', h.id, NULL::uuid, h.proposed_at, ${score('h.text')}
-      FROM human_proposals h WHERE h.review_status = 'pending' AND h.project_id = ${proj}::uuid AND ${hit('h.text')}`);
+      FROM human_proposals h WHERE h.review_status = 'pending' AND ${notHeldSql('h')} AND h.project_id = ${proj}::uuid AND ${hit('h.text')}`);
   }
   if (branches.length === 0) return [];
   const text = `
@@ -456,14 +457,16 @@ export async function readableMaterial(db: Db, scope: MaterialScope, items: Mate
   const b = p.add(items.map((i) => i.recordKind));
   const c = p.add(items.map((i) => i.recordId));
   const d = p.add(items.map((i) => i.recordAudienceId));
-  const record = (table: string) => `EXISTS (SELECT 1 FROM ${table} r WHERE r.id = i.record_id AND r.project_id = ${proj}::uuid)`;
+  // A Deleted or held record is no longer readable (history spec 4.3): dropped at start, and an answer built on it is not shown.
+  const record = (table: string) =>
+    `EXISTS (SELECT 1 FROM ${table} r WHERE r.id = i.record_id AND r.project_id = ${proj}::uuid${table === 'human_proposals' ? ` AND ${notHeldSql('r')}` : ` AND ${unheldRecordSql('r')}`})`;
   const proposals =
     scope.kind === 'personal'
       ? `WHEN i.record_kind = 'ai_proposal' THEN
            -- The source's current audience as well as the stored one: publishing a returned note may give it a new row.
            EXISTS (SELECT 1 FROM extraction_items x JOIN source_versions v ON v.id = x.source_version_id JOIN sources s ON s.id = v.source_id
                      JOIN audiences sa ON sa.id = s.audience_id
-                    WHERE x.id = i.record_id AND s.project_id = ${proj}::uuid AND s.status <> 'deleted' AND s.publication = 'published'
+                    WHERE x.id = i.record_id AND ${notHeldSql('x')} AND s.project_id = ${proj}::uuid AND ${liveSourceSql('s')} AND s.publication = 'published'
                       AND ${audienceSql(scope, p, 'sa')})
            AND EXISTS (SELECT 1 FROM audiences au WHERE au.id = i.record_audience_id AND au.project_id = ${proj}::uuid AND ${audienceSql(scope, p, 'au')})
          WHEN i.record_kind = 'human_proposal' THEN
@@ -488,7 +491,7 @@ SELECT CASE
                         JOIN audiences au ON au.id = th.audience_id
                        WHERE p.id = i.passage_id AND p.owner_kind = 'message_version'
                          AND p.project_id = ${proj}::uuid AND th.project_id = ${proj}::uuid
-                         AND m.state = 'visible' AND ${audienceSql(scope, p, 'au')})
+                         AND ${liveMessageSql('m')} AND ${notHeldSql('th')} AND ${audienceSql(scope, p, 'au')})
          WHEN i.record_kind = 'task' THEN ${record('tasks')}
          WHEN i.record_kind = 'decision' THEN ${record('decisions')}
          WHEN i.record_kind = 'question' THEN ${record('questions')}

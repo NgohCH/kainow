@@ -1,3 +1,4 @@
+import { possibleCopyLabelSql } from '../quarantine/labels';
 import { maskedVersionText } from '../discussion/masking';
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
@@ -7,9 +8,11 @@ import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { RESTRICTED_ROLES, audienceVisibleSql } from '../discussion/audience';
 import { refuseSecrets } from '../discussion/messages';
+import { WITHHELD_TEXT } from '../quarantine/clean';
 import { effectiveRoles } from '../projects/membership';
 import { ProjectAccess } from '../projects/access.service';
 import { summaryShownSql } from '../assist/material';
+import { liveSourceSql } from '../history/deleted-sql';
 import { indexVersion } from '../assist/passage-index';
 import { UploadRejected, readUpload } from './readers';
 import { NoteTextError, normaliseText, sha256Hex } from './text';
@@ -49,6 +52,8 @@ export interface SourceSummary {
 export interface ListedSource extends SourceSummary {
   kind: 'notes' | 'minutes' | 'summary';
   label: string | null;
+  /** "Possible credential removed — awaiting check" while the note is a possible copy masked at once (spec 7.4). */
+  quarantineLabel: string | null;
 }
 
 export const MINUTES_LABEL = 'Minutes — from meeting';
@@ -78,10 +83,15 @@ export interface VersionSummary {
   textSha256: string;
   originalSha256: string | null;
   createdAt: Date;
+  /** WITHHELD_TEXT when the uploaded original is withheld because a credential was removed from the text (history spec 7.4). */
+  originalWithheld: string | null;
 }
 
 const VERSION_COLUMNS = `id, source_id AS "sourceId", version_no AS "versionNo", origin, filename, media_type AS "mediaType",
-  char_count AS "charCount", text_sha256 AS "textSha256", original_sha256 AS "originalSha256", created_at AS "createdAt"`;
+  char_count AS "charCount", text_sha256 AS "textSha256", original_sha256 AS "originalSha256", created_at AS "createdAt", quarantined_at AS "originalWithheld"`;
+
+/** A version as shown: the withheld label in place of the time it was withheld. */
+const shownVersion = <T extends VersionSummary>(v: T): T => ({ ...v, originalWithheld: v.originalWithheld ? WITHHELD_TEXT : null });
 
 /** Browsers send multipart filenames as Latin-1 bytes of the UTF-8 name; undo that, then strip anything unsafe. */
 export function cleanFilename(raw: string): string {
@@ -139,6 +149,8 @@ export class NotesService {
     submission?: SubmissionInput;
   }): Promise<{ source: SourceSummary; version: VersionSummary }> {
     const prepared = await this.prepare(input.content);
+    // Every import is checked for credentials (D79), an upload on its text after extraction; only the kind is named.
+    refuseSecrets(prepared.text);
     input.submission?.refuse(prepared.text);
     const title = this.checkTitle(input.title ?? (prepared.filename ? prepared.filename.replace(/\.[^.]*$/, '') || prepared.filename : undefined));
     const at = this.now();
@@ -180,7 +192,7 @@ export class NotesService {
       await client.query('BEGIN');
       // The source row is the lock that keeps version numbers gap-free when two people add at once.
       const src = await client.query<{ kind: string; publication: string; submittedBy: string | null; projectId: string; title: string }>(
-        'SELECT kind, publication, submitted_by AS "submittedBy", project_id AS "projectId", title FROM sources WHERE id = $1 AND status = \'active\' FOR UPDATE',
+        `SELECT kind, publication, submitted_by AS "submittedBy", project_id AS "projectId", title FROM sources s WHERE id = $1 AND ${liveSourceSql('s')} FOR UPDATE`,
         [sourceId],
       );
       if (src.rowCount === 0) throw new NotFoundException();
@@ -190,7 +202,8 @@ export class NotesService {
       // A returned submission is revised by its submitter alone, and goes back to the reviewers.
       const revising = row.publication === 'returned' && row.submittedBy === actorUserId;
       if (row.publication !== 'published' && !revising) throw new ConflictException('This submission is waiting for a reviewer; publish or return it first.');
-      if (revising) refuseSecrets(prepared.text);
+      // Every new version is checked for credentials (D79), not only a submitter's revision.
+      refuseSecrets(prepared.text);
       const latest = await client.query<{ version_no: number; text_sha256: string }>(
         'SELECT version_no, text_sha256 FROM source_versions WHERE source_id = $1 ORDER BY version_no DESC LIMIT 1',
         [sourceId],
@@ -316,9 +329,9 @@ export class NotesService {
     const { rows } = await this.pool.query<ListedSource>(
       `SELECT s.id, s.title, s.created_at AS "createdAt", s.kind,
               CASE WHEN s.kind = 'minutes' THEN $4::text WHEN s.kind = 'summary' THEN $5::text END AS label,
-              max(v.version_no)::int AS "latestVersion", count(v.id)::int AS "versionCount"
+              max(v.version_no)::int AS "latestVersion", count(v.id)::int AS "versionCount", ${possibleCopyLabelSql('source', 's.id')}
          FROM sources s JOIN source_versions v ON v.source_id = s.id JOIN audiences a ON a.id = s.audience_id
-        WHERE s.status = 'active' AND s.project_id = $1 AND s.kind IN ('notes', 'minutes', 'summary') AND s.publication = 'published'
+        WHERE ${liveSourceSql('s')} AND s.project_id = $1 AND s.kind IN ('notes', 'minutes', 'summary') AND s.publication = 'published'
           AND ${summaryShownSql('s', { user: '$2', today: '$3' })} AND ${audienceVisibleSql('a', '$2', '$3')}
         GROUP BY s.id ORDER BY s.created_at DESC, s.id DESC`,
       [projectId, userId, this.access.today(), MINUTES_LABEL, SUMMARY_LIST_LABEL],
@@ -332,6 +345,8 @@ export class NotesService {
       projectId: string;
       kind: string;
       label: string | null;
+      /** "Possible credential removed — awaiting check" while the note is a possible copy masked at once (spec 7.4). */
+      quarantineLabel: string | null;
       publication: string;
       intendedMode: string | null;
       returnedReason: string | null;
@@ -346,8 +361,8 @@ export class NotesService {
   }> {
     const src = await this.pool.query(
       `SELECT id, title, created_at AS "createdAt", project_id AS "projectId", kind, publication, intended_mode AS "intendedMode",
-              returned_reason AS "returnedReason", audience_id AS "audienceId"
-         FROM sources WHERE id = $1 AND status = 'active'`,
+              returned_reason AS "returnedReason", audience_id AS "audienceId", ${possibleCopyLabelSql('source', 's.id')}
+         FROM sources s WHERE id = $1 AND ${liveSourceSql('s')}`,
       [sourceId],
     );
     if (src.rowCount === 0) throw new NotFoundException();
@@ -372,7 +387,7 @@ export class NotesService {
         summary: s.kind === 'summary' ? await this.summaryLabels(sourceId) : null,
         mayExtract: s.kind !== 'summary',
       },
-      versions: rows,
+      versions: rows.map(shownVersion),
     };
   }
 
@@ -399,7 +414,9 @@ export class NotesService {
    */
   async provenance(versionId: string): Promise<string | null> {
     const found = await this.pool.query(
-      `SELECT t.title, d.id AS "draftId", e.at AS "at", u.display_name AS "publisher"
+      // A held meeting's title (history spec 7.2) is not repeated here.
+      `SELECT CASE WHEN t.held_case_id IS NULL THEN t.title ELSE '(held for a suspected credential)' END AS title,
+              d.id AS "draftId", e.at AS "at", u.display_name AS "publisher"
          FROM source_versions v
          JOIN minutes_drafts d ON d.id = v.minutes_draft_id
          JOIN discussion_threads t ON t.id = d.thread_id
@@ -433,19 +450,19 @@ export class NotesService {
     const { rows } = await this.pool.query<VersionSummary & { text: string }>(
       `SELECT ${VERSION_COLUMNS.split(',').map((c) => 'v.' + c.trim()).join(', ')}, v.text_content AS text
          FROM source_versions v JOIN sources s ON s.id = v.source_id
-        WHERE v.source_id = $1 AND v.version_no = $2 AND s.status = 'active'`,
+        WHERE v.source_id = $1 AND v.version_no = $2 AND ${liveSourceSql('s')}`,
       [sourceId, versionNo],
     );
     if (!rows[0]) throw new NotFoundException();
     // A discussion transcript keeps its stored text, but messages hidden or deleted since are masked when shown.
-    return { ...rows[0], text: await maskedVersionText(this.pool, rows[0].id, rows[0].text), provenance: await this.provenance(rows[0].id) };
+    return { ...shownVersion(rows[0]), text: await maskedVersionText(this.pool, rows[0].id, rows[0].text), provenance: await this.provenance(rows[0].id) };
   }
 
   async getOriginal(sourceId: string, versionNo: number): Promise<{ filename: string; mediaType: string; bytes: Buffer }> {
     const { rows } = await this.pool.query<{ filename: string; media_type: string; original_bytes: Buffer }>(
       `SELECT v.filename, v.media_type, v.original_bytes
          FROM source_versions v JOIN sources s ON s.id = v.source_id
-        WHERE v.source_id = $1 AND v.version_no = $2 AND s.status = 'active' AND v.origin = 'upload'`,
+        WHERE v.source_id = $1 AND v.version_no = $2 AND ${liveSourceSql('s')} AND v.origin = 'upload' AND v.original_bytes IS NOT NULL`,
       [sourceId, versionNo],
     );
     if (!rows[0]) throw new NotFoundException();

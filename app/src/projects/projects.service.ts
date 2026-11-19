@@ -1,7 +1,10 @@
+import { liveRecordRefSql, liveRecordSql } from '../history/deleted-sql';
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable } from '@nestjs/common';
+import { readReason, refuseSecretsIn } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
+import { openRecordDelegation } from '../history/delegation';
 import { assertClosureReady, finaliseClosure, openDelegation } from '../changes/closure';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { APP_CONFIG, type AppConfig } from '../config';
@@ -63,6 +66,7 @@ export class ProjectsService {
     const purpose = 'purpose' in input || !current ? text(input.purpose) : current.purpose;
     if (purpose === '') throw new BadRequestException("Describe the project's purpose.");
     if (purpose.length > 4000) throw new BadRequestException('The purpose can be at most 4000 characters.');
+    refuseSecretsIn(purpose);
     const owning = 'owningDepartmentId' in input || !current ? input.owningDepartmentId : current.owningDepartmentId;
     const contributing = 'contributingDepartmentIds' in input || !current ? (input.contributingDepartmentIds ?? []) : current.contributingDepartmentIds;
     if (!Array.isArray(contributing) || !contributing.every((d) => typeof d === 'string')) {
@@ -155,7 +159,7 @@ export class ProjectsService {
         ...(await loadArchiveState(this.pool, id, ctx.project.status, ctx.today)),
         myOpenTasks: (
           await this.pool.query(
-            `SELECT count(*)::int AS n FROM tasks WHERE project_id = $1 AND assignee_id = $2 AND status NOT IN ('completed', 'cancelled')`,
+            `SELECT count(*)::int AS n FROM tasks t WHERE t.project_id = $1 AND t.assignee_id = $2 AND t.status NOT IN ('completed', 'cancelled') AND ${liveRecordSql('t')}`,
             [id, user.id],
           )
         ).rows[0].n as number,
@@ -203,6 +207,11 @@ export class ProjectsService {
   async detail(user: AuthUser, id: string) {
     const ctx = await this.access.context(user, id);
     return { project: await this.render(ctx) };
+  }
+
+  private async recordDelegation(projectId: string) {
+    const d = await openRecordDelegation(this.pool, projectId);
+    return d === null ? null : { pm: d.pm, by: d.by, reason: d.reason, at: d.at };
   }
 
   private async render(ctx: ProjectContext) {
@@ -267,12 +276,15 @@ export class ProjectsService {
       })),
       myRoles: ctx.roles,
       isAdmin: ctx.isAdmin,
-      openReviewFlags: Number((await this.pool.query(`SELECT count(*) AS n FROM review_flags WHERE project_id = $1 AND cleared_at IS NULL`, [id])).rows[0].n),
+      openReviewFlags: Number((await this.pool.query(`SELECT count(*) AS n FROM review_flags f WHERE f.project_id = $1 AND f.cleared_at IS NULL AND ${liveRecordRefSql('f.record_kind', 'f.record_id')}`, [id])).rows[0].n),
       missingAccountability: ctx.missingAccountability,
       missingRoles: ctx.missingRoles,
       onHold: managesRoles(ctx) && ctx.onHold,
       access: ctx.roles.length === 0 && ctx.grantKinds.length > 0 ? ctx.grantKinds[0] : null,
+      // The viewer's own Active grant includes Inspect Deleted Content: the project page shows its Deleted items list.
+      inspectDeleted: ctx.inspectDeleted === true,
       grants: await this.grantsFor(ctx),
+      recordDeletionDelegation: await this.recordDelegation(id),
       ...(await loadArchiveState(this.pool, id, ctx.project.status, ctx.today)),
     };
   }
@@ -284,7 +296,7 @@ export class ProjectsService {
       await client.query('BEGIN');
       const ctx = await this.access.authorize(user, 'project.archive', id, client, true);
       const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
-      if (reason === '') throw new BadRequestException('A reason is required.');
+      readReason(reason, 'a reason', { refusal: 'A reason is required.' });
       const current = await loadArchiveState(client, id, ctx.project.status, ctx.today);
       if (kind === 'archived' && current.archived) throw new ConflictException('This project is already archived.');
       if (kind === 'unarchived' && !current.archived) throw new ConflictException('This project is not archived.');
@@ -311,7 +323,7 @@ export class ProjectsService {
       const ctx = await this.access.context(user, id, client, true);
       if (!ctx.isAdmin) throw new ForbiddenException('Only an Enterprise Administrator can move a project to another owning department.');
       const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
-      if (reason === '') throw new BadRequestException('A reason is required.');
+      readReason(reason, 'a reason', { refusal: 'A reason is required.' });
       const to = input.departmentId;
       if (typeof to !== 'string' || !UUID.test(to)) throw new BadRequestException('Choose an active department.');
       const dept = (await client.query(`SELECT id FROM departments WHERE id = $1 AND status = 'active'`, [to])).rows[0];
@@ -345,7 +357,7 @@ export class ProjectsService {
       `SELECT g.id, g.kind, g.purpose, g.scope, to_char(g.starts_on, 'YYYY-MM-DD') AS "startsOn", to_char(g.expires_on, 'YYYY-MM-DD') AS "expiresOn",
               json_build_object('id', u.id, 'displayName', u.display_name, 'email', u.email) AS "user",
               r.display_name AS "requestedBy", g.requested_by AS "requestedById", d.display_name AS "decidedBy", g.decision_reason AS "decisionReason",
-              g.suspend_reason AS "suspendReason", g.revoke_reason AS "revokeReason"
+              g.suspend_reason AS "suspendReason", g.revoke_reason AS "revokeReason", g.inspect_deleted AS "inspectDeleted"
          FROM access_grants g JOIN users u ON u.id = g.user_id JOIN users r ON r.id = g.requested_by LEFT JOIN users d ON d.id = g.decided_by
         WHERE g.project_id = $1 ORDER BY g.requested_at, g.id`,
       [ctx.project.id],
@@ -406,6 +418,7 @@ export class ProjectsService {
     const outcome = (input.outcome ?? null) as ClosureOutcome | null;
     if (outcome !== null && !OUTCOMES.includes(outcome)) throw new BadRequestException('Choose a closure outcome.');
     const reason = optionalText(input.reason);
+    refuseSecretsIn(reason);
     const stage = optionalText(input.stage);
     const objectivesMet = input.objectivesMet === true;
     const at = this.now();
@@ -514,6 +527,7 @@ export class ProjectsService {
     try {
       await client.query('BEGIN');
       await this.access.authorize(user, 'project.stage', id, client, true);
+      refuseSecretsIn(input.reason);
       await this.startStage(client, id, stage, substage, optionalText(input.reason), user.id, at);
       await writeAudit(client, { at, action: 'project.stage', actorUserId: user.id, subjectType: 'project', subjectId: id, detail: { stage, substage } });
       await client.query('COMMIT');

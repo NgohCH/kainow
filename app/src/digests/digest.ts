@@ -1,4 +1,5 @@
 // Action-item digests (spec §8): the content built per recipient, the schedule rule, and the scheduled send.
+import { unheldRecordSql } from '../history/deleted-sql';
 import type { Pool, PoolClient } from 'pg';
 import { uuidv7 } from '../common/uuid7';
 import type { EmailRelevance } from '../email/relevance';
@@ -52,7 +53,7 @@ async function openTasks(db: Db, projectId: string): Promise<OpenTask[]> {
     `SELECT t.id, t.title, t.assignee_id AS "assigneeId", u.display_name AS name, u.email,
             to_char(t.due_on, 'YYYY-MM-DD') AS "dueOn", t.status, t.deadline_review_required AS review
        FROM tasks t JOIN users u ON u.id = t.assignee_id
-      WHERE t.project_id = $1 AND t.status IN ('not_started', 'in_progress', 'blocked')`,
+      WHERE t.project_id = $1 AND t.status IN ('not_started', 'in_progress', 'blocked') AND ${unheldRecordSql('t')}`,
     [projectId],
   );
   return r.rows.map((x) => ({
@@ -63,7 +64,10 @@ async function openTasks(db: Db, projectId: string): Promise<OpenTask[]> {
 
 /** The number of open tasks in the project (not per recipient). */
 export async function countOpen(db: Db, projectId: string): Promise<number> {
-  const r = await db.query(`SELECT count(*)::int AS n FROM tasks WHERE project_id = $1 AND status IN ('not_started', 'in_progress', 'blocked')`, [projectId]);
+  const r = await db.query(
+    `SELECT count(*)::int AS n FROM tasks t WHERE t.project_id = $1 AND t.status IN ('not_started', 'in_progress', 'blocked') AND ${unheldRecordSql('t')}`,
+    [projectId],
+  );
   return r.rows[0].n;
 }
 
@@ -76,7 +80,7 @@ export async function buildDigest(
   recipientId: string,
   asAt: Date,
   appUrl = '',
-): Promise<{ subject: string; body: string; openCount: number }> {
+): Promise<{ subject: string; body: string; openCount: number; taskIds: string[] }> {
   const name = (await db.query(`SELECT name FROM projects WHERE id = $1`, [projectId])).rows[0].name as string;
   const today = todayUtc8(asAt);
   const tasks = await openTasks(db, projectId);
@@ -103,7 +107,7 @@ export async function buildDigest(
   const parts = [name, asAtLine(asAt), '', 'Your open tasks', own.length ? own.map(line).join('\n') : 'None', '', 'Other open tasks in this project'];
   if (others.length === 0) parts.push('None');
   for (const g of others) parts.push(g.assignee, ...g.list.sort(byDue).map(line));
-  return { subject: `Action items: ${name}`, body: parts.join('\n'), openCount: tasks.length };
+  return { subject: `Action items: ${name}`, body: parts.join('\n'), openCount: tasks.length, taskIds: tasks.map((x) => x.id) };
 }
 
 export interface DigestRecipient { userId: string; email: string }
@@ -123,7 +127,39 @@ export async function digestRecipients(db: Db, projectId: string, today: string)
   return r.rows;
 }
 
-export const digestRelevance = (projectId: string): EmailRelevance => ({ kind: 'project_active', projectId, scope: 'project' });
+export const digestRelevance = (projectId: string, taskIds: string[] = [], appUrl = ''): EmailRelevance => ({
+  kind: 'project_active',
+  projectId,
+  ...(taskIds.length > 0 ? { taskIds } : {}),
+  ...(appUrl ? { appUrl } : {}),
+  scope: 'project',
+});
+
+/**
+ * A digest cancelled because a task it lists was held or Deleted, or because it held reported text, is queued again
+ * rebuilt as at `now` without what is no longer shown (PO, 18 Nov 2026: the held item drops out, the digest still goes).
+ * Nothing is queued when the project is no longer Active or no open task is left. Returns whether one was queued.
+ */
+export async function requeueDigest(db: Db, outboxId: string, now: Date): Promise<boolean> {
+  const r = (
+    await db.query(
+      `SELECT o.to_user_id, o.to_address, o.project_id, o.initiated_by_user, o.digest_run_id, o.relevance, p.status AS project_status
+         FROM email_outbox o JOIN projects p ON p.id = o.project_id
+        WHERE o.id = $1 AND o.kind = 'digest' AND o.status = 'cancelled' AND o.to_user_id IS NOT NULL`,
+      [outboxId],
+    )
+  ).rows[0];
+  if (!r || r.project_status !== 'active') return false;
+  const appUrl: string = r.relevance?.appUrl ?? '';
+  const d = await buildDigest(db, r.project_id, r.to_user_id, now, appUrl);
+  if (d.openCount === 0) return false;
+  await writeOutbox(db, {
+    toUserId: r.to_user_id, toAddress: r.to_address, subject: d.subject, body: d.body, kind: 'digest', projectId: r.project_id,
+    initiatedBy: 'digest', ...(r.initiated_by_user ? { initiatedByUser: r.initiated_by_user } : {}), digestRunId: r.digest_run_id ?? undefined,
+    relevance: digestRelevance(r.project_id, d.taskIds, appUrl), replaces: outboxId, now,
+  });
+  return true;
+}
 
 /** Queues one digest email per recipient in the caller's transaction and records the run. Returns the run id. */
 export async function queueDigestRun(
@@ -140,7 +176,7 @@ export async function queueDigestRun(
     await writeOutbox(c, {
       toUserId: r.userId, toAddress: r.email, subject: d.subject, body: d.body, kind: 'digest', projectId: o.projectId,
       initiatedBy: 'digest', ...(o.initiatedBy ? { initiatedByUser: o.initiatedBy } : {}), digestRunId: runId,
-      relevance: digestRelevance(o.projectId), now: o.asAt,
+      relevance: digestRelevance(o.projectId, d.taskIds, o.appUrl), now: o.asAt,
     });
   }
   return runId;

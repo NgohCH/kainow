@@ -1,8 +1,11 @@
 import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { readReason } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
+import { possibleCopyLabelSql } from '../quarantine/labels';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
+import { notHeldSql, refuseHeld } from '../history/deleted-sql';
 import { type AudienceMode, type Person, inAudience } from '../discussion/audience';
 import { refuseSecrets } from '../discussion/messages';
 import { NoteTextError, normaliseText, sha256Hex } from '../notes/text';
@@ -68,6 +71,8 @@ export interface AnswerView {
   /** Sources used: cited ones first, then the rest in the order they were found. */
   sources: AnswerSource[];
   droppedCount: number;
+  /** "Possible credential removed — awaiting check" while the answer is a possible copy masked at once (spec 7.4). */
+  quarantineLabel: string | null;
 }
 
 /** What visibility is decided on. */
@@ -83,6 +88,8 @@ export interface AnswerRow {
   sharedAt: Date | null;
   reviewState: 'none' | 'review_required' | 'cleared' | 'withdrawn';
   answerMarkdown: string | null;
+  /** Held in an open quarantine case (history spec 7.2): seen by nobody; a write is refused with HELD. */
+  heldCaseId: string | null;
 }
 
 /**
@@ -94,7 +101,7 @@ export type AnswerAccess = 'none' | 'hidden' | 'readable' | 'no_longer_readable'
 const ANSWER_ROW = `a.request_id AS "requestId", a.project_id AS "projectId", r.requested_by AS "requestedBy", a.visibility,
   a.shared_thread_id AS "sharedThreadId", a.shared_at AS "sharedAt", a.hidden, a.hidden_reason AS "hiddenReason",
   (SELECT hu.display_name FROM users hu WHERE hu.id = a.hidden_by) AS "hiddenByName",
-  a.review_state AS "reviewState", a.answer_markdown AS "answerMarkdown"`;
+  a.review_state AS "reviewState", a.answer_markdown AS "answerMarkdown", a.held_case_id AS "heldCaseId"`;
 
 /** A question's answer row, or undefined. With `lock`, the answer row is locked for the transaction. */
 export async function loadAnswerRow(db: Db, requestId: string, lock = false): Promise<AnswerRow | undefined> {
@@ -121,7 +128,7 @@ const mayReview = (ctx: ProjectContext) => decide({ action: 'assist.review', rol
  */
 export async function answerAccess(db: Db, ctx: ProjectContext | null, row: AnswerRow): Promise<AnswerAccess> {
   if (!canReadContent(ctx) || ctx.project.id !== row.projectId) return 'none';
-  if (row.reviewState === 'withdrawn') return 'none';
+  if (row.reviewState === 'withdrawn' || row.heldCaseId) return 'none';
   if (row.visibility === 'private') {
     if (row.requestedBy !== ctx.viewerId) return 'none';
   } else {
@@ -132,7 +139,7 @@ export async function answerAccess(db: Db, ctx: ProjectContext | null, row: Answ
         `SELECT au.id, au.project_id AS "projectId", au.mode,
                 COALESCE((SELECT array_agg(m.user_id) FROM audience_members m WHERE m.audience_id = au.id), '{}') AS named
            FROM discussion_threads t JOIN audiences au ON au.id = t.audience_id
-          WHERE t.id = $1 AND t.project_id = $2`,
+          WHERE t.id = $1 AND t.project_id = $2 AND ${notHeldSql('t')}`,
         [row.sharedThreadId, row.projectId],
       )
     ).rows[0];
@@ -193,13 +200,14 @@ interface ViewRow extends AnswerRow {
   modelId: string | null;
   createdAt: Date;
   finishedAt: Date | null;
+  quarantineLabel: string | null;
   question: string;
   notFound: boolean;
 }
 
 const VIEW_SELECT = `SELECT ${ANSWER_ROW}, u.display_name AS "askedByName", r.status, r.failure_code AS "failureCode",
        r.failure_detail AS "failureDetail", r.model_id AS "modelId", r.created_at AS "createdAt", r.finished_at AS "finishedAt",
-       a.question, a.not_found AS "notFound"
+       a.question, a.not_found AS "notFound", ${possibleCopyLabelSql('answer', 'a.request_id')}
   FROM ai_answers a JOIN ai_requests r ON r.id = a.request_id JOIN users u ON u.id = r.requested_by`;
 
 /** The newest questions shown in the Ask panel. */
@@ -257,6 +265,7 @@ async function buildView(db: Db, ctx: ProjectContext, row: ViewRow): Promise<Ans
     sharedAt: row.sharedAt,
     hidden: row.hidden,
     unavailableReason: reason,
+    quarantineLabel: row.quarantineLabel ?? null,
   } as const;
   if (seen === 'hidden') {
     return { ...base, question: null, searchedWords: [], answerMarkdown: null, notice: hiddenNotice(row), sources: [], droppedCount: 0 };
@@ -289,6 +298,7 @@ export interface ThreadAnswerView {
   sharedAt: Date;
   hidden: boolean;
   notice: string | null;
+  quarantineLabel: string | null;
 }
 
 /**
@@ -314,6 +324,7 @@ export async function threadAnswers(db: Db, ctx: ProjectContext, threadId: strin
       sharedAt: row.sharedAt as Date,
       hidden: v.hidden,
       notice: v.notice,
+      quarantineLabel: v.quarantineLabel,
     });
   }
   return out;
@@ -442,7 +453,8 @@ export class QuestionsService {
   private async ownAnswer(db: PoolClient, user: AuthUser, requestId: string): Promise<{ row: AnswerRow; ctx: ProjectContext }> {
     const row = await loadAnswerRow(db, requestId, true);
     if (!row || row.requestedBy !== user.id) throw new NotFoundException();
-    if ((await answerAccess(db, await this.access.load(row.projectId, user, db), row)) === 'none') throw new NotFoundException();
+    if ((await answerAccess(db, await this.access.load(row.projectId, user, db), { ...row, heldCaseId: null })) === 'none') throw new NotFoundException();
+    refuseHeld(row);
     const ctx = await this.access.authorize(user, 'assist.share', row.projectId, db);
     return { row, ctx };
   }
@@ -464,7 +476,7 @@ export class QuestionsService {
         `SELECT t.id, t.audience_id AS "audienceId", t.state, au.mode,
                 COALESCE((SELECT array_agg(m.user_id) FROM audience_members m WHERE m.audience_id = au.id), '{}') AS named
            FROM discussion_threads t JOIN audiences au ON au.id = t.audience_id
-          WHERE t.id = $1 AND t.project_id = $2
+          WHERE t.id = $1 AND t.project_id = $2 AND ${notHeldSql('t')}
           FOR NO KEY UPDATE OF t`,
         [raw, ctx.project.id],
       )
@@ -556,10 +568,10 @@ export class QuestionsService {
     const ctx = await this.inTransaction(async (db) => {
       const row = await loadAnswerRow(db, requestId, true);
       if (!row || row.visibility !== 'shared') throw new NotFoundException();
-      if ((await answerAccess(db, await this.access.load(row.projectId, user, db), row)) === 'none') throw new NotFoundException();
+      if ((await answerAccess(db, await this.access.load(row.projectId, user, db), { ...row, heldCaseId: null })) === 'none') throw new NotFoundException();
+      refuseHeld(row);
       const ctx = await this.access.authorize(user, 'message.moderate', row.projectId, db);
-      const reason = typeof body.reason === 'string' ? body.reason.trim() : '';
-      if (reason === '' || reason.length > 500) throw new BadRequestException(REASON_REQUIRED);
+      const reason = readReason(body.reason, 'a reason', { max: 500, refusal: REASON_REQUIRED });
       if (row.hidden === hide) throw new ConflictException(hide ? 'This answer is already hidden.' : 'This answer is not hidden.');
       const at = this.now();
       await db.query(

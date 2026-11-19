@@ -202,11 +202,13 @@ function seedSql(now: Date): string[] {
 
 /**
  * Seeds the realistic data set into an empty, migrated bench database. Returns the instant "now" for the tick.
- * `guard` checks the connected database's name (the 4b bench passes its own, which also admits `_test`).
+ * The connected database's name is checked before anything is written, and only a `_bench` database is seeded,
+ * whatever the caller's own guard admits: seeding leaves a `bench_meta` table that is in neither registry list of the
+ * quarantine, so a shared `_test` database would fail its registry completeness test (final review I6).
  */
-export async function seedBench(pool: Pool, log: (m: string) => void = console.log, guard: (url: string) => unknown = assertBenchDatabase): Promise<Date> {
+export async function seedBench(pool: Pool, log: (m: string) => void = console.log): Promise<Date> {
   const name = (await pool.query(`SELECT current_database() AS name`)).rows[0].name as string;
-  guard(`postgres://x/${name}`);
+  assertBenchDatabase(`postgres://x/${name}`);
   await pool.query(`CREATE TABLE IF NOT EXISTS bench_meta (key text PRIMARY KEY, value text NOT NULL)`);
   const prior = await pool.query(`SELECT value FROM bench_meta WHERE key = 'seeded_at'`);
   if (prior.rows[0]) {
@@ -292,13 +294,15 @@ export interface Session {
   request(method: string, path: string, body?: unknown): Promise<{ status: number; text: string }>;
 }
 
-export async function startApp(databaseUrl: string): Promise<{ app: INestApplication; base: string; signIn: (email: string) => Promise<Session> }> {
+/** `env` adds settings to the app's configuration (the history bench passes KAINOW_PROTECTED_KEY_FILE). */
+export async function startApp(databaseUrl: string, env: Record<string, string> = {}): Promise<{ app: INestApplication; base: string; signIn: (email: string) => Promise<Session> }> {
   const sender = new CaptureSender();
   const config = loadConfig({
     DATABASE_URL: databaseUrl,
     AUTH_SECRET: randomBytes(32).toString('hex'),
     LOG_SIGN_IN_CODES: 'true',
     COOKIE_SECURE: 'false',
+    ...env,
   });
   const app = await createApp(config, {
     codeSender: sender,

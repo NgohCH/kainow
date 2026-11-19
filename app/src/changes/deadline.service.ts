@@ -1,3 +1,4 @@
+import { liveRecordSql } from '../history/deleted-sql';
 import { BadRequestException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { isCalendarDate } from '../extraction/due';
@@ -45,7 +46,7 @@ export class DeadlineService {
                  FROM change_requests r JOIN change_request_versions v ON v.request_id = r.id AND v.version = r.version
                 WHERE r.target_kind = 'task' AND r.target_id = t.id AND r.status = 'pending' LIMIT 1) AS "pendingRequest"
          FROM tasks t JOIN users u ON u.id = t.assignee_id LEFT JOIN tasks p ON p.id = t.parent_id
-        WHERE t.project_id = $1 AND t.deadline_review_required AND t.status NOT IN ('completed', 'cancelled')
+        WHERE t.project_id = $1 AND t.deadline_review_required AND t.status NOT IN ('completed', 'cancelled') AND ${liveRecordSql('t')}
         ORDER BY t.due_on, t.authorised_at, t.id`,
       [projectId],
     );

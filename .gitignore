@@ -2,3 +2,7 @@
 .env
 # Backups made with the steps in INSTALL.md.
 *.dump
+
+# Protected key files (never commit)
+secrets/
+*.key

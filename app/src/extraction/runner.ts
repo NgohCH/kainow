@@ -11,10 +11,15 @@ import { guardedAiCall, markStaleReservations } from '../ai/guarded-call';
 import type { ModelClient, ModelAnswer } from './model';
 import { DISCUSSION_PREAMBLE, EXTRACTION_SYSTEM_PROMPT, MAX_OUTPUT_TOKENS, REQUEST_TIMEOUT_MS } from './prompt';
 import { type Span, placeItem } from '../analysis/transcript';
+import { type KainowReporter, type OwnedText, messagesOfVersions, reportOwned } from '../quarantine/kainow-report';
+import { HELD_DURING_RUN, sweepMarkSql, sweptSince } from '../quarantine/sweep-lock';
 
 const OPEN_STATES: ProjectStatus[] = ['draft', 'planned', 'active'];
 
 export type RunOutcome = 'succeeded' | 'failed' | 'blocked' | 'retry' | 'skipped';
+
+/** The failure code of a run or request blocked at start because its source was deleted (history spec 4.2). */
+export const SOURCE_DELETED = 'source_deleted';
 
 export interface RunnerDeps {
   pool: Pool;
@@ -23,20 +28,30 @@ export interface RunnerDeps {
   model: ModelClient | null;
   clock: Clock;
   log?: (message: string) => void;
+  /** Opens a quarantine case on the item holding a secret found in stored text (history spec 7.1); without it the run only blocks. */
+  quarantine?: KainowReporter;
 }
 
 interface RunRow {
   id: string;
   status: string;
   source_version_id: string;
+  source_id: string;
+  project_id: string | null;
   requested_by: string | null;
   /** 'discussion' for a stored transcript of a project discussion; 'notes' and 'minutes' are read as notes. */
   source_kind: string;
+  /** 'deleted' once the source was deleted while the run waited (history spec 4.2). */
+  source_status: string;
+  /** The source is held in a quarantine case (history spec 7.2). */
+  source_held: boolean;
   /** 'discussion' only for a run made by the analysis runner, which has already rechecked the requester. */
   trigger: string;
   user_status: string;
   user_role: string;
   text: string;
+  /** The project's sweep marker, read in the same statement as `text` (history spec 7.4; final review C1). */
+  sweep_mark: string;
 }
 
 /**
@@ -76,8 +91,9 @@ export class ExtractionRunner {
   async process(runId: string, attemptNo: number, isLastAttempt: boolean): Promise<RunOutcome> {
     const { pool, spend } = this.d;
     const { rows } = await pool.query<RunRow>(
-      `SELECT r.id, r.status, r.source_version_id, r.requested_by, r.trigger, s.kind AS source_kind, u.status AS user_status, u.role AS user_role,
-              v.text_content AS text
+      `SELECT r.id, r.status, r.source_version_id, s.id AS source_id, s.project_id, r.requested_by, r.trigger, s.kind AS source_kind, s.status AS source_status, s.held_case_id IS NOT NULL AS source_held,
+              u.status AS user_status, u.role AS user_role,
+              v.text_content AS text, ${sweepMarkSql('s.project_id')} AS sweep_mark
          FROM extraction_runs r
          JOIN source_versions v ON v.id = r.source_version_id
          JOIN sources s ON s.id = v.source_id
@@ -98,6 +114,14 @@ export class ExtractionRunner {
 
     await markStaleReservations(pool, spend, runId, attemptNo);
 
+    // A source deleted while the run waited is never sent (history spec 4.2): no AI call, no charge.
+    if (run.source_status === 'deleted') {
+      return this.finish(run, 'blocked', SOURCE_DELETED, 'The source was deleted, so the extraction did not run.');
+    }
+    // Nor is a source held for a suspected credential (history spec 7.2).
+    if (run.source_held) {
+      return this.finish(run, 'blocked', 'held', 'The source is held for a suspected credential, so the extraction did not run.');
+    }
     // The person may have been disabled, or lost the right in the note's project, since they asked (A11).
     // Automatic runs (no requester) recheck the project state only.
     if (run.requested_by !== null && run.user_status !== 'active') {
@@ -112,6 +136,8 @@ export class ExtractionRunner {
 
     const findings = findCredentials(run.text);
     if (findings.length > 0) {
+      // A secret in stored text: Kainow opens the case itself on the owning item, then blocks as before (history spec 7.1).
+      await this.reportStored(run);
       const kinds = findings.map((f) => `${f.pattern} (${f.count})`).join(', ');
       return this.finish(
         run,
@@ -148,7 +174,12 @@ export class ExtractionRunner {
     if (outcome.kind === 'retry') return this.requeue(run);
     if (outcome.kind !== 'ok') return this.finish(run, outcome.kind, outcome.code, outcome.detail);
     try {
-      return await this.saveItems(run, outcome.modelId, outcome.value);
+      const saved = await this.saveItems(run, outcome.modelId, outcome.value);
+      if (saved !== 'swept') return saved;
+      // A report swept this project while the AI call ran: nothing was saved. Asked again, the run reads the cleaned
+      // text (or finds its source held and blocks); on its last attempt it ends blocked (C1).
+      if (!isLastAttempt) return this.requeue(run);
+      return this.finish(run, 'blocked', HELD_DURING_RUN.code, HELD_DURING_RUN.detail);
     } catch (err) {
       // The cost is already settled; saving failed, so the run is retried or ends as an internal error.
       this.d.log?.(`extraction ${run.id}: unexpected error: ${err instanceof Error ? err.stack ?? err.message : String(err)}`);
@@ -157,17 +188,40 @@ export class ExtractionRunner {
     }
   }
 
+  /**
+   * Notes and minutes: the source owns its text. A stored discussion transcript: each message whose body holds a match
+   * owns it, found through the transcript's spans (the transcript itself is not an item). No transaction is open here.
+   */
+  private async reportStored(run: RunRow): Promise<void> {
+    let owned: OwnedText[];
+    if (run.source_kind === 'discussion') {
+      const spans = await this.loadSpans(this.d.pool, run.source_version_id);
+      owned = await messagesOfVersions(this.d.pool, spans.map((s) => ({ messageVersionId: s.messageVersionId, text: run.text.slice(s.bodyStart, s.bodyEnd) })));
+    } else {
+      owned = [{ kind: 'source', id: run.source_id, text: run.text }];
+    }
+    await reportOwned(this.d.quarantine, run.project_id, owned, this.d.log);
+  }
+
   private async requeue(run: RunRow): Promise<RunOutcome> {
     await this.d.pool.query(`UPDATE extraction_runs SET status = 'queued' WHERE id = $1 AND status IN ('queued', 'running')`, [run.id]);
     return 'retry';
   }
 
-  private async saveItems(run: RunRow, modelId: string, answer: ModelAnswer): Promise<RunOutcome> {
+  /**
+   * 'swept' when a report swept or held something in the project since the text was read: nothing is saved, since the
+   * answer may repeat text the sweep has since cleaned (C1). Checked first, under the project's sweep lock (shared).
+   */
+  private async saveItems(run: RunRow, modelId: string, answer: ModelAnswer): Promise<RunOutcome | 'swept'> {
     const { items, meetingDate } = answer;
     const at = this.d.clock();
     const client = await this.d.pool.connect();
     try {
       await client.query('BEGIN');
+      if (run.project_id && (await sweptSince(client, run.project_id, run.sweep_mark))) {
+        await client.query('ROLLBACK');
+        return 'swept';
+      }
       // Items are saved only while the run is still waiting or running (a late save after a stall inserts nothing; spend stays settled).
       const live = await client.query(`SELECT 1 FROM extraction_runs WHERE id = $1 AND status IN ('queued', 'running') FOR UPDATE`, [run.id]);
       if (live.rowCount === 0) {
@@ -226,7 +280,7 @@ export class ExtractionRunner {
     }
   }
 
-  private async loadSpans(db: PoolClient, sourceVersionId: string): Promise<Span[]> {
+  private async loadSpans(db: Pick<Pool, 'query'>, sourceVersionId: string): Promise<Span[]> {
     const { rows } = await db.query(
       `SELECT message_no AS "messageNo", message_version_id AS "messageVersionId", author_id AS "authorId", header_start AS "headerStart",
               body_start AS "bodyStart", body_end AS "bodyEnd", is_context AS "isContext"

@@ -4,6 +4,10 @@ import { go } from '../App.tsx';
 import { type AudienceView, returnedNotice, versionOriginText } from '../discussion.ts';
 import { formatWhen, plural } from '../format.ts';
 import { mayDraftSummary } from '../assist.ts';
+import { type SourceKind, mayDeleteSource } from '../history.ts';
+import { DeleteAction } from './DeleteRestore.tsx';
+import { runFailureText } from '../quarantine.ts';
+import { QuarantineNote, ReportSecret } from './ReportSecret.tsx';
 import { AudiencePanel } from './AudiencePanel.tsx';
 import { SummaryRequest } from './SummaryView.tsx';
 import { Intake } from './Intake.tsx';
@@ -17,6 +21,8 @@ interface Detail {
     projectId: string;
     kind: string;
     label: string | null;
+    /** "Possible credential removed — awaiting check" while this is a possible copy masked at once (history spec 7.4). */
+    quarantineLabel?: string | null;
     publication: 'published' | 'submitted' | 'returned';
     intendedMode: 'project' | 'restricted' | null;
     returnedReason: string | null;
@@ -111,12 +117,26 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
   const isReviewer = roles.some((r) => r !== 'member');
   const projectOpen = project ? ['draft', 'planned', 'active'].includes(project.status) : false;
   const published = src.publication === 'published';
+  // Notes, minutes and approved summaries can be deleted; a discussion transcript is not deleted directly (its messages are).
+  const sourceKind: SourceKind | null = src.kind === 'notes' ? 'note' : src.kind === 'minutes' ? 'minutes' : src.kind === 'summary' ? 'summary' : null;
+  const mayDelete = project !== null && sourceKind !== null && mayDeleteSource(project.myRoles, project.status);
 
   return (
     <main className="page">
       <p><a href={`#/projects/${src.projectId}/notes`}>Back to the project's notes</a></p>
       <h1>{src.title}</h1>
+      {mayDelete && sourceKind && (
+        <p>
+          <DeleteAction kind={sourceKind} id={sourceId} label={`${sourceKind === 'minutes' ? 'these minutes' : `this ${sourceKind}`}`} onDone={() => go(`#/projects/${src.projectId}/notes`)} />
+        </p>
+      )}
+      {project && src.kind !== 'discussion' && (
+        <p>
+          <ReportSecret projectId={src.projectId} kind="source" id={sourceId} label={`this ${sourceKind === 'minutes' ? 'set of minutes' : (sourceKind ?? 'source')}`} onReported={() => go(`#/projects/${src.projectId}/notes`)} />
+        </p>
+      )}
       {src.label && <p className="meta">{src.label}</p>}
+      <QuarantineNote text={src.quarantineLabel} />
       {src.provenance && <p className="meta">{src.provenance}</p>}
       {src.summary && (
         <p className="meta" role="note">
@@ -169,7 +189,7 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
         <section aria-label="Notes text">
           <p className="meta">
             Version {version.versionNo}, {versionOriginText(version)}, {version.charCount.toLocaleString()} characters, added {formatWhen(version.createdAt)}.{' '}
-            {version.origin === 'upload' && <a href={api.originalUrl(sourceId, version.versionNo)}>Download the original file</a>}
+            {version.origin === 'upload' && (version.originalWithheld ? <span className="warn" role="note">{version.originalWithheld}</span> : <a href={api.originalUrl(sourceId, version.versionNo)}>Download the original file</a>)}
           </p>
           <div className="source" tabIndex={0}>{text ?? 'Loading'}</div>
         </section>
@@ -192,7 +212,7 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
                     <a className="button" href={`#/runs/${r.id}`}>Review</a>
                   </>
                 )}
-                {(r.status === 'failed' || r.status === 'blocked') && <span className="reason">{r.failureDetail}</span>}
+                {(r.status === 'failed' || r.status === 'blocked') && <span className="reason">{runFailureText(r.failureCode, r.failureDetail)}</span>}
               </li>
             ))}
           </ul>

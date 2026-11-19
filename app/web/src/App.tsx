@@ -4,12 +4,15 @@ import type { Branding } from './branding.ts';
 import { Invitation } from './views/Invitation.tsx';
 import { Bell } from './views/Bell.tsx';
 import { Letterhead, LogoImage } from './views/Letterhead.tsx';
+import { DeletedItemPage } from './views/DeletedItems.tsx';
 import { NoteDetail } from './views/NoteDetail.tsx';
 import { BeingSetUp, Onboarding } from './views/Onboarding.tsx';
 import { ApprovalSettings } from './views/ApprovalSettings.tsx';
 import { EscalatedFeedback } from './views/EscalatedFeedback.tsx';
 import { Departments, Domains } from './views/Organisation.tsx';
 import { OrganisationScreen } from './views/OrganisationProfile.tsx';
+import { CasePage } from './views/HeldReview.tsx';
+import { SecurityReviewPage } from './views/SecurityReview.tsx';
 import { Setup } from './views/Setup.tsx';
 import { People } from './views/People.tsx';
 import { ProjectPage } from './views/ProjectPage.tsx';
@@ -196,6 +199,13 @@ export function App() {
     );
   }, []);
 
+  // A designated security reviewer gets the Security review page; anyone else is refused, so the link stays hidden.
+  const [reviewer, setReviewer] = useState(false);
+  useEffect(() => {
+    if (!user) return setReviewer(false);
+    api.get('/security/cases').then(() => setReviewer(true), () => setReviewer(false));
+  }, [user]);
+
   const signOut = useCallback(async () => {
     await api.post('/auth/logout').catch(() => undefined);
     setUser(null);
@@ -245,7 +255,10 @@ export function App() {
   }
   const note = /^#\/notes\/([0-9a-f-]{36})(?:\/v\/(\d+))?$/i.exec(hash);
   const run = /^#\/runs\/([0-9a-f-]{36})$/i.exec(hash);
-  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work|drafts|review|settings|feedback|closing|deadline-review)(?:\/([0-9a-f-]{36}))?)?$/i.exec(hash);
+  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work|drafts|review|settings|feedback|closing|deadline-review|deleted)(?:\/([0-9a-f-]{36}))?)?$/i.exec(hash);
+  const deletedItem = /^#\/projects\/([0-9a-f-]{36})\/deleted\/([a-z]+)\/([0-9a-f-]{36})$/i.exec(hash);
+  const quarantineCase = /^#\/quarantine\/cases\/([0-9a-f-]{36})(?:\/copies)?$/i.exec(hash);
+  const securityPage = /^#\/security\/(cases|grants)$/.test(hash);
   const summary = /^#\/summaries\/([0-9a-f-]{36})$/i.exec(hash);
   const thread = parseThreadHash(hash);
   const searching = isSearchHash(hash);
@@ -257,19 +270,22 @@ export function App() {
   else if (isAdmin && adminPage === 'spending') page = <Spending />;
   else if (isAdmin && adminPage === 'departments') page = <Departments />;
   else if (isAdmin && adminPage === 'domains') page = <Domains />;
-  else if (isAdmin && adminPage === 'organisation') page = <OrganisationScreen onBrandingChanged={loadBranding} />;
+  else if (isAdmin && adminPage === 'organisation') page = <OrganisationScreen onBrandingChanged={loadBranding} meId={user.id} />;
   else if (isAdmin && adminPage === 'approvals') page = <ApprovalSettings />;
   else if (isAdmin && adminPage === 'notifications-settings') page = <NotificationsSettings />;
   else if (isAdmin && adminPage === 'deliveries') page = <Deliveries />;
   else if (isAdmin && adminPage === 'go-live') page = <GoLive />;
   else if (isAdmin && adminPage === 'escalated-feedback') page = <EscalatedFeedback />;
+  else if (quarantineCase) page = <CasePage key={quarantineCase[1]} caseId={quarantineCase[1]} />;
+  else if (securityPage) page = <SecurityReviewPage />;
   else if (hash === '#/notifications') page = <Notifications />;
   else if (searching) page = <Search hash={hash} />;
   else if (summary) page = <SummaryPage key={summary[1]} summaryId={summary[1]} />;
   else if (thread) page = <Thread key={thread.threadId} projectId={thread.projectId} threadId={thread.threadId} meId={user.id} messageNo={thread.messageNo} answerId={answerIdFromHash(hash)} />;
+  else if (deletedItem) page = <DeletedItemPage key={deletedItem[3]} projectId={deletedItem[1]} kind={deletedItem[2]} itemId={deletedItem[3]} />;
   else if (run) page = <Review runId={run[1]} meId={user.id} />;
   else if (note) page = <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} />;
-  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'feedback' | 'closing' | 'deadline-review' | undefined) ?? 'overview'} itemId={project[3]} />;
+  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | undefined) ?? 'overview'} itemId={project[3]} />;
   else page = <Projects isAdmin={isAdmin} />;
 
   return (
@@ -279,7 +295,8 @@ export function App() {
         {branding && <Letterhead branding={branding} place="header" />}
         <a className="wordmark" href="#/">Kainow</a>
         <nav aria-label="Main" className="mainnav">
-          <a href="#/" aria-current={!adminPage ? 'page' : undefined}>My Projects</a>
+          <a href="#/" aria-current={!adminPage && !securityPage ? 'page' : undefined}>My Projects</a>
+          {reviewer && <a href="#/security/cases" aria-current={securityPage ? 'page' : undefined}>Security review</a>}
           {isAdmin && (
             <>
               <a href="#/people" aria-current={adminPage === 'people' ? 'page' : undefined}>Administrators</a>

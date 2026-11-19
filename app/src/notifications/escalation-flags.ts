@@ -1,5 +1,6 @@
 // "No independent escalation recipient" (spec §5): open tasks whose current-episode escalation found nobody to tell,
 // listed for as long as that episode is overdue.
+import { liveRecordSql } from '../history/deleted-sql';
 import type { Pool, PoolClient } from 'pg';
 
 export interface EscalationFlag {
@@ -13,7 +14,7 @@ export async function escalationFlags(db: Pool | PoolClient, projectId: string, 
     `SELECT DISTINCT t.id AS "taskId", t.title, to_char(t.due_on, 'YYYY-MM-DD') AS "dueOn"
        FROM tasks t
        JOIN notification_triggers n ON n.record_kind = 'task' AND n.record_id = t.id AND n.outcome = 'no_recipient'
-      WHERE t.project_id = $1 AND t.status NOT IN ('completed', 'cancelled')
+      WHERE t.project_id = $1 AND t.status NOT IN ('completed', 'cancelled') AND ${liveRecordSql('t')}
         AND (
           (n.kind = 'overdue' AND t.due_on < $2::date
             AND n.key = 'task:' || t.id || ':overdue:' || to_char(t.due_on, 'YYYY-MM-DD') || ':'

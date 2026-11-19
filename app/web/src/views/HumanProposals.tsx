@@ -1,4 +1,5 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import { QuarantineNote, ReportSecret } from './ReportSecret.tsx';
 import { ApiError, api, type DueReading } from '../api.ts';
 import { formatWhen } from '../format.ts';
 import { AuthoriseForm, type Person } from './AuthoriseForm.tsx';
@@ -8,6 +9,8 @@ import { waitingLine, type RequestView } from '../changes.ts';
 
 type Kind = 'action' | 'decision' | 'question' | 'risk';
 interface Proposal {
+  /** "Possible credential removed — awaiting check" while this is a possible copy masked at once (history spec 7.4). */
+  quarantineLabel?: string | null;
   id: string;
   kind: Kind;
   text: string;
@@ -132,6 +135,7 @@ export function HumanProposals({
               <div>
                 <span className="badge">{KIND_LABEL[p.kind]}</span> <strong>{p.text}</strong>
               </div>
+              <QuarantineNote text={p.quarantineLabel} />
               <span className="meta">
                 {p.label}, by {p.proposedBy}, {formatWhen(p.proposedAt)}
                 {p.owner ? ` · who: ${p.owner}` : ''}
@@ -139,6 +143,7 @@ export function HumanProposals({
                 {p.reviewStatus === 'rejected' ? ` · rejected: ${p.rejectReason}` : ''}
                 {p.record ? ' · authorised (see the Work tab)' : ''}
               </span>
+              <ReportSecret projectId={projectId} kind="human_proposal" id={p.id} label="this proposal" onReported={() => void load()} />
               {canReview && p.reviewStatus === 'pending' && authorising !== p.id && rejecting !== p.id && !pendingAuthorisation(requests, p.id) && (
                 <div className="decision">
                   <button className="approve" onClick={() => setAuthorising(p.id)}>Authorise</button>

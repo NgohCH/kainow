@@ -2,6 +2,7 @@ import { BadRequestException, ConflictException, ForbiddenException, Inject, Inj
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
+import { readReason } from '../common/reason';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { type ProjectContext, ProjectAccess } from './access.service';
@@ -55,8 +56,7 @@ export class HoldsService {
   }
 
   async recordFinding(user: AuthUser, membershipId: string, input: Record<string, unknown>) {
-    const finding = text(input.finding);
-    if (finding === '' || finding.length > 4000) throw new BadRequestException('Write the finding (up to 4000 characters).');
+    const finding = readReason(input.finding, 'the finding', { max: 4000, refusal: 'Write the finding (up to 4000 characters).' });
     const recommendation = input.recommendation;
     if (recommendation !== 'restore' && recommendation !== 'revoke') throw new BadRequestException('Recommend restore or revoke.');
     const at = this.now();
@@ -94,8 +94,7 @@ export class HoldsService {
   }
 
   async restore(user: AuthUser, membershipId: string, input: Record<string, unknown>) {
-    const reason = text(input.reason);
-    if (reason === '') throw new BadRequestException('A reason is required.');
+    const reason = readReason(input.reason, 'a reason', { refusal: 'A reason is required.' });
     const at = this.now();
     return this.tx(async (c) => {
       const { ctx, row } = await this.load(c, user, membershipId, true);

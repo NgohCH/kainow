@@ -1,4 +1,5 @@
 import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { refuseSecretsIn } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -23,6 +24,7 @@ export interface Preview { moved: PreviewItem[]; added: PreviewItem[]; removed: 
 
 const reasonOf = (v: unknown): string => {
   if (typeof v !== 'string' || v.trim() === '') throw new BadRequestException(MSG.reason);
+  refuseSecretsIn(v.trim());
   return v.trim();
 };
 

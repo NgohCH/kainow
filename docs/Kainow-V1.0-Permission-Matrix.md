@@ -7,7 +7,7 @@
 
 ## 1. Reading the matrix
 
-This is the current default action catalogue, consolidating the role-specific documents and D01–D70/O01–O17. It does not create new permissions or replace their conditions. **A role not listed for an action has no default authority for that action.** Administrator-configured policy may change supported delegable choices, never the mandatory protections. A newly requested action not covered here requires clarification rather than an inferred management power.
+This is the current default action catalogue, consolidating the role-specific documents and D01–D83/O01–O17. It does not create new permissions or replace their conditions. **A role not listed for an action has no default authority for that action.** Administrator-configured policy may change supported delegable choices, never the mandatory protections. A newly requested action not covered here requires clarification rather than an inferred management power.
 
 Abbreviations: **EA** Enterprise Administrator; **PM** Project Manager; **DPM** Deputy PM; **O/S** Project Owner or Sponsor. “Participant” means a currently authorised active project participant, including management roles. “Own” is the named author/assignee/requester relationship, not a right over every project record. Audit/Oversight and leadership are additional scopes, not primary project roles. Combining roles gives the valid permissions of each, subject to separation and self-approval rules.
 
@@ -37,8 +37,13 @@ Every action also checks account, organisation/project, membership or independen
 | Suspend/restore independent grant | EA or authorised grant manager | Reason, explicit restoration; expiry continues; O07. |
 | Grant leadership summary scope | EA | Explicit project/organisation summary scope, start and optional expiry; D48. |
 | Inspect investigation details | Explicitly authorised investigators/role managers | Separate restricted record, minimum disclosure; leadership excluded by default; O07. |
-| Approve quarantined-original access | Enterprise Administrator other than requester | Separate security grant, 24-hour default, fresh approval for extension, scoped records/purpose/expiry; no independent approver means blocked; Q03. |
+| Designate/undesignate security reviewer | EA, never for themselves | Reason recorded in security-reviewer history; Organisation page; D82. |
+| Request quarantined-original access | Designated security reviewer | Names cases by reference, project and item kind (never content), with a purpose and duration (default 24 hours); D82. |
+| Approve/decline/extend quarantined-original access | Enterprise Administrator other than requester | Separate security grant, 24-hour default, fresh approval for extension, scoped records/purpose/expiry; no independent approver means blocked; Q03, D82. |
+| Revoke quarantined-original access | Any EA | Ends the grant at once; reason recorded. |
 | Inspect quarantined originals | Current security-grant holder | Explicit reveal confirmation and inspection log; no bulk export, email or AI; ordinary Audit/Oversight insufficient; Q03. |
+| Release a quarantine case unchanged (false alarm) | Current security-grant holder naming the case | Reason; every original returns except a value changed since cleaning, which is listed and not overwritten; Administrators notified; D82. |
+| See quarantine cases (no content) | EA | Case reference, project, item kind, state, waiting-for-key and known disclosures; never the marked text or the original. |
 
 Required-role vacancy on an Active project flags accountability and blocks new approvals/substantive amendments. Existing authorised work and explicitly permitted repairs/protective actions can continue; no automatic access extension (D03). Draft may be incomplete; Planned needs accepted appointments and Active needs Active required memberships. Role separation must hold before the seventh participant activates.
 
@@ -104,10 +109,15 @@ Self-approval is allowed by default for an eligible O/S, including a valid combi
 | Review/close AI feedback | PM or DPM | Escalate provider/configuration issues to EA; no automatic configuration edits. |
 | Inspect ordinary history | Person with current record access | Version retention does not bypass source restrictions. |
 | Mark discussion message Deleted | Author, PM or DPM | Logical deletion with actor/time/reason; exclude ordinary use/future processing. |
-| Mark imported source Deleted | PM or O/S | Retain source/history and flag affected records. |
-| Mark authorised record Deleted | O/S | Must first reach appropriate cancellation/withdrawal/resolution disposition; no erasure of commitments. |
-| Inspect Deleted content | Explicit Inspect Deleted Content Audit/Oversight scope | Not automatic for creator/PM/EA; quarantined originals excluded. |
-| Restore discussion / source / authorised record | PM or DPM / PM or O/S / O/S approval respectively | Narrow administrative exception while Deferred/Closed. Audience preview, current permissions, prior status/history, no automatic work/AI/email/access revival; Q04. |
+| Mark imported source Deleted | PM or O/S in the source audience | Draft, Planned or Active only; reason (credential-checked); retain source/history and flag affected records; refused while held for a suspected credential. |
+| Mark authorised record Deleted | O/S; PM under a current D83 delegation | Draft, Planned or Active only; must first reach appropriate cancellation/withdrawal/resolution disposition (the refusal names the state needed); subtasks deleted with their parent; no erasure of commitments. |
+| Delegate/revoke record deletion and restoring | O/S | Per project, to the PM only (never a Deputy), with a reason; one delegation per project; revocable by any O/S; ends when the PM changes; O/S notified in-app of each deletion or restoration under it; D83. |
+| Inspect Deleted content | Explicit Inspect Deleted Content Audit/Oversight scope | Chosen when the grant is requested; within the grant's project and audience rules; read-only and labelled; each opening recorded; no AI, search or export. Not automatic for creator/PM/EA; held items and quarantined originals excluded. |
+| Restore discussion / source / authorised record | PM or DPM / PM or O/S / O/S, or PM under D83 | Any project state (narrow administrative exception while Deferred/Closed). Audience preview naming who regains visibility, current permissions, prior status/history, no automatic work/AI/email/access revival; a parent brings back only the subtasks deleted with it; Q04, D83. |
+| See project History of deletions and reports | Participant or Active grant holder | Kind, actor, time and reason, never the title or text; titles only for Inspect Deleted Content holders; a credential report line names its reporter only to PM, O/S and EA. |
+| Report a suspected secret | Anyone who can currently read the item, including Audit/Oversight grant holders | Any project state (protective); marks the exact text and gives a reason; the item is held at once and every copy cleaned; D80, D81. |
+| Review, mark more and release a cleaned item | PM or O/S in the item's audience | Any project state (protective); sees the cleaned text only, never the original; reason on release; confirmed copies return with it; D81. |
+| Confirm/dismiss possible copies | PM or DPM | Any project state (protective); kind, reference and date only, never the marked text; a dismissed place gets its original back; D80. |
 | Export visible data | Person with current read access AND enabled export policy | Restricted read alone does not imply bulk export; recheck content/audience, deleted/quarantined exclusions; O14. |
 
 ## 5. Resources, money, outputs and dashboards

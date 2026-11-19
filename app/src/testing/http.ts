@@ -23,8 +23,8 @@ export interface Client {
   request(method: string, path: string, body?: unknown): Promise<Reply>;
   /** Sends raw bytes (a file upload) with the given type. */
   upload(method: string, path: string, body: Buffer, contentType: string): Promise<Reply>;
-  /** A request whose answer is not JSON (a download): status, headers and the text as sent. */
-  raw(method: string, path: string): Promise<{ status: number; headers: Headers; text: string }>;
+  /** A request whose answer is read as sent (a download, or headers to check): status, headers and the text. A body is sent as JSON. */
+  raw(method: string, path: string, body?: unknown): Promise<{ status: number; headers: Headers; text: string }>;
 }
 
 /** A queued email as the tests see it. */
@@ -70,10 +70,10 @@ async function send(base: string, method: string, path: string, body: unknown, h
  * The organisation is already set up unless `organisation: false` (for onboarding tests).
  */
 /** Ending a meeting does nothing unless a test gives a hook, or an analysis queue (then the real hook requests the final draft). */
-export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opts: { organisation?: boolean; emailNudge?: { nudge(): Promise<void> }; meetingEndHook?: MeetingEndHook; automaticAnalysis?: AutomaticAnalysis; analysisQueue?: AnalysisQueue; assistQueue?: AssistQueue } = {}): Promise<TestApp> {
+export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opts: { organisation?: boolean; emailNudge?: { nudge(): Promise<void> }; meetingEndHook?: MeetingEndHook; automaticAnalysis?: AutomaticAnalysis; analysisQueue?: AnalysisQueue; assistQueue?: AssistQueue; protectedKeyFile?: string } = {}): Promise<TestApp> {
   const sender = new CaptureSender();
   const clock = new FakeClock(startAt);
-  const config = loadConfig(testEnv(testDatabaseUrl() as string));
+  const config = loadConfig({ ...testEnv(testDatabaseUrl() as string), ...(opts.protectedKeyFile ? { KAINOW_PROTECTED_KEY_FILE: opts.protectedKeyFile } : {}) });
   const pool = new Pool({ connectionString: config.databaseUrl });
   await resetPublicSchema(pool);
   await runMigrations(pool, config.migrationsDir);
@@ -102,8 +102,12 @@ export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opt
         const text = await res.text();
         return { status: res.status, body: text ? JSON.parse(text) : undefined };
       },
-      raw: async (method, path) => {
-        const res = await fetch(`${base}${path}`, { method, headers: { Cookie: cookie, 'X-CSRF-Token': csrfToken } });
+      raw: async (method, path, body) => {
+        const res = await fetch(`${base}${path}`, {
+          method,
+          headers: { Cookie: cookie, 'X-CSRF-Token': csrfToken, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
+          body: body !== undefined ? JSON.stringify(body) : undefined,
+        });
         return { status: res.status, headers: res.headers, text: await res.text() };
       },
     };

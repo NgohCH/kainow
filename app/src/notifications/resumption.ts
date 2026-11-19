@@ -1,5 +1,6 @@
 // The resumption summary (spec §5): once when a Deferred or Closed project returns to Active, to the PM and each
 // assignee with outstanding work. Missed reminders are not replayed; this summary covers what matters.
+import { liveRecordSql } from '../history/deleted-sql';
 import type { Pool } from 'pg';
 import type { Decided } from './fire';
 import { type Holder, routeFor } from './recipients';
@@ -39,14 +40,14 @@ export async function resumptionTrigger(
   const open = (
     await pool.query(
       `SELECT title, assignee_id AS "assigneeId", to_char(due_on, 'YYYY-MM-DD') AS "dueOn", deadline_review_required AS review
-         FROM tasks WHERE project_id = $1 AND status NOT IN ('completed', 'cancelled') ORDER BY due_on, title, id`,
+         FROM tasks t WHERE t.project_id = $1 AND t.status NOT IN ('completed', 'cancelled') AND ${liveRecordSql('t')} ORDER BY t.due_on, t.title, t.id`,
       [project.id],
     )
   ).rows as { title: string; assigneeId: string; dueOn: string; review: boolean }[];
   const risks = (
     await pool.query(
-      `SELECT description, to_char(review_on, 'YYYY-MM-DD') AS "reviewOn" FROM risks
-        WHERE project_id = $1 AND status <> 'resolved' AND review_on < $2::date ORDER BY review_on, description, id`,
+      `SELECT description, to_char(review_on, 'YYYY-MM-DD') AS "reviewOn" FROM risks k
+        WHERE k.project_id = $1 AND k.status <> 'resolved' AND k.review_on < $2::date AND ${liveRecordSql('k')} ORDER BY k.review_on, k.description, k.id`,
       [project.id, ctx.today],
     )
   ).rows as { description: string; reviewOn: string }[];

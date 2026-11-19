@@ -14,6 +14,8 @@ export const NOTE_MESSAGE = `Write a note of 1 to ${MAX_NOTE.toLocaleString('en-
 export const CATEGORY_MESSAGE = 'Choose what was wrong.';
 
 export interface FeedbackView {
+  /** "Possible credential removed — awaiting check" while this is a possible copy masked at once (history spec 7.4). */
+  quarantineLabel?: string | null;
   id: string;
   projectId: string;
   targetKind: TargetKind;

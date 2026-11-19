@@ -22,6 +22,8 @@ export interface AnswerSource {
 }
 
 export interface AnswerView {
+  /** "Possible credential removed — awaiting check" while this is a possible copy masked at once (history spec 7.4). */
+  quarantineLabel?: string | null;
   id: string;
   projectId: string;
   question: string | null;
@@ -46,6 +48,8 @@ export interface AnswerView {
 
 /** An answer shared into a thread, as ThreadView.aiAnswers carries it. */
 export interface ThreadAnswerView {
+  /** "Possible credential removed — awaiting check" while this is a possible copy masked at once (history spec 7.4). */
+  quarantineLabel?: string | null;
   id: string;
   askedBy: Person;
   question: string | null;
@@ -328,6 +332,8 @@ export interface DraftVersion {
   createdAt: string;
 }
 export interface DraftListItem {
+  /** "Possible credential removed — awaiting check" while this is a possible copy masked at once (history spec 7.4). */
+  quarantineLabel?: string | null;
   id: string;
   kind: ReportKind;
   kindLabel: string;
@@ -342,6 +348,8 @@ export interface DraftListItem {
   notice: string | null;
 }
 export interface DraftView {
+  /** "Possible credential removed — awaiting check" while this is a possible copy masked at once (history spec 7.4). */
+  quarantineLabel?: string | null;
   id: string;
   projectId: string;
   kind: ReportKind;
@@ -515,6 +523,8 @@ export interface SummaryVersion {
   label: string;
 }
 export interface SummaryFullView {
+  /** "Possible credential removed — awaiting check" while this is a possible copy masked at once (history spec 7.4). */
+  quarantineLabel?: string | null;
   view: 'full';
   id: string;
   projectId: string;
@@ -541,6 +551,8 @@ export interface SummaryFullView {
   canReview: boolean;
 }
 export interface SummarySharedView {
+  /** "Possible credential removed — awaiting check" while this is a possible copy masked at once (history spec 7.4). */
+  quarantineLabel?: string | null;
   view: 'shared';
   id: string;
   projectId: string;
@@ -552,6 +564,8 @@ export interface SummarySharedView {
 }
 export type SummaryAny = SummaryFullView | SummarySharedView;
 export interface SummaryListItem {
+  /** "Possible credential removed — awaiting check" while this is a possible copy masked at once (history spec 7.4). */
+  quarantineLabel?: string | null;
   id: string;
   original: { kind: 'source' | 'meeting'; id: string; title: string };
   state: SummaryState;

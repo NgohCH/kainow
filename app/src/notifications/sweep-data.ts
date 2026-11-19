@@ -1,6 +1,7 @@
 // What the sweep reads about every Active project, loaded together for the whole run (a handful of queries) rather than
 // project by project (about sixteen each). Every value equals what the per-project loaders return; they remain the
 // loaders for everything else (settings pages, digests, eligibility checks).
+import { liveRecordSql } from '../history/deleted-sql';
 import type { Pool } from 'pg';
 import type { MembershipRow, ProjectRole } from '../projects/membership';
 import type { RiskStatus } from '../records/lifecycles';
@@ -54,7 +55,7 @@ export async function loadSweepData(pool: Pool, projectIds: string[], today: str
             (SELECT count(*)::int FROM task_events e WHERE e.task_id = t.id AND e.kind = 'reopened') AS "reopenCount",
             t.invitation_id AS "invitationId", i.status AS "invStatus", i.expires_at AS "invExpiresAt"
        FROM tasks t LEFT JOIN invitations i ON i.id = t.invitation_id
-      WHERE t.project_id = ANY($1::uuid[]) AND t.status NOT IN ('completed', 'cancelled')
+      WHERE t.project_id = ANY($1::uuid[]) AND t.status NOT IN ('completed', 'cancelled') AND ${liveRecordSql('t')}
       ORDER BY t.project_id, t.id`,
     [projectIds],
   );
@@ -65,7 +66,7 @@ export async function loadSweepData(pool: Pool, projectIds: string[], today: str
 
   const risks = await pool.query(
     `SELECT project_id AS "projectId", id, description, status, responsible_id AS "responsibleId", to_char(review_on, 'YYYY-MM-DD') AS "reviewOn"
-       FROM risks WHERE project_id = ANY($1::uuid[]) AND status <> 'resolved' AND review_on IS NOT NULL ORDER BY project_id, id`,
+       FROM risks k WHERE k.project_id = ANY($1::uuid[]) AND k.status <> 'resolved' AND k.review_on IS NOT NULL AND ${liveRecordSql('k')} ORDER BY k.project_id, k.id`,
     [projectIds],
   );
   for (const r of risks.rows) {
