@@ -29,8 +29,8 @@ export const LEADERSHIP_FIELD_KEYS = [
   'attentionFlags',
   'refresh',
 ] as const;
-/** Fields that can never be hidden. */
-export const LEADERSHIP_FIXED_FIELDS: readonly string[] = ['name', 'refresh'];
+/** Fields that can never be hidden (spec section 8: attention flags are never hideable). They can still be moved. */
+export const LEADERSHIP_FIXED_FIELDS: readonly string[] = ['name', 'refresh', 'attentionFlags'];
 
 export const MAX_EXPANDED = 1000;
 

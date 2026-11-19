@@ -43,6 +43,12 @@ describe('normalisePrefs', () => {
     assert.ok(p.leadership.fields.order.includes('name') && p.leadership.fields.order.includes('refresh'));
   });
 
+  test('attentionFlags cannot be hidden but can be moved', () => {
+    const p = normalisePrefs({ leadership: { fields: { order: ['attentionFlags', 'name'], hidden: ['attentionFlags', 'status'] } } });
+    assert.deepEqual(p.leadership.fields.hidden, ['status']);
+    assert.equal(p.leadership.fields.order[0], 'attentionFlags');
+  });
+
   test('free text in keys or values is dropped', () => {
     const p = normalisePrefs({
       theme: FREE,
