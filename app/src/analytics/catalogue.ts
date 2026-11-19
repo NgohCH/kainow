@@ -286,8 +286,8 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
   ]),
   ...group('resource_catalogue_events', 'Resources', PERSON, 'resource catalogue entry or maintainer', [
     ['added', 'A catalogue item or category was added.'],
-    ['edited', 'A catalogue item was edited.'],
-    ['renamed', 'A catalogue category was renamed.'],
+    ['edited', 'A catalogue item was edited: previous and new values.'],
+    ['renamed', 'A catalogue item or category was renamed (name or reference): previous and new values.'],
     ['retired', 'A catalogue item or category was retired, with a reason.'],
     ['maintainer_added', 'A person was made a catalogue maintainer, with a reason.'],
     ['maintainer_removed', 'A person stopped being a catalogue maintainer, with a reason.'],
