@@ -30,7 +30,14 @@ test('OpenAI: GET /v1/models/{id} with a Bearer header; a timeout or a network e
   assert.deepEqual(seen, { url: 'https://api.openai.com/v1/models/gpt%2Ftest%201', method: 'GET', auth: `Bearer ${KEY}` });
   const slow = ((_u: string, init: RequestInit) =>
     new Promise((_res, rej) => init.signal?.addEventListener('abort', () => rej(init.signal?.reason)))) as unknown as typeof fetch;
-  assert.deepEqual(await checkKey('openai', KEY, 'gpt-test-1', 20, slow), { outcome: 'unreachable' });
+  // AbortSignal.timeout's timer does not hold the event loop open, and the fake fetch has no socket that would;
+  // without this the test runner (Node 22) sees an idle loop and cancels the test before the abort fires.
+  const keepAlive = setInterval(() => undefined, 1_000);
+  try {
+    assert.deepEqual(await checkKey('openai', KEY, 'gpt-test-1', 20, slow), { outcome: 'unreachable' });
+  } finally {
+    clearInterval(keepAlive);
+  }
   const down = (async () => { throw new TypeError('fetch failed'); }) as unknown as typeof fetch;
   assert.deepEqual(await checkKey('openai', KEY, 'gpt-test-1', 1000, down), { outcome: 'unreachable' });
 });
