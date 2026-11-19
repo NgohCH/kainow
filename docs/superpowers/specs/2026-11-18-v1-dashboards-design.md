@@ -379,6 +379,19 @@ The sketch shows intent; the builder fixes exact names, indexes and the append-o
 - **CSV tests:** header lines, formula-injection escaping, export disallowed, audit event.
 - **Web helper tests:** label and empty-state wording, expansion defaults with saved choices, preference validation, chart-to-table equivalence data.
 - **Bench (`npm run bench-dashboards`, own `kainow_bench` style database):** 200 users, 100 projects, 30,000 tasks with subtasks, 3,000 risks, events for a year. **Aims (approved by the Product Owner, 19 November 2026): `GET /dashboard/me` p95 < 300 ms for a user in 10 projects; `GET /projects/:id/dashboard` p95 < 200 ms; each analytics panel p95 < 500 ms; leadership summary for organisation scope p95 < 500 ms.** Results are recorded in this section, met or missed, as earlier sub-projects did.
+- **Bench results (20 November 2026).** Machine: developer laptop, Docker Postgres 16, one run through the real HTTP app on loopback. Data: 200 users, 100 projects in 10 departments (70 Active, 10 Planned, 5 Draft, 5 Deferred, 10 Closed), 30,000 tasks (20,000 top level and 10,000 subtasks, a few Deleted), 3,000 risks, 48,100 task events and 195 project transitions over a year. The timed person is in 10 projects. 5 warm-up requests, then 50 counted; p95 is nearest-rank. The fifth analytics panel, AI usage, is a link and has no endpoint. No index or query change was needed.
+
+  | Request | Aim p95 | p50 | p95 | max | Result |
+  |---|---|---|---|---|---|
+  | `GET /dashboard/me` (user in 10 projects) | < 300 ms | 28.7 ms | 35.0 ms | 41.7 ms | met |
+  | `GET /projects/:id/dashboard` | < 200 ms | 14.4 ms | 16.5 ms | 20.5 ms | met |
+  | `GET /admin/analytics?panel=progress` | < 500 ms | 350.1 ms | 396.8 ms | 419.5 ms | met |
+  | `GET /admin/analytics?panel=problems` | < 500 ms | 355.5 ms | 389.7 ms | 433.0 ms | met |
+  | `GET /admin/analytics?panel=system` | < 500 ms | 4.8 ms | 6.0 ms | 7.1 ms | met |
+  | `GET /admin/analytics?panel=trends` | < 500 ms | 117.1 ms | 146.1 ms | 161.0 ms | met |
+  | `GET /dashboard/leadership` (organisation scope) | < 500 ms | 366.6 ms | 398.9 ms | 423.7 ms | met |
+
+  Progress, problems and leadership sit at about 80% of their aim on this data; the system panel finds no e-mail, job or AI-connection rows in the bench data, so its figure is a floor.
 - Screens checked at desktop width and at 375 px, by keyboard, in both themes; WCAG 2.2 AA.
 
 ## 15. Left to the builder, and open items
