@@ -1,7 +1,8 @@
-import { Controller, Get, NotFoundException, Param, Query, Req } from '@nestjs/common';
+import { Body, Controller, Get, NotFoundException, Param, Put, Query, Req } from '@nestjs/common';
 import { AnySignedInUser } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
+import { PreferencesService } from './preferences.service';
 import { ProjectDashboardService } from './project-dashboard.service';
 import { TimelineService } from './timeline.service';
 
@@ -17,7 +18,20 @@ export class DashboardsController {
   constructor(
     private readonly projectDashboard: ProjectDashboardService,
     private readonly timeline: TimelineService,
+    private readonly preferences: PreferencesService,
   ) {}
+
+  @Get('me/preferences')
+  @AnySignedInUser()
+  myPreferences(@Req() req: HttpRequest) {
+    return this.preferences.get(who(req));
+  }
+
+  @Put('me/preferences')
+  @AnySignedInUser()
+  savePreferences(@Body() body: unknown, @Req() req: HttpRequest) {
+    return this.preferences.put(who(req), body);
+  }
 
   @Get('projects/:id/dashboard')
   @AnySignedInUser()
