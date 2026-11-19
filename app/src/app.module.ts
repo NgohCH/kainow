@@ -27,6 +27,7 @@ import { QuarantineModule } from './quarantine/quarantine.module';
 import { SearchModule } from './search/search.module';
 import { AiModule } from './ai/ai.module';
 import { SpendModule } from './spend/spend.module';
+import { DashboardsModule } from './dashboards/dashboards.module';
 
 @Global()
 @Module({})
@@ -85,6 +86,7 @@ export class AppModule {
         AssistModule.register(options.assistQueue),
         HistoryModule,
         QuarantineModule,
+        DashboardsModule,
       ],
       controllers: [HealthController],
     };
