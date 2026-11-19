@@ -7,6 +7,8 @@ import { PG_POOL } from '../db/database.module';
 import { liveRecordSql } from '../history/deleted-sql';
 import { ProjectAccess, type ProjectContext } from '../projects/access.service';
 import { type ProjectRole, membershipState, todayUtc8 } from '../projects/membership';
+import { countPendingAdjustments, figuresView, loadFigures } from '../finance/finance.service';
+import { loadProjectFinanceSettings, mayReadFinance } from '../finance/readers';
 import { LINE_STATUSES, type LineStatus, ONE_OFF_KINDS, UNITS } from './vocabulary';
 
 type Db = Pool | PoolClient;
@@ -294,7 +296,17 @@ export class LinesService {
     const lines = await this.views(this.pool, user, projectId, null);
     const counts = Object.fromEntries(Object.keys(LINE_STATUSES).map((s) => [s, 0])) as Record<LineStatus, number>;
     for (const l of lines) counts[l.status] += 1;
-    return { lines, counts, people: await this.people(ctx), computedAt };
+    return { lines, counts, people: await this.people(ctx), finance: await this.finance(ctx, projectId), computedAt };
+  }
+
+  /** Figures for financial-detail readers while tracking is Enabled; the tracking value alone for anyone else (spec 4, 5). */
+  private async finance(ctx: ProjectContext, projectId: string) {
+    const s = await loadProjectFinanceSettings(this.pool, projectId);
+    if (s.tracking !== 'enabled' || !mayReadFinance(ctx, s)) return { tracking: s.tracking };
+    const f = await loadFigures(this.pool, projectId);
+    if (!f) return { tracking: s.tracking };
+    const figures = figuresView(f, f.warnThresholds);
+    return { tracking: s.tracking, currency: f.currency, figures, pendingAdjustments: await countPendingAdjustments(this.pool, projectId), notInTotals: figures.notInTotals };
   }
 
   async history(user: AuthUser, projectId: string, lineId: string) {
