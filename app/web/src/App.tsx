@@ -21,6 +21,7 @@ import { Deliveries } from './views/Deliveries.tsx';
 import { Notifications } from './views/Notifications.tsx';
 import { NotificationsSettings } from './views/NotificationSettings.tsx';
 import { Projects } from './views/Projects.tsx';
+import { Home } from './views/Home.tsx';
 import { Review } from './views/Review.tsx';
 import { HeaderSearch, isSearchHash, Search } from './views/Search.tsx';
 import { AiAdmin } from './views/AiAdmin.tsx';
@@ -304,7 +305,7 @@ export function App() {
   }
   const note = /^#\/notes\/([0-9a-f-]{36})(?:\/v\/(\d+))?$/i.exec(hash);
   const run = /^#\/runs\/([0-9a-f-]{36})$/i.exec(hash);
-  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work|drafts|review|settings|ai|feedback|closing|deadline-review|deleted)(?:\/([0-9a-f-]{36}))?)?$/i.exec(hash);
+  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work|drafts|review|settings|ai|feedback|closing|deadline-review|deleted|timeline)(?:\/([0-9a-f-]{36}))?)?$/i.exec(hash);
   const deletedItem = /^#\/projects\/([0-9a-f-]{36})\/deleted\/([a-z]+)\/([0-9a-f-]{36})$/i.exec(hash);
   const quarantineCase = /^#\/quarantine\/cases\/([0-9a-f-]{36})(?:\/copies)?$/i.exec(hash);
   const securityPage = /^#\/security\/(cases|grants)$/.test(hash);
@@ -335,8 +336,9 @@ export function App() {
   else if (deletedItem) page = <DeletedItemPage key={deletedItem[3]} projectId={deletedItem[1]} kind={deletedItem[2]} itemId={deletedItem[3]} />;
   else if (run) page = <Review runId={run[1]} meId={user.id} />;
   else if (note) page = <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} />;
-  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | undefined) ?? 'overview'} itemId={project[3]} />;
-  else page = <Projects isAdmin={isAdmin} />;
+  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | 'timeline' | undefined) ?? 'overview'} itemId={project[3]} prefs={prefs} prefsReady={prefsLoaded} onPrefs={savePrefs} />;
+  else if (hash === '#/projects') page = <Projects isAdmin={isAdmin} />;
+  else page = <Home prefs={prefs} ready={prefsLoaded} onChange={savePrefs} />;
 
   return (
     <>

@@ -502,3 +502,24 @@ a.meter { text-decoration: underline; }
 .swatch { display: inline-block; width: 1rem; height: 1rem; margin-right: 0.4rem; border: 1px solid var(--ink); border-radius: 3px; }
 .customise-order > li { justify-content: space-between; padding: 0.25rem 0; }
 .customise-order label.check { flex: 1 1 12rem; }
+
+/* Dashboards: home, project figures, timeline */
+.disclosure { background: none; border: 0; padding: 0.25rem 0; font: inherit; font-family: var(--serif); font-size: 1.1rem; font-weight: 600; color: var(--ink); text-align: left; cursor: pointer; }
+.disclosure::before { content: '\25B8'; display: inline-block; width: 1.1rem; color: var(--accent); }
+.disclosure[aria-expanded='true']::before { content: '\25BE'; }
+.home-project { border-bottom: 1px solid var(--rule); padding: 0.5rem 0.25rem; }
+.home-project h3 { margin: 0; }
+.home-project-body { padding-left: 1.1rem; }
+.bars-list { display: grid; gap: 0.6rem; margin: 0.5rem 0; }
+.bars-list > li { display: grid; grid-template-columns: 9rem minmax(6rem, 1fr); gap: 0.15rem 0.75rem; align-items: center; }
+.bars-list .bar-text { grid-column: 1 / -1; font-size: 0.9rem; }
+.bar-track { display: block; height: 0.75rem; background: var(--muted-wash); border: 1px solid var(--control-border); border-radius: 4px; overflow: hidden; }
+.bar-fill { display: block; height: 100%; background: var(--accent); }
+@media (max-width: 30rem) { .bars-list > li { grid-template-columns: 1fr; } }
+.timeline-kinds { border: 1px solid var(--rule); border-radius: 4px; padding: 0.5rem 0.75rem; margin: 0.5rem 0 1rem; display: flex; flex-wrap: wrap; gap: 0.25rem 1.25rem; }
+.timeline-list { margin: 0.25rem 0 1rem; gap: 0; }
+.timeline-line { display: grid; grid-template-columns: 7.5rem 1fr; gap: 0.5rem; padding: 0.4rem 0; border-bottom: 1px solid var(--rule); }
+.timeline-day { color: var(--muted); font-size: 0.9rem; }
+.timeline-today { padding: 0.3rem 0.5rem; border-left: 4px solid var(--accent); background: var(--accent-wash); color: var(--accent-deep); }
+@media (max-width: 30rem) { .timeline-line { grid-template-columns: 1fr; gap: 0; } }
+.about-figures { margin: 0.75rem 0; }

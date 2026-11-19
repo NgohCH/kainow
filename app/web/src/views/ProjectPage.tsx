@@ -36,16 +36,19 @@ import { ProjectAi } from './ProjectAi.tsx';
 import { mayViewAiTab, mayViewAiUsage } from '../ai.ts';
 import { ProjectCalendarProvider } from './ProjectCalendar.tsx';
 import { DeletedItemsList } from './DeletedItems.tsx';
+import { ProjectFigures } from './ProjectFigures.tsx';
+import { Timeline } from './Timeline.tsx';
+import type { Prefs } from '../prefs.ts';
 import { DeletionDelegationPanel } from './DeleteRestore.tsx';
 import { DeletionsList } from './HistoryList.tsx';
 import { CopiesAwaitingList, HeldForReviewList } from './HeldReview.tsx';
 import { type Act, ArchivePanel, DepartmentMove, GrantsSection, HandoverForm, HoldActions } from './ProjectAccessPanels.tsx';
 
-type Tab = 'overview' | 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted';
+type Tab = 'overview' | 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | 'timeline';
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
-export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: string; tab: Tab; meId: string; itemId?: string }) {
+export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, onPrefs }: { projectId: string; tab: Tab; meId: string; itemId?: string; prefs: Prefs; prefsReady: boolean; onPrefs: (next: Prefs) => Promise<void> }) {
   const [project, setProject] = useState<Project | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
@@ -101,6 +104,7 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
   const tabs: Array<[Tab, string]> = [
     ['overview', 'Overview'],
     ['people', 'People'],
+    ['timeline', 'Timeline'],
     ...(contentAllowed ? ([['notes', 'Notes & discussion'], ['work', 'Work'], ['drafts', 'Drafts']] as Array<[Tab, string]>) : []),
     ...(contentAllowed && (mayReviewAnswers(roles) || mayReviewSummaries(roles)) ? ([['review', 'Review']] as Array<[Tab, string]>) : []),
     ...(contentAllowed ? ([['feedback', 'Feedback']] as Array<[Tab, string]>) : []),
@@ -170,7 +174,8 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
       )}
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
-      {tab === 'overview' && <Overview project={project} act={act} />}
+      {tab === 'overview' && <Overview project={project} act={act} contentAllowed={contentAllowed} />}
+      {tab === 'timeline' && <Timeline projectId={project.id} prefs={prefs} ready={prefsReady} onChange={onPrefs} />}
       {tab === 'drafts' && contentAllowed && <Drafts projectId={project.id} draftId={itemId} />}
       {tab === 'review' && contentAllowed && <AssistReview projectId={project.id} roles={roles} />}
       {tab === 'feedback' && contentAllowed && <Feedback projectId={project.id} />}
@@ -217,7 +222,7 @@ export function ProjectPage({ projectId, tab, meId, itemId }: { projectId: strin
   );
 }
 
-function Overview({ project, act }: { project: Project; act: Act }) {
+function Overview({ project, act, contentAllowed }: { project: Project; act: Act; contentAllowed: boolean }) {
   const options = transitionsFor(project.status, project.myRoles, project.isAdmin);
   const [chosen, setChosen] = useState<TransitionOption | null>(null);
   const canEdit = project.myRoles.some((r) => r === 'pm' || r === 'owner' || r === 'sponsor') && ['draft', 'planned', 'active'].includes(project.status);
@@ -284,6 +289,7 @@ function Overview({ project, act }: { project: Project; act: Act }) {
           </dl>
         )}
       </section>
+      <ProjectFigures projectId={project.id} canReadWork={contentAllowed} />
 
       {atClosure && (atClosure.kept.length > 0 || atClosure.unresolved.length > 0) && (
         <section aria-labelledby="at-closure-heading">
