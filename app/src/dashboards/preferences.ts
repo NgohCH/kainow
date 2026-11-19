@@ -1,3 +1,4 @@
+import { LEADERSHIP_FIELDS } from '../leadership/leadership-fields';
 import { TIMELINE_KINDS, type TimelineLine } from './timeline';
 
 /**
@@ -11,26 +12,10 @@ export type HomeSection = (typeof HOME_SECTIONS)[number];
 const THEMES = ['light', 'dark'] as const;
 const ACCENTS = ['teal', 'blue', 'plum', 'slate'] as const;
 
-/** The leadership card field keys (spec 6.3), in default order. Sub-project 8 adds resource and budget keys. */
-export const LEADERSHIP_FIELD_KEYS = [
-  'name',
-  'owningDepartment',
-  'contributingDepartments',
-  'projectManager',
-  'status',
-  'stage',
-  'taskCompletion',
-  'onTime',
-  'plannedEnd',
-  'overdue',
-  'blocked',
-  'significantRisks',
-  'nextDates',
-  'attentionFlags',
-  'refresh',
-] as const;
+/** The leadership card field keys (spec 6.3), in default order, from the one catalogue. */
+export const LEADERSHIP_FIELD_KEYS = LEADERSHIP_FIELDS.map((f) => f.key) as readonly string[];
 /** Fields that can never be hidden (spec section 8: attention flags are never hideable). They can still be moved. */
-export const LEADERSHIP_FIXED_FIELDS: readonly string[] = ['name', 'refresh', 'attentionFlags'];
+export const LEADERSHIP_FIXED_FIELDS: readonly string[] = LEADERSHIP_FIELDS.filter((f) => f.required).map((f) => f.key);
 
 export const MAX_EXPANDED = 1000;
 

@@ -7,7 +7,7 @@ import type { RequestRow } from '../changes/handlers';
 import type { ChangeKind } from '../changes/rules';
 import { PG_POOL } from '../db/database.module';
 import { liveRecordSql, liveSourceSql } from '../history/deleted-sql';
-import { type MembershipRecord, type ProjectContext, ProjectAccess, buildProjectContext, canReadContent } from '../projects/access.service';
+import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { archiveState } from '../projects/archive';
 import type { GrantRow } from '../projects/grants';
 import { type ProjectStatus, decide } from '../projects/matrix';
@@ -16,6 +16,7 @@ import { loadAccessSettings } from '../organisation/access-settings';
 import { POSSIBLE_COPY_TEXT, possibleCopySql } from '../quarantine/labels';
 import { type TaskStatus, taskIndicators } from '../records/tasks';
 import { type ProjectMeasures, loadProjectMeasures } from './measures';
+import { archivedAmong, groupBy, loadProjectContexts } from './project-contexts';
 import { shown } from './project-dashboard.service';
 
 export type NeedsYouKind = 'approval' | 'minutes' | 'question' | 'copies' | 'deadline_review';
@@ -95,16 +96,6 @@ const daysBetween = (from: string, to: string): number => Math.round((Date.parse
 const iso = (v: Date | string | null): string | null => (v === null ? null : new Date(v).toISOString());
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
-function groupBy<T>(rows: T[], key: (r: T) => string): Map<string, T[]> {
-  const m = new Map<string, T[]>();
-  for (const r of rows) {
-    const k = key(r);
-    const list = m.get(k);
-    if (list) list.push(r);
-    else m.set(k, [r]);
-  }
-  return m;
-}
 
 /** Where an approval is acted on in the web app. */
 function approvalLink(r: RequestRow & { runId: string | null }): string {
@@ -137,7 +128,7 @@ export class PersonalDashboardService {
     // Candidates as `GET /projects` finds them (Active-dated memberships, held ones included, and current grants).
     const ids = await this.access.visibleProjectIds(user.id);
     if (ids.length === 0) return empty;
-    const contexts = await this.contexts(user, ids, today);
+    const contexts = await loadProjectContexts(this.pool, user, ids, today);
 
     // canReadContent as a plain boolean (its type guard would narrow the negative case to never).
     const reads = (ctx: ProjectContext): boolean => canReadContent(ctx);
@@ -148,7 +139,7 @@ export class PersonalDashboardService {
     const readableIds = readable.map((c) => c.ctx.project.id);
     const nameOf = (id: string) => contexts.get(id)?.name as string;
 
-    const archived = await this.archived([...readable, ...heldOnly].filter((c) => c.ctx.project.status === 'closed').map((c) => c.ctx.project.id), today);
+    const archived = await archivedAmong(this.pool, [...readable, ...heldOnly].filter((c) => c.ctx.project.status === 'closed').map((c) => c.ctx.project.id), today);
     const measures = await loadProjectMeasures(this.pool, readableIds, today, now);
 
     // My projects (§4.3).
@@ -239,89 +230,6 @@ export class PersonalDashboardService {
     });
 
     return { needsYou, myTasks, projects, computedAt: now.toISOString() };
-  }
-
-  /** Every candidate's context, built by the rule `ProjectAccess.load` uses, from three batched queries. */
-  private async contexts(user: AuthUser, ids: string[], today: string) {
-    const projects = (
-      await this.pool.query(
-        `SELECT p.id, p.name, p.status, to_char(p.created_at AT TIME ZONE 'Asia/Kuala_Lumpur', 'YYYY-MM-DD') AS "createdOn", d.name AS "owningDepartment"
-           FROM projects p JOIN departments d ON d.id = p.owning_department_id WHERE p.id = ANY($1::uuid[])`,
-        [ids],
-      )
-    ).rows as Array<{ id: string; name: string; status: ProjectStatus; createdOn: string; owningDepartment: string }>;
-    const members = groupBy(
-      (
-        await this.pool.query(
-          `SELECT m.project_id AS "projectId", m.id, m.user_id AS "userId", m.role, to_char(m.starts_on, 'YYYY-MM-DD') AS "startsOn",
-                  to_char(m.expires_on, 'YYYY-MM-DD') AS "expiresOn", m.revoked_at AS "revokedAt",
-                  m.held_at AS "heldAt", m.restored_at AS "restoredAt", m.hold_reason AS "holdReason",
-                  u.display_name AS "displayName", u.email
-             FROM memberships m JOIN users u ON u.id = m.user_id
-            WHERE m.project_id = ANY($1::uuid[]) ORDER BY m.starts_on, m.id`,
-          [ids],
-        )
-      ).rows as Array<MembershipRecord & { projectId: string }>,
-      (r) => r.projectId,
-    );
-    const grants = groupBy(
-      (
-        await this.pool.query(
-          `SELECT project_id AS "projectId", id, user_id AS "userId", kind, to_char(starts_on, 'YYYY-MM-DD') AS "startsOn", to_char(expires_on, 'YYYY-MM-DD') AS "expiresOn",
-                  requested_by AS "requestedBy", decision, suspended_at AS "suspendedAt", revoked_at AS "revokedAt",
-                  inspect_deleted AS "inspectDeleted"
-             FROM access_grants WHERE project_id = ANY($1::uuid[]) ORDER BY requested_at, id`,
-          [ids],
-        )
-      ).rows as Array<GrantRow & { projectId: string }>,
-      (r) => r.projectId,
-    );
-    const out = new Map<string, { ctx: ProjectContext; name: string; owningDepartment: string }>();
-    for (const p of projects) {
-      const strip = <T extends { projectId: string }>(rows: T[]) => rows.map(({ projectId: _p, ...rest }) => rest);
-      const ctx = buildProjectContext({
-        project: { id: p.id, status: p.status, createdOn: p.createdOn },
-        rows: strip(members.get(p.id) ?? []) as MembershipRecord[],
-        grants: strip(grants.get(p.id) ?? []) as GrantRow[],
-        user,
-        today,
-      });
-      out.set(p.id, { ctx, name: p.name, owningDepartment: p.owningDepartment });
-    }
-    return out;
-  }
-
-  /** The archived ones among these Closed projects, by the archive rule (`archiveState`) with the settings in force. */
-  private async archived(closedIds: string[], today: string): Promise<Set<string>> {
-    const out = new Set<string>();
-    if (closedIds.length === 0) return out;
-    const closings = new Map(
-      (
-        await this.pool.query(
-          `SELECT DISTINCT ON (project_id) project_id AS "projectId", at FROM project_transitions
-            WHERE project_id = ANY($1::uuid[]) AND to_status = 'closed' ORDER BY project_id, at DESC, id DESC`,
-          [closedIds],
-        )
-      ).rows.map((r) => [r.projectId as string, new Date(r.at).toISOString()]),
-    );
-    const events = groupBy(
-      (await this.pool.query(`SELECT project_id AS "projectId", kind, at FROM project_archive_events WHERE project_id = ANY($1::uuid[]) ORDER BY at, id`, [closedIds])).rows as Array<{
-        projectId: string; kind: 'archived' | 'unarchived'; at: Date;
-      }>,
-      (r) => r.projectId,
-    );
-    const { archiveAfterMonths } = await loadAccessSettings(this.pool);
-    for (const id of closedIds) {
-      const s = archiveState({
-        status: 'closed',
-        closedAt: closings.get(id) ?? null,
-        events: (events.get(id) ?? []).map((e) => ({ kind: e.kind, at: new Date(e.at).toISOString() })),
-        today,
-        afterMonths: archiveAfterMonths,
-      });
-      if (s.archived) out.add(id);
-    }
-    return out;
   }
 
   /** Pending requests the viewer may approve now and has not approved (the list view's check, `changeMayApprove`). */
