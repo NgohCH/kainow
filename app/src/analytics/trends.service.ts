@@ -4,7 +4,7 @@ import { CLOCK, type Clock } from '../auth/tokens';
 import { PG_POOL } from '../db/database.module';
 import { liveRecordSql } from '../history/deleted-sql';
 import { todayUtc8 } from '../projects/membership';
-import { type AnalyticsFilters, addDays, weekStarts } from './filters';
+import { type AnalyticsFilters, STATUSES, addDays, weekStarts } from './filters';
 import { selectProjects } from './scope';
 
 export const TRENDS_NOTE = 'Trends are worked out from current records: changed due dates use the current date, and deleted records are left out of past weeks.';
@@ -34,7 +34,8 @@ export class TrendsService {
     const now = this.clock();
     const today = todayUtc8(now);
     const weeks = weekStarts(f.from, f.to);
-    const ids = (await selectProjects(this.pool, f, today)).map((p) => p.id);
+    // Trends are history: the status and archived filters describe current state, so they do not apply. Department and ownership do.
+    const ids = (await selectProjects(this.pool, { ...f, statuses: [...STATUSES], includeArchived: true }, today)).map((p) => p.id);
     const series = Object.fromEntries(TREND_KEYS.map((k) => [k, weeks.map(() => 0)])) as Record<TrendKey, number[]>;
     if (weeks.length === 0 || ids.length === 0) return { weeks, series, note: TRENDS_NOTE, computedAt: now.toISOString() };
     const from = new Date(`${weeks[0]}T00:00:00+08:00`);

@@ -125,6 +125,18 @@ describe('analytics trends panel', { skip: SKIP_NO_DB }, () => {
     assert.equal(d.series.projects_active.reduce((a, b) => a + b, 0), 1);
   });
 
+  test('closed projects still count under the default filters; Sunday 16:30Z is Monday in UTC+8', async () => {
+    const pc = await seedProject(t.pool, { status: 'closed', name: 'Closed works', members: [{ userId: pmId, role: 'pm' }] });
+    await t.pool.query(`INSERT INTO project_transitions (id, project_id, from_status, to_status, actor_id, at) VALUES ($1, $2, 'active', 'closed', $3, '2026-11-03T02:00:00Z')`, [uuidv7(), pc, pmId]);
+    await task({ project: pc, status: 'completed', completedAt: '2026-11-03T02:00:00Z' });
+    await task({ project: pc, status: 'completed', completedAt: '2026-11-01T16:30:00Z' });
+    await task({ project: pc, status: 'completed', completedAt: '2026-11-01T15:30:00Z' });
+    const d = await trends('&period=last_4w');
+    assert.equal(at(d, 'projects_closed', '2026-11-02'), 1);
+    assert.equal(at(d, 'tasks_completed', '2026-11-02'), 2);
+    assert.equal(at(d, 'tasks_completed', '2026-10-26'), 1);
+  });
+
   test('department filter narrows trends through the project scope', async () => {
     const dept = await seedDepartment(t.pool, 'Beta Unit');
     const pb = await seedProject(t.pool, { status: 'active', name: 'Beta works', departmentId: dept, members: [{ userId: pmId, role: 'pm' }] });
