@@ -28,6 +28,7 @@ import { SearchModule } from './search/search.module';
 import { AiModule } from './ai/ai.module';
 import { SpendModule } from './spend/spend.module';
 import { DashboardsModule } from './dashboards/dashboards.module';
+import { LeadershipModule } from './leadership/leadership.module';
 
 @Global()
 @Module({})
@@ -87,6 +88,7 @@ export class AppModule {
         HistoryModule,
         QuarantineModule,
         DashboardsModule,
+        LeadershipModule,
       ],
       controllers: [HealthController],
     };
