@@ -143,10 +143,9 @@ Self-approval is allowed by default for an eligible O/S, including a valid combi
 | Relink a moved or renamed file within approved destinations; register a changed file as a new version | PM or DPM | Sub-project 9, D107: only files Kainow filed can be registered as a new version. |
 | Approve a new place as a destination so a file moved there can be relinked | EA | Sub-project 9, D107: through destination approval; no separate flow. |
 | Project output settings (destination, formats, export roles) | PM or O/S when delegated; otherwise EA | Sub-project 9: reason; versioned. Action `outputs.settings`. |
-| Change owning department (move or keep the filed folder) | EA | Sub-project 9, D108: reason and folder choice; refused while an earlier move has failed and not been retried. |
+| Change (transfer) owning department (move or keep the filed folder) | EA | Sub-project 9, D108: reason and an explicit folder choice (move the filed folder, or keep it at its approved location); refused while an earlier move has failed and not been retried; no duplicate project counts. |
 | Report a suspected secret in an output | Any output reader | Sub-project 9, D80: a held output file is withheld from storage. |
 | Approve deliverable/report/spec version | O/S | Exact version; external edit cannot inherit approval. |
-| Transfer owning department | EA | Reason, explicit relocate or retain-approved-location decision; no duplicate project counts. |
 | Send manual action-item digest | PM or O/S | Enabled channels; recipient/content rechecked. |
 | View personal dashboard | Any signed-in Active account | Only own items and projects visible today; D88. |
 | View project dashboard and timeline | `project.view` (participants and Audit/Oversight holders) | Pending invitation names shown to PM, Deputy, Owner and Sponsor; D88. |

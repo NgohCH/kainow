@@ -31,7 +31,9 @@ export async function outputHeld(c: PoolClient, outputId: string, caseId: string
       [outputId],
     )
   ).rows;
-  await queueWithhold(c, files.filter((f) => f.state === 'stored').map((f) => f.id), caseId);
+  // Every file, also one another case already withholds: this case is then recorded as holding it too, so releasing
+  // the other case does not bring it back while this output is held.
+  await queueWithhold(c, files.map((f) => f.id), caseId);
   if (files.some((f) => f.state === 'linked')) await noticeHeldLink(c, outputId, at);
   await queueOutputPlacement(c, outputId, 'narrow');
 }

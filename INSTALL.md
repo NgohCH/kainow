@@ -322,6 +322,6 @@ Kainow keeps every uploaded source file and its text in a protected **source are
 
    Outside Docker: `DATABASE_URL=... KAINOW_PROTECTED_KEY_FILE=... npm run probe-storage -- --destination "<label>" --test-account <person@your-domain> --granted fullcontrol`.
 
-   It works in its own folder, removes it permanently afterwards, prints one line per check and never prints the secret or a token. `--granted` says which site permission you gave in step 3. To find out whether `write` is enough in your tenant, grant `write` instead of Full control on one site, run the probe against a destination there with `--granted write`, and keep `write` only if it prints "write sufficed: ok". Send the output to whoever looks after Kainow.
+   It works in its own folder, removes it permanently afterwards, prints one line per check and never prints the secret or a token. `--granted` says which site permission you gave in step 3. To find out whether `write` is enough in your tenant, grant `write` instead of Full control on one site, run the probe against a destination there with `--granted write`, and keep `write` only if it prints "write sufficed: ok". Send the output to whoever looks after Kainow. The output may name the people and groups who can open the library, so check it before you send it on.
 
 To stop Kainow reaching a site, remove the site permission of step 3 (or delete the client secret in Entra). Files Kainow filed stay where they are; Kainow never deletes a filed output.

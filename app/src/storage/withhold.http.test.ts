@@ -442,6 +442,30 @@ The vault code is ${SECRET}.
     assert.equal(await exists(z.file.item_id), false);
   });
 
+  test('holding an output registers its files another case already withholds, so dismissing that case does not bring them back', async () => {
+    const OTHER = 'KX4LOCKER5521BETA';
+    const reported = await filedOutput(`Valve audit ${SECRET}`);
+    const y = await filedOutput(`Pump log ${SECRET} locker ${OTHER}`);
+    // Case A: the reported output; Y carries the same text and is withheld as a possible copy, pending the PM's decision.
+    const a = await report('output', reported.out);
+    assert.equal((await fileRow(y.out)).state, 'withheld');
+    // Case B holds Y itself (reported without the protected key, so nothing registers the file later).
+    const cases = standaloneCases(t.pool, t.clock.now, false);
+    const { caseId: b } = await cases.report({ id: ids.pm, email: 'pm@example.org', displayName: 'pm', role: 'member' } as never, {
+      projectId: project, kind: 'output', id: y.out, marked: [OTHER], reason: 'Its own credential',
+    });
+    const holders = async (fileId: string) =>
+      (await rows(`SELECT case_id FROM stored_file_withholds WHERE stored_file_id = $1 AND release_requested_at IS NULL ORDER BY case_id`, [fileId])).map((x) => x.case_id);
+    assert.deepEqual(await holders(y.file.id), [a, b].sort(), 'both cases hold the file');
+    // The PM dismisses Y as a copy for A: B still holds Y, so its file stays withheld, now for B.
+    const decided = await c.pm.request('POST', `/quarantine/cases/${a}/copies`, { decisions: [{ kind: 'output', id: y.out, decision: 'dismissed' }] });
+    assert.equal(decided.status, 200, JSON.stringify(decided.body));
+    await drain();
+    const f = await fileRow(y.out);
+    assert.equal(f.state, 'withheld', 'not put back while B holds the output');
+    assert.equal(f.withhold_case_id, b);
+  });
+
   test('a file withheld by two cases comes back only when neither holds it', async () => {
     const OTHER = 'KX4LOCKER5521BETA';
     const bytes = Buffer.from(`Plant room notes.\nThe vault code is ${SECRET} and the locker code ${OTHER}.\n`);

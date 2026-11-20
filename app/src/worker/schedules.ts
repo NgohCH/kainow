@@ -74,7 +74,9 @@ export async function registerSchedules(boss: PgBoss, deps: ScheduleDeps): Promi
   const storage = deps.storage;
   if (storage) {
     await boss.schedule(QUEUES.storageOutbox, EVERY_MINUTE, null, { key: 'tick', singletonKey: 'tick' });
-    await boss.schedule(QUEUES.storageDaily, DAILY_0230, null, { key: 'tick', singletonKey: 'tick', tz: UTC8 });
+    // The daily run can take hours at real provider latency; it runs once (its tasks isolate their own failures), so
+    // it is given four hours and never retried the same day.
+    await boss.schedule(QUEUES.storageDaily, DAILY_0230, null, { key: 'tick', singletonKey: 'tick', tz: UTC8, expireInSeconds: 4 * 60 * 60, retryLimit: 0 });
     await boss.work(QUEUES.storageOutbox, { localConcurrency: 1 }, async () => {
       try {
         await storage.sendOutbox();

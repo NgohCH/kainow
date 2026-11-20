@@ -155,6 +155,9 @@ test('the storage outbox is sent every minute and the daily storage tick runs at
     assert.equal(outbox?.cron, '* * * * *');
     assert.equal(daily?.cron, '30 2 * * *');
     assert.equal(daily?.timezone, 'Asia/Kuala_Lumpur');
+    // The daily run may take hours at real provider latency, and is never re-run the same day (its tasks isolate failures).
+    const opts = (daily as { options?: { expireInSeconds?: number; retryLimit?: number } } | undefined)?.options;
+    assert.deepEqual([opts?.expireInSeconds, opts?.retryLimit], [4 * 60 * 60, 0]);
     await boss.unschedule(QUEUES.storageOutbox, 'tick');
     await boss.unschedule(QUEUES.storageDaily, 'tick');
     await boss.send(QUEUES.storageOutbox, {});
