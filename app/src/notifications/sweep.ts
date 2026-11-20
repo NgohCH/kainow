@@ -12,6 +12,7 @@ import { type PlannedTrigger, type RiskSnap, type TaskSnap, dueNow, planProject 
 import { type Holder, applyCover, holdersOf, loadAdmins, routeFor } from './recipients';
 import { resumptionTrigger } from './resumption';
 import { refreshChecklist } from '../golive/checklist';
+import { runOpsSweep } from '../ops/sweep-ops';
 import { loadOrgRow } from './settings';
 import { type ProjectData, loadSweepData } from './sweep-data';
 import { linkFor, triggerSummary } from './summaries';
@@ -102,6 +103,12 @@ export class Sweep {
   /** Runs when `sweep_minutes` have passed since the last run started (or there was none). */
   async runIfDue(): Promise<boolean> {
     const now = this.deps.clock();
+    // The ops checks run on every tick, whether or not the notification sweep is due by its own interval.
+    try {
+      await runOpsSweep(this.deps.pool, now);
+    } catch {
+      this.deps.log.warn('The sweep could not finish the operations checks; they are tried again at the next sweep');
+    }
     const last = (await this.deps.pool.query(`SELECT max(started_at) AS at FROM sweep_runs`)).rows[0]?.at as Date | null;
     const minutes = (await loadOrgRow(this.deps.pool)).sweepMinutes;
     if (last && now.getTime() - last.getTime() < minutes * 60_000) return false;

@@ -75,6 +75,10 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['ops.backup_failed', 'A backup run failed, with a fixed failure code.'],
     ['ops.backup_key_changed', 'A backup ran with a new backup key (--new-key); key ids only.'],
     ['ops.backup_expired', 'Old backup sets and unused stored files were removed after a backup; counts only.'],
+    ['ops.backup_interrupted', 'A backup run still unfinished after 6 hours was marked failed (interrupted) by the sweep.'],
+  ]),
+  ...audit('Operations', SYSTEM, 'restore drill', [
+    ['ops.restore_drill_interrupted', 'A restore drill still unfinished after 6 hours was marked failed (interrupted) by the sweep.'],
   ]),
   ...audit('Projects', PERSON, 'project', [
     ['project.created', 'A project was created as a draft.'],
