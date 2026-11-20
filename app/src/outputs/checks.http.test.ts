@@ -13,10 +13,11 @@ import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedDepartment, seedProject, seedUser } from '../testing/projects';
 import { FILE_NOT_AS_FILED, NOT_CHECKED } from './approval-handler';
 import {
-  CHANGED_SINCE_APPROVAL, NOT_APPROVED_PLACE, NOT_CHANGED, NOT_FILED_BY_KAINOW, NOT_RECOVERED, REGISTER_FAILED, SHARED_FILE, checkOutputs,
+  CHANGED_SINCE_APPROVAL, KAINOW_FILES, NOT_APPROVED_PLACE, NOT_CHANGED, NOT_FILED_BY_KAINOW, NOT_RECOVERED, REGISTER_FAILED, SHARED_FILE, checkOutputs,
   checkStoredFile, registerChangedContent,
 } from './checks';
 import { fileOutputVersion } from './filing';
+import { LINKED_OPEN_ONLY } from './output-files.service';
 import { placeOutput } from './sharing';
 import { onFinalFailure } from '../storage/jobs';
 
@@ -510,6 +511,68 @@ describe('opening, checking and reconciling output files', { skip: SKIP_NO_DB },
     const before = itemReads(doc.itemId);
     assert.equal(await checkStoredFile(deps(), f.id), 'access_denied');
     assert.equal(itemReads(doc.itemId), before);
+  });
+
+  test('a link to a file Kainow filed, or to anything in Kainow’s folders, is refused, also when relinking a linked document', async () => {
+    // Another project's restricted output, filed by Kainow; Ada is not in that project.
+    const otherDept = await seedDepartment(t.pool, 'Treasury');
+    const other = await seedProject(t.pool, {
+      status: 'active', name: 'Board pay review', departmentId: otherDept, members: [{ userId: ids.pm, role: 'pm' }, { userId: ids.deputy, role: 'deputy_pm' }],
+    });
+    await t.pool.query(`INSERT INTO project_output_settings (project_id, destination_id) VALUES ($1, $2)`, [other, destId]);
+    const home = project;
+    project = other;
+    const secret = await filedOutput('Pay review', { restrictTo: [ids.pm, ids.deputy] });
+    project = home;
+    const refusedLink = async (link: string) => {
+      const r = await c.ada.request('POST', url(), { kind: 'link', url: link, title: 'Linked plan' });
+      assert.equal(r.status, 400, JSON.stringify(r.body));
+      assert.equal(r.body.message, KAINOW_FILES);
+    };
+    await refusedLink(secret.file.web_url);
+    // A document someone else put into one of Kainow's folders (the other project's restricted root) is refused too.
+    const restrictedRoot = (await rows(`SELECT item_id FROM storage_folders WHERE level = 'restricted_root'`))[0].item_id as string;
+    const dropped = await connector.upload({ ...driveRoot(), rootItemId: outputsRoot }, restrictedRoot, 'Notes.docx', Buffer.from('notes'), { conflict: 'fail' });
+    await refusedLink(dropped.webUrl as string);
+    // A file Kainow filed that someone moved out of Kainow's folders still stands for its output version.
+    const moved = await filedOutput('Weekly status');
+    const loose = (await connector.createFolder({ ...driveRoot(), rootItemId: outputsRoot }, null, 'Loose')).itemId;
+    fake.moveItem(drive.driveId, moved.file.item_id, loose);
+    await refusedLink((await connector.getItem(driveRoot(), moved.file.item_id)).webUrl as string);
+    assert.equal((await rows(`SELECT count(*)::int AS n FROM stored_files WHERE state = 'linked'`))[0].n, 0, 'nothing registered');
+
+    // A linked document moved into one of Kainow's folders cannot be relinked there, by its id or by a link.
+    const plans = (await connector.createFolder({ ...driveRoot(), rootItemId: outputsRoot }, null, 'Plans')).itemId;
+    const doc = await connector.upload({ ...driveRoot(), rootItemId: outputsRoot }, plans, 'Plan of works.docx', Buffer.from('plan of works'), { conflict: 'fail' });
+    const sub = await c.pm.request('POST', url(), { kind: 'link', url: doc.webUrl, title: 'Plan of works' });
+    assert.equal(sub.status, 201, JSON.stringify(sub.body));
+    fake.moveItem(drive.driveId, doc.itemId, restrictedRoot);
+    const linked = await fileRow(sub.body.id);
+    assert.equal(await checkStoredFile(deps(), linked.id), 'moved');
+    for (const body of [{}, { url: (await connector.getItem(driveRoot(), doc.itemId)).webUrl }]) {
+      const r = await c.pm.request('POST', vUrl(sub.body.id, 1, 'relink'), body);
+      assert.equal(r.status, 409, JSON.stringify(r.body));
+      assert.equal(r.body.message, KAINOW_FILES);
+    }
+    assert.equal((await fileRow(sub.body.id)).item_id, doc.itemId);
+    assert.equal((await fileRow(sub.body.id)).path, linked.path, 'the recorded place is unchanged');
+    // Relinking a linked document by a link to a Kainow-filed file is refused as well.
+    fake.moveItem(drive.driveId, doc.itemId, plans);
+    const byLink = await c.pm.request('POST', vUrl(sub.body.id, 1, 'relink'), { url: secret.file.web_url });
+    assert.equal(byLink.status, 409);
+  });
+
+  test('a linked document opens in SharePoint only: Kainow never streams its bytes', async () => {
+    const plans = (await connector.createFolder({ ...driveRoot(), rootItemId: outputsRoot }, null, 'Plans')).itemId;
+    const doc = await connector.upload({ ...driveRoot(), rootItemId: outputsRoot }, plans, 'Plan of works.docx', Buffer.from('plan of works'), { conflict: 'fail' });
+    const sub = await c.ada.request('POST', url(), { kind: 'link', url: doc.webUrl, title: 'Plan of works' });
+    assert.equal(sub.status, 201, JSON.stringify(sub.body));
+    const before = fake.calls.filter((x) => x.method === 'GET' && x.path.endsWith('/content')).length;
+    const r = await c.ada.raw('GET', vUrl(sub.body.id, 1, 'download'));
+    assert.equal(r.status, 409, r.text);
+    assert.equal(JSON.parse(r.text).message, LINKED_OPEN_ONLY);
+    assert.equal(fake.calls.filter((x) => x.method === 'GET' && x.path.endsWith('/content')).length, before, 'no bytes fetched');
+    assert.equal((await c.ada.raw('GET', vUrl(sub.body.id, 1, 'open'))).status, 303, 'Open still redirects to the document');
   });
 
   test('download streams the file to readers only', async () => {

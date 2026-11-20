@@ -16,6 +16,8 @@ import { NOT_KEPT, filingFailedLabel } from './filing';
 import { OutputsService, type OutputDetail } from './outputs.service';
 
 /** Shown when the provider cannot be asked right now (a download, relink or registering a change). */
+/** A linked document is someone else's: only SharePoint can tell whether the viewer may read it, so it is never streamed. */
+export const LINKED_OPEN_ONLY = 'A linked document opens in SharePoint only. Use Open.';
 export const STORE_UNREACHABLE = 'The storage service cannot be reached right now. Try again later.';
 
 const MEDIA_TYPES: Readonly<Record<string, string>> = {
@@ -76,16 +78,18 @@ export class OutputFilesService {
   }
 
   /**
-   * The file, streamed through Kainow from the provider, for readers. The bytes are checked against the record (the
-   * SHA-256 of a filed file; size and QuickXorHash of a linked one) before they are handed out: a file that differs is
-   * found Changed and refused, like one already Changed, Missing or Access denied.
+   * A file Kainow filed, streamed through Kainow from the provider, for readers. The bytes are checked against the
+   * record's SHA-256 before they are handed out: a file that differs is found Changed and refused, like one already
+   * Changed, Missing or Access denied. A linked document is never streamed: Kainow reads with its own access, which
+   * cannot prove the viewer's, so a link opens in SharePoint only (Open), where SharePoint decides.
    */
   async download(user: AuthUser, projectId: string, outputId: string, versionNo: number): Promise<DownloadedFile> {
     const { ctx } = await this.outputs.visible(user, projectId, outputId);
     const manages = decide({ action: 'output.manage', roles: ctx.roles, status: ctx.project.status }).allowed;
     const v = await this.versionFile(outputId, versionNo);
     const f = v.fileId ? await loadFile(this.pool, v.fileId) : undefined;
-    if (!f || (f.state !== 'stored' && f.state !== 'linked') || !f.destination_id || !f.item_id) throw this.notOpenable(v);
+    if (f?.state === 'linked') throw new ConflictException({ statusCode: 409, message: LINKED_OPEN_ONLY, state: 'linked', label: LINKED_OPEN_ONLY, actions: [] });
+    if (!f || f.state !== 'stored' || !f.destination_id || !f.item_id) throw this.notOpenable(v);
     if (BLOCKING.includes(f.check_status)) throw await this.refused(f.check_status, v, manages);
     if (f.dest_status !== 'approved') throw await this.refused((await checkFile(this.deps, f.id)).status, v, manages);
     let bytes: Buffer;
@@ -100,7 +104,7 @@ export class OutputFilesService {
       throw err;
     }
     const sizeOk = f.size_bytes === null || Number(f.size_bytes) === bytes.length;
-    const same = f.state === 'stored' && f.sha256 ? sha256(bytes) === f.sha256 : !f.provider_hash || quickXorHash(bytes) === f.provider_hash;
+    const same = f.sha256 ? sha256(bytes) === f.sha256 : !f.provider_hash || quickXorHash(bytes) === f.provider_hash;
     if (!sizeOk || !same) {
       const status = (await checkFile(this.deps, f.id)).status;
       throw await this.refused(BLOCKING.includes(status) ? status : 'changed', v, manages);

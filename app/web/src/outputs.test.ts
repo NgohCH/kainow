@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { formatWhen } from './format.ts';
 import {
   APPROVAL_NOTICE, ACCESS_REVIEW, KEPT_AT_EXISTING, approvalNoticeFor, audiencePreviewText, checkLabel, effectiveSourceLabel, exportControls,
-  exportPath, filenameFromDisposition, filingLabel, mayAskApproval, mayFile, notMovedLabel, notSharedLabel, openRefusal, sourceStorageLabel, transferConfirmText,
+  exportPath, fileAccess, filenameFromDisposition, filingLabel, mayAskApproval, mayFile, notMovedLabel, notSharedLabel, openRefusal, sourceStorageLabel, transferConfirmText,
   versionStatusLabel, type OutputVersion,
 } from './outputs.ts';
 
@@ -132,4 +132,10 @@ test('a download is named from its Content-Disposition, else the fallback', () =
   assert.equal(filenameFromDisposition('attachment; filename="Bridge tasks 2026-11-20.csv"', 'tasks.csv'), 'Bridge tasks 2026-11-20.csv');
   assert.equal(filenameFromDisposition("attachment; filename=\"x.csv\"; filename*=UTF-8''Jambatan%20t%C3%A1sk.csv", 'tasks.csv'), 'Jambatan tásk.csv');
   assert.equal(filenameFromDisposition(null, 'tasks.csv'), 'tasks.csv');
+});
+
+test('a filed file opens and downloads; a linked document only opens (in SharePoint); anything else neither', () => {
+  assert.deepEqual(fileAccess('stored'), { open: true, download: true });
+  assert.deepEqual(fileAccess('linked'), { open: true, download: false });
+  for (const s of ['pending', 'failed', 'withheld', 'missing', null]) assert.deepEqual(fileAccess(s), { open: false, download: false }, String(s));
 });

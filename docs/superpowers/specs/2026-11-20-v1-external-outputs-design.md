@@ -120,7 +120,7 @@ Any participant with an Active membership (PM, Deputy, Owner, Sponsor, Member) o
 
 - **From a D77 draft report**: on a draft version they can read, "Submit as output", choosing a format the project allows (Markdown, DOCX or PDF). The version is rendered (§6) and stored in the database until filed.
 - **An uploaded document**: a DOCX, PDF, Markdown or CSV file up to the existing upload limit (`MAX_UPLOAD_BYTES`), in an output format the project allows (*design call*: uploaded outputs are checked against the output list; TXT is an input format only, and other document types are registered by link instead). Its text is extracted with the existing readers and passed through the credential check; a suspected secret refuses the upload, naming only the kind found (as D79).
-- **A link to an existing document**: a SharePoint or OneDrive link. Kainow resolves it through the provider (`/shares/{encoded}/driveItem`). It must lie inside an approved output destination (any, not only the project's); otherwise it is refused with "Kainow can only register documents in approved storage locations." It is registered at its existing location (D32) and labelled "Kept at its existing location". Kainow does not manage sharing for linked documents (it did not create their access), and says so: "Sharing for this document is managed outside Kainow".
+- **A link to an existing document**: a SharePoint or OneDrive link. Kainow resolves it through the provider (`/shares/{encoded}/driveItem`). It must lie inside an approved output destination (any, not only the project's); otherwise it is refused with "Kainow can only register documents in approved storage locations." It must not be a file Kainow filed, nor be or lie under a folder Kainow keeps (project, restricted, output, year, report type or source folders), because Kainow resolves the link with its own access; otherwise it is refused with "Kainow cannot register a document from the folders Kainow files outputs and sources in." (The same applies when a linked version is relinked.) It is registered at its existing location (D32) and labelled "Kept at its existing location". Kainow does not manage sharing for linked documents (it did not create their access), and says so: "Sharing for this document is managed outside Kainow". A linked document opens in SharePoint only ("Open"), so SharePoint decides whether the viewer may read it; Kainow never streams its bytes.
 - **A saved export** (§7.3).
 
 The submitter gives a title (1–200 characters) and a suggested report type. The output is created **Submitted**, with version 1 in Draft. A submitted output is visible to its submitter, the PM and Deputies (and, if Restricted, only those of them in its audience).
@@ -274,7 +274,7 @@ Kainow shares **folders**, never individual files, read-only, so the number of i
 
 ### 5.7 Opening a filed output
 
-"Open" goes through Kainow: `GET /projects/:id/outputs/:outputId/versions/:n/open` checks the reader's access, runs a quick check of the file (§9.1, at most once a minute per file), and redirects (303) to the file's web URL. If the check finds Missing, Changed or Access denied, it shows that state instead of redirecting, with what the PM can do. Kainow never shows a raw web URL in a list (links do not grant access, and stale URLs mislead). "Download a copy" (readers) streams the file through Kainow from the provider.
+"Open" goes through Kainow: `GET /projects/:id/outputs/:outputId/versions/:n/open` checks the reader's access, runs a quick check of the file (§9.1, at most once a minute per file), and redirects (303) to the file's web URL. If the check finds Missing, Changed or Access denied, it shows that state instead of redirecting, with what the PM can do. Kainow never shows a raw web URL in a list (links do not grant access, and stale URLs mislead). "Download a copy" (readers) streams a file Kainow filed through Kainow from the provider. A linked document has no download: Kainow's app-only access cannot prove the viewer's own, so it is opened in SharePoint only and the download is refused with "A linked document opens in SharePoint only. Use Open."
 
 ### 5.8 Checks and reconciliation of output files (D107)
 
@@ -472,7 +472,7 @@ An Enterprise Administrator may change the source-area destination (with a reaso
 
 ## 12. Screens
 
-- **Project › Outputs tab** (new): register list (filters: report type, category, status, year; search box), Submit button; each output's page: summary, versions table (version, origin, format, status, filing state, check state with time, approval reference, Open, Download a copy), contributors and AI-assisted label, audience (with Not-shared notes), actions by role, history.
+- **Project › Outputs tab** (new): register list (filters: report type, category, status, year; search box), Submit button; each output's page: summary, versions table (version, origin, format, status, filing state, check state with time, approval reference, Open, Download a copy for filed files only), contributors and AI-assisted label, audience (with Not-shared notes), actions by role, history.
 - **Draft report page:** "Submit as output" with format choice.
 - **Work and Records views:** "Export CSV" where allowed (hidden otherwise), and "Save as output".
 - **Project settings › Outputs:** destination, formats, export roles, each showing effective value, where it comes from and who may change it (Q01).
@@ -618,7 +618,7 @@ INSERT INTO golive_steps … ('storage', 12, …);
 | `POST /projects/:id/outputs/:outputId/versions` | `output.manage` | add a version |
 | `POST /projects/:id/outputs/:outputId/versions/:n/{file,approval,relink,register-changed}` | `output.manage` | §5.4, §4.3, §9 |
 | `PUT /projects/:id/outputs/:outputId/audience`, `POST …/review/{clear,withdraw}` | `output.audience` | §4.5 |
-| `GET /projects/:id/outputs/:outputId/versions/:n/{open,download}` | output readers | §5.7 |
+| `GET /projects/:id/outputs/:outputId/versions/:n/{open,download}` | output readers (download: filed files only, never a linked document) | §5.7 |
 | `GET /projects/:id/export?kind=&filters` | D106 | CSV |
 | `POST /projects/:id/export/save` | D106 + `output.submit` | §7.3 |
 | `GET/PUT /projects/:id/output-settings` | readers / `outputs.settings` | §8.3 |

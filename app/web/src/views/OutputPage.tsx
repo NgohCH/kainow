@@ -4,7 +4,7 @@ import { formatDay, formatWhen } from '../format.ts';
 import { OUTPUT_EVENT_TEXT } from '../history.ts';
 import {
   type AffectedPerson, APPROVAL_NOTICE, FILE_ACTION_LABEL, type FileAction, type OpenRefusal, type OutputDetail, type OutputSummary, type OutputVersion, audiencePreviewText,
-  checkLabel, filingLabel, formatLabel, mayAskApproval, mayFile, openRefusal, originLabel, outputStatusLabel, versionStatusLabel,
+  checkLabel, fileAccess, filingLabel, formatLabel, mayAskApproval, mayFile, openRefusal, originLabel, outputStatusLabel, versionStatusLabel,
 } from '../outputs.ts';
 import type { ProjectRole, ProjectStatus } from '../projects.ts';
 import { sizeLabel } from '../storage.ts';
@@ -207,7 +207,7 @@ export function OutputPage({ projectId, outputId, roles, status, people }: {
 
 type Act = (work: () => Promise<unknown>, done: string) => Promise<boolean>;
 
-/** One version: status, filing, check (with time), approval, Open and Download, and what the PM or a Deputy can do. */
+/** One version: status, filing, check (with time), approval, Open and (for a filed file) Download, and what the PM or a Deputy can do. */
 function VersionRow({ v, base, manages, mayRequestApproval, approvalPending, act }: {
   v: OutputVersion; base: string; manages: boolean; mayRequestApproval: boolean; approvalPending: boolean; act: Act;
 }) {
@@ -218,7 +218,8 @@ function VersionRow({ v, base, manages, mayRequestApproval, approvalPending, act
   const remember = useReturnFocus(mode !== null);
   const f = v.filing;
   const path = `${base}/versions/${v.no}`;
-  const hasFile = f.state === 'stored' || f.state === 'linked';
+  const access = fileAccess(f.state);
+  const hasFile = access.open;
 
   /** Open goes through Kainow: a quick check, then the file itself; a Changed, Missing or Access denied file is shown instead. */
   async function open() {
@@ -292,7 +293,7 @@ function VersionRow({ v, base, manages, mayRequestApproval, approvalPending, act
       <td data-label="File">
         <div className="actions">
           {hasFile && <button type="button" onClick={() => void open()} disabled={opening}>Open<span className="visually-hidden"> version {v.no}</span></button>}
-          {hasFile && <a href={api.url(`${path}/download`)} download>Download a copy<span className="visually-hidden"> of version {v.no}</span></a>}
+          {access.download && <a href={api.url(`${path}/download`)} download>Download a copy<span className="visually-hidden"> of version {v.no}</span></a>}
         </div>
         {refusal && <p className="warn" role="alert">{refusal.label}</p>}
         {actions.includes('register_changed') && (

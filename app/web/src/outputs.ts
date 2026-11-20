@@ -291,6 +291,16 @@ export function mayAskApproval(v: Pick<OutputVersion, 'status' | 'filing'>): boo
 }
 
 /** "File it" (or "Try again") on a version not yet filed whose bytes Kainow still holds. */
+/**
+ * What a reader can do with a version's file: a filed file opens and downloads a copy; a linked document only opens,
+ * in SharePoint, where SharePoint decides whether the reader may see it (Kainow never streams it).
+ */
+export function fileAccess(state: string | null | undefined): { open: boolean; download: boolean } {
+  if (state === 'stored') return { open: true, download: true };
+  if (state === 'linked') return { open: true, download: false };
+  return { open: false, download: false };
+}
+
 export const mayFile = (v: Pick<OutputVersion, 'origin' | 'filing'>): boolean =>
   v.origin !== 'link' && (v.filing.state === 'not_filed' || (v.filing.state === 'failed' && v.filing.tryAgain === true));
 

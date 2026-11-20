@@ -31,6 +31,7 @@ export const CHANGED_SINCE_APPROVAL = 'File changed since approval — this is n
 export const NOT_RECOVERED = 'The approved content could not be recovered from storage';
 export const NOT_APPROVED_PLACE =
   'This place is not an approved storage location. An Enterprise Administrator must approve it as a destination before the file can be relinked.';
+export const KAINOW_FILES = 'Kainow cannot register a document from the folders Kainow files outputs and sources in.';
 export const SHARED_FILE = 'Another output version already stands for this file.';
 export const NOTHING_TO_RELINK = 'This file is where Kainow recorded it.';
 export const GIVE_LINK = 'Kainow cannot find the file. Give a link to where it is now.';
@@ -141,6 +142,35 @@ export async function pathInDestination(connector: StorageConnector, driveRef: D
   const root = plainPath((await connector.getItem(driveRef, rootItemId)).path);
   const p = plainPath(drivePath);
   return root && p.startsWith(`${root}/`) ? `/${p.slice(root.length + 1)}` : drivePath;
+}
+
+/**
+ * Whether the item is a file Kainow filed (any stored file but a link) or is, or lies under, a folder Kainow files
+ * outputs or sources in (project, restricted root, output, year, report type, source root). A link may never point
+ * there: Kainow resolves links with its own access, so registering one would hand out what SharePoint and Kainow's
+ * readers rule keep from the person. A walk that does not reach the top of the drive counts as inside (fails closed).
+ */
+export async function inKainowFiles(db: Db, connector: StorageConnector, ref: DestinationRef, item: ItemState, driveRootId?: string): Promise<boolean> {
+  const filed = await db.query(`SELECT 1 FROM stored_files WHERE drive_id = $1 AND item_id = $2 AND state <> 'linked' LIMIT 1`, [ref.driveId, item.itemId]);
+  if (filed.rowCount) return true;
+  const folders = new Set(
+    (
+      await db.query<{ item_id: string }>(
+        `SELECT f.item_id FROM storage_folders f JOIN storage_destinations d ON d.id = f.destination_id
+          WHERE d.drive_id = $1 AND f.level <> 'department'`,
+        [ref.driveId],
+      )
+    ).rows.map((r) => r.item_id),
+  );
+  if (folders.size === 0) return false;
+  if (folders.has(item.itemId)) return true;
+  let parent = item.parentId;
+  for (let depth = 0; depth < MAX_FOLDER_DEPTH; depth++) {
+    if (!parent || parent === driveRootId) return false;
+    if (folders.has(parent)) return true;
+    parent = (await connector.getItem(ref, parent)).parentId;
+  }
+  return true;
 }
 
 export interface ApprovedPlace { id: string; connector: 'graph' | 'local'; rootItemId: string; label: string }
@@ -399,6 +429,8 @@ export async function relinkFile(deps: CheckDeps, fileId: string, actorId: strin
   }
   const place = await approvedPlaceOf(deps.pool, connector, ref, item, { prefer: f.destination_id, driveRootId });
   if (!place) throw new FileActionRefused(NOT_APPROVED_PLACE);
+  // A linked document is someone else's: it may not be pointed at anything Kainow filed or keeps folders for.
+  if (f.state === 'linked' && (await inKainowFiles(deps.pool, connector, ref, item, driveRootId))) throw new FileActionRefused(KAINOW_FILES);
   if (await standsElsewhere(deps.pool, f.id, ref.driveId, item.itemId)) throw new FileActionRefused(SHARED_FILE);
   if (contentDiffers(f, item)) throw new FileActionRefused(NOT_SAME_FILE);
   // The path as seen from the destination it is in now.

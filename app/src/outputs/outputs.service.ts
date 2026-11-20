@@ -22,7 +22,7 @@ import { type OutputFormat, loadStorageSettings } from '../storage/settings';
 import { type ItemState, StorageError } from '../storage/types';
 import { DOES_NOT_APPROVE_COMMITMENTS, approveOutputHandler, endOutputApprovalRequests } from './approval-handler';
 import { checkOutputAudience, createOutputAudience, withdrawOutput, writeOutputAudience } from './audience';
-import { type CheckStatus, NOT_RECOVERED, REGISTER_FAILED, REGISTER_PENDING, approvedPlaceOf, changeStateSql, checkActions, checkLabel, pathInDestination } from './checks';
+import { type CheckStatus, KAINOW_FILES, NOT_RECOVERED, REGISTER_FAILED, REGISTER_PENDING, approvedPlaceOf, changeStateSql, checkActions, checkLabel, inKainowFiles, pathInDestination } from './checks';
 import { ALREADY_FILED, BEING_FILED, KEPT_LABEL, STORED_LABELS, LINKED_NOT_FILED, NOT_KEPT, NO_DESTINATION, REGISTER_FIRST, filingFailedLabel, requestFiling } from './filing';
 import { type ExportFilters, type ExportKind, assertMayExport, buildExport, defaultExportTitle, recordExport } from './exports';
 import { effectiveFormats, outputRefusal } from './formats';
@@ -363,6 +363,8 @@ export class OutputsService {
       // Any approved output destination counts, the earliest approved first (spec 4.1).
       const dest = await approvedPlaceOf(this.pool, connector, ref, resolved.item, { driveRootId: ref.rootItemId });
       if (!dest) throw new BadRequestException(LINK_REFUSED);
+      // Never a file Kainow filed, nor anything in Kainow's own folders: the link is resolved with Kainow's access.
+      if (await inKainowFiles(this.pool, connector, ref, resolved.item, ref.rootItemId)) throw new BadRequestException(KAINOW_FILES);
       // Kept relative to the destination's own folder, as the checks compare it (spec 5.8).
       const item = { ...resolved.item, path: await pathInDestination(connector, ref, dest.rootItemId, resolved.item.path) };
       return {
