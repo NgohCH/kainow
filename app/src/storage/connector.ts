@@ -5,7 +5,11 @@ import type {
 /** The one interface all storage code uses; nothing outside connectors/ knows about a provider. */
 export interface StorageConnector {
   kind: 'graph' | 'local';
-  checkDestination(dest: DestinationRef): Promise<DestinationCheck>;
+  /**
+   * With `testPerson`, the check also grants that person read on the check folder and revokes it again; without one
+   * the permissions line fails ("Creating permissions was not checked: no test person given").
+   */
+  checkDestination(dest: DestinationRef, opts?: { testPerson?: string }): Promise<DestinationCheck>;
   /** parentId null means the destination root. */
   ensureFolder(dest: DestinationRef, parentId: string | null, name: string): Promise<FolderRef>;
   upload(dest: DestinationRef, folderId: string, name: string, bytes: Buffer, opts: { conflict: 'fail' }): Promise<StoredRef>;

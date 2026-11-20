@@ -12,6 +12,8 @@ const GRAPH_SCOPE = 'https://graph.microsoft.com/.default';
 const cfg = { tenantId: 'test-tenant', clientId: 'client-1', clientSecret: 'secret-value-xyz' };
 const people = { known: 'known.person@example.org', unknown: 'unknown.person@example.org' };
 const MiB = 1024 * 1024;
+const APP_ID = '11111111-2222-4333-8444-555555555555';
+const OTHER_APP_ID = '99999999-0000-4000-8000-000000000000';
 
 interface Setup { fake: FakeGraph; connector: GraphConnector; dest: DestinationRef; tokens: M365TokenSource }
 
@@ -23,6 +25,7 @@ async function setup(opts: { lookup?: boolean; domains?: string[]; callTimeoutMs
     graphBase: fake.graphBase,
     lookup: opts.lookup ?? true,
     allowedDomains: async () => opts.domains ?? ['example.org'],
+    appClientId: APP_ID,
     callTimeoutMs: opts.callTimeoutMs,
   });
   const a = fake.addDrive();
@@ -164,7 +167,7 @@ test('upload with dropped reply leaves the file findable by findChild', async ()
   } finally { await s.fake.close(); }
 });
 
-test('lookupPerson with lookup on: member → account, guest → not_found, disabled → not_found, unknown → not_found', async () => {
+test('lookupPerson with lookup on (User.ReadBasic.All): member → account, guest → not_found, unknown → not_found', async () => {
   const s = await setup({ lookup: true });
   try {
     s.fake.addUser('member@example.org');
@@ -172,9 +175,59 @@ test('lookupPerson with lookup on: member → account, guest → not_found, disa
     s.fake.addUser('disabled@example.org', { enabled: false });
     assert.equal(await s.connector.lookupPerson('member@example.org'), 'account');
     assert.equal(await s.connector.lookupPerson('guest@example.net'), 'not_found');
-    assert.equal(await s.connector.lookupPerson('disabled@example.org'), 'not_found');
+    // ReadBasic does not expose accountEnabled: a disabled account cannot be told apart
+    assert.equal(await s.connector.lookupPerson('disabled@example.org'), 'account');
     assert.equal(await s.connector.lookupPerson('nobody@example.org'), 'not_found');
     assert.ok(s.fake.calls.some((c) => c.method === 'GET' && c.path === '/v1.0/users/member@example.org'));
+  } finally { await s.fake.close(); }
+});
+
+test('grant with lookup on refuses a guest without inviting', async () => {
+  const s = await setup({ lookup: true });
+  try {
+    const f = await s.connector.ensureFolder(s.dest, null, 'Guests');
+    s.fake.addUser('guest@example.net', { userType: 'Guest' });
+    assert.deepEqual(await s.connector.grant(s.dest, f.itemId, 'guest@example.net', 'read'), { notFound: true });
+    assert.equal(s.fake.invites.length, 0);
+    assert.ok(!s.fake.calls.some((c) => c.path.endsWith('/invite')));
+  } finally { await s.fake.close(); }
+});
+
+test('grant refuses the library root', async () => {
+  const s = await setup({ lookup: true });
+  try {
+    s.fake.addUser(people.known);
+    await assert.rejects(s.connector.grant(s.dest, s.dest.rootItemId, people.known, 'read'), isCode('invalid'));
+    assert.equal(s.fake.invites.length, 0);
+  } finally { await s.fake.close(); }
+});
+
+test('423 resourceLocked maps to a temporary server error', async () => {
+  const s = await setup();
+  try {
+    const f = await s.connector.ensureFolder(s.dest, null, 'Locked');
+    s.fake.fault({ method: 'GET', pathIncludes: f.itemId }, '423');
+    await assert.rejects(s.connector.getItem(s.dest, f.itemId), (e: unknown) => e instanceof StorageError && e.code === 'server' && e.status === 423);
+  } finally { await s.fake.close(); }
+});
+
+test('a next page outside Graph is refused and never sent the token', async () => {
+  const s = await setup();
+  try {
+    const f = await s.connector.ensureFolder(s.dest, null, 'Paged');
+    const foreign: string[] = [];
+    // rewrites the permissions page so its next link names another host
+    const fetchFn = (async (input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.startsWith('https://elsewhere.example.net')) { foreign.push(url); return new Response('{"value":[]}', { status: 200 }); }
+      const res = await s.fake.fetch(input, init);
+      if (!url.includes('/permissions')) return res;
+      const body = await res.json() as Record<string, unknown>;
+      return new Response(JSON.stringify({ ...body, '@odata.nextLink': 'https://elsewhere.example.net/v1.0/next' }), { status: 200 });
+    }) as typeof fetch;
+    const c = new GraphConnector(s.tokens, { fetchFn, graphBase: s.fake.graphBase, lookup: true, allowedDomains: async () => [], appClientId: APP_ID });
+    await assert.rejects(c.listPermissions(s.dest, f.itemId), isCode('invalid'));
+    assert.deepEqual(foreign, []);
   } finally { await s.fake.close(); }
 });
 
@@ -250,12 +303,13 @@ test('listPermissions classifies owner group, site admin, app, user, group and l
   const s = await setup();
   try {
     const f = await s.connector.ensureFolder(s.dest, null, 'Perms');
-    const seed = (kind: 'owner_group' | 'site_admin' | 'app' | 'user' | 'group' | 'link', principal: string, roles: string[]) =>
+    const seed = (kind: 'owner_group' | 'site_admin' | 'app' | 'other_app' | 'user' | 'group' | 'link', principal: string, roles: string[]) =>
       s.fake.seedPermission(s.dest.driveId, f.itemId, { kind, principal, roles });
     const ids = {
       owners: seed('owner_group', 'Outputs Owners', ['owner']),
       admin: seed('site_admin', 'admin@example.org', ['owner']),
-      app: seed('app', 'Kainow', ['write']),
+      app: seed('app', APP_ID, ['write']),
+      otherApp: seed('other_app', OTHER_APP_ID, ['write']),
       user: seed('user', 'someone@example.org', ['read']),
       members: seed('group', 'Outputs Members', ['write']),
       link: seed('link', 'organization', ['read']),
@@ -266,9 +320,12 @@ test('listPermissions classifies owner group, site admin, app, user, group and l
     const by = new Map(perms.map((p) => [p.id, p]));
     assert.equal(by.get(ids.owners)?.kind, 'owner_group');
     assert.equal(by.get(ids.owners)?.principal, 'Outputs Owners');
-    assert.equal(by.get(ids.admin)?.kind, 'site_admin');
+    // a site user with full control is not trusted as a site administrator (fail closed)
+    assert.equal(by.get(ids.admin)?.kind, 'user');
     assert.equal(by.get(ids.admin)?.principal, 'admin@example.org');
     assert.equal(by.get(ids.app)?.kind, 'app');
+    assert.equal(by.get(ids.otherApp)?.kind, 'other_app');
+    assert.equal(by.get(ids.otherApp)?.principal, OTHER_APP_ID);
     assert.equal(by.get(ids.user)?.kind, 'user');
     assert.equal(by.get(ids.user)?.principal, 'someone@example.org');
     assert.deepEqual(by.get(ids.user)?.roles, ['read']);
@@ -282,19 +339,37 @@ test('listPermissions classifies owner group, site admin, app, user, group and l
 test('checkDestination passes a library limited to owners and lists anyone else', async () => {
   const s = await setup();
   try {
+    s.fake.addUser(people.known);
     s.fake.seedPermission(s.dest.driveId, s.dest.rootItemId, { kind: 'owner_group', principal: 'Outputs Owners', roles: ['owner'] });
-    const good = await s.connector.checkDestination(s.dest);
+    s.fake.seedPermission(s.dest.driveId, s.dest.rootItemId, { kind: 'app', principal: APP_ID, roles: ['owner'] });
+    const good = await s.connector.checkDestination(s.dest, { testPerson: people.known });
     assert.equal(good.ok, true, JSON.stringify(good.lines));
     assert.deepEqual(good.lines.map((l) => l.key), ['reachable', 'folder', 'upload', 'delete', 'permissions', 'library_permissions', 'sharing_capability']);
     assert.ok(good.quotaBytes && good.quotaBytes > 0);
     assert.equal(good.others.length, 0);
     assert.deepEqual(s.fake.recycleBin(s.dest.driveId), [], 'probe file removed permanently');
+    assert.equal(s.fake.invites.length, 1, 'test person invited once');
+    const check = await s.connector.findChild(s.dest, s.dest.rootItemId, '.kainow-check');
+    assert.ok(check);
+    assert.deepEqual(await s.connector.listPermissions(s.dest, check.itemId), [], 'test permission revoked');
+
+    // without a test person, creating permissions is not checked and the check does not pass
+    const untested = await s.connector.checkDestination(s.dest);
+    assert.equal(untested.ok, false);
+    assert.deepEqual(untested.lines.find((l) => l.key === 'permissions'),
+      { key: 'permissions', ok: false, detail: 'Creating permissions was not checked: no test person given' });
+    assert.equal(untested.lines.find((l) => l.key === 'library_permissions')?.ok, true, 'library still checked');
+
+    // a test person who cannot be given access fails the line
+    const refused = await s.connector.checkDestination(s.dest, { testPerson: 'nobody@example.org' });
+    assert.equal(refused.lines.find((l) => l.key === 'permissions')?.ok, false);
 
     s.fake.seedPermission(s.dest.driveId, s.dest.rootItemId, { kind: 'group', principal: 'Outputs Members', roles: ['write'] });
-    const bad = await s.connector.checkDestination(s.dest);
+    s.fake.seedPermission(s.dest.driveId, s.dest.rootItemId, { kind: 'other_app', principal: OTHER_APP_ID, roles: ['write'] });
+    const bad = await s.connector.checkDestination(s.dest, { testPerson: people.known });
     assert.equal(bad.ok, false);
     assert.equal(bad.lines.find((l) => l.key === 'library_permissions')?.ok, false);
-    assert.deepEqual(bad.others.map((o) => o.principal), ['Outputs Members']);
+    assert.deepEqual(bad.others.map((o) => o.principal), ['Outputs Members', OTHER_APP_ID]);
   } finally { await s.fake.close(); }
 });
 
@@ -321,7 +396,7 @@ test('resolveSharePointLibrary and resolveOneDrive find the drive and root', asy
     const ref = await s.connector.upload(folderDest, inFolder.rootItemId, 'a.txt', Buffer.from('a'), { conflict: 'fail' });
     assert.equal(ref.path, '/a.txt');
 
-    const off = new GraphConnector(s.tokens, { fetchFn: s.fake.fetch, graphBase: s.fake.graphBase, lookup: false, allowedDomains: async () => [] });
+    const off = new GraphConnector(s.tokens, { fetchFn: s.fake.fetch, graphBase: s.fake.graphBase, lookup: false, allowedDomains: async () => [], appClientId: APP_ID });
     await assert.rejects(off.resolveOneDrive('owner@example.org'), isCode('unsupported'));
   } finally { await s.fake.close(); }
 });

@@ -54,6 +54,8 @@ export interface GraphConnectorOptions {
   lookup: boolean;
   /** The organisation's approved email domains. */
   allowedDomains: () => Promise<string[]>;
+  /** Kainow's own application (client) id: only this application's permission counts as `app`. */
+  appClientId: string;
   callTimeoutMs?: number;
   chunkTimeoutMs?: number;
 }
@@ -83,6 +85,7 @@ function statusError(status: number, headers: Headers): StorageError {
   if (status === 413) return new StorageError('too_large', opts);
   if (status === 429) return new StorageError('throttled', opts);
   if (status === 507) return new StorageError('quota', opts);
+  if (status === 423) return new StorageError('server', opts); // resourceLocked: temporary, the job retries
   if (status >= 500) return new StorageError('server', opts);
   return new StorageError('invalid', opts);
 }
@@ -175,6 +178,8 @@ export class GraphConnector implements StorageConnector {
       if (!Array.isArray(r.json?.value)) throw new StorageError('server', { status: r.status });
       out.push(...(r.json.value as T[]));
       next = typeof r.json['@odata.nextLink'] === 'string' ? r.json['@odata.nextLink'] : undefined;
+      // the bearer token goes only to Graph: a next page anywhere else is refused, never followed
+      if (next !== undefined && !next.startsWith(`${this.graphBase}/`)) throw new StorageError('invalid');
     }
     return out;
   }
@@ -261,7 +266,7 @@ export class GraphConnector implements StorageConnector {
   }
 
   // ---- contract ----
-  async checkDestination(dest: DestinationRef): Promise<DestinationCheck> {
+  async checkDestination(dest: DestinationRef, opts: { testPerson?: string } = {}): Promise<DestinationCheck> {
     const lines: DestinationCheck['lines'] = [];
     let quotaBytes: number | null = null;
     let usedBytes: number | null = null;
@@ -273,7 +278,7 @@ export class GraphConnector implements StorageConnector {
         const r = await fn();
         lines.push({ key, ...r });
       } catch (e) {
-        failed = key !== 'library_permissions' && key !== 'sharing_capability';
+        failed = key !== 'permissions' && key !== 'library_permissions' && key !== 'sharing_capability';
         lines.push({ key, ok: false, detail: e instanceof StorageError ? e.message : 'The check failed.' });
       }
     };
@@ -303,7 +308,11 @@ export class GraphConnector implements StorageConnector {
     });
     await step('permissions', async () => {
       await this.listPermissions(dest, folderId);
-      return { ok: true, detail: 'Can list folder permissions' };
+      if (!opts.testPerson) return { ok: false, detail: 'Creating permissions was not checked: no test person given' };
+      const g = await this.grant(dest, folderId, opts.testPerson, 'read');
+      if (!('permissionId' in g)) return { ok: false, detail: 'The test person could not be given access' };
+      await this.revoke(dest, folderId, g.permissionId);
+      return { ok: true, detail: 'Can create and remove folder permissions' };
     });
     await step('library_permissions', async () => {
       const perms = await this.listPermissions(dest, dest.rootItemId);
@@ -447,11 +456,18 @@ export class GraphConnector implements StorageConnector {
     await this.call('POST', `${this.itemPath(dest, itemId)}/versions/${enc(versionId)}/restoreVersion`, { read: 'none' });
   }
 
+  /**
+   * Works with User.ReadBasic.All only, which does not expose userType or accountEnabled: a guest is recognised by
+   * "#EXT#" in its userPrincipalName. A disabled account cannot be detected this way and counts as an account
+   * (Kainow's own account state still governs who reads what).
+   */
   async lookupPerson(email: string): Promise<'account' | 'not_found' | 'unknown'> {
     if (!this.opts.lookup) return 'unknown';
-    const r = await this.call('GET', `/users/${enc(email.trim())}?$select=id,userType,accountEnabled`, { allow: [404] });
+    const r = await this.call('GET', `/users/${enc(email.trim())}?$select=id,userPrincipalName,mail`, { allow: [404] });
     if (r.status === 404) return 'not_found';
-    return r.json?.userType === 'Member' && r.json?.accountEnabled === true ? 'account' : 'not_found';
+    if (typeof r.json?.id !== 'string') throw new StorageError('server', { status: r.status });
+    const upn = typeof r.json.userPrincipalName === 'string' ? r.json.userPrincipalName : '';
+    return upn.toUpperCase().includes('#EXT#') ? 'not_found' : 'account';
   }
 
   async grant(dest: DestinationRef, itemId: string, email: string, role: 'read' | 'write'): Promise<GrantResult> {
@@ -466,7 +482,8 @@ export class GraphConnector implements StorageConnector {
       if (!allowed.includes(domain)) return { notFound: true };
     }
     const target = await this.getRaw(dest, itemId);
-    if (!target.folder && !target.root) throw new StorageError('invalid'); // Kainow shares folders only
+    // Kainow shares folders only, never files and never the library root itself
+    if (!target.folder || target.root) throw new StorageError('invalid');
     const r = await this.call('POST', `${this.itemPath(dest, itemId)}/invite`, {
       body: { recipients: [{ email: address }], roles: [role], requireSignIn: true, sendInvitation: false },
       allow: [404],
@@ -486,7 +503,7 @@ export class GraphConnector implements StorageConnector {
 
   async listPermissions(dest: DestinationRef, itemId: string): Promise<PermissionInfo[]> {
     const perms = await this.listAll<GraphPermission>(`${this.itemPath(dest, itemId)}/permissions`);
-    return perms.map(classify);
+    return perms.map((p) => classify(p, this.opts.appClientId));
   }
 
   async resolveLink(url: string): Promise<{ dest: DestinationRef | null; item: ItemState }> {
@@ -508,9 +525,10 @@ export class GraphConnector implements StorageConnector {
 
 /**
  * Sorts a Graph permission into the kinds the library check needs (§5.5). The site's owners group is a SharePoint
- * site group with full control whose name ends in "Owners"; a site user with full control is a site administrator.
+ * site group with full control whose name ends in "Owners"; only Kainow's own application is `app`. Site users are
+ * always `user` (fail closed): `site_admin` waits for a rule confirmed against a real tenant.
  */
-function classify(p: GraphPermission): PermissionInfo {
+function classify(p: GraphPermission, appClientId: string): PermissionInfo {
   const roles = [...(p.roles ?? [])];
   const base = { id: p.id, roles };
   if (p.link) return { ...base, kind: 'link', principal: p.link.scope ?? 'link' };
@@ -518,7 +536,10 @@ function classify(p: GraphPermission): PermissionInfo {
   const legacy = p.grantedTo ?? {};
   const owner = roles.includes('owner');
   const app = g.application ?? legacy.application;
-  if (app) return { ...base, kind: 'app', principal: app.displayName ?? app.id ?? '' };
+  if (app) {
+    const mine = !!app.id && app.id.toLowerCase() === appClientId.toLowerCase();
+    return mine ? { ...base, kind: 'app', principal: app.displayName ?? app.id ?? '' } : { ...base, kind: 'other_app', principal: app.id ?? '' };
+  }
   const user = g.user ?? legacy.user;
   if (user) return { ...base, kind: 'user', principal: user.email ?? p.invitation?.email ?? user.displayName ?? user.id ?? '' };
   if (g.group) return { ...base, kind: 'group', principal: g.group.displayName ?? g.group.email ?? g.group.id ?? '' };
@@ -528,7 +549,7 @@ function classify(p: GraphPermission): PermissionInfo {
   }
   if (g.siteUser) {
     const principal = g.siteUser.email ?? g.siteUser.loginName ?? g.siteUser.displayName ?? '';
-    return { ...base, kind: owner ? 'site_admin' : 'user', principal };
+    return { ...base, kind: 'user', principal };
   }
   if (p.invitation?.email) return { ...base, kind: 'user', principal: p.invitation.email };
   return { ...base, kind: 'group', principal: '' };

@@ -76,7 +76,21 @@ test('local connector resolveLink round-trips a web URL', async () => {
     const r = await c.resolveLink(ref.webUrl);
     assert.equal(r.item.itemId, ref.itemId);
     await assert.rejects(c.resolveLink('https://example.org/nope'), (e: unknown) => e instanceof StorageError && e.code === 'invalid');
-    const chk = await c.checkDestination(dest);
-    assert.equal(chk.ok, true);
+  } finally { await rm(dir, { recursive: true, force: true }); }
+});
+
+test('local connector checkDestination creates and removes a permission only with a test person', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'kainow-local-'));
+  try {
+    const c = new LocalConnector(dir, { lookup: { [people.known]: 'account' } });
+    const chk = await c.checkDestination(dest, { testPerson: people.known });
+    assert.equal(chk.ok, true, JSON.stringify(chk.lines));
+    assert.equal(chk.lines.find((l) => l.key === 'permissions')?.ok, true);
+    const folder = await c.ensureFolder(dest, null, '.kainow-check');
+    assert.deepEqual(await c.listPermissions(dest, folder.itemId), [], 'test grant revoked');
+    const none = await c.checkDestination(dest);
+    assert.equal(none.ok, false);
+    assert.deepEqual(none.lines.find((l) => l.key === 'permissions'),
+      { key: 'permissions', ok: false, detail: 'Creating permissions was not checked: no test person given' });
   } finally { await rm(dir, { recursive: true, force: true }); }
 });

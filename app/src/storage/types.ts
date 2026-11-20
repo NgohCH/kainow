@@ -42,7 +42,8 @@ export interface FolderRef { itemId: string; name: string }
 export interface ItemVersion { id: string; size: number; providerHash: string | null; modifiedAt: string }
 export interface PermissionInfo {
   id: string;
-  kind: 'owner_group' | 'site_admin' | 'app' | 'user' | 'group' | 'link';
+  /** `app` is Kainow's own application; `other_app` any other application (never allowed on a library). */
+  kind: 'owner_group' | 'site_admin' | 'app' | 'other_app' | 'user' | 'group' | 'link';
   principal: string;
   roles: string[];
 }

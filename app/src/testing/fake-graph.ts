@@ -17,7 +17,7 @@ const CHUNK_UNIT = 320 * 1024;
 const SIMPLE_UPLOAD_MAX = 4 * 1024 * 1024;
 const MAX_FRAGMENT = 60 * 1024 * 1024;
 
-export type FaultKind = 'timeout' | 'drop_after_body' | '429' | '503' | '401' | '403' | '404' | '500';
+export type FaultKind = 'timeout' | 'drop_after_body' | '429' | '503' | '401' | '403' | '404' | '423' | '500';
 
 export interface FakeGraph {
   /** Stands in for https://graph.microsoft.com/v1.0. */
@@ -228,11 +228,12 @@ export async function startFakeGraph(): Promise<FakeGraph> {
       case 'group':
         perm = { id, roles: [...p.roles], grantedToV2: { siteGroup: { id: pid, displayName: p.principal, loginName: p.principal } } };
         break;
-      case 'site_admin':
+      case 'site_admin': // a site user with these roles (the connector classes every site user as `user`)
         perm = { id, roles: [...p.roles], grantedToV2: { siteUser: { id: pid, displayName: p.principal, email: p.principal, loginName: `i:0#.f|membership|${p.principal}` } } };
         break;
       case 'app':
-        perm = { id, roles: [...p.roles], grantedToV2: { application: { id: pid, displayName: p.principal } } };
+      case 'other_app': // the principal is the application (client) id
+        perm = { id, roles: [...p.roles], grantedToV2: { application: { id: p.principal, displayName: `App ${p.principal}` } } };
         break;
       case 'user':
         perm = { id, roles: [...p.roles], grantedToV2: { user: { id: pid, displayName: p.principal, email: p.principal } } };
@@ -274,7 +275,11 @@ export async function startFakeGraph(): Promise<FakeGraph> {
     if (method === 'GET' && (m = /^\/users\/([^/]+)$/.exec(path))) {
       const u = users.get(m[1].toLowerCase());
       if (!u) throw new GErr(404, 'Request_ResourceNotFound');
-      return { status: 200, json: { id: u.id, userType: u.userType, accountEnabled: u.enabled, mail: u.email, userPrincipalName: u.email } };
+      // only what User.ReadBasic.All exposes (no userType, no accountEnabled); a guest's UPN carries #EXT#
+      const upn = u.userType === 'Guest' ? `${u.email.replace('@', '_')}#EXT#@tenant.example.org` : u.email;
+      const all: Record<string, unknown> = { id: u.id, displayName: u.email, mail: u.email, userPrincipalName: upn };
+      const select = q.get('$select')?.split(',').map((x) => x.trim()).filter((x) => x in all);
+      return { status: 200, json: select?.length ? Object.fromEntries(select.map((k) => [k, all[k]])) : all };
     }
     if (method === 'GET' && (m = /^\/shares\/([^/]+)\/driveItem$/.exec(path))) {
       if (!m[1].startsWith('u!')) throw new GErr(400, 'invalidRequest');

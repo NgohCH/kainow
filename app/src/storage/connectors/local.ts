@@ -93,7 +93,7 @@ export class LocalConnector implements StorageConnector {
   }
 
   // ---- contract ----
-  async checkDestination(dest: DestinationRef): Promise<DestinationCheck> {
+  async checkDestination(dest: DestinationRef, opts: { testPerson?: string } = {}): Promise<DestinationCheck> {
     const lines: DestinationCheck['lines'] = [];
     let ok = true;
     const step = (key: DestinationCheck['lines'][number]['key'], fn: () => string) => {
@@ -104,10 +104,25 @@ export class LocalConnector implements StorageConnector {
     step('folder', () => 'Local folder is the root');
     step('upload', () => { writeFileSync(probe, 'probe'); return 'Can write'; });
     step('delete', () => { rmSync(probe); return 'Can delete'; });
-    step('permissions', () => 'Not applicable to the local folder');
+    lines.push(await this.checkGrant(dest, opts.testPerson));
+    if (!lines[lines.length - 1].ok) ok = false;
     step('library_permissions', () => 'Not applicable to the local folder');
     step('sharing_capability', () => 'Grants are recorded in a sidecar file');
     return { ok, lines, quotaBytes: null, usedBytes: null, others: this.loadPerms()[dest.rootItemId] ?? [] };
+  }
+
+  /** Grants the test person read on the check folder and revokes it again (both must succeed). */
+  private async checkGrant(dest: DestinationRef, testPerson?: string): Promise<DestinationCheck['lines'][number]> {
+    if (!testPerson) return { key: 'permissions', ok: false, detail: 'Creating permissions was not checked: no test person given' };
+    try {
+      const folder = await this.ensureFolder(dest, null, '.kainow-check');
+      const g = await this.grant(dest, folder.itemId, testPerson, 'read');
+      if (!('permissionId' in g)) return { key: 'permissions', ok: false, detail: 'The test person could not be given access' };
+      await this.revoke(dest, folder.itemId, g.permissionId);
+      return { key: 'permissions', ok: true, detail: 'Can create and remove folder permissions' };
+    } catch {
+      return { key: 'permissions', ok: false, detail: 'failed' };
+    }
   }
 
   async ensureFolder(dest: DestinationRef, parentId: string | null, name: string): Promise<FolderRef> {
