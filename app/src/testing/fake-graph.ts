@@ -211,6 +211,10 @@ export async function startFakeGraph(): Promise<FakeGraph> {
       id: d.rootId, driveId: d.id, parentId: null, name: 'root', folder: true, content: Buffer.alloc(0), history: [],
       created: t, modified: t, ver: 1, cver: 1, perms: [],
     });
+    // A OneDrive root lists its owner as a user, as a real one does.
+    if (owner) {
+      items.get(d.rootId)!.perms.push({ id: randomUUID(), roles: ['owner'], grantedToV2: { user: { id: randomUUID(), displayName: owner, email: owner } } });
+    }
     return { driveId: d.id, rootItemId: d.rootId, siteId: site.id };
   };
 

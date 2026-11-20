@@ -42,6 +42,8 @@ export interface AddDestinationInput {
 export interface LibraryAllowance {
   storageAdminUserEmails: string[];
   kainowGrantPermissionIds: Set<string>;
+  /** A OneDrive destination's own account: its root lists the owner as a user. */
+  oneDriveAccountEmail?: string | null;
 }
 
 const OPEN_TO_OTHERS = (who: string) => `Others can open everything in this library: ${who}. Limit the library to site owners before approving it.`;
@@ -60,6 +62,7 @@ export function libraryPermissionProblems(perms: PermissionInfo[], allowed: Libr
     if (p.kind === 'owner_group' || p.kind === 'site_admin' || p.kind === 'app') return false;
     if (allowed.kainowGrantPermissionIds.has(p.id)) return false;
     if (p.kind === 'user' && admins.has(p.principal.trim().toLowerCase())) return false;
+    if (p.kind === 'user' && allowed.oneDriveAccountEmail && p.principal.trim().toLowerCase() === allowed.oneDriveAccountEmail.trim().toLowerCase()) return false;
     return true;
   });
 }
@@ -215,7 +218,8 @@ export class DestinationsService {
       result = await this.applyLibraryRule(raw, row);
     } catch (e) {
       if (e instanceof StorageWaitingForKey) throw this.translate(e);
-      const detail = e instanceof StorageError ? e.message : 'The check failed.';
+      if (!(e instanceof StorageError)) throw e;
+      const detail = e.message;
       result = { ok: false, lines: [{ key: 'reachable', ok: false, detail }], quotaBytes: null, usedBytes: null, others: [] };
     }
     const at = this.clock();
@@ -231,6 +235,7 @@ export class DestinationsService {
     const line = raw.lines.find((l) => l.key === 'library_permissions');
     if (!line || (!line.ok && raw.others.length === 0)) return raw; // not evaluated, or the listing failed
     const allowed: LibraryAllowance = {
+      oneDriveAccountEmail: row.kind === 'onedrive' ? row.account_email : null,
       storageAdminUserEmails: row.purpose === 'source_area'
         ? (await this.pool.query<{ email: string }>(
             `SELECT u.email FROM storage_admins a JOIN users u ON u.id = a.user_id WHERE a.ended_at IS NULL ORDER BY u.email`,

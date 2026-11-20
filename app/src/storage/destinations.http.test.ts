@@ -140,6 +140,31 @@ describe('storage destinations over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.ok(!(status === 'approved' && lookup === false), `approved OneDrive with lookup off: ${results.map((r) => r.status)}`);
   });
 
+  test('a OneDrive account may open its own drive; another named user may not', async () => {
+    fake.addUser('admin@example.org');
+    fake.addUser('owner@example.org');
+    const od = fake.addDrive({ ownerEmail: 'owner@example.org' });
+    assert.equal((await admin.request('PUT', '/admin/storage', { reason, directoryLookup: true })).status, 200);
+    const body = { kind: 'onedrive', purpose: 'outputs', label: 'Shared drive', accountEmail: 'Owner@Example.org', reason };
+    const added = await admin.request('POST', '/admin/storage/destinations', body);
+    assert.equal(added.status, 201, JSON.stringify(added.body));
+    assert.equal(added.body.lastCheck.ok, true, JSON.stringify(added.body.lastCheck));
+    assert.equal((await approve(added.body.id)).status, 200);
+    fake.seedPermission(od.driveId, od.rootItemId, { kind: 'user', principal: 'other@example.org', roles: ['read'] });
+    const again = await admin.request('POST', `/admin/storage/destinations/${added.body.id}/check`);
+    assert.equal(again.body.ok, false);
+    assert.equal(again.body.lines.find((l: { key: string }) => l.key === 'library_permissions').detail, EXACT('other@example.org'));
+  });
+
+  test('a database failure during a check is an error, not a failed check', async () => {
+    library();
+    const added = await addLibrary();
+    await t.pool.query(`ALTER TABLE storage_destination_events RENAME TO sde_tmp`);
+    const res = await admin.request('POST', `/admin/storage/destinations/${added.body.id}/check`);
+    await t.pool.query(`ALTER TABLE sde_tmp RENAME TO storage_destination_events`);
+    assert.equal(res.status, 500);
+  });
+
   test('approval requires a passing check and a reason', async () => {
     library();
     const added = await addLibrary();
@@ -330,6 +355,25 @@ describe('connector factory without credentials', { skip: SKIP_NO_DB }, () => {
     const factory = t.app.get<DbStorageConnectorFactory>(STORAGE_CONNECTORS);
     await assert.rejects(factory.forNew('sharepoint_library'), (e) => e instanceof StorageError && e.code === 'invalid');
     await assert.rejects(factory.forDestination(uuidv7()), (e) => e instanceof StorageError && e.code === 'invalid');
+  });
+
+  test('adding a destination without the protected key writes nothing', async () => {
+    dir = mkdtempSync(join(tmpdir(), 'kainow-dest-'));
+    t = await startTestApp(undefined, {});
+    const adminId = await seedUser(t.pool, 'admin@example.org', 'enterprise_administrator');
+    await t.pool.query(`UPDATE storage_settings SET tenant_id = 't', client_id = 'c'`);
+    await t.pool.query(
+      `INSERT INTO storage_connection_secrets (id, ciphertext, nonce, tag, key_id, saved_by, saved_at) VALUES ($1, $3, $3, $3, 'k', $2, now())`,
+      [uuidv7(), adminId, Buffer.from([0])],
+    );
+    const admin = await t.signIn('admin@example.org');
+    const res = await admin.request('POST', '/admin/storage/destinations', {
+      kind: 'sharepoint_library', purpose: 'outputs', label: 'L', siteUrl: SITE, libraryName: 'Docs', reason,
+    });
+    assert.equal(res.status, 409);
+    assert.match(res.body.message, /protected key/);
+    assert.equal((await t.pool.query(`SELECT count(*)::int AS n FROM storage_destinations`)).rows[0].n, 0);
+    assert.equal((await t.pool.query(`SELECT count(*)::int AS n FROM storage_destination_events`)).rows[0].n, 0);
   });
 
   test('a saved secret without the protected key makes storage wait for the key', async () => {
