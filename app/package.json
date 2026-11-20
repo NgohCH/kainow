@@ -26,6 +26,7 @@
     "setup-invite": "node dist/users/setup-invite-cli.js",
     "golive-init": "node dist/golive/golive-init-cli.js",
     "protected-key": "node dist/quarantine/protected-key-cli.js",
+    "backup-key": "node dist/ops/backup-key-cli.js",
     "recover-admin": "node dist/golive/recover-admin-cli.js",
     "seed-demo": "node dist/users/seed-demo-cli.js",
     "apply-mvp-spend-settings": "node dist/spend/apply-mvp-settings-cli.js",
