@@ -89,10 +89,16 @@ describe('backup expiry', { skip: SKIP_NO_DB }, () => {
   const expiredAt = async (id: string) =>
     (await pool.query('SELECT expired_at FROM backup_runs WHERE id = $1', [id])).rows[0].expired_at as Date | null;
   // audit_events is append-only, so each test counts only the events written after it began.
-  let auditBase = 0;
+  // Ids are uuidv7 from the fixed NOW, so their order is not the write order: exclude the
+  // ids seen before the test instead of slicing by position.
+  let auditBefore = new Set<string>();
   const allAudit = async () =>
-    (await pool.query(`SELECT detail FROM audit_events WHERE action = 'ops.backup_expired' ORDER BY id`)).rows;
-  const audit = async () => (await allAudit()).slice(auditBase);
+    (
+      await pool.query<{ id: string; detail: Record<string, unknown> }>(
+        `SELECT id, detail FROM audit_events WHERE action = 'ops.backup_expired' ORDER BY occurred_at, id`,
+      )
+    ).rows;
+  const audit = async () => (await allAudit()).filter((r) => !auditBefore.has(r.id));
 
   before(async () => {
     pool = new Pool({ connectionString: testDatabaseUrl() });
@@ -116,7 +122,7 @@ describe('backup expiry', { skip: SKIP_NO_DB }, () => {
     writeFileSync(keyFile, randomBytes(32));
     key = loadBackupKey(keyFile) as BackupKey;
     await pool.query('DELETE FROM backup_runs');
-    auditBase = (await allAudit()).length;
+    auditBefore = new Set((await allAudit()).map((r) => r.id));
   });
 
   test('an expired set goes; files only it listed go; shared files stay; the row gets expired_at', async () => {
