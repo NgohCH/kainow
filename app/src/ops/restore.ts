@@ -40,11 +40,14 @@ export interface RestoreDeps {
 }
 
 const RECREATE = 'Recreate the target database empty before trying again.';
+/** Said whenever the run may have stopped between pg_restore committing and the post-steps committing. */
+const INTERRUPTED =
+  'If an earlier restore into it was interrupted, its Kainow tables are not safe to start: do not start Kainow on it; drop and recreate the target database empty, then run restore again.';
 
 export const RESTORE_TEXT = {
   usage: 'Usage: npm run restore -- --set <name>|latest --reason "<why>"',
   noReason: 'Give a reason with --reason "<why>".',
-  notEmpty: 'The target database is not empty. A restore only goes into a new, empty installation; nothing was changed.',
+  notEmpty: `The target database is not empty, so nothing was changed: a restore only goes into a new, empty installation. ${INTERRUPTED}`,
   busy: 'Another backup, drill or restore is running',
   noSet: 'There is no successful backup set to restore.',
   setNotFound: 'That backup set was not found, or it is not a successful backup.',
@@ -53,12 +56,12 @@ export const RESTORE_TEXT = {
   manifestBad: 'The backup could not be decrypted. Nothing was restored.',
   migrationNewer: 'The set was made by a newer version of Kainow than this one. Nothing was restored.',
   noSpace: 'There is not enough free space on the database disk to restore this backup. Nothing was restored.',
-  decryptFailed: `The backup could not be decrypted while restoring, so the target database holds a partial restore. ${RECREATE}`,
-  spaceLow: `Free space ran too low during the restore, so the target database holds a partial restore. ${RECREATE}`,
+  decryptFailed: `The backup could not be decrypted while restoring; the restore was rolled back. ${RECREATE}`,
+  spaceLow: `Free space ran too low during the restore; the restore was rolled back. ${RECREATE}`,
   restoreFailed: `The restore into the target database failed. ${RECREATE}`,
   rowCounts: (tables: string[]) => `Row counts differ from the backup: ${tables.join(', ')}. ${RECREATE}`,
   afterFailed: `The restored database could not be put into protective read-only mode. ${RECREATE}`,
-  unexpected: 'The restore stopped unexpectedly.',
+  unexpected: `The restore stopped unexpectedly. Do not start Kainow on the target database: drop and recreate it empty, then run restore again.`,
   noProtectedKey:
     'No protected key is mounted: sealed AI keys and the storage secret cannot be opened until it is mounted from its recovery copy.',
   next: 'Next: start Kainow with docker compose up -d --build. It starts read-only; an Administrator signs in, checks, and chooses Resume normal use.',
@@ -185,7 +188,7 @@ async function restoreLocked(args: Args, deps: RestoreDeps): Promise<number> {
   deps.out(`Restoring backup set ${chosen.name}.`);
   let restored: Awaited<ReturnType<typeof restoreDump>>;
   try {
-    restored = await restoreDump(deps, databaseName(config.databaseUrl), join(chosen.dir, SET_FILES.dump), key, floor);
+    restored = await restoreDump(deps, databaseName(config.databaseUrl), join(chosen.dir, SET_FILES.dump), key, floor, { singleTransaction: true });
   } catch {
     restored = 'failed';
   }

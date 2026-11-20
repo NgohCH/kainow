@@ -100,6 +100,10 @@ describe('restore', { skip: SKIP_NO_DB }, () => {
     return { code, out, err, at };
   }
 
+  const assertEmpty = async (db: Pool): Promise<void> => {
+    assert.deepEqual(await publicTables(db), [], 'no table in public');
+    assert.equal((await db.query(`SELECT count(*) AS n FROM pg_namespace WHERE nspname = 'pgboss'`)).rows[0].n, '0', 'no pgboss schema');
+  };
   const publicTables = async (db: Pool): Promise<string[]> =>
     (await db.query(`SELECT tablename FROM pg_tables WHERE schemaname = 'public' ORDER BY tablename`)).rows.map((r) => r.tablename);
 
@@ -254,10 +258,49 @@ describe('restore', { skip: SKIP_NO_DB }, () => {
     assert.equal(r.code, 1);
     assert.deepEqual(r.err, [RESTORE_TEXT.decryptFailed]);
     assert.match(RESTORE_TEXT.decryptFailed, /Recreate the target database empty/, 'the operator is told to recreate the target empty');
-    const hasState = (await into.db.query(`SELECT to_regclass('public.operations_state') IS NOT NULL AS ok`)).rows[0].ok;
-    if (hasState) {
-      const s = (await into.db.query('SELECT protective FROM operations_state')).rows[0];
-      assert.notEqual(s?.protective, true, 'afterRestore never runs on a partial restore');
+    // pg_restore ran as one transaction: the failure rolled it back, so nothing of the dump (and no afterRestore) is there.
+    await assertEmpty(into.db);
+  });
+
+  test('free space falling during the restore rolls the whole restore back: the target stays empty', async (t) => {
+    if (!needTools(t)) return;
+    await backup();
+    const into = await target();
+    let calls = 0;
+    const r = await restore(into, ['--set', 'latest', '--reason', 'Disaster recovery'], {
+      pollMs: 1,
+      statfs: () => {
+        calls++;
+        return { total: 10 * TB, free: calls >= 2 ? 6 * 1024 ** 3 : 5 * TB };
+      },
+    });
+    assert.equal(r.code, 1);
+    assert.deepEqual(r.err, [RESTORE_TEXT.spaceLow]);
+    assert.ok(calls >= 2);
+    await assertEmpty(into.db);
+  });
+
+  test('pg_restore failing after the tables and their rows are written rolls the whole restore back: the target stays empty', async (t) => {
+    if (!needTools(t)) return;
+    await backup();
+    const into = await target();
+    // Not a table, so the target still counts as empty; it makes the post-data step CREATE UNIQUE INDEX users_email_key fail
+    // after every table has been created and filled.
+    await into.db.query('CREATE SEQUENCE public.users_email_key');
+    const r = await restore(into, ['--set', 'latest', '--reason', 'Disaster recovery']);
+    assert.equal(r.code, 1);
+    assert.deepEqual(r.err, [RESTORE_TEXT.restoreFailed]);
+    await assertEmpty(into.db);
+  });
+
+  test('the refusal and stop texts tell the operator to drop and recreate the target empty, never to start Kainow on it', () => {
+    for (const text of [RESTORE_TEXT.notEmpty, RESTORE_TEXT.unexpected]) {
+      assert.match(text, /drop and recreate (it|the target database) empty/);
+      assert.match(text, /[Dd]o not start Kainow/);
+    }
+    assert.match(RESTORE_TEXT.notEmpty, /interrupted/);
+    for (const text of [RESTORE_TEXT.decryptFailed, RESTORE_TEXT.spaceLow, RESTORE_TEXT.restoreFailed, RESTORE_TEXT.afterFailed, RESTORE_TEXT.rowCounts(['public.users'])]) {
+      assert.match(text, /Recreate the target database empty before trying again\./);
     }
   });
 });

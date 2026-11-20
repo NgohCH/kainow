@@ -500,8 +500,11 @@ export async function restoreDump(
   dumpFile: string,
   key: BackupKey,
   floor: number,
+  options: { singleTransaction?: boolean } = {},
 ): Promise<'ok' | 'crypto' | 'space_low' | 'failed'> {
-  const child = deps.tools.restore(['--no-owner', '--exit-on-error', '-d', dbName]);
+  // A real restore runs as one transaction, so a failure or a killed run leaves the target empty; the drill does not need to.
+  const args = ['--no-owner', '--exit-on-error', ...(options.singleTransaction ? ['--single-transaction'] : []), '-d', dbName];
+  const child = deps.tools.restore(args);
   const exited = exitOf(child);
   child.stdout?.resume();
   child.stderr?.resume(); // never printed: it can name hosts and databases

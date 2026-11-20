@@ -2,7 +2,7 @@ import { Pool } from 'pg';
 import { loadProtectedKey } from '../quarantine/protected-key';
 import { loadOpsConfig } from './config';
 import { PgTools } from './pg-tools';
-import { runRestore } from './restore';
+import { RESTORE_TEXT, runRestore } from './restore';
 import { defaultStatfs } from './storage-check';
 
 /**
@@ -44,7 +44,7 @@ main().then(
   (code) => process.exit(code),
   () => {
     // Never the raw error: it can carry paths or connection strings.
-    console.error('The restore stopped unexpectedly.');
+    console.error(RESTORE_TEXT.unexpected);
     process.exit(1);
   },
 );
