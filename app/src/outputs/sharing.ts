@@ -41,6 +41,8 @@ export const notSharedLabel = (email: string): string => `Not shared in SharePoi
 export const SHARING_REVOKE_FAILED = 'sharing_revoke_failed';
 export const revokeFailedNotice = (projectName: string): string =>
   `Kainow could not remove SharePoint access for a person who has left ${projectName}`;
+/** The same notice for the source area's direct (write) access. */
+export const SOURCE_REVOKE_FAILED_TEXT = 'Kainow could not remove direct access to the source area for a former storage Administrator';
 /** The Administrator notice raised once when moving an output's files keeps failing. */
 export const SHARING_PLACE_FAILED = 'sharing_place_failed';
 export const placeFailedNotice = (projectName: string): string =>
@@ -150,7 +152,14 @@ export async function desiredFolderGrants(db: Db, folderId: string, at: Date): P
     ids = [...(await outputReaders(db, outputId, at))];
   } else if (f.level === 'source_root') {
     // Only designated storage Administrators; being an Enterprise Administrator gives nothing here.
-    ids = (await db.query<{ user_id: string }>(`SELECT user_id FROM storage_admins WHERE ended_at IS NULL ORDER BY user_id`)).rows.map((r) => r.user_id);
+    ids = (
+      await db.query<{ user_id: string }>(
+        `SELECT a.user_id FROM storage_admins a JOIN storage_folders f ON f.id = $1
+           JOIN storage_destinations d ON d.id = f.destination_id AND d.purpose = 'source_area' AND d.status = 'approved'
+          WHERE a.ended_at IS NULL ORDER BY a.user_id`,
+        [folderId],
+      )
+    ).rows.map((r) => r.user_id);
   } else {
     return out;
   }
@@ -594,7 +603,8 @@ export async function reconcileSharing(deps: StorageDeps, at: Date = deps.clock(
   const folders = (
     await deps.pool.query<{ id: string; level: string }>(
       `SELECT f.id, f.level FROM storage_folders f JOIN storage_destinations d ON d.id = f.destination_id
-        WHERE (f.level IN ('project', 'output') AND d.purpose = 'outputs') OR (f.level = 'source_root' AND d.purpose = 'source_area')
+        WHERE (f.level IN ('project', 'output') AND d.purpose = 'outputs')
+           OR (f.level = 'source_root' AND d.purpose = 'source_area' AND d.status = 'approved')
         ORDER BY f.id`,
     )
   ).rows;
@@ -663,7 +673,7 @@ export async function notSharedFor(db: Db, outputId: string): Promise<Array<{ pe
 
 export interface SharingRepair {
   /** Grants that failed, and revocations not yet done (including any refused because the permission is not plainly Kainow's). */
-  grants: Array<{ grantId: string; folderId: string; projectId: string; projectName: string; userId: string; displayName: string; state: 'failed' | 'revoking'; since: Date }>;
+  grants: Array<{ grantId: string; folderId: string; projectId: string | null; projectName: string | null; area: 'source' | null; userId: string; displayName: string; state: 'failed' | 'revoking'; since: Date }>;
   /** Outputs whose files could not be moved to where their readers need them (titles are left out: they may be restricted). */
   outputs: Array<{ outputId: string; projectId: string; projectName: string; since: Date }>;
 }
@@ -673,13 +683,15 @@ export async function sharingToRepair(db: Db): Promise<SharingRepair> {
   const grants = (
     await db.query(
       `SELECT g.id AS "grantId", g.folder_id AS "folderId", p.id AS "projectId", p.name AS "projectName", u.id AS "userId",
-              u.display_name AS "displayName", g.state, g.updated_at AS since
+              u.display_name AS "displayName", g.state, g.updated_at AS since,
+              CASE WHEN f.level = 'source_root' THEN 'source' END AS area
          FROM storage_grants g
          JOIN storage_folders f ON f.id = g.folder_id
-         JOIN projects p ON p.id::text = split_part(f.key, '/', 2)
+         LEFT JOIN projects p ON p.id::text = split_part(f.key, '/', 2) AND f.level IN ('project', 'output')
          JOIN users u ON u.id = g.user_id
-        WHERE g.state IN ('failed', 'revoking') AND f.level IN ('project', 'output')
-        ORDER BY p.name, u.display_name, g.updated_at, g.id`,
+        WHERE g.state IN ('failed', 'revoking')
+          AND ((f.level IN ('project', 'output') AND p.id IS NOT NULL) OR f.level = 'source_root')
+        ORDER BY (f.level = 'source_root'), p.name, u.display_name, g.updated_at, g.id`,
     )
   ).rows;
   const outputs = (

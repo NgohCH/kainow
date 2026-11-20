@@ -6,7 +6,7 @@ import { loadAdmins } from '../notifications/recipients';
 import { ProjectAccess } from '../projects/access.service';
 import type { StorageNotice } from './jobs';
 import { SOURCE_FILE_CHANGED, SOURCE_FILE_MISSING } from './source-files';
-import { SHARING_PLACE_FAILED, SHARING_REVOKE_FAILED, placeFailedNotice, revokeFailedNotice } from '../outputs/sharing';
+import { SHARING_PLACE_FAILED, SHARING_REVOKE_FAILED, SOURCE_REVOKE_FAILED_TEXT, placeFailedNotice, revokeFailedNotice } from '../outputs/sharing';
 import { OUTPUT_FILE_CHANGED, OUTPUT_FILE_MISSING, OUTPUT_FILE_MOVED } from '../outputs/checks';
 import { contentReaderContexts, loadOutputAccessRow, readsOutput } from '../outputs/readers';
 import { HELD_FILE_NOT_REMOVED, HELD_FILE_NOT_REMOVED_TEXT, HELD_FILE_NOT_RESTORED, HELD_FILE_NOT_RESTORED_TEXT } from './withhold';
@@ -85,7 +85,22 @@ export function makeStorageNotify(pool: Pool, clock: Clock): StorageNotify {
         [n.subjectId],
       )
     ).rows[0];
-    if (!g) return;
+    if (!g) {
+      // The source area's direct access (a former storage Administrator's write grant): Enterprise Administrators only.
+      const s = (
+        await c.query(`SELECT 1 FROM storage_grants g JOIN storage_folders f ON f.id = g.folder_id WHERE g.id = $1 AND f.level = 'source_root'`, [n.subjectId])
+      ).rowCount;
+      if (!s) return;
+      const at = clock();
+      for (const userId of [...new Set(await loadAdmins(c))].sort()) {
+        await c.query(
+          `INSERT INTO notifications (id, user_id, project_id, kind, urgent, summary, link, created_at, email_off)
+           VALUES ($1, $2, NULL, $3, false, $4, '#/storage', $5, true)`,
+          [uuidv7(at.getTime()), userId, n.kind, SOURCE_REVOKE_FAILED_TEXT, at],
+        );
+      }
+      return;
+    }
     await toAdministrators(c, n.kind, g.project_id, revokeFailedNotice(g.project_name));
   }
 

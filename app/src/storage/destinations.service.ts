@@ -6,6 +6,7 @@ import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { StorageWaitingForKey, STORAGE_CONNECTORS, localStorageDir, type StorageConnectorFactory } from './connector-factory';
 import { GraphConnector } from './connectors/graph';
+import { queueFolderSharing } from '../outputs/sharing-queue';
 import { queueStorageJob } from './outbox';
 import { loadStorageSettings } from './settings';
 import { StorageError, type DestinationCheck, type PermissionInfo } from './types';
@@ -75,6 +76,31 @@ export function libraryPermissionProblems(perms: PermissionInfo[], allowed: Libr
 }
 
 type Db = Pool | PoolClient;
+
+/**
+ * What the library permission check allows on a destination: Kainow's own live grants there (never `external` ones),
+ * and for the source area its designated storage Administrators. One definition for the approval check and the daily one.
+ */
+export async function libraryAllowance(
+  db: Db, dest: { id: string; kind: string; purpose: string; account_email: string | null },
+): Promise<LibraryAllowance> {
+  return {
+    oneDriveAccountEmail: dest.kind === 'onedrive' ? dest.account_email : null,
+    storageAdminUserEmails: dest.purpose === 'source_area'
+      ? (await db.query<{ email: string }>(
+          `SELECT u.email FROM storage_admins a JOIN users u ON u.id = a.user_id WHERE a.ended_at IS NULL ORDER BY u.email`,
+        )).rows.map((r) => r.email)
+      : [],
+    kainowGrantPermissionIds: new Set(
+      (await db.query<{ permission_id: string }>(
+        `SELECT g.permission_id FROM storage_grants g JOIN storage_folders f ON f.id = g.folder_id
+          WHERE f.destination_id = $1 AND g.permission_id IS NOT NULL AND g.state IN ('pending', 'granted', 'revoking', 'failed')`,
+        [dest.id],
+      )).rows.map((r) => r.permission_id),
+    ),
+  };
+}
+
 interface Row {
   id: string; connector: 'graph' | 'local'; kind: DestinationKind; purpose: DestinationPurpose; label: string;
   site_url: string | null; account_email: string | null; folder_path: string | null; status: DestinationStatus;
@@ -194,7 +220,14 @@ export class DestinationsService {
         await c.query(`UPDATE storage_destinations SET status = 'approved' WHERE id = $1`, [id]);
         await this.event(c, id, 'approved', user.id, at, why, {});
         // A new source area stores every version still waiting, oldest first (spec 9.1).
-        if (row.purpose === 'source_area') await queueStorageJob(c, 'backfill-sources', id);
+        if (row.purpose === 'source_area') {
+          await queueStorageJob(c, 'backfill-sources', id);
+          // Designations made before this source area was approved get their grants now.
+          const folders = (await c.query<{ id: string }>(
+            `SELECT id FROM storage_folders WHERE destination_id = $1 AND level = 'source_root' ORDER BY id`, [id],
+          )).rows;
+          for (const f of folders) await queueFolderSharing(c, f.id, 'normal');
+        }
       });
     } catch (e) {
       if ((e as { code?: string }).code === '23505') throw new ConflictException(SECOND_SOURCE_AREA);
@@ -243,21 +276,7 @@ export class DestinationsService {
   private async applyLibraryRule(raw: DestinationCheck, row: Row): Promise<DestinationCheck> {
     const line = raw.lines.find((l) => l.key === 'library_permissions');
     if (!line || (!line.ok && raw.others.length === 0)) return raw; // not evaluated, or the listing failed
-    const allowed: LibraryAllowance = {
-      oneDriveAccountEmail: row.kind === 'onedrive' ? row.account_email : null,
-      storageAdminUserEmails: row.purpose === 'source_area'
-        ? (await this.pool.query<{ email: string }>(
-            `SELECT u.email FROM storage_admins a JOIN users u ON u.id = a.user_id WHERE a.ended_at IS NULL ORDER BY u.email`,
-          )).rows.map((r) => r.email)
-        : [],
-      kainowGrantPermissionIds: new Set(
-        (await this.pool.query<{ permission_id: string }>(
-          `SELECT g.permission_id FROM storage_grants g JOIN storage_folders f ON f.id = g.folder_id
-            WHERE f.destination_id = $1 AND g.permission_id IS NOT NULL AND g.state IN ('pending', 'granted', 'revoking', 'failed')`,
-          [row.id],
-        )).rows.map((r) => r.permission_id),
-      ),
-    };
+    const allowed = await libraryAllowance(this.pool, row);
     const problems = libraryPermissionProblems(raw.others, allowed);
     const lines = raw.lines.map((l) =>
       l.key === 'library_permissions'

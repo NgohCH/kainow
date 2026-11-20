@@ -9,6 +9,8 @@ import { seedUser } from '../testing/projects';
 import { dailySourceAreaAccess, sourceAreaOthers } from './admins.service';
 import type { StorageConnectorFactory } from './connector-factory';
 import { GraphConnector } from './connectors/graph';
+import { sharingToRepair } from '../outputs/sharing';
+import { noticeStuckRevocations } from '../outputs/sharing';
 import { type StorageDeps, storageHandler } from './jobs';
 import { makeStorageNotify } from './notices';
 import type { DestinationRef } from './types';
@@ -78,6 +80,9 @@ describe('storage Administrators', { skip: SKIP_NO_DB }, () => {
     const mine = await c.admin.request('POST', '/admin/storage/admins', { userId: ids.admin, reason: 'Me' });
     assert.equal(mine.status, 400);
     assert.match(JSON.stringify(mine.body), /cannot make yourself/);
+    const upper = await c.admin.request('POST', '/admin/storage/admins', { userId: ids.admin.toUpperCase(), reason: 'Me again' });
+    assert.equal(upper.status, 400, 'an upper-case copy of your own id is still yourself');
+    assert.equal((await rows(`SELECT 1 FROM storage_admins`)).length, 0);
     assert.equal((await c.admin.request('POST', '/admin/storage/admins', { userId: ids.bob })).status, 400, 'a reason is needed');
     assert.equal((await c.admin.request('POST', '/admin/storage/admins', { userId: 'nope', reason: 'x' })).status, 400);
     await t.pool.query(`UPDATE users SET status = 'disabled' WHERE id = $1`, [ids.dave]);
@@ -91,7 +96,7 @@ describe('storage Administrators', { skip: SKIP_NO_DB }, () => {
     assert.equal((await c.admin2.request('POST', '/admin/storage/admins', { userId: ids.admin, reason: 'Second pair of hands' })).status, 201);
     const audit = await rows(`SELECT action, actor_user_id, detail FROM audit_events WHERE action = 'storage.admin_designated' ORDER BY occurred_at, id`);
     assert.equal(audit.length, 2);
-    assert.equal(audit[0].detail.userId, ids.bob);
+    assert.deepEqual(audit.map((a) => a.detail.userId).sort(), [ids.admin, ids.bob].sort());
     const list = await c.admin.request('GET', '/admin/storage/admins');
     assert.deepEqual(list.body.admins.map((a: { displayName: string }) => a.displayName), ['admin', 'bob']);
     assert.equal(list.body.admins[1].reason, 'Looks after the source files');
@@ -174,6 +179,26 @@ describe('storage Administrators', { skip: SKIP_NO_DB }, () => {
     await connector.revoke(dest(), drive.rootItemId, stranger.id);
     await dailySourceAreaAccess(deps());
     assert.equal((await c.admin.request('GET', '/admin/storage/admins')).body.warning, null);
+  });
+
+  test('a revocation that keeps failing after the designation ends is noticed once, listed to repair and shown', async () => {
+    assert.equal((await designate('bob')).status, 201);
+    await drain();
+    const f = (await sourceFolder())!;
+    const id = (await rows(`SELECT id FROM storage_admins WHERE user_id = $1`, [ids.bob]))[0].id;
+    assert.equal((await c.admin.request('POST', `/admin/storage/admins/${id}/end`, { reason: 'Left the team' })).status, 200);
+    fake.fault({ method: 'DELETE', pathIncludes: '/permissions/' }, '500', 100);
+    await assert.rejects(drain());
+    assert.deepEqual(await sharedWith(f.item_id), ['bob@example.org:write'], 'still open at the provider');
+    await noticeStuckRevocations(deps(), f.id);
+    await noticeStuckRevocations(deps(), f.id);
+    const notes = await rows(`SELECT u.email, n.summary FROM notifications n JOIN users u ON u.id = n.user_id WHERE n.kind = 'sharing_revoke_failed' ORDER BY u.email`);
+    assert.deepEqual(notes.map((n) => n.email), ['admin2@example.org', 'admin@example.org'].sort());
+    assert.ok(notes.every((n) => n.summary === 'Kainow could not remove direct access to the source area for a former storage Administrator'));
+    const repair = (await sharingToRepair(t.pool)).grants;
+    assert.deepEqual(repair.map((g) => [g.displayName, g.state, g.area, g.projectName]), [['bob', 'revoking', 'source', null]]);
+    const ended = (await c.admin.request('GET', '/admin/storage/admins')).body.ended;
+    assert.equal(ended[0].access, 'revoking');
   });
 
   test('events are recorded and listed ordered by name', async () => {
