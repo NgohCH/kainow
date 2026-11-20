@@ -588,7 +588,7 @@ const TABLES: TableDef[] = [
     table: 'stored_files',
     project: `t.project_id ${P}`,
     owner: FILE_OWNER('t.id'),
-    text: ['name', 'path'],
+    text: ['name', 'path', 'upload_name'],
     items: FILE_ITEMS('t.id'),
   },
   {
@@ -876,6 +876,7 @@ export const NO_USER_TEXT: Readonly<Record<string, string>> = {
   'stored_files.purpose': ENUM,
   'stored_files.sha256': HASH,
   'stored_files.state': ENUM,
+  'stored_files.upload_folder_id': 'a provider item identifier, not typed text',
   'stored_files.web_url': 'a link the provider returned for the file, built from identifiers and the stored name; the name is registered and cleaned',
   'access_settings_changes.next': SETTING,
   'access_settings_changes.previous': SETTING,

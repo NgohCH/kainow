@@ -144,6 +144,15 @@ export class LocalConnector implements StorageConnector {
     return { itemId: it.id, name: it.name };
   }
 
+  async createFolder(dest: DestinationRef, parentId: string | null, name: string): Promise<FolderRef> {
+    this.checkName(name);
+    const idx = this.loadIndex();
+    const pid = parentId ?? dest.rootItemId;
+    this.assertParent(dest, idx, pid);
+    if (this.childNamed(dest, idx, pid, name)) throw new StorageError('conflict');
+    return this.ensureFolder(dest, parentId, name);
+  }
+
   async upload(dest: DestinationRef, folderId: string, name: string, bytes: Buffer, opts: { conflict: 'fail' }): Promise<StoredRef> {
     if (opts.conflict !== 'fail') throw new StorageError('invalid');
     this.checkName(name);

@@ -42,6 +42,17 @@ export function runContractSuite(name: string, make: () => Promise<ContractHarne
       assert.notEqual(child.itemId, a.itemId);
     });
 
+    run('createFolder creates a new folder and never adopts an existing name', async (h) => {
+      const a = await h.connector.createFolder(h.dest, null, 'Only once');
+      assert.equal(a.name, 'Only once');
+      await rejectsWith(h.connector.createFolder(h.dest, null, 'Only once'), 'conflict');
+      await h.connector.upload(h.dest, a.itemId, 'taken', Buffer.from('a file'), { conflict: 'fail' });
+      await rejectsWith(h.connector.createFolder(h.dest, a.itemId, 'taken'), 'conflict');
+      const child = await h.connector.createFolder(h.dest, a.itemId, 'Child');
+      assert.notEqual(child.itemId, a.itemId);
+      assert.equal((await h.connector.ensureFolder(h.dest, a.itemId, 'Child')).itemId, child.itemId);
+    });
+
     run('upload returns size and provider hash equal to quickXorHash', async (h) => {
       const f = await h.connector.ensureFolder(h.dest, null, 'Up');
       const bytes = Buffer.from('hello contract');

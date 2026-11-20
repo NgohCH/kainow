@@ -274,8 +274,9 @@ describe('filing output versions', { skip: SKIP_NO_DB }, () => {
     assert.equal((a.status === 409 ? a : b).body.message, 'This version is already being filed.');
     assert.equal((await rows(`SELECT count(*)::int AS n FROM stored_files WHERE purpose = 'output'`))[0].n, 1);
     assert.equal((await rows(`SELECT count(*)::int AS n FROM storage_outbox WHERE job = 'file-output' AND subject_id = $1`, [vid]))[0].n, 1);
-    // Two runs of the job at once (a redelivery) upload once.
-    await Promise.all([fileOutputVersion(deps(), vid), fileOutputVersion(deps(), vid)]);
+    // Two runs of the job at once (a redelivery) upload once: a run that finds the other working is retried later.
+    const runs = await Promise.allSettled([fileOutputVersion(deps(), vid), fileOutputVersion(deps(), vid)]);
+    for (const r of runs) if (r.status === 'rejected') assert.ok(r.reason instanceof StorageError && r.reason.code === 'throttled', 'retryable');
     await fileOutputVersion(deps(), vid);
     assert.equal((await fileRow(out)).state, 'stored');
     assert.equal(uploads(), 1, 'one provider item');
@@ -283,10 +284,9 @@ describe('filing output versions', { skip: SKIP_NO_DB }, () => {
 
   test('a different file with the same name gives (2), never overwrites', async () => {
     const out = await registered('Weekly status');
-    // Someone already put a different "Weekly status v1.md" in the report type folder.
-    let parent: string | null = null;
-    for (const name of ['Water Services', 'Pump station renewal', '2026', 'Status reports']) parent = (await connector.ensureFolder(dest(), parent, name)).itemId;
-    const theirs = Buffer.from('Somebody else’s notes.');
+    // Kainow's report type folder exists (another output was filed), and someone put a different "Weekly status v1.md" in it.
+    await fileNow(await registered('Monthly status'));
+    const parent = (await rows(`SELECT item_id FROM storage_folders WHERE level = 'report_type'`))[0].item_id as string;    const theirs = Buffer.from('Somebody else’s notes.');
     const existing = await connector.upload(dest(), parent as string, 'Weekly status v1.md', theirs, { conflict: 'fail' });
     const f = await fileNow(out);
     assert.equal(f.state, 'stored');
@@ -322,6 +322,102 @@ describe('filing output versions', { skip: SKIP_NO_DB }, () => {
     assert.equal((await rows(`SELECT count(*)::int AS n FROM stored_files WHERE purpose = 'output'`))[0].n, 1, 'the same stored file');
     await fileOutputVersion(deps(), vid);
     assert.equal((await filing(c.pm, out)).label, 'Filed');
+  });
+
+  test('two outputs with the same title, type, year and bytes get two distinct files', async () => {
+    const bytes = Buffer.from('# Weekly status\n\nSame words.\n');
+    const a = await registered('Weekly status', { bytes });
+    const b = await registered('Weekly status', { bytes });
+    const fa = await fileNow(a);
+    const fb = await fileNow(b);
+    assert.equal(fa.state, 'stored');
+    assert.equal(fb.state, 'stored');
+    assert.notEqual(fa.item_id, fb.item_id, 'never adopts another output’s file');
+    assert.equal(fa.name, 'Weekly status v1.md');
+    assert.equal(fb.name, 'Weekly status v1 (2).md');
+    assert.equal(await providerPath(fb.item_id), fb.path);
+  });
+
+  test('same-named projects get their own project, restricted and output folders', async () => {
+    const twin = await seedProject(t.pool, { status: 'active', name: 'Pump station renewal', departmentId: dept, members: [{ userId: ids.pm, role: 'pm' }, { userId: ids.deputy, role: 'deputy_pm' }] });
+    await t.pool.query(`INSERT INTO project_output_settings (project_id, destination_id) VALUES ($1, $2)`, [twin, destId]);
+    const first = project;
+    const a = await registered('Weekly status');
+    const ra = await registered('Board briefing', { restrictTo: [ids.pm] });
+    project = twin;
+    const b = await registered('Weekly status');
+    const rb = await registered('Board briefing', { restrictTo: [ids.pm] });
+    project = first;
+    const fa = await fileNow(a);
+    const fra = await fileNow(ra);
+    project = twin;
+    const fb = await fileNow(b);
+    const frb = await fileNow(rb);
+    project = first;
+    assert.equal(fa.path, 'Water Services/Pump station renewal/2026/Status reports/Weekly status v1.md');
+    assert.equal(fb.path, 'Water Services/Pump station renewal (2)/2026/Status reports/Weekly status v1.md');
+    assert.equal(fra.path, 'Water Services/Pump station renewal (restricted)/Board briefing/Board briefing v1.md');
+    assert.equal(frb.path, 'Water Services/Pump station renewal (2) (restricted)/Board briefing/Board briefing v1.md');
+    for (const f of [fa, fb, fra, frb]) assert.equal(await providerPath(f.item_id), f.path);
+    const folder = async (level: string, p: string) => (await rows(`SELECT item_id FROM storage_folders WHERE level = $1 AND key LIKE $2`, [level, `${dept}/${p}%`]))[0].item_id;
+    assert.notEqual(await folder('project', first), await folder('project', twin));
+    assert.notEqual(await folder('restricted_root', first), await folder('restricted_root', twin));
+    assert.notEqual(await folder('output', first), await folder('output', twin));
+  });
+
+  test('an output keeps its folder when its issue date and type change', async () => {
+    const out = await registered('Weekly status', { issueDate: '2026-11-09' });
+    const first = await fileNow(out);
+    const r = await c.pm.request('PUT', url(`/${out}`), { issueDate: '2027-02-01', reportTypeId: await typeId('Risk summaries') });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const m = multipart({}, { name: 'report.md', bytes: Buffer.from('# Weekly status\n\nVersion two.\n') });
+    assert.equal((await c.pm.upload('POST', url(`/${out}/versions`), m.body, m.type)).status, 201);
+    const second = await fileNow(out, 2);
+    assert.equal(second.path, 'Water Services/Pump station renewal/2026/Status reports/Weekly status v2.md');
+    assert.equal((await connector.getItem(dest(), second.item_id)).parentId, (await connector.getItem(dest(), first.item_id)).parentId);
+    assert.equal((await rows(`SELECT count(*)::int AS n FROM storage_folders WHERE level IN ('year', 'report_type')`))[0].n, 2, 'no 2027 or Risk summaries folder');
+  });
+
+  test('a job for a withdrawn or held output fails as not fileable and Try again works', async () => {
+    const out = await registered('Weekly status');
+    const vid = await versionId(out);
+    assert.equal((await c.pm.request('POST', fileUrl(out))).status, 200);
+    await t.pool.query(`UPDATE outputs SET status = 'withdrawn' WHERE id = $1`, [out]);
+    await fileOutputVersion(deps(), vid);
+    const f = await fileRow(out);
+    assert.equal(f.state, 'failed');
+    assert.equal(f.failure_code, 'not_fileable');
+    assert.equal(uploads(), 0, 'nothing was uploaded');
+    const shown = await filing(c.pm, out);
+    assert.equal(shown.label, 'Filing failed — The output was withdrawn, deleted or held before it was filed');
+    assert.equal((await c.pm.request('POST', fileUrl(out))).body.message, 'Register this output before filing it.');
+    await t.pool.query(`UPDATE outputs SET status = 'registered' WHERE id = $1`, [out]);
+    assert.equal((await c.pm.request('POST', fileUrl(out))).status, 200, 'Try again once it may be filed');
+    await fileOutputVersion(deps(), vid);
+    assert.equal((await fileRow(out)).state, 'stored');
+  });
+
+  test('a lost upload left in the old place is removed when the output moves to its restricted folder', async () => {
+    const out = await registered('Weekly status');
+    const vid = await versionId(out);
+    assert.equal((await c.pm.request('POST', fileUrl(out))).status, 200);
+    fake.fault({ method: 'PUT', pathIncludes: ':/content' }, 'drop_after_body', 1);
+    await assert.rejects(fileOutputVersion(deps(), vid), (e: unknown) => e instanceof StorageError);
+    const typeFolder = (await rows(`SELECT item_id FROM storage_folders WHERE level = 'report_type'`))[0].item_id;
+    assert.ok(await connector.findChild(dest(), typeFolder, 'Weekly status v1.md'), 'the lost upload landed in the project tree');
+    // Before the retry the output is Restricted: it now belongs in its own folder.
+    const audience = uuidv7();
+    await t.pool.query(`INSERT INTO audiences (id, project_id, mode, created_at) VALUES ($1, $2, 'restricted', now())`, [audience, project]);
+    await t.pool.query(`INSERT INTO audience_members (audience_id, user_id, added_by, added_at) VALUES ($1, $2, $2, now())`, [audience, ids.pm]);
+    await t.pool.query(`UPDATE outputs SET audience_id = $2 WHERE id = $1`, [out, audience]);
+    const logged: string[] = [];
+    await fileOutputVersion({ ...deps(), log: (m) => logged.push(m) }, vid);
+    const f = await fileRow(out);
+    assert.equal(f.state, 'stored');
+    assert.equal(f.path, 'Water Services/Pump station renewal (restricted)/Weekly status/Weekly status v1.md');
+    assert.equal(await connector.findChild(dest(), typeFolder, 'Weekly status v1.md'), null, 'the stray copy in the project tree is gone');
+    assert.equal(logged.length, 1);
+    assert.ok(!logged[0].includes('Weekly'), 'the message names nothing');
   });
 
   test('linked versions cannot be filed', async () => {

@@ -34,6 +34,8 @@ export interface StorageDeps {
   key: ProtectedKey | null;
   clock: Clock;
   notify: (c: PoolClient, n: StorageNotice) => Promise<void>;
+  /** Fixed messages only (never names, paths, provider text or secrets); none in tests unless given. */
+  log?: (message: string) => void;
 }
 
 /** An outcome that is not a StorageError: a bug or a database failure inside the handler. Its message is never kept. */

@@ -12,6 +12,11 @@ export interface StorageConnector {
   checkDestination(dest: DestinationRef, opts?: { testPerson?: string }): Promise<DestinationCheck>;
   /** parentId null means the destination root. */
   ensureFolder(dest: DestinationRef, parentId: string | null, name: string): Promise<FolderRef>;
+  /**
+   * Creates a new folder and never adopts an existing one: anything already with the name (folder or file) rejects
+   * with StorageError('conflict'). parentId null means the destination root.
+   */
+  createFolder(dest: DestinationRef, parentId: string | null, name: string): Promise<FolderRef>;
   upload(dest: DestinationRef, folderId: string, name: string, bytes: Buffer, opts: { conflict: 'fail' }): Promise<StoredRef>;
   findChild(dest: DestinationRef, folderId: string, name: string): Promise<StoredRef | null>;
   getItem(dest: DestinationRef, itemId: string): Promise<ItemState>;

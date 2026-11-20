@@ -90,6 +90,7 @@ async function main(): Promise<void> {
   const quarantineLog = new Logger('Quarantine');
   const quarantineJob = key ? { cleanWaiting: () => cleanWaitingCases(pool, key, clock(), (m) => quarantineLog.warn(m)) } : undefined;
   // Storage jobs (external outputs spec 5.6). Without the protected key, jobs needing the storage secret wait.
+  const storageLog = new Logger('Storage');
   const storageDeps: StorageDeps = {
     pool,
     connectors: new DbStorageConnectorFactory(pool, clock, key),
@@ -97,9 +98,9 @@ async function main(): Promise<void> {
     clock,
     // Source-file notices (Task 8); the notices of Task 13 and 17 are added to the same function.
     notify: makeStorageNotify(pool, clock),
+    log: (m) => storageLog.warn(m),
   };
   await registerStorageWorker(boss, storageDeps);
-  const storageLog = new Logger('Storage');
   const storage = {
     sendOutbox: () => sendStorageOutbox(pool, boss),
     daily: () => runStorageDaily(storageDeps, (m) => storageLog.warn(m)),

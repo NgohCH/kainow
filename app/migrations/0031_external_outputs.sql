@@ -157,8 +157,14 @@ CREATE TABLE stored_files (
   failure_code     text,
   attempts         integer     NOT NULL DEFAULT 0,
   created_at       timestamptz NOT NULL,
-  stored_at        timestamptz
+  stored_at        timestamptz,
+  -- Where the latest upload attempt went, recorded before it is sent: a retry adopts only a file found there.
+  upload_destination_id  uuid  REFERENCES storage_destinations (id),
+  upload_folder_id       text,
+  upload_name            text
 );
+-- One reference per provider item: Kainow never adopts a file another stored file already stands for.
+CREATE UNIQUE INDEX stored_files_item_once ON stored_files (drive_id, item_id) WHERE item_id IS NOT NULL AND state <> 'linked';
 CREATE INDEX stored_files_project_idx ON stored_files (project_id, purpose);
 CREATE INDEX stored_files_state_idx ON stored_files (state, created_at);
 CREATE INDEX stored_files_check_idx ON stored_files (last_checked_at NULLS FIRST) WHERE state = 'stored';
@@ -329,7 +335,9 @@ CREATE TABLE outputs (
   deleted_at      timestamptz,
   deleted_by      uuid        REFERENCES users (id),
   delete_reason   text,
-  held_case_id    uuid        REFERENCES quarantine_cases (id)
+  held_case_id    uuid        REFERENCES quarantine_cases (id),
+  -- The folder the output's versions are filed in, fixed when its first version is filed (spec 5.4).
+  placement_folder_id  uuid   REFERENCES storage_folders (id)
 );
 CREATE INDEX outputs_project_idx ON outputs (project_id, status, created_at);
 CREATE INDEX outputs_report_type_idx ON outputs (report_type_id) WHERE report_type_id IS NOT NULL;

@@ -343,6 +343,17 @@ export class GraphConnector implements StorageConnector {
     return { itemId: existing.id, name: existing.name };
   }
 
+  async createFolder(dest: DestinationRef, parentId: string | null, name: string): Promise<FolderRef> {
+    checkName(name);
+    const pid = parentId ?? dest.rootItemId;
+    const r = await this.call('POST', `${this.itemPath(dest, pid)}/children`, {
+      body: { name, folder: {}, [FAIL]: 'fail' }, allow: [409],
+    });
+    if (r.status === 409) throw new StorageError('conflict', { status: 409 });
+    const g = this.item(r.json, r.status);
+    return { itemId: g.id, name: g.name };
+  }
+
   async upload(dest: DestinationRef, folderId: string, name: string, bytes: Buffer, opts: { conflict: 'fail' }): Promise<StoredRef> {
     if (opts.conflict !== 'fail') throw new StorageError('invalid');
     checkName(name);
