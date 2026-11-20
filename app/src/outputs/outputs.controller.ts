@@ -110,4 +110,14 @@ export class OutputsController {
     if (!/^[1-9][0-9]{0,8}$/.test(n)) throw new NotFoundException();
     return this.outputs.file(who(req), projectId, outputId, Number(n));
   }
+
+  /** Puts a version for approval (PM or Deputy); an Owner or Sponsor approves it through the project's change requests. */
+  @Post(':outputId/versions/:n/approval')
+  @AnySignedInUser()
+  @HttpCode(201)
+  requestApproval(@Param('projectId') projectId: string, @Param('outputId') outputId: string, @Param('n') n: string, @Req() req: HttpRequest) {
+    ids(projectId, outputId);
+    if (!/^[1-9][0-9]{0,8}$/.test(n)) throw new NotFoundException();
+    return this.outputs.requestApproval(who(req), projectId, outputId, Number(n));
+  }
 }

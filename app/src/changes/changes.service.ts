@@ -10,6 +10,7 @@ import { activeManagerSql, audienceVisibleSql } from '../discussion/audience';
 import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { GRANT_READ_ONLY, type ProjectStatus } from '../projects/matrix';
 import { membershipState } from '../projects/membership';
+import { DOES_NOT_APPROVE_COMMITMENTS } from '../outputs/approval-handler';
 import type { Created } from '../records/records.service';
 import { type ChangeHandler, HANDLERS, type RequestRow, type Row, type TargetKind } from './handlers';
 import { PolicyService } from './policy.service';
@@ -43,10 +44,11 @@ export const TARGET_SQL: Record<TargetKind, string> = {
   task: `SELECT x.*, x.project_id AS "projectId", to_char(x.due_on, 'YYYY-MM-DD') AS "dueOn" FROM tasks x WHERE x.id = $1 AND ${liveRecordSql('x')} FOR UPDATE`,
   decision: `SELECT x.*, x.project_id AS "projectId" FROM decisions x WHERE x.id = $1 AND ${liveRecordSql('x')} FOR UPDATE`,
   risk: `SELECT x.*, x.project_id AS "projectId", to_char(x.review_on, 'YYYY-MM-DD') AS "reviewOn" FROM risks x WHERE x.id = $1 AND ${liveRecordSql('x')} FOR UPDATE`,
-  // An output version: its project is the output's. A held version (history spec 7.2) is not a target.
+  // An output version: its project is the output's. A held version (history spec 7.2) is not a target. The output is
+  // locked before its version (outputs, then versions, then stored files).
   output_version: `SELECT v.id, v.output_id AS "outputId", v.version_no AS "versionNo", v.status, v.stored_file_id AS "storedFileId", o.project_id AS "projectId"
-                     FROM output_versions v JOIN outputs o ON o.id = v.output_id
-                    WHERE v.id = $1 AND ${notHeldSql('v')} AND o.deleted_at IS NULL FOR UPDATE OF v`,
+                     FROM outputs o JOIN output_versions v ON v.output_id = o.id
+                    WHERE v.id = $1 AND ${notHeldSql('v')} AND o.deleted_at IS NULL FOR UPDATE OF o, v`,
 };
 
 const REQUEST_COLUMNS = `id, project_id AS "projectId", kind, target_kind AS "targetKind", target_id AS "targetId", batch_id AS "batchId", version,
@@ -76,6 +78,9 @@ export interface RequestView {
   submittedAt: Date;
   /** For a risk hand-over: where the risk comes from and what it says. */
   offer?: { fromProject: { id: string; name: string }; risk: { id: string; description: string; severity: string } };
+  /** For an output approval: which output version, and that approving it does not approve what the text mentions. */
+  output?: { id: string; title: string; versionNo: number };
+  notice?: string;
   mayApprove: boolean;
   mayRevise: boolean;
   mayWithdraw: boolean;
@@ -551,6 +556,16 @@ export class ChangesService {
         )
       ).rows) offers.set(o.riskId, { fromProject: { id: o.projectId, name: o.name }, risk: { id: o.riskId, description: o.description, severity: o.severity } });
     }
+    const outputs = new Map<string, NonNullable<RequestView['output']>>();
+    const versionIds = [...new Set(rows.filter((r) => r.kind === 'approve_output').map((r) => r.targetId))];
+    if (versionIds.length > 0) {
+      for (const o of (
+        await db.query(
+          `SELECT v.id AS "versionId", o.id, o.title, v.version_no AS "versionNo" FROM output_versions v JOIN outputs o ON o.id = v.output_id WHERE v.id = ANY($1::uuid[])`,
+          [versionIds],
+        )
+      ).rows) outputs.set(o.versionId, { id: o.id, title: o.title, versionNo: o.versionNo });
+    }
     return rows.map((r) => {
       const version = versions.get(r.id) as { terms: Record<string, unknown>; reason: string | null };
       const given = approvals.get(r.id) ?? [];
@@ -571,6 +586,7 @@ export class ChangesService {
         submittedBy: names.get(r.submittedBy) as string,
         submittedAt: r.submittedAt,
         ...(offer ? { offer } : {}),
+        ...(r.kind === 'approve_output' ? { ...(outputs.get(r.targetId) ? { output: outputs.get(r.targetId) } : {}), notice: DOES_NOT_APPROVE_COMMITMENTS } : {}),
         mayApprove: changeMayApprove(ctx, r, given.map((a) => a.userId), user.id),
         mayRevise: pending && r.submittedBy === user.id,
         // The receiving project declines a hand-over (an Owner or Sponsor rejects it); only the offerer withdraws it.
