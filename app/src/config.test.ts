@@ -140,22 +140,29 @@ test('the protected key file path is optional and trimmed, for the API and the w
   assert.equal(loadWorkerConfig({ ...base, KAINOW_PROTECTED_KEY_FILE: '/run/keys/p.key' }).protectedKeyFile, '/run/keys/p.key');
 });
 
-// G02: sign-in codes must never be printed to the log of a production server that other people reach.
-test('in production, codes are logged only for a server reached at a localhost address', () => {
+// G02 (review of PR #19): in production, sign-in codes are never printed to the log, whatever APP_URL says.
+// APP_URL only shapes links; it says nothing about who can reach the server.
+test('in production the log provider is refused at every address, for the API and the worker', () => {
   const prod = { ...base, NODE_ENV: 'production' };
-  for (const appUrl of [undefined, 'http://localhost:3000', 'http://127.0.0.1:8080', 'http://[::1]:3000']) {
-    assert.deepEqual(loadConfig({ ...prod, APP_URL: appUrl }).email, { provider: 'log' }, String(appUrl));
-    assert.deepEqual(loadWorkerConfig({ ...prod, APP_URL: appUrl }).email, { provider: 'log' }, String(appUrl));
+  for (const appUrl of [undefined, 'http://localhost:3000', 'http://127.0.0.1:8080', 'http://[::1]:3000', 'https://kainow.example.org']) {
+    assert.throws(() => loadConfig({ ...prod, APP_URL: appUrl }), /LOG_SIGN_IN_CODES/, String(appUrl));
+    assert.throws(() => loadWorkerConfig({ ...prod, APP_URL: appUrl }), /LOG_SIGN_IN_CODES/, String(appUrl));
+    assert.throws(() => loadConfig({ ...prod, APP_URL: appUrl, LOG_SIGN_IN_CODES: undefined, EMAIL_PROVIDER: 'log' }), /LOG_SIGN_IN_CODES/, String(appUrl));
   }
-  for (const appUrl of ['https://kainow.example.org', 'http://10.0.0.5:3000', 'http://localhost.example.org']) {
-    assert.throws(() => loadConfig({ ...prod, APP_URL: appUrl }), /LOG_SIGN_IN_CODES/, appUrl);
-    assert.throws(() => loadWorkerConfig({ ...prod, APP_URL: appUrl }), /LOG_SIGN_IN_CODES/, appUrl);
-    assert.throws(() => loadConfig({ ...prod, APP_URL: appUrl, LOG_SIGN_IN_CODES: undefined, EMAIL_PROVIDER: 'log' }), /LOG_SIGN_IN_CODES|log/, appUrl);
+});
+
+test('in production a configured SMTP or Microsoft 365 sender starts, even with LOG_SIGN_IN_CODES left set', () => {
+  const prod = { ...base, NODE_ENV: 'production', APP_URL: 'https://kainow.example.org' };
+  assert.equal(loadConfig({ ...prod, SMTP_URL: 'smtp://mail.example.org', SMTP_FROM: 'a@example.org' }).email.provider, 'smtp');
+  assert.equal(loadWorkerConfig({ ...prod, EMAIL_PROVIDER: 'smtp', SMTP_URL: 'smtp://mail.example.org', EMAIL_FROM: 'a@example.org' }).email.provider, 'smtp');
+  assert.equal(loadConfig({ ...prod, EMAIL_PROVIDER: 'm365', M365_TENANT_ID: 't', M365_CLIENT_ID: 'c', M365_CLIENT_SECRET: 's', EMAIL_FROM: 'a@example.org' }).email.provider, 'm365');
+});
+
+test('development and test environments keep logged codes for local trials', () => {
+  for (const nodeEnv of [undefined, 'development', 'test']) {
+    assert.deepEqual(loadConfig({ ...base, NODE_ENV: nodeEnv }).email, { provider: 'log' }, String(nodeEnv));
+    assert.deepEqual(loadWorkerConfig({ ...base, NODE_ENV: nodeEnv, APP_URL: 'http://localhost:3000' }).email, { provider: 'log' }, String(nodeEnv));
   }
-  // Outside production (development and tests) the log provider stays available at any address.
-  assert.deepEqual(loadConfig({ ...base, APP_URL: 'https://kainow.example.org' }).email, { provider: 'log' });
-  // A real email provider is unaffected.
-  assert.equal(loadConfig({ ...prod, APP_URL: 'https://kainow.example.org', SMTP_URL: 'smtp://mail.example.org', SMTP_FROM: 'a@example.org' }).email.provider, 'smtp');
 });
 
 // G05: an AI-enabled production deployment can require the protected key, and then refuses to start without it.

@@ -294,6 +294,41 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     assert.equal((await get()).closedAt, null, 'second_admin');
   });
 
+  // G01 (review of PR #19): a stale automatic tick must not close the checklist. Real sequence, no hand-edited ticks.
+  test('a second Administrator disabled after the automatic tick keeps the checklist open until another is active', async () => {
+    const second = await seedUser(t.pool, 'second@example.org', 'enterprise_administrator');
+    assert.equal(step(await get(), 'second_admin').done, true, 'ticked by Kainow while two Administrators are active');
+    await t.pool.query(`UPDATE users SET status = 'disabled' WHERE id = $1`, [second]);
+    await recordCustodian();
+    await queueTestEmail('sent');
+    for (const key of ['recovery', 'mailbox', 'test_email', 'calendar', 'backups']) {
+      assert.equal((await admin.request('POST', `/go-live/steps/${key}/tick`, {})).status, 200, key);
+    }
+    await reachLaunch();
+    let body = await get();
+    assert.equal(body.closedAt, null, 'only one active Administrator: stays open');
+    assert.equal(step(body, 'second_admin').done, false, 'the stale tick is withdrawn');
+    assert.deepEqual((await events(t)).filter((e) => e.step_key === 'second_admin').map((e) => [e.action, e.actor_id]), [['ticked', null], ['unticked', null]]);
+    await t.pool.query(`UPDATE users SET status = 'active' WHERE id = $1`, [second]);
+    body = await get();
+    assert.ok(body.closedAt, 'a second active Administrator again lets it close');
+    assert.equal(step(body, 'second_admin').done, true);
+  });
+
+  test('an Administrator ticking the last step does not close the checklist on a stale second-Administrator tick', async () => {
+    const second = await seedUser(t.pool, 'second@example.org', 'enterprise_administrator');
+    await get();
+    await reachLaunch();
+    await recordCustodian();
+    await queueTestEmail('sent');
+    for (const key of ['recovery', 'mailbox', 'test_email', 'calendar']) await admin.request('POST', `/go-live/steps/${key}/tick`, {});
+    await t.pool.query(`UPDATE users SET status = 'disabled' WHERE id = $1`, [second]);
+    const last = await admin.request('POST', '/go-live/steps/backups/tick', {});
+    assert.equal(last.status, 200);
+    assert.equal(last.body.closedAt, null);
+    assert.equal(step(last.body, 'second_admin').done, false);
+  });
+
   test('the checklist closes once every step but the optional logos is done, and lists what is open', async () => {
     await reachLaunch();
     assert.equal((await get()).closedAt, null);

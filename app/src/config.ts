@@ -66,27 +66,17 @@ export function loadDatabaseConfig(env: NodeJS.ProcessEnv = process.env): Databa
 
 const missing = (name: string, when: string): Error => new Error(`${name} must be set when ${when}`);
 
-/** True for an address only this computer can open: localhost, 127.x.x.x or ::1. */
-export function isLocalOnlyUrl(url: string): boolean {
-  let host: string;
-  try {
-    host = new URL(url).hostname.toLowerCase();
-  } catch {
-    return false;
-  }
-  return host === 'localhost' || host === '[::1]' || host === '::1' || /^127(\.\d{1,3}){3}$/.test(host);
-}
-
 /**
  * Chooses the email provider. EMAIL_PROVIDER unset keeps the older rules: SMTP_URL (with SMTP_FROM) gives smtp,
  * else LOG_SIGN_IN_CODES=true gives log. Messages name variables, never their values.
  */
 export function loadEmailConfig(env: NodeJS.ProcessEnv): EmailConfig {
   const email = chooseEmailConfig(env);
-  // Printed codes are as good as passwords: a production server that other people reach must email them (review G02).
-  if (email.provider === 'log' && env.NODE_ENV === 'production' && !isLocalOnlyUrl(appUrlFrom(env))) {
+  // Printed codes are as good as passwords, so production never logs them, whatever APP_URL says (review G02).
+  // A local trial that reads codes from the log runs with NODE_ENV=development instead.
+  if (email.provider === 'log' && env.NODE_ENV === 'production') {
     throw new Error(
-      'LOG_SIGN_IN_CODES (the log email provider) is refused in production unless APP_URL is a localhost address: set EMAIL_PROVIDER to m365 or smtp',
+      'LOG_SIGN_IN_CODES (the log email provider) is refused when NODE_ENV=production: set EMAIL_PROVIDER to m365 or smtp, or set NODE_ENV=development for a trial on your own computer',
     );
   }
   return email;

@@ -36,7 +36,7 @@ The PowerShell lines in this guide were run in Windows PowerShell 5.1 on 8 Novem
      ```
      $b = New-Object byte[] 48; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [Convert]::ToBase64String($b)
      ```
-   - Email (sign-in codes and reminders): either the four Microsoft 365 variables (see "Microsoft 365 email" below), or `SMTP_URL` and `SMTP_FROM`, or uncomment `LOG_SIGN_IN_CODES=true` to read codes from the log (own computer only). Kainow refuses to start with `LOG_SIGN_IN_CODES` unless `APP_URL` is a localhost address (`localhost`, `127.x.x.x` or `[::1]`): anyone who can read the log could otherwise sign in as anyone.
+   - Email (sign-in codes and reminders): either the four Microsoft 365 variables (see "Microsoft 365 email" below), or `SMTP_URL` and `SMTP_FROM`, or, for a trial on your own computer only, uncomment both `NODE_ENV=development` and `LOG_SIGN_IN_CODES=true` to read codes from the log. Kainow refuses to start with `LOG_SIGN_IN_CODES` when `NODE_ENV=production` (the default), whatever `APP_URL` says: anyone who can read the log could otherwise sign in as anyone. Before real use, set up email and remove both lines.
    - No AI key goes in `.env`. The worker does not read `OPENAI_API_KEY` or any provider key from its environment. AI keys are entered later, per project, in Kainow itself (see "Set up AI" below), and are stored encrypted with the protected key.
 
 2. **Build and start.**
@@ -286,7 +286,7 @@ Kainow can send all its email, sign-in codes and reminders, as one mailbox in yo
    EMAIL_FROM=kainow@example.org
    ```
 
-   Then `docker compose up -d`. If one is missing, Kainow refuses to start and names the missing variable (never its value). Remove `LOG_SIGN_IN_CODES` so codes are emailed, not logged.
+   Then `docker compose up -d`. If one is missing, Kainow refuses to start and names the missing variable (never its value). Remove `LOG_SIGN_IN_CODES` and `NODE_ENV=development` so codes are emailed, not logged, and Kainow runs in production mode.
 
 **Auto-reply.** Set an automatic reply on the sender mailbox saying that it is not monitored, so people who answer a Kainow email know no one will read it.
 

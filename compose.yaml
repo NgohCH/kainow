@@ -15,7 +15,9 @@ x-kainow: &kainow
     options: { max-size: 10m, max-file: "3" }
   environment: &kainow-env
     DATABASE_URL: postgres://kainow:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the .env file}@db:5432/kainow
-    NODE_ENV: production
+    # production unless .env says otherwise. Only a trial on your own computer that reads sign-in codes from the log sets
+    # NODE_ENV=development (with LOG_SIGN_IN_CODES=true); production refuses to log codes.
+    NODE_ENV: ${NODE_ENV:-production}
 
 services:
   db:
