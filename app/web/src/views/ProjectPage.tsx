@@ -28,6 +28,7 @@ import { Drafts } from './Drafts.tsx';
 import { mayReviewAnswers, mayReviewSummaries } from '../assist.ts';
 import { Discussion } from './Discussion.tsx';
 import { Work } from './Work.tsx';
+import { ProjectOutputs } from './ProjectOutputs.tsx';
 import { DeliveryHistory } from './Deliveries.tsx';
 import { DigestSend, EscalationFlags } from './DigestSend.tsx';
 import { Feedback } from './Feedback.tsx';
@@ -44,7 +45,7 @@ import { DeletionsList } from './HistoryList.tsx';
 import { CopiesAwaitingList, HeldForReviewList } from './HeldReview.tsx';
 import { type Act, ArchivePanel, DepartmentMove, GrantsSection, HandoverForm, HoldActions } from './ProjectAccessPanels.tsx';
 
-type Tab = 'overview' | 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | 'timeline';
+type Tab = 'overview' | 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | 'timeline' | 'outputs';
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
@@ -108,6 +109,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
     ...(contentAllowed ? ([['notes', 'Notes & discussion'], ['work', 'Work'], ['drafts', 'Drafts']] as Array<[Tab, string]>) : []),
     ...(contentAllowed && (mayReviewAnswers(roles) || mayReviewSummaries(roles)) ? ([['review', 'Review']] as Array<[Tab, string]>) : []),
     ...(contentAllowed ? ([['feedback', 'Feedback']] as Array<[Tab, string]>) : []),
+    ...(contentAllowed ? ([['outputs', 'Outputs']] as Array<[Tab, string]>) : []),
     ...(project.inspectDeleted ? ([['deleted', 'Deleted items']] as Array<[Tab, string]>) : []),
     ['settings', 'Settings'],
     ...(mayViewAiTab(roles, project.isAdmin) ? ([['ai', 'AI']] as Array<[Tab, string]>) : []),
@@ -180,6 +182,19 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
       {tab === 'review' && contentAllowed && <AssistReview projectId={project.id} roles={roles} />}
       {tab === 'feedback' && contentAllowed && <Feedback projectId={project.id} />}
       {tab === 'settings' && <ProjectSettings projectId={project.id} />}
+      {tab === 'outputs' && contentAllowed && (
+        <ProjectOutputs
+          key={itemId ?? 'register'}
+          projectId={project.id}
+          outputId={itemId}
+          roles={roles}
+          status={project.status}
+          people={{
+            people: people.map((p) => ({ userId: p.userId, displayName: p.displayName })),
+            departments: [project.owningDepartment, ...project.contributingDepartments],
+          }}
+        />
+      )}
       {tab === 'ai' && mayViewAiTab(roles, project.isAdmin) && <ProjectAi projectId={project.id} mayViewUsage={mayViewAiUsage(roles)} />}
       {tab === 'deleted' && project.inspectDeleted && <DeletedItemsList projectId={project.id} />}
       {tab === 'closing' && <Closing project={project} act={act} />}

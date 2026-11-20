@@ -1,4 +1,5 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
+import { ProjectOutputSettings } from './ProjectOutputSettings.tsx';
 import { ApiError, api } from '../api.ts';
 import { formatWhen, noticesStartLine } from '../format.ts';
 import {
@@ -359,6 +360,7 @@ export function ProjectSettings({ projectId }: { projectId: string }) {
       <NotificationSettingsForm projectId={projectId} />
       <Holidays projectId={projectId} canEdit={canEditCalendar} notice={blocked} onChanged={refreshCalendar} />
       <ProjectAnalysisSettings projectId={projectId} />
+      <ProjectOutputSettings projectId={projectId} />
     </>
   );
 }

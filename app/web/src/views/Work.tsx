@@ -28,6 +28,8 @@ import type { Person } from './AuthoriseForm.tsx';
 import { ModeLabel } from './ProjectCalendar.tsx';
 import { type RequestView } from '../changes.ts';
 import { ChangeRequestPanel, useRequests } from './ChangeRequest.tsx';
+import { ExportControls } from './ProjectOutputs.tsx';
+import { useOutputPolicy } from './ProjectOutputSettings.tsx';
 import { useFocusItem } from './useFocusItem.ts';
 import { AddSubtaskForm, AmendForm, CancelForm, FollowUpForm, SupersedeForm, WithdrawForm, type WorkContext } from './ChangeForms.tsx';
 
@@ -122,6 +124,8 @@ export function Work({
   const [notice, setNotice] = useState<string | null>(null);
   const mayDelete = mayDeleteRecord(roles, status, delegated);
   const { requests, reload: reloadRequests } = useRequests(projectId);
+  // Whether "Export CSV" and "Save as output" are shown: the server says (D106); hidden otherwise.
+  const { policy } = useOutputPolicy(projectId);
   const load = useCallback(() => {
     api.get<Records>(`/projects/${projectId}/records`).then(setRecords, (e: Error) => setError(e.message));
     reloadRequests();
@@ -185,11 +189,12 @@ export function Work({
         {waiting.length === 0 ? (
           <p className="meta">Nothing is waiting for authorisation.</p>
         ) : (
-          waiting.map((r) => <ChangeRequestPanel key={`${r.id}:${r.version}`} request={r} work={work} onChanged={changed} />)
+          waiting.map((r) => <ChangeRequestPanel key={`${r.id}:${r.version}`} request={r} work={work} onChanged={changed} projectId={projectId} />)
         )}
       </section>
       <section aria-labelledby="tasks-heading">
         <h2 id="tasks-heading">Tasks</h2>
+        <ExportControls projectId={projectId} kind="tasks" policy={policy} onSaved={(m) => { setError(null); setNotice(m); }} />
         {records.tasks.length === 0 ? (
           <p className="empty">No tasks yet. Authorise an action on the review screen to create one.</p>
         ) : (
@@ -202,6 +207,7 @@ export function Work({
       </section>
       <section aria-labelledby="questions-heading">
         <h2 id="questions-heading">Questions</h2>
+        <ExportControls projectId={projectId} kind="questions" policy={policy} onSaved={(m) => { setError(null); setNotice(m); }} />
         {records.questions.length === 0 ? (
           <p className="meta">No questions yet.</p>
         ) : (
@@ -214,6 +220,7 @@ export function Work({
       </section>
       <section aria-labelledby="decisions-heading">
         <h2 id="decisions-heading">Decisions</h2>
+        <ExportControls projectId={projectId} kind="decisions" policy={policy} onSaved={(m) => { setError(null); setNotice(m); }} />
         {records.decisions.length === 0 ? (
           <p className="meta">No decisions yet.</p>
         ) : (
@@ -226,6 +233,7 @@ export function Work({
       </section>
       <section aria-labelledby="risks-heading">
         <h2 id="risks-heading">Risks</h2>
+        <ExportControls projectId={projectId} kind="risks" policy={policy} onSaved={(m) => { setError(null); setNotice(m); }} />
         {records.risks.length === 0 ? (
           <p className="meta">No risks yet.</p>
         ) : (

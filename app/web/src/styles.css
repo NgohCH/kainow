@@ -537,3 +537,12 @@ a.meter { text-decoration: underline; }
 .badge.tone-quiet { color: var(--muted); }
 pre { overflow-x: auto; max-width: 100%; background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; padding: 0.5rem 0.75rem; font-size: 0.85rem; white-space: pre-wrap; overflow-wrap: anywhere; }
 details > summary { cursor: pointer; font-weight: 600; }
+
+/* Sub-project 9: outputs register, output page and project output settings */
+.settings-summary dt { font-weight: 600; margin-top: 0.75rem; }
+.settings-summary dd { margin: 0.25rem 0 0; overflow-wrap: anywhere; }
+.outputs-table .path { overflow-wrap: anywhere; }
+.outputs-table td .actions { margin: 0; }
+@media (max-width: 40rem) {
+  .outputs-table td[data-label]::before { content: attr(data-label) ': '; color: var(--muted); font-weight: 600; font-size: 0.85rem; }
+}

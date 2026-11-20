@@ -9,9 +9,10 @@ test('the approvals line counts approvals and names who gave them', () => {
 });
 
 test('every kind of change has a plain label', () => {
-  const kinds: ChangeKind[] = ['authorise_proposal', 'amend_task', 'cancel_task', 'supersede_decision', 'withdraw_decision', 'deadline_review', 'reconcile_completion', 'risk_handover'];
+  const kinds: ChangeKind[] = ['authorise_proposal', 'amend_task', 'cancel_task', 'supersede_decision', 'withdraw_decision', 'deadline_review', 'reconcile_completion', 'risk_handover', 'approve_output'];
   const labels = kinds.map(kindLabel);
-  assert.equal(new Set(labels).size, 8);
+  assert.equal(new Set(labels).size, 9);
+  assert.equal(kindLabel('approve_output'), 'Approve an output version');
   assert.ok(labels.every((l) => l.length > 0));
   assert.equal(kindLabel('cancel_task'), 'Cancel a task');
 });

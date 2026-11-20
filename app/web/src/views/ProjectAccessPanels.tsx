@@ -1,6 +1,7 @@
-import { type FormEvent, useEffect, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { ApiError, api, type Department, type Finding, type Grant, type Membership, type Project } from '../api.ts';
 import { formatWhen } from '../format.ts';
+import { type FolderChoice, MOVING_FILES, type TransferView, transferConfirmText } from '../outputs.ts';
 import { type GrantKind, accessLabel, canArchive, canManageGrants, grantStateLabel, roleLabel } from '../projects.ts';
 
 export type Act = (work: () => Promise<unknown>, done: string | ((result: unknown) => string)) => Promise<boolean>;
@@ -66,30 +67,75 @@ export function ArchivePanel({ project, act }: { project: Project; act: Act }) {
 /** The Administrator moves the project to another owning department, with a reason. */
 export function DepartmentMove({ project, act }: { project: Project; act: Act }) {
   const [open, setOpen] = useState(false);
+  const [confirming, setConfirming] = useState(false);
   const [departments, setDepartments] = useState<Department[]>([]);
+  const [view, setView] = useState<{ department: { id: string; name: string }; filedFiles: number; transfer: TransferView | null } | null>(null);
   const [to, setTo] = useState('');
   const [reason, setReason] = useState('');
+  const [choice, setChoice] = useState<FolderChoice | ''>('');
+  const owning = project.owningDepartment.id;
+  const loadView = useCallback(() => {
+    api.get<NonNullable<typeof view>>(`/projects/${project.id}/owning-department`).then(setView, () => setView(null));
+  }, [project.id]);
+  useEffect(() => {
+    if (project.isAdmin) loadView();
+  }, [project.isAdmin, loadView, owning]);
   useEffect(() => {
     if (open) api.get<{ departments: Department[] }>('/departments').then((r) => setDepartments(r.departments), () => setDepartments([]));
   }, [open]);
   if (!project.isAdmin) return null;
   const contributing = new Set(project.contributingDepartments.map((d) => d.id));
-  const choices = departments.filter((d) => d.id !== project.owningDepartment.id && !contributing.has(d.id));
+  const choices = departments.filter((d) => d.status === 'active' && d.id !== owning && !contributing.has(d.id));
+  const filed = view?.filedFiles ?? 0;
+  const transfer = view?.transfer ?? null;
+  const busy = transfer?.state === 'moving' || transfer?.state === 'move_failed';
+  const toName = departments.find((d) => d.id === to)?.name ?? 'the new department';
+  function close() {
+    setOpen(false);
+    setConfirming(false);
+  }
   async function submit(e: FormEvent) {
     e.preventDefault();
-    if (await act(() => api.post(`/projects/${project.id}/department`, { departmentId: to, reason }), 'The project was moved to another department.')) {
-      setOpen(false);
+    if (!confirming) {
+      setConfirming(true);
+      return;
+    }
+    const body = { departmentId: to, reason, ...(filed > 0 ? { folderChoice: choice } : {}) };
+    const ok = await act(
+      () => api.put(`/projects/${project.id}/owning-department`, body),
+      (r) => ((r as { state?: string } | undefined)?.state === 'moving' ? `The project now belongs to ${toName}. ${MOVING_FILES}.` : `The project now belongs to ${toName}.`),
+    );
+    if (ok) {
+      close();
       setReason('');
+      setChoice('');
+      setTo('');
+      loadView();
     }
   }
   return (
     <section aria-labelledby="department-heading">
       <h2 id="department-heading">Owning department</h2>
+      <p>
+        {project.owningDepartment.name}
+        {filed > 0 && <span className="meta"> · {filed === 1 ? '1 filed output file' : `${filed} filed output files`}</span>}
+      </p>
+      {transfer && transfer.label && (
+        <p className={transfer.state === 'move_failed' ? 'warn' : 'meta'} role="status">
+          {transfer.label}
+          <span className="hint">Changed from {transfer.from.name} to {transfer.to.name} by {transfer.actor}, {formatWhen(transfer.at)}.</span>
+        </p>
+      )}
+      {transfer?.tryAgain && (
+        <button type="button" onClick={() => void act(() => api.post(`/projects/${project.id}/owning-department/retry`), `${MOVING_FILES}.`).then((ok) => ok && loadView())}>
+          Try again
+        </button>
+      )}
       {open ? (
-        <form className="panel stack" onSubmit={submit} aria-label="Move to another department">
+        <form className="panel stack" onSubmit={submit} aria-label="Change owning department" onKeyDown={(e) => e.key === 'Escape' && close()}>
           <label>
             New owning department
-            <select required value={to} onChange={(e) => setTo(e.target.value)}>
+            <select required value={to} disabled={confirming} onChange={(e) => setTo(e.target.value)}>
               <option value="">Choose a department</option>
               {choices.map((d) => (
                 <option key={d.id} value={d.id}>
@@ -100,17 +146,32 @@ export function DepartmentMove({ project, act }: { project: Project; act: Act })
           </label>
           <label>
             Reason
-            <input required value={reason} onChange={(e) => setReason(e.target.value)} />
+            <input required value={reason} disabled={confirming} onChange={(e) => setReason(e.target.value)} />
           </label>
-          <p className="meta">The project's files stay where they are until managed storage arrives.</p>
+          {filed > 0 && (
+            <fieldset disabled={confirming}>
+              <legend>The project's filed outputs ({filed === 1 ? '1 file' : `${filed} files`})</legend>
+              <label className="check">
+                <input type="radio" name="folder-choice" required checked={choice === 'move'} onChange={() => setChoice('move')} /> Move the folder into the new department's folder
+              </label>
+              <label className="check">
+                <input type="radio" name="folder-choice" required checked={choice === 'keep'} onChange={() => setChoice('keep')} /> Keep it where it is (new filings go under the new department)
+              </label>
+            </fieldset>
+          )}
+          {confirming && (
+            <p className="warn" role="status">{transferConfirmText(filed, choice || null, project.owningDepartment.name, toName)}</p>
+          )}
           <div className="decision">
-            <button className="primary">Move</button>
-            <button type="button" onClick={() => setOpen(false)}>Cancel</button>
+            <button className="primary">{confirming ? 'Change department' : 'Continue'}</button>
+            {confirming && <button type="button" onClick={() => setConfirming(false)}>Back</button>}
+            <button type="button" onClick={close}>Cancel</button>
           </div>
         </form>
       ) : (
-        <button onClick={() => setOpen(true)}>Move to another department</button>
+        <button onClick={() => setOpen(true)} disabled={busy} aria-describedby={busy ? 'department-busy' : undefined}>Change owning department</button>
       )}
+      {busy && !open && <p id="department-busy" className="hint">The department can be changed again once the files are moved.</p>}
     </section>
   );
 }
