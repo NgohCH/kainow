@@ -13,6 +13,7 @@ import { type ExportPanel, type PanelData, exportMeta, panelTable, toCsv } from 
 import { DrillService } from './drill.service';
 import { type AnalyticsFilters, parseAnalyticsFilters } from './filters';
 import { PanelsService } from './panels.service';
+import { RESOURCES_TABLES, ResourcesPanelService, type ResourcesTable } from './resources-panel';
 import { SystemService } from './system.service';
 import { TrendsService } from './trends.service';
 import { ViewsService } from './views.service';
@@ -22,7 +23,7 @@ interface HttpResponse {
 }
 
 /** The panels served. */
-const PANELS = ['progress', 'problems', 'system', 'trends'] as const;
+const PANELS = ['progress', 'problems', 'system', 'trends', 'resources'] as const;
 type Panel = (typeof PANELS)[number];
 
 export const EXPORT_OFF = 'Analytics export is turned off.';
@@ -39,6 +40,7 @@ const who = (req: HttpRequest): AuthUser => {
 export class AnalyticsController {
   constructor(
     private readonly panels: PanelsService,
+    private readonly resources: ResourcesPanelService,
     private readonly system: SystemService,
     private readonly trends: TrendsService,
     private readonly drills: DrillService,
@@ -59,14 +61,22 @@ export class AnalyticsController {
     return filters;
   }
 
-  private async load(panel: Panel, filters: AnalyticsFilters): Promise<PanelData> {
+  /** `table` for the resources export: one of lines, sharedItems, finance. */
+  private tableOf(query: Record<string, unknown>): ResourcesTable {
+    const table = query.table;
+    if (typeof table !== 'string' || !(RESOURCES_TABLES as readonly string[]).includes(table)) throw new BadRequestException('Choose a table: lines, sharedItems or finance.');
+    return table as ResourcesTable;
+  }
+
+  private async load(panel: Panel, filters: AnalyticsFilters, table: ResourcesTable = 'lines'): Promise<PanelData> {
+    if (panel === 'resources') return { panel, data: await this.resources.resources(filters), table };
     if (panel === 'progress') return { panel, data: await this.panels.progress(filters) };
     if (panel === 'problems') return { panel, data: await this.panels.problems(filters) };
     if (panel === 'system') return { panel, data: await this.system.problems(filters) };
     return { panel, data: await this.trends.weekly(filters) };
   }
 
-  /** `?panel=progress|problems|system|trends&period=&department=&status=&ownership=&includeArchived=` */
+  /** `?panel=progress|problems|system|trends|resources&period=&department=&status=&ownership=&includeArchived=` */
   @Get()
   @RequireAction('analytics.view')
   async get(@Query() query: Record<string, unknown>) {
@@ -100,17 +110,18 @@ export class AnalyticsController {
     const user = who(req);
     const panel: ExportPanel = this.panelOf(query);
     const filters = this.filtersOf(query);
+    const table = panel === 'resources' ? this.tableOf(query) : undefined;
     if (!(await loadAccessSettings(this.pool)).analyticsExportAllowed) throw new ForbiddenException(EXPORT_OFF);
-    const loaded = await this.load(panel, filters);
+    const loaded = await this.load(panel, filters, table);
     const department = filters.departmentId
       ? ((await this.pool.query(`SELECT name FROM departments WHERE id = $1`, [filters.departmentId])).rows[0]?.name as string | undefined) ?? null
       : null;
     const { columns, rows } = panelTable(loaded);
-    const text = toCsv(exportMeta(panel, filters, department, loaded.data.computedAt), columns, rows);
+    const text = toCsv(exportMeta(panel, filters, department, loaded.data.computedAt, table), columns, rows);
     const now = this.clock();
-    await writeAudit(this.pool, { at: now, action: 'analytics.exported', actorUserId: user.id, subjectType: 'analytics', detail: { panel, filters } });
+    await writeAudit(this.pool, { at: now, action: 'analytics.exported', actorUserId: user.id, subjectType: 'analytics', detail: table ? { panel, table, filters } : { panel, filters } });
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="kainow-${panel}-${todayUtc8(now)}.csv"`);
+    res.setHeader('Content-Disposition', `attachment; filename="kainow-${panel}${table ? `-${table}` : ''}-${todayUtc8(now)}.csv"`);
     return text;
   }
 

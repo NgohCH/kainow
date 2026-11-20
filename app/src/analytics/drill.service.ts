@@ -11,7 +11,9 @@ import { type ProjectContext, canReadContent } from '../projects/access.service'
 import type { ProjectStatus } from '../projects/matrix';
 import { todayUtc8 } from '../projects/membership';
 import type { AnalyticsFilters } from './filters';
+import { LinesService, type LineView } from '../resources/lines.service';
 import { PROBLEM_KEYS, PanelsService, type ProgressRow } from './panels.service';
+import { LINE_MEASURES, type LineMeasure, type LineRow, ResourcesPanelService, lineIdsFor } from './resources-panel';
 
 /**
  * Drill-down (dashboards spec 7.3): organisation, then department, then project, as counts from the same panels. At
@@ -23,7 +25,8 @@ export const DRILL_LEVELS = ['org', 'department', 'project'] as const;
 export type DrillLevel = (typeof DRILL_LEVELS)[number];
 
 /** The measure keys the panels return: the nine problem counts and the progress measures. */
-export const DRILL_MEASURES = [...PROBLEM_KEYS, 'completion', 'onTime', 'overdue', 'blocked'] as const;
+export const FINANCE_MEASURES = ['financeBudgetNotProvided', 'financeAtFirst', 'financeAtSecond'] as const;
+export const DRILL_MEASURES = [...PROBLEM_KEYS, 'completion', 'onTime', 'overdue', 'blocked', ...(Object.keys(LINE_MEASURES) as LineMeasure[]), ...FINANCE_MEASURES] as const;
 export type DrillMeasure = (typeof DRILL_MEASURES)[number];
 
 export const LIMITED = 'Only counts are shown: you are not a participant in this project.';
@@ -45,6 +48,8 @@ export interface DrillResult {
   measure: DrillMeasure;
   counts: { total: DrillValue; breakdown?: Array<{ id: string; name: string; value: DrillValue }> };
   records?: DrillRecord[];
+  /** Resource line detail (the Resources tab's fields), for a participant only; never any finance detail. */
+  lines?: LineView[];
   limited?: string;
   computedAt: string;
 }
@@ -53,6 +58,7 @@ export interface DrillResult {
 type Listing =
   | { kind: 'task'; where: 'overdue' | 'blocked' | 'reviewPending' | 'eligibleLeaf' | 'dueLeaf' }
   | { kind: 'risk'; where: 'significant' | 'overdueReview' }
+  | { kind: 'line'; measure: LineMeasure }
   | null;
 
 const LISTING: Record<DrillMeasure, Listing> = {
@@ -69,6 +75,11 @@ const LISTING: Record<DrillMeasure, Listing> = {
   openEscalations: null,
   noIndependentEscalation: null,
   invitationsExpired: null,
+  ...(Object.fromEntries(Object.keys(LINE_MEASURES).map((m) => [m, { kind: 'line', measure: m }])) as Record<LineMeasure, Listing>),
+  // Finance gives counts only, to everyone: never entries or amounts.
+  financeBudgetNotProvided: null,
+  financeAtFirst: null,
+  financeAtSecond: null,
 };
 
 /** A live leaf: no live subtask (as `loadProjectMeasures` decides it). */
@@ -111,6 +122,8 @@ export class DrillService {
     @Inject(PG_POOL) private readonly pool: Pool,
     @Inject(CLOCK) private readonly clock: Clock,
     private readonly panels: PanelsService,
+    private readonly resources: ResourcesPanelService,
+    private readonly lines: LinesService,
   ) {}
 
   async drill(user: AuthUser, query: { level: unknown; id: unknown; measure: unknown }, f: AnalyticsFilters): Promise<DrillResult> {
@@ -147,6 +160,10 @@ export class DrillService {
     const today = todayUtc8(this.clock());
     const ctx = (await loadProjectContexts(this.pool, user, [row.id], today)).get(row.id)?.ctx ?? null;
     if (!this.participates(ctx)) return { ...out, limited: LIMITED };
+    if (listing.kind === 'line') {
+      const ids = await lineIdsFor(this.pool, row.id, LINE_MEASURES[listing.measure], today, f);
+      return { ...out, lines: await this.lines.viewsFor(user, row.id, ids) };
+    }
     return { ...out, records: await this.records(row.id, listing, today) };
   }
 
@@ -164,7 +181,22 @@ export class DrillService {
         computedAt: p.computedAt,
       };
     }
-    const key = m === 'overdue' ? 'overdueTasks' : m === 'blocked' ? 'blockedTasks' : m;
+    if (m in LINE_MEASURES || (FINANCE_MEASURES as readonly string[]).includes(m)) {
+      const p = await this.resources.resources(f);
+      const field = (LINE_MEASURES as Record<string, keyof LineRow>)[m];
+      const fin = new Map(p.finance.flatMap((g) => g.projects).map((r) => [r.id, r]));
+      const finance = (id: string): number => {
+        const r = fin.get(id);
+        if (!r) return 0;
+        return m === 'financeBudgetNotProvided' ? (r.budget === null ? 1 : 0) : m === 'financeAtFirst' ? (r.level >= 1 ? 1 : 0) : r.level === 2 ? 1 : 0;
+      };
+      return {
+        rows: p.lines.projects.map((r) => ({ id: r.id, name: r.name, departmentId: r.departmentId, value: field ? r[field] : finance(r.id) })),
+        departments: p.lines.departments.map((d) => ({ id: d.id, name: d.name })),
+        computedAt: p.computedAt,
+      };
+    }
+    const key = (m === 'overdue' ? 'overdueTasks' : m === 'blocked' ? 'blockedTasks' : m) as (typeof PROBLEM_KEYS)[number];
     const p = await this.panels.problems(f);
     return {
       rows: p.projects.map((r) => ({ id: r.id, name: r.name, departmentId: r.departmentId, value: r[key] })),
@@ -174,7 +206,7 @@ export class DrillService {
   }
 
   /** The live tasks or risks behind a count, as the Work tab shows them (a cleaned held record shows its label). */
-  private async records(projectId: string, listing: NonNullable<Listing>, today: string): Promise<DrillRecord[]> {
+  private async records(projectId: string, listing: Exclude<NonNullable<Listing>, { kind: 'line' }>, today: string): Promise<DrillRecord[]> {
     const params: unknown[] = [projectId];
     // Binds the :today and :ref days a condition uses (an unused parameter would have no type).
     const bind = async (where: string): Promise<string> => {

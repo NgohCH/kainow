@@ -252,6 +252,12 @@ export class LinesService {
     }));
   }
 
+  /** A project's lines by id, as the Resources tab shows them (overlap names only for projects `user` can open). For analytics drill-down. */
+  async viewsFor(user: AuthUser, projectId: string, ids: string[]): Promise<LineView[]> {
+    const wanted = new Set(ids);
+    return (await this.views(this.pool, user, projectId, null)).filter((l) => wanted.has(l.id));
+  }
+
   private async one(db: Db, user: AuthUser, projectId: string, lineId: string): Promise<LineView> {
     const [line] = await this.views(db, user, projectId, lineId);
     if (!line) throw new NotFoundException(NOT_FOUND);

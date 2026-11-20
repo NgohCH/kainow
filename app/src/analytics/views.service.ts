@@ -17,7 +17,7 @@ import { TREND_KEYS } from './trends.service';
  * characters, credential-checked like a reason).
  */
 
-export const VIEW_PANELS = ['progress', 'problems', 'system', 'trends', 'aiUsage'] as const;
+export const VIEW_PANELS = ['progress', 'problems', 'system', 'trends', 'resources', 'aiUsage'] as const;
 type ViewPanel = (typeof VIEW_PANELS)[number];
 
 /** The columns of the two project tables. */
