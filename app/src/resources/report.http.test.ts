@@ -78,6 +78,62 @@ describe('project resources report over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.match(text, /\r\nSummary,Approved budget,,Not provided,MYR,/);
   });
 
+  test('CSV: kind and unit are written as words, never raw keys', async () => {
+    const text = (await csv(pm)).text;
+    assert.match(text, /\r\nNeeded,"Winch, heavy",Equipment,2\.00,Items,2026-12-03,2026-12-14,/);
+    assert.match(text, /\r\nNeeded,Hired drone,Other,Not provided,Not provided,/);
+    assert.doesNotMatch(text, /,equipment,|,items,|,other,/);
+  });
+
+  test('CSV money wording: a 0.00 budget, a converted foreign entry with a refund, a foreign entry awaiting conversion', async () => {
+    const pmId = (await t.pool.query(`SELECT id FROM users WHERE email = 'pm@example.org'`)).rows[0].id as string;
+    const at = new Date(START);
+    const cr = async (kind: string, targetKind: string, targetId: string) => {
+      const id = uuidv7();
+      await t.pool.query(
+        `INSERT INTO change_requests (id, project_id, kind, target_kind, target_id, version, required_approvals, status, submitted_by, submitted_at)
+         VALUES ($1, $2, $3, $4, $5, 1, 1, 'authorised', $6, $7)`,
+        [id, projectId, kind, targetKind, targetId, pmId, at],
+      );
+      return id;
+    };
+    const entry = async (amount: string, currency: string, description: string) => {
+      const id = uuidv7();
+      await t.pool.query(
+        `INSERT INTO expenditures (id, project_id, spent_on, amount, currency, description, recorded_by, recorded_at) VALUES ($1, $2, '2026-11-06', $3, $4, $5, $6, $7)`,
+        [id, projectId, amount, currency, description, pmId, at],
+      );
+      return id;
+    };
+    await t.pool.query(`INSERT INTO budget_versions (id, project_id, amount, currency, change_request_id, approved_at) VALUES ($1, $2, 0.00, 'MYR', $3, $4)`, [
+      uuidv7(), projectId, await cr('set_budget', 'project_budget', projectId), at,
+    ]);
+    const converted = await entry('100.00', 'USD', 'Hired crane');
+    await entry('55.00', 'USD', 'Ferry tickets');
+    await t.pool.query(
+      `INSERT INTO expenditure_adjustments (id, expenditure_id, kind, amount, rate, rate_on, reason, change_request_id, approved_at) VALUES ($1, $2, 'conversion', 440.00, 4.4, '2026-11-07', 'Rate', $3, $4)`,
+      [uuidv7(), converted, await cr('finance_adjustment', 'expenditure', converted), new Date(START + 1000)],
+    );
+    await t.pool.query(
+      `INSERT INTO expenditure_adjustments (id, expenditure_id, kind, amount, refund_on, reason, change_request_id, approved_at) VALUES ($1, $2, 'refund', 40.00, '2026-11-08', 'Returned', $3, $4)`,
+      [uuidv7(), converted, await cr('finance_adjustment', 'expenditure', converted), new Date(START + 2000)],
+    );
+    const text = (await csv(pm)).text;
+    assert.match(text, /\r\nSummary,Approved budget,,0\.00,MYR,/);
+    assert.match(text, /\r\nSummary,Percent used,,,,,,Not applicable\r\n/);
+    assert.match(text, /\r\nSummary,Over budget,,,,,,Yes\r\n/);
+    assert.match(text, /\r\nSummary,Not in totals,,55\.00,USD,/);
+    assert.match(text, /\r\nEntry,Ferry tickets,2026-11-06,55\.00,USD,Not in totals,,/);
+    assert.match(text, /\r\nEntry,Hired crane,2026-11-06,100\.00,USD,400\.00,MYR,Conversion: 440\.00 MYR at rate 4\.40000000 on 2026-11-07; Refund of 40\.00 MYR on 2026-11-08\r\n/);
+    assert.doesNotMatch(text, /440\.00 USD|40\.00 USD/);
+  });
+
+  test('CSV: with no budget the percentage is Not provided and there is no Over budget row', async () => {
+    const text = (await csv(pm)).text;
+    assert.match(text, /\r\nSummary,Percent used,,,,,,Not provided\r\n/);
+    assert.doesNotMatch(text, /Over budget/);
+  });
+
   test('CSV for a Member has no finance section; tracking off shows Not required for readers', async () => {
     const m = (await csv(ann)).text;
     assert.doesNotMatch(m, /# Section: finance/);

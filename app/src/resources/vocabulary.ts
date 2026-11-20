@@ -19,4 +19,6 @@ export const LINE_STATUSES = {
 export type LineStatus = keyof typeof LINE_STATUSES;
 
 export const ONE_OFF_KINDS = ['equipment', 'facility', 'other'] as const;
+/** Display words for item and one-off kinds (the Resources tab and the report CSV). */
+export const KIND_LABELS: Record<(typeof ONE_OFF_KINDS)[number], string> = { equipment: 'Equipment', facility: 'Facility', other: 'Other' };
 export const ITEM_KINDS = ['equipment', 'facility'] as const;

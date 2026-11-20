@@ -9,7 +9,7 @@ import { loadProjectFinanceSettings, mayReadFinance } from '../finance/readers';
 import { ProjectAccess } from '../projects/access.service';
 import { todayUtc8 } from '../projects/membership';
 import { type LineView, LinesService, type PersonRow } from './lines.service';
-import { LINE_STATUSES } from './vocabulary';
+import { KIND_LABELS, LINE_STATUSES, UNITS } from './vocabulary';
 
 export const REPORT_NOTE = 'Usage records, not bookings';
 export type FinanceView = Awaited<ReturnType<FinanceService['read']>>;
@@ -26,6 +26,9 @@ export type ResourcesReport = {
 const NOT_PROVIDED = 'Not provided';
 const NOT_REQUIRED = 'Not required';
 const NO_PERIOD = 'Period not provided';
+const NOT_APPLICABLE = 'Not applicable';
+const OVER_BUDGET = 'Over budget';
+const NOT_IN_TOTALS = 'Not in totals';
 
 /** The project resources report (spec 4, 13): one service, so the JSON, the CSV and later callers share one build. */
 @Injectable()
@@ -76,6 +79,7 @@ export class ResourcesReportService {
 }
 
 const orWord = (v: string | null, word = NOT_PROVIDED): string => (v === null || v === '' ? word : v);
+const label = (words: Record<string, string>, key: string): string => (Object.prototype.hasOwnProperty.call(words, key) ? words[key] : key);
 
 function lineRow(l: LineView): unknown[] {
   const name = l.item ? `${l.item.reference} ${l.item.name}` : l.description;
@@ -83,9 +87,9 @@ function lineRow(l: LineView): unknown[] {
   return [
     LINE_STATUSES[l.status] ?? l.status,
     name,
-    l.item ? l.item.kind : l.oneOffKind ?? '',
+    label(KIND_LABELS, l.item ? l.item.kind : l.oneOffKind ?? ''),
     orWord(l.quantity),
-    orWord(l.unit),
+    l.unit === null ? NOT_PROVIDED : label(UNITS, l.unit),
     orWord(l.startsOn, NO_PERIOD),
     orWord(l.endsOn, noPeriod ? NO_PERIOD : NOT_PROVIDED),
     orWord(l.neededBy),
@@ -97,7 +101,16 @@ function lineRow(l: LineView): unknown[] {
 }
 
 type Figures = { budget: string | null; spent: string; balance: string | null; percentUsed: number | null; overBudget: boolean; notInTotals: { currency: string; amount: string }[] };
-type EntryRow = { spentOn: string; amount: string; currency: string; description: string; reference: string; counted: string | null; adjustments: { kind: string; amount: string }[]; pending: unknown };
+type AdjRow = { kind: string; amount: string; rate: string | null; rateOn: string | null; refundOn: string | null };
+type EntryRow = { spentOn: string; amount: string; currency: string; description: string; reference: string; counted: string | null; adjustments: AdjRow[]; pending: unknown };
+
+/** One approved adjustment, worded as the finance view words it; its amount is in the reporting currency (spec 3.5). */
+function adjustmentText(a: AdjRow, reporting: string): string {
+  const amount = `${a.amount} ${reporting}`.trim();
+  if (a.kind === 'correction') return `Correction: counted amount set to ${amount}`;
+  if (a.kind === 'refund') return `Refund of ${amount}${a.refundOn ? ` on ${a.refundOn}` : ''}`;
+  return `Conversion: ${amount}${a.rate ? ` at rate ${a.rate}` : ''}${a.rateOn ? ` on ${a.rateOn}` : ''}`;
+}
 
 /** Columns: row, name, date, amount, amount currency, counted amount, counted currency, details. */
 function financeRows(f: FinanceView): unknown[][] {
@@ -109,16 +122,21 @@ function financeRows(f: FinanceView): unknown[][] {
     rows.push(['Summary', 'Approved budget', '', orWord(figures.budget), currency, '', '', '']);
     rows.push(['Summary', 'Spent', '', figures.spent, currency, '', '', 'Based on recorded entries.']);
     rows.push(['Summary', 'Balance', '', orWord(figures.balance), currency, '', '', 'Balance based on recorded expenditure']);
-    rows.push(['Summary', 'Percent used', '', '', '', '', '', figures.percentUsed === null ? NOT_PROVIDED : `${figures.percentUsed}${figures.overBudget ? ' (Over budget)' : ''}`]);
-    for (const n of figures.notInTotals) rows.push(['Summary', 'Not in totals', '', n.amount, n.currency, '', '', '']);
+    // No budget: Not provided; a 0.00 budget has no percentage: Not applicable (spec 3.5).
+    const percent = figures.percentUsed !== null ? String(figures.percentUsed) : figures.budget === null ? NOT_PROVIDED : NOT_APPLICABLE;
+    rows.push(['Summary', 'Percent used', '', '', '', '', '', percent]);
+    if (figures.overBudget) rows.push(['Summary', OVER_BUDGET, '', '', '', '', '', 'Yes']);
+    for (const n of figures.notInTotals) rows.push(['Summary', NOT_IN_TOTALS, '', n.amount, n.currency, '', '', '']);
   } else rows.push(['Summary', 'Reporting currency', '', '', '', '', '', NOT_PROVIDED]);
   for (const v of f.budgetVersions as { amount: string; currency: string; approvedAt: Date }[]) {
     rows.push(['Budget version', 'Approved budget', new Date(v.approvedAt).toISOString().slice(0, 10), v.amount, v.currency, '', '', '']);
   }
   for (const e of f.entries as EntryRow[]) {
-    const adj = e.adjustments.map((a) => `${a.kind} ${a.amount} ${e.currency}`).join('; ');
+    const adj = e.adjustments.map((a) => adjustmentText(a, currency)).join('; ');
     const details = [e.reference && `Reference ${e.reference}`, adj, e.pending ? 'Adjustment pending' : ''].filter(Boolean).join('; ');
-    rows.push(['Entry', e.description, e.spentOn, e.amount, e.currency, orWord(e.counted), currency, details]);
+    // A foreign entry awaiting conversion has no counted amount: it is not in the totals.
+    const counted = e.counted === null ? [NOT_IN_TOTALS, ''] : [e.counted, currency];
+    rows.push(['Entry', e.description, e.spentOn, e.amount, e.currency, ...counted, details]);
   }
   return rows;
 }
