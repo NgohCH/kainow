@@ -17,7 +17,7 @@ import { TREND_KEYS } from './trends.service';
  * characters, credential-checked like a reason).
  */
 
-export const VIEW_PANELS = ['progress', 'problems', 'system', 'trends', 'aiUsage'] as const;
+export const VIEW_PANELS = ['progress', 'problems', 'system', 'trends', 'resources', 'aiUsage'] as const;
 type ViewPanel = (typeof VIEW_PANELS)[number];
 
 /** The columns of the two project tables. */
@@ -28,7 +28,7 @@ export const VIEW_COLUMNS = {
 type ColumnPanel = keyof typeof VIEW_COLUMNS;
 
 /** Each chart, switchable between chart and table. */
-export const VIEW_CHARTS = ['progress.onTime', ...TREND_KEYS.map((k) => `trends.${k}`)] as readonly string[];
+export const VIEW_CHARTS = ['progress.onTime', ...TREND_KEYS.map((k) => `trends.${k}`), 'resources.finance.MYR', 'resources.finance.SGD', 'resources.finance.USD'] as readonly string[];
 const CHART_MODES = ['chart', 'table'] as const;
 const OWNERSHIPS = ['owned', 'contributed', 'both'] as const;
 

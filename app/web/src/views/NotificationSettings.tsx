@@ -9,6 +9,7 @@ import { ProjectAnalysisSettings } from './AnalysisSettings.tsx';
 import { Holidays } from './Holidays.tsx';
 import { useRefreshCalendar } from './ProjectCalendar.tsx';
 import { PreviewList } from './PreviewList.tsx';
+import { ProjectFinanceSettings } from './ProjectFinanceSettings.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 const NOT_ALLOWED = 'The Administrator has not allowed projects to change this setting.';
@@ -341,7 +342,7 @@ export function NotificationsSettings() {
 }
 
 /** Project → Settings. Everyone who can read the project sees the values; editing follows `canEdit`. */
-export function ProjectSettings({ projectId }: { projectId: string }) {
+export function ProjectSettings({ projectId, showFinance = false }: { projectId: string; showFinance?: boolean }) {
   const [canEditCalendar, setCanEditCalendar] = useState(false);
   const [blocked, setBlocked] = useState<string | null>(null);
   const refreshCalendar = useRefreshCalendar();
@@ -361,6 +362,7 @@ export function ProjectSettings({ projectId }: { projectId: string }) {
       <Holidays projectId={projectId} canEdit={canEditCalendar} notice={blocked} onChanged={refreshCalendar} />
       <ProjectAnalysisSettings projectId={projectId} />
       <ProjectOutputSettings projectId={projectId} />
+      {showFinance && <ProjectFinanceSettings projectId={projectId} />}
     </>
   );
 }

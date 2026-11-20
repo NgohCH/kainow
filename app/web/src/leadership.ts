@@ -4,6 +4,7 @@
  * code. The field catalogue lives in prefs.ts (which mirrors app/src/leadership/leadership-fields.ts) and is re-exported.
  */
 import { LEADERSHIP_FIELDS, type Prefs } from './prefs.ts';
+import type { Currency } from './finance.ts';
 import type { Completion, OnTime, PlannedEnd, Severity } from './dashboard.ts';
 
 export { LEADERSHIP_FIELDS };
@@ -30,6 +31,19 @@ export interface Grant {
   state: GrantState;
 }
 
+/** The `resources` card field (app/src/leadership/summary.service.ts): counts only. */
+export interface ResourcesCardValue {
+  needed: number;
+  arranged: number;
+  inUse: number;
+  neededByPassed: number;
+}
+
+/** The `budget` card field: figures only, never entries, references, notes or reasons. */
+export type BudgetCardValue =
+  | { tracking: 'not_required' }
+  | { tracking: 'enabled'; currency: Currency; budget: string | null; spent: string; percentUsed: number | null; level: 0 | 1 | 2; overBudget: boolean };
+
 export interface LeadershipCard {
   id: string;
   link: boolean;
@@ -47,6 +61,8 @@ export interface LeadershipCard {
   significantRisks?: { count: number; items: Array<{ description: string; severity: Severity; reviewOn: string | null }> };
   nextDates?: { nextTaskDue: string | null; nextRiskReview: string | null };
   attentionFlags?: { missingRole: boolean; noIndependentEscalation: boolean; deadlineReview: boolean };
+  resources?: ResourcesCardValue;
+  budget?: BudgetCardValue;
   refresh?: string;
 }
 

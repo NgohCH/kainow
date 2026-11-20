@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type { Pool } from 'pg';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
-import { changeMayApprove, eligibleApprovers, listedRequestSql } from '../changes/changes.service';
+import { ChangesService, changeMayApprove, eligibleApprovers, listedRequestSql } from '../changes/changes.service';
 import { isManager as preparesDeadlineReview } from '../changes/deadline-handlers';
 import type { RequestRow } from '../changes/handlers';
 import type { ChangeKind } from '../changes/rules';
@@ -11,6 +11,7 @@ import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/
 import { archiveState } from '../projects/archive';
 import type { GrantRow } from '../projects/grants';
 import { type ProjectStatus, decide } from '../projects/matrix';
+import { neededByPassedSql } from '../resources/line-sql';
 import { membershipState, todayUtc8 } from '../projects/membership';
 import { loadAccessSettings } from '../organisation/access-settings';
 import { POSSIBLE_COPY_TEXT, possibleCopySql } from '../quarantine/labels';
@@ -19,7 +20,7 @@ import { type ProjectMeasures, loadProjectMeasures } from './measures';
 import { archivedAmong, groupBy, loadProjectContexts } from './project-contexts';
 import { shown } from './project-dashboard.service';
 
-export type NeedsYouKind = 'approval' | 'minutes' | 'question' | 'copies' | 'deadline_review';
+export type NeedsYouKind = 'approval' | 'minutes' | 'question' | 'copies' | 'deadline_review' | 'resources';
 
 export interface NeedsYouItem {
   kind: NeedsYouKind;
@@ -87,6 +88,8 @@ const KIND_LABEL: Record<ChangeKind, string> = {
   reconcile_completion: 'Confirm work finished during a pause',
   risk_handover: 'Take over a risk',
   approve_output: 'Approve an output',
+  set_budget: 'Set the budget',
+  finance_adjustment: 'Adjust a spending entry',
 };
 
 const DUE_SOON_DAYS = 7;
@@ -118,6 +121,7 @@ export class PersonalDashboardService {
     @Inject(PG_POOL) private readonly pool: Pool,
     @Inject(CLOCK) private readonly clock: Clock,
     private readonly access: ProjectAccess,
+    private readonly changes: ChangesService,
   ) {}
 
   async get(user: AuthUser, opts: { includeArchived: boolean; showCompleted: boolean }): Promise<PersonalDashboard> {
@@ -224,6 +228,7 @@ export class PersonalDashboardService {
       ...(await this.questions(user, readableIds, nameOf)),
       ...(await this.copies(readable.map((c) => c.ctx), nameOf)),
       ...(await this.deadlineReviews(readable.map((c) => c.ctx), nameOf)),
+      ...(await this.resourcesPastNeededBy(readable.map((c) => c.ctx), today, nameOf)),
     ];
     needsYou.sort((a, b) => {
       if (a.since !== b.since) return a.since === null ? 1 : b.since === null ? -1 : a.since.localeCompare(b.since);
@@ -233,7 +238,11 @@ export class PersonalDashboardService {
     return { needsYou, myTasks, projects, computedAt: now.toISOString() };
   }
 
-  /** Pending requests the viewer may approve now and has not approved (the list view's check, `changeMayApprove`). */
+  /**
+   * Pending requests the viewer may approve now and has not approved: the list view's filter (`listedRequestSql`, which
+   * keeps finance requests to finance readers) and its check (`changeMayApprove` with the kind's handler block, so a
+   * finance request while tracking is off is not offered).
+   */
   private async approvals(user: AuthUser, ctxs: ProjectContext[], today: string, nameOf: (id: string) => string): Promise<NeedsYouItem[]> {
     const mine = ctxs.filter((c) => eligibleApprovers(c).includes(user.id));
     if (mine.length === 0) return [];
@@ -263,8 +272,16 @@ export class PersonalDashboardService {
       ).rows as Array<{ requestId: string; approverId: string }>,
       (a) => a.requestId,
     );
+    // What each kind's handler says about each project, asked once per project and kind.
+    const blocks = new Map<string, string | null>();
+    for (const r of rows) {
+      const key = `${r.projectId}:${r.kind}`;
+      if (!blocks.has(key)) blocks.set(key, await this.changes.handlerBlock(this.pool, byId.get(r.projectId) as ProjectContext, r.kind));
+    }
     return rows
-      .filter((r) => changeMayApprove(byId.get(r.projectId) as ProjectContext, r, (given.get(r.id) ?? []).map((a) => a.approverId), user.id))
+      .filter((r) =>
+        changeMayApprove(byId.get(r.projectId) as ProjectContext, r, (given.get(r.id) ?? []).map((a) => a.approverId), user.id, blocks.get(`${r.projectId}:${r.kind}`) ?? null),
+      )
       .map((r) => ({
         kind: 'approval' as const,
         projectId: r.projectId,
@@ -359,6 +376,30 @@ export class PersonalDashboardService {
       label: `Deadline review to prepare: ${plural(r.n, 'task', 'tasks')}`,
       since: iso(r.since),
       link: `#/projects/${r.projectId}/deadline-review`,
+    }));
+  }
+
+  /** Needed lines past their needed-by date, as a count per project (PM or Deputy). */
+  private async resourcesPastNeededBy(ctxs: ProjectContext[], today: string, nameOf: (id: string) => string): Promise<NeedsYouItem[]> {
+    const ids = ctxs.filter((c) => preparesDeadlineReview(c.roles)).map((c) => c.project.id);
+    if (ids.length === 0) return [];
+    const rows = (
+      await this.pool.query(
+        `SELECT l.project_id AS "projectId", count(*)::int AS n, (min(l.needed_by)::timestamp AT TIME ZONE 'Asia/Kuala_Lumpur') AS since
+           FROM resource_lines l
+          WHERE l.project_id = ANY($1::uuid[]) AND ${neededByPassedSql('l', '$2')}
+          GROUP BY l.project_id`,
+        [ids, today],
+      )
+    ).rows as Array<{ projectId: string; n: number; since: Date }>;
+    return rows.map((r) => ({
+      kind: 'resources' as const,
+      projectId: r.projectId,
+      projectName: nameOf(r.projectId),
+      label: `Resources past needed-by date: ${r.n}`,
+      count: r.n,
+      since: iso(r.since),
+      link: `#/projects/${r.projectId}/resources`,
     }));
   }
 }

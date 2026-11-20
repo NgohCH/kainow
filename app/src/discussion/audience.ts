@@ -1,6 +1,7 @@
 import { BadRequestException } from '@nestjs/common';
 import { UUID } from '../common/uuid7';
 import { type ProjectContext, canReadContent } from '../projects/access.service';
+import { holdsActiveRoleSql } from '../projects/access-sql';
 import type { ProjectRole } from '../projects/membership';
 
 export type AudienceMode = 'project' | 'restricted';
@@ -52,14 +53,7 @@ export function audienceVisibleSql(audienceAlias: string, userParam: string, tod
 
 /** SQL: the person holds an Active role among `roleList` (default: PM, Deputy, Owner or Sponsor) on the project `projectExpr` today. */
 export function activeManagerSql(projectExpr: string, userParam: string, todayParam: string, roleList: readonly ProjectRole[] = RESTRICTED_ROLES): string {
-  const roles = roleList.map((r) => `'${r}'`).join(', ');
-  return `EXISTS (
-      SELECT 1 FROM memberships rm
-       WHERE rm.project_id = ${projectExpr} AND rm.user_id = ${userParam}::uuid AND rm.role IN (${roles})
-         AND rm.revoked_at IS NULL
-         AND (rm.expires_on IS NULL OR rm.expires_on >= ${todayParam}::date)
-         AND (rm.held_at IS NULL OR (rm.restored_at IS NOT NULL AND rm.restored_at >= rm.held_at))
-         AND rm.starts_on <= ${todayParam}::date)`;
+  return holdsActiveRoleSql(projectExpr, userParam, todayParam, roleList, 'rm');
 }
 
 const BAD_CHANGE = 'Choose Project-wide or Restricted, and name people only for a Restricted audience.';

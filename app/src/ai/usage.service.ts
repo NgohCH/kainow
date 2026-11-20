@@ -51,6 +51,19 @@ const period = (p: Period) => ({ start: p.start.toISOString(), end: p.end.toISOS
 const limitView = (s: PeriodSummary | null) =>
   s ? { limitMyr: s.limitMicroMyr === null ? null : formatMicro(s.limitMicroMyr), remainingMyr: formatMicro(s.remainingMicroMyr) } : { limitMyr: null, remainingMyr: null };
 
+/**
+ * A project's AI usage for the UTC+8 month containing `now`, with confirmed, uncertain and reserved apart (an unknown
+ * outcome is shown as uncertain, never as zero). Shared with the finance view (sub-project 8, spec 3.5).
+ */
+export async function projectMonthUsage(db: Pool, projectId: string, now: Date) {
+  const month = monthPeriod(now);
+  const { rows } = await db.query<FigureRow>(
+    `SELECT ${FIGURES} FROM ai_spend_entries e WHERE e.created_at >= $1 AND e.created_at < $2 AND e.project_id = $3`,
+    [month.start, month.end, projectId],
+  );
+  return { period: period(month), ...figures(rows[0] ?? ZERO) };
+}
+
 @Injectable()
 export class UsageService {
   constructor(
@@ -113,7 +126,7 @@ export class UsageService {
     );
     return {
       day: { period: period(day), ...figures(await this.total(day, 'e.project_id = $3', [projectId])), ...limitView(summary.projectDaily), dailyLimitApplies: summary.projectDaily !== null },
-      month: { period: period(month), ...figures(await this.total(month, 'e.project_id = $3', [projectId])), ...limitView(summary.project) },
+      month: { ...(await projectMonthUsage(this.pool, projectId, now)), ...limitView(summary.project) },
       byPerson: byPerson.rows.map((r) => ({ userId: r.user_id, name: r.name, ...figures(r) })),
       system: system.rows.map((r) => ({ purpose: r.purpose, ...figures(r) })),
       byConnection: await this.byConnection(month, projectId),

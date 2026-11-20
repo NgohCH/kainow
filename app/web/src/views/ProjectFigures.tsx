@@ -12,6 +12,7 @@ import {
   updatedLabel,
 } from '../dashboard.ts';
 import { formatWhen, plural } from '../format.ts';
+import { dashboardFinanceLines, resourceCountsLine } from '../resourceScreens.ts';
 import { Bars } from './Bars.tsx';
 
 const SEVERITIES = ['critical', 'high', 'medium', 'low'] as const;
@@ -143,6 +144,19 @@ export function ProjectFigures({ projectId, canReadWork }: { projectId: string; 
           ))}
         </ul>
       )}
+
+      <h3>Resources</h3>
+      <p>
+        <a href={`#/projects/${projectId}/resources`}>{resourceCountsLine(d.resources.byStatus)}</a>
+      </p>
+      {d.resources.neededByPassed > 0 && <p className="warn">Resources past needed-by date: {d.resources.neededByPassed}</p>}
+      {d.resources.overlapping > 0 && <p className="meta">{plural(d.resources.overlapping, 'line')} also recorded by other projects in the same period. Usage records, not bookings.</p>}
+
+      <h3>Finance</h3>
+      {dashboardFinanceLines(d.finance).map((t, i) => (
+        <p key={i} className={i === 0 || t.startsWith('Financial tracking') ? undefined : 'meta'}>{t}</p>
+      ))}
+      {'figures' in d.finance && <p className="meta"><a href={`#/projects/${projectId}/resources`}>Open Finance on the Resources tab</a></p>}
 
       <details className="about-figures">
         <summary>About these figures</summary>

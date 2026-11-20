@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { formatExpiry, membershipStateLabel, roleLabel, transitionsFor } from './projects.ts';
+import { formatExpiry, membershipStateLabel, roleLabel, rolesText, transitionsFor } from './projects.ts';
 
 test('roles and membership states read as words', () => {
   assert.equal(roleLabel('pm'), 'Project Manager');
@@ -72,4 +72,12 @@ test('holds, grants and access read as words', async () => {
   assert.equal(canArchive('closed', ['pm']), true);
   assert.equal(canArchive('closed', ['member']), false);
   assert.equal(canArchive('active', ['owner']), false);
+});
+
+test('a list of role keys reads as role names, unknown keys left as they are', () => {
+  assert.equal(rolesText(['pm']), 'Project Manager');
+  assert.equal(rolesText(['deputy_pm', 'member']), 'Deputy Project Manager, Member');
+  assert.equal(rolesText(['owner', 'sponsor']), 'Owner, Sponsor');
+  assert.equal(rolesText(['mystery']), 'mystery');
+  assert.equal(rolesText([]), '');
 });

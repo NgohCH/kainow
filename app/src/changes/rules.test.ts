@@ -36,6 +36,12 @@ test('kindAllowedIn follows the project-state rules', () => {
   assert.equal(kindAllowedIn('risk_handover', 'deferred', 'submit'), true);
   assert.equal(kindAllowedIn('risk_handover', 'deferred', 'approve'), false);
   assert.equal(kindAllowedIn('risk_handover', 'active', 'approve'), true);
+  for (const kind of ['set_budget', 'finance_adjustment'] as const) {
+    for (const phase of ['submit', 'approve'] as const) {
+      for (const s of ['draft', 'planned', 'active'] as const) assert.equal(kindAllowedIn(kind, s, phase), true, `${kind} ${phase} ${s}`);
+      for (const s of ['deferred', 'closed'] as const) assert.equal(kindAllowedIn(kind, s, phase), false, `${kind} ${phase} ${s}`);
+    }
+  }
 });
 
 test('closureReadiness names what is missing', () => {

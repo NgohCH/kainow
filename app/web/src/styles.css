@@ -546,3 +546,10 @@ details > summary { cursor: pointer; font-weight: 600; }
 @media (max-width: 40rem) {
   .outputs-table td[data-label]::before { content: attr(data-label) ': '; color: var(--muted); font-weight: 600; font-size: 0.85rem; }
 }
+
+/* The resources report prints on its own: no bar, tabs, buttons or footer. */
+@media print {
+  .bar, .foot, .skip, .tabs, .no-print, .ask-panel { display: none !important; }
+  .report .warn { background: none; color: inherit; border: 1px solid currentColor; }
+  .report ul.plain > li { break-inside: avoid; }
+}

@@ -1,5 +1,5 @@
 import { ConflictException } from '@nestjs/common';
-import type { PoolClient } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import type { AuthUser } from '../auth/tokens';
 import type { ExtractionService } from '../extraction/extraction.service';
 import { AUTHORISED_MESSAGE } from '../extraction/extraction.service';
@@ -8,7 +8,7 @@ import { decide } from '../projects/matrix';
 import type { Created, RecordsService } from '../records/records.service';
 import type { ChangeKind } from './rules';
 
-export type TargetKind = 'extraction_item' | 'human_proposal' | 'task' | 'decision' | 'risk' | 'output_version';
+export type TargetKind = 'extraction_item' | 'human_proposal' | 'task' | 'decision' | 'risk' | 'output_version' | 'project_budget' | 'expenditure';
 
 /** The target of a request as loaded (and locked) by ChangesService: its columns, camel-cased where named, plus projectId. */
 export type Row = Record<string, any>;
@@ -63,6 +63,12 @@ export interface ChangeHandler {
   afterSubmit?(c: PoolClient, ctx: ProjectContext, target: Row, request: RequestRow, at: Date): Promise<void>;
   /** The refusal (400) when the terms are not complete enough to approve, else null. Checked on every approval. */
   readyToApprove?(terms: Record<string, unknown>): string | null;
+  /**
+   * Why nobody can approve this kind of change in the project now, from the project's own state (finance changes while
+   * Financial Tracking is not Enabled), else null. Added to the shared approval blocks: refused with 409 on approve and
+   * shown as the request's `why` (with `mayApprove` false) in the list.
+   */
+  approvalBlockedBy?(db: Pool | PoolClient, ctx: ProjectContext): Promise<string | null>;
 }
 
 /**

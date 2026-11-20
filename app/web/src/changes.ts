@@ -1,3 +1,4 @@
+import { money } from './finance.ts';
 /**
  * Change requests (sub-project 2b): types and the plain-words helpers the request panel uses. The server decides
  * who may approve, revise or withdraw (`mayApprove`, `mayRevise`, `mayWithdraw`, `why`); nothing here re-derives that.
@@ -12,7 +13,9 @@ export type ChangeKind =
   | 'deadline_review'
   | 'reconcile_completion'
   | 'risk_handover'
-  | 'approve_output';
+  | 'approve_output'
+  | 'set_budget'
+  | 'finance_adjustment';
 
 export interface RequestView {
   id: string;
@@ -49,6 +52,8 @@ const LABELS: Record<ChangeKind, string> = {
   reconcile_completion: 'Confirm work finished during a pause',
   risk_handover: 'Take over a risk',
   approve_output: 'Approve an output version',
+  set_budget: 'Set the budget',
+  finance_adjustment: 'Adjust a spending entry',
 };
 
 export const kindLabel = (kind: ChangeKind): string => LABELS[kind] ?? kind;
@@ -76,10 +81,13 @@ export interface CurrentView {
   names?: Record<string, string>;
   /** Unfinished subtask id → title. */
   subtaskTitles?: Record<string, string>;
+  /** The reporting currency, for finance requests. */
+  currency?: string;
 }
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '');
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+const amountText = (amount: unknown, currency?: string) => (str(amount) === '' ? '' : money(str(amount), currency ?? '', { code: !!currency }));
 const count = (n: number) => (n === 0 ? 'None' : `${n} ${n === 1 ? 'item' : 'items'}`);
 
 /** Side-by-side rows for a request's terms. Rows with nothing to show are left out. */
@@ -132,6 +140,18 @@ export function termsRows(kind: ChangeKind, terms: Record<string, unknown>, curr
     case 'risk_handover':
       if (str(terms.responsibleId)) add('Responsible person', '', nameOf(str(terms.responsibleId)));
       add('Review date', '', str(terms.reviewOn));
+      break;
+    case 'set_budget':
+      add('Budget', '', amountText(terms.amount, current.currency));
+      add('Reason', '', str(terms.reason));
+      break;
+    case 'finance_adjustment':
+      add('Kind', '', str(terms.type).charAt(0).toUpperCase() + str(terms.type).slice(1));
+      add('Amount', '', amountText(terms.amount, current.currency));
+      add('Rate', '', str(terms.rate));
+      add('Rate date', '', str(terms.rateOn));
+      add('Refund date', '', str(terms.refundOn));
+      add('Reason', '', str(terms.reason));
       break;
     case 'authorise_proposal':
       add('Assignee', '', person(terms));

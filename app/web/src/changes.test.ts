@@ -92,3 +92,19 @@ test('the waiting-requests line says so plainly when the count is unknown', asyn
   assert.equal(waitingRequestsText(4), '4 requests are waiting and will be affected.');
   assert.equal(waitingRequestsText(null), 'The number of waiting requests could not be loaded; Keep is the safe choice.');
 });
+
+test('termsRows for finance requests', () => {
+  assert.deepEqual(termsRows('set_budget', { amount: '120000', reason: 'Scope grew' }, { currency: 'MYR' }), [
+    { label: 'Budget', from: '', to: 'MYR 120,000.00' },
+    { label: 'Reason', from: '', to: 'Scope grew' },
+  ]);
+  const rows = termsRows('finance_adjustment', { type: 'conversion', amount: '1250.5', rate: '4.2', rateOn: '2026-11-01', reason: 'Converted' }, { currency: 'MYR' });
+  assert.deepEqual(rows.slice(0, 2), [
+    { label: 'Kind', from: '', to: 'Conversion' },
+    { label: 'Amount', from: '', to: 'MYR 1,250.50' },
+  ]);
+});
+
+test('termsRows shows a finance amount without a code when the currency is unknown', () => {
+  assert.deepEqual(termsRows('set_budget', { amount: '500' }, {}), [{ label: 'Budget', from: '', to: '500.00' }]);
+});

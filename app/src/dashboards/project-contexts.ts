@@ -1,4 +1,4 @@
-import type { Pool } from 'pg';
+import type { Pool, PoolClient } from 'pg';
 import type { AuthUser } from '../auth/tokens';
 import { loadAccessSettings } from '../organisation/access-settings';
 import { type MembershipRecord, type ProjectContext, buildProjectContext } from '../projects/access.service';
@@ -20,7 +20,7 @@ export function groupBy<T>(rows: T[], key: (r: T) => string): Map<string, T[]> {
 }
 
 /** Every candidate's context, built by the rule `ProjectAccess.load` uses, from three batched queries. */
-export async function loadProjectContexts(pool: Pool, user: AuthUser, ids: string[], today: string) {
+export async function loadProjectContexts(pool: Pool | PoolClient, user: AuthUser, ids: string[], today: string) {
   const projects = (
     await pool.query(
       `SELECT p.id, p.name, p.status, to_char(p.created_at AT TIME ZONE 'Asia/Kuala_Lumpur', 'YYYY-MM-DD') AS "createdOn", d.name AS "owningDepartment"

@@ -3,8 +3,11 @@ import type { Pool } from 'pg';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { PG_POOL } from '../db/database.module';
 import { liveRecordSql } from '../history/deleted-sql';
+import { type FinanceSummary, financeSummaryFor } from '../finance/finance.service';
 import { ProjectAccess } from '../projects/access.service';
 import { POSSIBLE_COPY_TEXT, UNDER_REVIEW_TEXT, possibleCopySql } from '../quarantine/labels';
+import { neededByPassedSql, overlappingLineSql } from '../resources/line-sql';
+import { LINE_STATUSES, type LineStatus } from '../resources/vocabulary';
 import { COVERAGE_NOTE, type ProjectMeasures, loadProjectMeasures } from './measures';
 
 /** Roles that see who has been invited (the others see the count). */
@@ -22,6 +25,10 @@ export interface ProjectDashboard {
   decisions: { active: number; recent: { id: string; title: string; at: string }[] };
   questions: { oldestOpen: { id: string; text: string; at: string }[] };
   risks: { significant: { id: string; description: string; severity: string; reviewOn: string | null }[] };
+  /** Counts of this project's own lines; `overlapping` counts non-Cancelled catalogue lines that overlap another project's. */
+  resources: { byStatus: Record<LineStatus, number>; neededByPassed: number; overlapping: number };
+  /** Figures only for financial-detail readers (the Resources tab's finance block). */
+  finance: FinanceSummary;
   computedAt: string;
   coverage: string;
 }
@@ -82,12 +89,36 @@ export class ProjectDashboardService {
       invitations.names = names.map((r) => r.name);
     }
 
+    const byStatus = Object.fromEntries(Object.keys(LINE_STATUSES).map((k) => [k, 0])) as Record<LineStatus, number>;
+    const counted = (
+      await this.pool.query(
+        `SELECT l.status, count(*)::int AS n, (count(*) FILTER (WHERE ${neededByPassedSql('l', '$2')}))::int AS passed
+           FROM resource_lines l WHERE l.project_id = $1 GROUP BY l.status`,
+        [projectId, ctx.today],
+      )
+    ).rows as { status: LineStatus; n: number; passed: number }[];
+    let neededByPassed = 0;
+    for (const r of counted) {
+      byStatus[r.status] = r.n;
+      neededByPassed += r.passed;
+    }
+    const overlapping = (
+      await this.pool.query(
+        `SELECT count(*)::int AS n FROM resource_lines mine
+          WHERE mine.project_id = $1 AND mine.status <> 'cancelled' AND mine.starts_on IS NOT NULL AND mine.item_id IS NOT NULL
+            AND EXISTS (SELECT 1 FROM resource_lines o WHERE ${overlappingLineSql('mine', 'o')})`,
+        [projectId],
+      )
+    ).rows[0].n as number;
+
     return {
       measures,
       invitations,
       decisions: { active: activeDecisions, recent: decisions.map((d) => ({ id: d.id, title: d.title, at: new Date(d.at).toISOString() })) },
       questions: { oldestOpen: questions.map((q) => ({ id: q.id, text: q.text, at: new Date(q.at).toISOString() })) },
       risks: { significant: risks },
+      resources: { byStatus, neededByPassed, overlapping },
+      finance: await financeSummaryFor(this.pool, ctx, projectId),
       computedAt: now.toISOString(),
       coverage: COVERAGE_NOTE,
     };

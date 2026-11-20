@@ -55,6 +55,11 @@ test('the matrix holds exactly the agreed rows', () => {
     'output.audience': ['pm,owner,sponsor', 'draft,planned,active,deferred,closed'],
     'output.delete': ['pm,deputy_pm', 'draft,planned,active'],
     'output.restore': ['pm,deputy_pm', 'draft,planned,active,deferred,closed'],
+    'resource.view': ['participant', 'draft,planned,active,deferred,closed'],
+    'resource.edit': ['pm,deputy_pm,owner,sponsor', 'draft,planned,active'],
+    'finance.record': ['pm,deputy_pm', 'draft,planned,active'],
+    'finance.propose': ['pm,deputy_pm,owner,sponsor', 'draft,planned,active'],
+    'finance.settings': ['pm,owner,sponsor', 'draft,planned,active'],
   });
   assert.equal(PROJECT_MATRIX['proposal.review'].refusal, 'Only the Owner or a Sponsor can approve or reject proposals, and only while the project is Planned or Active.');
 });
@@ -113,7 +118,7 @@ test('role managers follow the accepted matrix for every target, manager and sta
 
 test('a grant allows reading, and asking the AI privately', async () => {
   const { GRANT_ACTIONS } = await import('./matrix');
-  assert.deepEqual(GRANT_ACTIONS, ['project.view', 'note.view', 'assist.ask', 'secret.report']);
+  assert.deepEqual(GRANT_ACTIONS, ['project.view', 'note.view', 'assist.ask', 'secret.report', 'resource.view']);
 });
 
 test('AI assist actions: participants ask, share and request reports; leaders review; summaries for accountable roles', () => {
