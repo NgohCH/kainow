@@ -8,6 +8,7 @@ export type Currency = (typeof CURRENCIES)[number];
 
 export const NOT_PROVIDED = 'Not provided';
 export const NOT_REQUIRED = 'Not required';
+export const NOT_REQUIRED_NOTICE = 'Financial tracking is not required for this project. Earlier entries are kept here for reference.';
 export const BASIS_NOTE = 'Based on recorded entries.';
 export const BALANCE_LABEL = 'Balance based on recorded expenditure';
 export const OVER_BUDGET = 'Over budget';

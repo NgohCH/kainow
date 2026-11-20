@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from 'react';
+import type { ReactNode } from 'react';
 import type { ChartMode, FinanceGroup, ResourceLineRow, ResourcesPanel, ResourcesTable } from '../../analytics.ts';
 import { NOT_IN_TOTALS, NOT_PROVIDED, NOT_REQUIRED, OVER_BUDGET, money } from '../../finance.ts';
 import { dayLabel } from '../../dashboard.ts';
@@ -37,6 +37,11 @@ function warningText(level: 0 | 1 | 2, over: boolean): string {
 }
 
 /** One currency group: totals, then a chart (CSS bars of spending against the largest figure) or the table with the same rows. */
+function usedText(p: FinanceGroup['projects'][number]): string {
+  if (p.percentUsed !== null) return `${p.percentUsed}%`;
+  return p.budget === null ? NOT_PROVIDED : 'Not applicable';
+}
+
 function FinanceGroupView({ g, mode, onMode }: { g: FinanceGroup; mode: ChartMode; onMode: (m: ChartMode) => void }) {
   const max = g.projects.reduce((m, p) => Math.max(m, Number(p.spent), Number(p.budget ?? 0)), 0).toFixed(2);
   const next: ChartMode = mode === 'chart' ? 'table' : 'chart';
@@ -88,7 +93,7 @@ function FinanceGroupView({ g, mode, onMode }: { g: FinanceGroup; mode: ChartMod
                   <td data-label="Owning department">{p.owningDepartment}</td>
                   <td data-label="Budget">{budgetText(p.budget, g.currency)}</td>
                   <td data-label="Spent">{money(p.spent, g.currency)}</td>
-                  <td data-label="Used">{p.percentUsed === null ? '' : `${p.percentUsed}%`}</td>
+                  <td data-label="Used">{usedText(p)}</td>
                   <td data-label="Warning">{warningText(p.level, p.overBudget)}</td>
                   <td data-label={NOT_IN_TOTALS}>{p.notInTotals.length === 0 ? 'None' : p.notInTotals.map((n) => money(n.amount, n.currency)).join(', ')}</td>
                 </tr>
@@ -102,8 +107,7 @@ function FinanceGroupView({ g, mode, onMode }: { g: FinanceGroup; mode: ChartMod
 }
 
 /** Panel 5: Resources and finance (spec 7). Counts, item references and summary figures only; never entries. */
-export function ResourcesView({ data, csv }: { data: ResourcesPanel; csv: (table: ResourcesTable) => ReactNode }) {
-  const [modes, setModes] = useState<Record<string, ChartMode>>({});
+export function ResourcesView({ data, csv, modes, onMode }: { data: ResourcesPanel; csv: (table: ResourcesTable) => ReactNode; modes: Record<string, ChartMode>; onMode: (key: string, m: ChartMode) => void }) {
   const o = data.lines.organisation;
   return (
     <>
@@ -179,7 +183,7 @@ export function ResourcesView({ data, csv }: { data: ResourcesPanel; csv: (table
           <p className="empty">No project in scope is tracking finance.</p>
         ) : (
           data.finance.map((g) => (
-            <FinanceGroupView key={g.currency} g={g} mode={modes[g.currency] ?? 'chart'} onMode={(m) => setModes((c) => ({ ...c, [g.currency]: m }))} />
+            <FinanceGroupView key={g.currency} g={g} mode={modes[`resources.finance.${g.currency}`] ?? 'chart'} onMode={(m) => onMode(`resources.finance.${g.currency}`, m)} />
           ))
         )}
         <p>{NOT_REQUIRED}: {plural(data.notRequired, 'project')}. These are counted apart and are not zero.</p>

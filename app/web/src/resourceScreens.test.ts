@@ -8,6 +8,7 @@ import {
   financeSettingsBody,
   hasChanges,
   itemProblem,
+  nextAction,
   orgSettingsProblem,
   resourceCountsLine,
   resourcesCardText,
@@ -130,4 +131,11 @@ test('orgSettingsProblem needs an enabled default and both thresholds', () => {
   assert.match(orgSettingsProblem({ ...ok, defaultCurrency: 'SGD' }) ?? '', /default currency/);
   assert.notEqual(orgSettingsProblem({ ...ok, first: '' }), null);
   assert.notEqual(orgSettingsProblem({ ...ok, first: '100', second: '100' }), null);
+});
+
+test('turning tracking off needs the preview before it saves', () => {
+  assert.equal(nextAction({ changed: true, turningOff: true, previewShown: false }), 'preview');
+  assert.equal(nextAction({ changed: true, turningOff: true, previewShown: true }), 'save');
+  assert.equal(nextAction({ changed: true, turningOff: false, previewShown: false }), 'save');
+  assert.equal(nextAction({ changed: false, turningOff: true, previewShown: true }), 'none');
 });

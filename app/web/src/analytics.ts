@@ -375,7 +375,7 @@ export const COLUMN_LABELS: Record<string, string> = {
 };
 
 export type ChartMode = 'chart' | 'table';
-export const VIEW_CHARTS = ['progress.onTime', ...TREND_KEYS.map((k) => `trends.${k}`)];
+export const VIEW_CHARTS = ['progress.onTime', ...TREND_KEYS.map((k) => `trends.${k}`), 'resources.finance.MYR', 'resources.finance.SGD', 'resources.finance.USD'];
 
 export interface ViewConfig {
   filters: Filters;

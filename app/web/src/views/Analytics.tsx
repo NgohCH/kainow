@@ -220,7 +220,7 @@ export function Analytics() {
     if (p === 'problems' && problems?.data)
       return <>{updated}<ProblemsView data={problems.data} columns={visibleColumns('problems')} onDrill={openDrill('problems')} csv={csv('problems')} />{drillFor('problems')}</>;
     if (p === 'system' && system?.data) return <>{updated}<SystemView data={system.data} csv={csv('system')} /></>;
-    if (p === 'resources' && resources?.data) return <>{updated}<ResourcesView data={resources.data} csv={(table) => <CsvLink panel="resources" query={`${query}&table=${table}`} allowed={exportAllowed} />} /></>;
+    if (p === 'resources' && resources?.data) return <>{updated}<ResourcesView data={resources.data} modes={config.charts} onMode={setChart} csv={(table) => <CsvLink panel="resources" query={`${query}&table=${table}`} allowed={exportAllowed} />} /></>;
     if (p === 'trends' && trends?.data) return <>{updated}<TrendsView data={trends.data} modes={config.charts} onMode={setChart} csv={csv('trends')} /></>;
     return null;
   }

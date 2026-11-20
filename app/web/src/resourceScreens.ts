@@ -101,6 +101,16 @@ export function financeSettingsBody(
 /** True when the body changes something besides the reason. */
 export const hasChanges = (body: Record<string, unknown>): boolean => Object.keys(body).some((k) => k !== 'reason');
 
+/**
+ * What Save does on the finance settings form. Turning tracking off first fetches and shows the preview; only a second
+ * press, with the preview shown, saves.
+ */
+export function nextAction(s: { changed: boolean; turningOff: boolean; previewShown: boolean }): 'none' | 'preview' | 'save' {
+  if (!s.changed) return 'none';
+  if (s.turningOff && !s.previewShown) return 'preview';
+  return 'save';
+}
+
 // ---- Dashboard (spec 5) -------------------------------------------------------------------------------------------------
 
 export const FINANCE_NOT_REQUIRED_LINE = `Financial tracking: ${NOT_REQUIRED}`;

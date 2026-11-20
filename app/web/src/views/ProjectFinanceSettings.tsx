@@ -7,6 +7,7 @@ import {
   authorityText,
   financeSettingsBody,
   hasChanges,
+  nextAction,
   settingsChangeText,
   thresholdProblem,
   thresholdsText,
@@ -86,7 +87,7 @@ export function ProjectFinanceSettings({ projectId }: { projectId: string }) {
     setBusy(true);
     try {
       // Turning tracking off shows what is kept first, and waits for the person to confirm it.
-      if (turningOff && preview === null) {
+      if (nextAction({ changed: true, turningOff, previewShown: preview !== null }) === 'preview') {
         setPreview(await api.get<TurnOffPreview>(`/projects/${projectId}/settings/finance/preview`));
         return;
       }

@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ApiError, api } from '../api.ts';
-import { BASIS_NOTE, type FinanceView, NOT_REQUIRED, adjustmentLabel, figuresLines, money, notInTotalsLines } from '../finance.ts';
+import { BASIS_NOTE, type FinanceView, NOT_REQUIRED_NOTICE, adjustmentLabel, figuresLines, money, notInTotalsLines } from '../finance.ts';
 import { formatWhen, plural } from '../format.ts';
 import { LINE_STATUSES, type LineStatus, type LineView, REPORT_NOTE, type ResourcesReport as Report, overlapText, unitLabel } from '../resources.ts';
 import { lineName, periodText } from './Resources.tsx';
@@ -13,12 +13,10 @@ function quantityText(l: LineView): string {
 }
 
 function ReportFinance({ f }: { f: FinanceView }) {
-  if (f.tracking === 'not_required') {
-    return <p>Financial tracking: {NOT_REQUIRED}. Earlier entries are kept here for reference.</p>;
-  }
   const currency = f.currency;
   return (
     <>
+      {f.tracking === 'not_required' && <p>{f.notice ?? NOT_REQUIRED_NOTICE}</p>}
       {currency && f.figures && (
         <>
           <dl className="facts">
@@ -78,6 +76,7 @@ function ReportFinance({ f }: { f: FinanceView }) {
           </div>
         </>
       )}
+      {f.tracking === 'not_required' && f.entries.length === 0 && f.budgetVersions.length === 0 && <p className="meta">No earlier entries.</p>}
       {f.pending.length > 0 && <p className="meta">Awaiting approval: {plural(f.pending.length, 'request')}</p>}
     </>
   );

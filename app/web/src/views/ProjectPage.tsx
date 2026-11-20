@@ -129,7 +129,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
   return (
     <ProjectCalendarProvider projectId={project.id}>
     <main className="page">
-      <p><a href="#/">My Projects</a></p>
+      <p className="no-print"><a href="#/">My Projects</a></p>
       <div className="row">
         <h1>{project.name}</h1>
         <span className={`badge status-${project.status}`}>{STATUS_LABEL[project.status]}</span>
@@ -165,7 +165,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
         ))}
       </nav>
       {contentAllowed && (
-        <p>
+        <p className="no-print">
           <button type="button" ref={askButton} aria-expanded={asking} onClick={() => setAsking((v) => !v)}>Ask about this project</button>
         </p>
       )}

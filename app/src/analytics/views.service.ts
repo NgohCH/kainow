@@ -28,7 +28,7 @@ export const VIEW_COLUMNS = {
 type ColumnPanel = keyof typeof VIEW_COLUMNS;
 
 /** Each chart, switchable between chart and table. */
-export const VIEW_CHARTS = ['progress.onTime', ...TREND_KEYS.map((k) => `trends.${k}`)] as readonly string[];
+export const VIEW_CHARTS = ['progress.onTime', ...TREND_KEYS.map((k) => `trends.${k}`), 'resources.finance.MYR', 'resources.finance.SGD', 'resources.finance.USD'] as readonly string[];
 const CHART_MODES = ['chart', 'table'] as const;
 const OWNERSHIPS = ['owned', 'contributed', 'both'] as const;
 

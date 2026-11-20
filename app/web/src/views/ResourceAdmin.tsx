@@ -196,7 +196,7 @@ function FinanceSettingsPanel() {
   return (
     <section className="panel" aria-labelledby="finance-admin-heading">
       <h2 id="finance-admin-heading">Finance</h2>
-      <p className="meta">These are the organisation's defaults. A project can set its own warning thresholds. Spending warnings are advisory and never block anything.</p>
+      <p className="meta">These are the organisation's defaults. {may && 'A project can set its own warning thresholds. '}Spending warnings are advisory and never block anything.</p>
       <form className="stack" onSubmit={save} aria-label="Finance settings">
         <label className="check">
           <input type="checkbox" checked={may} onChange={(e) => setMay(e.target.checked)} />
@@ -270,8 +270,24 @@ export function ResourceAdmin() {
     <main className="page">
       <h1>Resources and finance</h1>
       <div className="tabs" role="tablist" aria-label="Resources and finance settings">
-        {TABS.map(([t, label]) => (
-          <button key={t} type="button" role="tab" id={`res-tab-${t}`} aria-selected={tab === t} aria-controls={`res-panel-${t}`} onClick={() => setTab(t)}>
+        {TABS.map(([t, label], i) => (
+          <button
+            key={t}
+            type="button"
+            role="tab"
+            id={`res-tab-${t}`}
+            aria-selected={tab === t}
+            aria-controls={`res-panel-${t}`}
+            tabIndex={tab === t ? 0 : -1}
+            onClick={() => setTab(t)}
+            onKeyDown={(e) => {
+              const to = e.key === 'ArrowRight' ? (i + 1) % TABS.length : e.key === 'ArrowLeft' ? (i + TABS.length - 1) % TABS.length : e.key === 'Home' ? 0 : e.key === 'End' ? TABS.length - 1 : -1;
+              if (to < 0) return;
+              e.preventDefault();
+              setTab(TABS[to][0]);
+              document.getElementById(`res-tab-${TABS[to][0]}`)?.focus();
+            }}
+          >
             {label}
           </button>
         ))}
