@@ -72,7 +72,8 @@ test('definitions: one per measure of the §3 table, with the version and covera
   assert.equal(COVERAGE_NOTE, 'Counts all authorised records in the project except deleted ones and any under credential review.');
   assert.deepEqual(
     MEASURE_DEFINITIONS.map((d) => d.label),
-    ['Eligible leaf task', 'Task completion', 'On-time completion', 'Overdue', 'Blocked', 'Due soon', 'Stage and stage duration', 'Planned end', 'Open questions', 'Risks', 'Vacant required role', 'Escalations', 'Pending invitations', 'Refresh time'],
+    ['Eligible leaf task', 'Task completion', 'On-time completion', 'Overdue', 'Blocked', 'Due soon', 'Stage and stage duration', 'Planned end', 'Open questions', 'Risks', 'Vacant required role', 'Escalations', 'Pending invitations', 'Refresh time',
+      'Resource lines', 'Resource lines finished in the period', 'Resources past needed-by date', 'Resource lines with overlaps', 'Shared items in overlap', 'Finance summary', 'Financial tracking not required'],
   );
   assert.equal(new Set(MEASURE_DEFINITIONS.map((d) => d.key)).size, MEASURE_DEFINITIONS.length);
   assert.ok(MEASURE_DEFINITIONS.every((d) => d.definition.length > 0));

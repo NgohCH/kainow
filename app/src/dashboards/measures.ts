@@ -66,6 +66,45 @@ export const MEASURE_DEFINITIONS: readonly { key: string; label: string; definit
   },
   { key: 'pendingInvitations', label: 'Pending invitations', definition: 'Invitations Invited and not expired.' },
   { key: 'refreshTime', label: 'Refresh time', definition: 'The time the server worked the figures out. Every response carries `computedAt`.' },
+  {
+    key: 'resourceLines',
+    label: 'Resource lines',
+    definition:
+      'Needed, Arranged and In use are lines of the project in that status (Cancelled lines are never counted). Counts only: no line text, notes or quantities appear in analytics.',
+  },
+  {
+    key: 'finishedInPeriod',
+    label: 'Resource lines finished in the period',
+    definition: 'Lines now Finished whose latest move to Finished (a `status_changed` event) falls inside the selected period (UTC+8 days).',
+  },
+  {
+    key: 'neededByPassed',
+    label: 'Resources past needed-by date',
+    definition: 'Lines still Needed whose needed-by date is before today (UTC+8).',
+  },
+  {
+    key: 'resourceOverlap',
+    label: 'Resource lines with overlaps',
+    definition:
+      'Non-Cancelled lines of a catalogue item with a start date whose period overlaps a non-Cancelled line of the same item in another project (inclusive dates; no end date runs on). Not a booking.',
+  },
+  {
+    key: 'sharedItems',
+    label: 'Shared items in overlap',
+    definition:
+      'Catalogue items for which at least two projects shown have overlapping non-Cancelled lines that have not ended. Projects = distinct projects in such overlaps. Earliest overlap = the first day two such lines both run (the later of the two start dates of the earliest overlapping pair).',
+  },
+  {
+    key: 'financeSummary',
+    label: 'Finance summary',
+    definition:
+      'Per reporting currency, never mixed: projects tracking, projects with budget Not provided, total approved budget and total spent from recorded entries (counted amounts only; entries not yet converted are Not in totals), and projects at or above the first and at the second warning threshold. Summary figures only, never entries. AI spending is separate.',
+  },
+  {
+    key: 'financeNotRequired',
+    label: 'Financial tracking not required',
+    definition: 'Projects shown whose financial tracking is Not required, counted apart and never as zero.',
+  },
 ];
 
 /** An eligible-leaf candidate: a live leaf task, Cancelled ones included (they are counted apart). */

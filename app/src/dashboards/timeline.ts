@@ -1,7 +1,7 @@
 /** The project timeline (spec 5.2): only recorded dates, never inferred ones. Pure helpers; the loader is in timeline.service.ts. */
 
 /** Every kind of timeline line, in display order. */
-export const TIMELINE_KINDS = ['stage', 'status', 'archive', 'tasks_due', 'risk_review', 'planned_end'] as const;
+export const TIMELINE_KINDS = ['stage', 'status', 'archive', 'tasks_due', 'risk_review', 'resource_needed_by', 'planned_end'] as const;
 
 export type TimelineLine = {
   day: string;

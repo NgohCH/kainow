@@ -3,6 +3,9 @@ import type { Pool } from 'pg';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
+import { loadFiguresMany } from '../finance/finance.service';
+import { toDecimalString } from '../finance/money';
+import { neededByPassedSql } from '../resources/line-sql';
 import { liveRecordSql } from '../history/deleted-sql';
 import { type ProjectMeasures, type Severity, loadProjectMeasures } from '../dashboards/measures';
 import { archivedAmong, groupBy, loadProjectContexts } from '../dashboards/project-contexts';
@@ -33,6 +36,27 @@ export interface LeadershipSummary {
   cards: LeadershipCard[];
   departments: Array<{ id: string; name: string }>;
   computedAt: string;
+}
+
+export interface ResourcesValue {
+  needed: number;
+  arranged: number;
+  inUse: number;
+  neededByPassed: number;
+}
+
+/** The budget field: the permitted summary (O14), figures only: no entries, references, notes, item names or reasons. */
+function budgetValue(f: Awaited<ReturnType<typeof loadFiguresMany>> extends Map<string, infer V> ? V | undefined : never): unknown {
+  if (!f) return { tracking: 'not_required' };
+  return {
+    tracking: 'enabled',
+    currency: f.currency,
+    budget: f.budget === null ? null : toDecimalString(f.budget),
+    spent: toDecimalString(f.spent),
+    percentUsed: f.percentUsed,
+    level: f.level,
+    overBudget: f.overBudget,
+  };
 }
 
 /** A description cut to 120 characters, with an ellipsis only when something was cut. */
@@ -101,6 +125,10 @@ export class LeadershipSummaryService {
     const contexts = await loadProjectContexts(this.pool, user, ids, today);
     const risks = groupBy(await this.significantRisks(ids), (r) => r.projectId);
 
+    const wants = (k: string) => shownKeys.includes(k);
+    const lineCounts = wants('resources') ? await this.lineCounts(ids, today) : new Map<string, ResourcesValue>();
+    const figs = wants('budget') ? await loadFiguresMany(this.pool, ids) : new Map();
+
     const cards = picked.map((p) => {
       const m = measures.get(p.id) as ProjectMeasures;
       const ctx = contexts.get(p.id)?.ctx;
@@ -121,6 +149,8 @@ export class LeadershipSummaryService {
           count: m.risks.significant,
           items: (risks.get(p.id) ?? []).map((r) => ({ description: cutDescription(r.description), severity: r.severity, reviewOn: r.reviewOn })),
         },
+        resources: lineCounts.get(p.id) ?? { needed: 0, arranged: 0, inUse: 0, neededByPassed: 0 },
+        budget: budgetValue(figs.get(p.id)),
         nextDates: { nextTaskDue: m.nextTaskDue, nextRiskReview: m.nextRiskReview },
         attentionFlags: { missingRole: m.flags.missingRole, noIndependentEscalation: m.flags.noIndependentEscalation, deadlineReview: m.flags.deadlineReview },
         refresh: now.toISOString(),
@@ -131,6 +161,22 @@ export class LeadershipSummaryService {
     });
 
     return { fields: empty.fields, cards, departments, computedAt: now.toISOString() };
+  }
+
+  /** Per project counts of Needed, Arranged and In use lines, and Needed lines past their needed-by date. No line detail. */
+  private async lineCounts(ids: string[], today: string): Promise<Map<string, ResourcesValue>> {
+    const rows = (
+      await this.pool.query(
+        `SELECT l.project_id AS "projectId",
+                (count(*) FILTER (WHERE l.status = 'needed'))::int AS needed,
+                (count(*) FILTER (WHERE l.status = 'arranged'))::int AS arranged,
+                (count(*) FILTER (WHERE l.status = 'in_use'))::int AS "inUse",
+                (count(*) FILTER (WHERE ${neededByPassedSql('l', '$2')}))::int AS "neededByPassed"
+           FROM resource_lines l WHERE l.project_id = ANY($1::uuid[]) GROUP BY l.project_id`,
+        [ids, today],
+      )
+    ).rows as Array<ResourcesValue & { projectId: string }>;
+    return new Map(rows.map(({ projectId, ...v }) => [projectId, v]));
   }
 
   /** Open High and Critical risks, live records only (a cleaned held one shows its label), most severe first. */

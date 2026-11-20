@@ -3,6 +3,7 @@
  * the web cannot import server code. The web never works out a figure: it words, orders and lays out what the server gave.
  */
 import { type Completion, type OnTime, type PlannedEnd, dayLabel, onTimeLabel } from './dashboard.ts';
+import type { Currency } from './finance.ts';
 import type { ProjectStatus } from './projects.ts';
 
 // ---- Filters (spec 7.1; app/src/analytics/filters.ts) ---------------------------------------------------------------
@@ -180,6 +181,66 @@ export interface TrendsPanel {
   computedAt: string;
 }
 
+/** The Resources and finance panel (app/src/analytics/resources-panel.ts): counts, item references and summary figures only. */
+export interface ResourceLineRow {
+  needed: number;
+  arranged: number;
+  inUse: number;
+  finishedInPeriod: number;
+  neededByPassed: number;
+  overlapping: number;
+}
+export interface ResourcesProject extends ResourceLineRow {
+  id: string;
+  name: string;
+  departmentId: string;
+  owningDepartment: string;
+}
+export interface ResourcesDepartment extends ResourceLineRow {
+  id: string;
+  name: string;
+  projects: number;
+}
+export interface SharedItem {
+  itemId: string;
+  reference: string;
+  name: string;
+  projects: number;
+  earliestOverlap: string;
+}
+export interface FinanceProject {
+  id: string;
+  name: string;
+  departmentId: string;
+  owningDepartment: string;
+  /** Null when Not provided. */
+  budget: string | null;
+  spent: string;
+  percentUsed: number | null;
+  overBudget: boolean;
+  level: 0 | 1 | 2;
+  notInTotals: { currency: Currency; amount: string }[];
+}
+export interface FinanceGroup {
+  currency: Currency;
+  projectsTracking: number;
+  budgetNotProvided: number;
+  totalBudget: string;
+  totalSpent: string;
+  atFirst: number;
+  atSecond: number;
+  projects: FinanceProject[];
+}
+export interface ResourcesPanel {
+  lines: { organisation: ResourceLineRow; departments: ResourcesDepartment[]; projects: ResourcesProject[] };
+  sharedItems: SharedItem[];
+  finance: FinanceGroup[];
+  /** In-scope projects whose financial tracking is Not required: counted apart, never as zero. */
+  notRequired: number;
+  computedAt: string;
+}
+export type ResourcesTable = 'lines' | 'sharedItems' | 'finance';
+
 export const COVERAGE_NOTE = 'Counts all authorised records in the project except deleted ones and any under credential review.';
 
 // ---- Sorting ----------------------------------------------------------------------------------------------------------
@@ -284,13 +345,14 @@ export function drillValueText(measure: DrillMeasure, v: DrillValue): string {
 
 // ---- Saved views and layout (app/src/analytics/views.service.ts) ----------------------------------------------------
 
-export const VIEW_PANELS = ['progress', 'problems', 'system', 'trends', 'aiUsage'] as const;
+export const VIEW_PANELS = ['progress', 'problems', 'system', 'trends', 'resources', 'aiUsage'] as const;
 export type ViewPanel = (typeof VIEW_PANELS)[number];
 export const PANEL_LABELS: Record<ViewPanel, string> = {
   progress: 'Project progress',
   problems: 'Project problems',
   system: 'System problems',
   trends: 'Trends',
+  resources: 'Resources and finance',
   aiUsage: 'AI usage',
 };
 
@@ -313,7 +375,7 @@ export const COLUMN_LABELS: Record<string, string> = {
 };
 
 export type ChartMode = 'chart' | 'table';
-export const VIEW_CHARTS = ['progress.onTime', ...TREND_KEYS.map((k) => `trends.${k}`)];
+export const VIEW_CHARTS = ['progress.onTime', ...TREND_KEYS.map((k) => `trends.${k}`), 'resources.finance.MYR', 'resources.finance.SGD', 'resources.finance.USD'];
 
 export interface ViewConfig {
   filters: Filters;

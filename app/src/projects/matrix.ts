@@ -48,7 +48,12 @@ export type ProjectAction =
   | 'ai.limits.manage'
   | 'ai.connections.manage'
   | 'ai.connections.view'
-  | 'ai.usage.view';
+  | 'ai.usage.view'
+  | 'resource.view'
+  | 'resource.edit'
+  | 'finance.record'
+  | 'finance.propose'
+  | 'finance.settings';
 
 interface MatrixRow {
   roles: ReadonlyArray<ProjectRole | 'participant'>;
@@ -233,6 +238,34 @@ export const PROJECT_MATRIX: Readonly<Record<ProjectAction, MatrixRow>> = {
     states: ALL,
     refusal: "Only the Project Manager, the Owner or a Sponsor can see the project's AI usage.",
   },
+  // Sub-project 8 (spec 9). Reading financial detail is not a row: it depends on the project's settings (finance/readers.ts).
+  'resource.view': {
+    roles: ['participant'],
+    states: ALL,
+    refusal: 'Only people in the project can see its resources.',
+  },
+  'resource.edit': {
+    roles: ['pm', 'deputy_pm', 'owner', 'sponsor'],
+    states: OPEN,
+    refusal: 'Only the Project Manager, a Deputy, the Owner or a Sponsor can change resource lines, and not while the project is Deferred or Closed.',
+  },
+  'finance.record': {
+    roles: ['pm', 'deputy_pm'],
+    states: OPEN,
+    refusal: 'Only the Project Manager or a Deputy can record spending, and not while the project is Deferred or Closed.',
+  },
+  // The finance service narrows adjustments to the Project Manager and Deputies; the budget is open to all four.
+  'finance.propose': {
+    roles: ['pm', 'deputy_pm', 'owner', 'sponsor'],
+    states: OPEN,
+    refusal: 'Only the Project Manager, a Deputy, the Owner or a Sponsor can propose a budget or a finance change, and not while the project is Deferred or Closed.',
+  },
+  // Delegated by the Administrator (D94), who may always change them: both checked in FinanceSettingsService.
+  'finance.settings': {
+    roles: ['pm', 'owner', 'sponsor'],
+    states: OPEN,
+    refusal: "Only the Project Manager, the Owner or a Sponsor can change the project's finance settings, and not while the project is Deferred or Closed.",
+  },
   'proposal.review': {
     roles: ['owner', 'sponsor'],
     states: ['planned', 'active'],
@@ -243,9 +276,9 @@ export const PROJECT_MATRIX: Readonly<Record<ProjectAction, MatrixRow>> = {
 /**
  * What an Active Audit or Oversight grant allows: reading only, plus asking the AI a private question within the
  * grant's scope (AI assist spec 5.1; an answer to a grant holder is never shared) and reporting a suspected secret in
- * what they can read (history spec 6). The project state still applies.
+ * what they can read (history spec 6), and the project's resource lines (resources spec 9). The project state still applies.
  */
-export const GRANT_ACTIONS: readonly ProjectAction[] = ['project.view', 'note.view', 'assist.ask', 'secret.report'];
+export const GRANT_ACTIONS: readonly ProjectAction[] = ['project.view', 'note.view', 'assist.ask', 'secret.report', 'resource.view'];
 export const GRANT_READ_ONLY = 'Audit and Oversight access is read-only.';
 
 export function decide(input: { action: ProjectAction; roles: ProjectRole[]; status: ProjectStatus }): { allowed: true } | { allowed: false; reason: string } {

@@ -8,7 +8,9 @@ export type ChangeKind =
   | 'withdraw_decision'
   | 'deadline_review'
   | 'reconcile_completion'
-  | 'risk_handover';
+  | 'risk_handover'
+  | 'set_budget'
+  | 'finance_adjustment';
 
 export function effectiveCount(
   org: { required: number; projectsMayOverride: boolean },
@@ -56,6 +58,10 @@ export function kindAllowedIn(
       return phase === 'submit'
         ? projectStatus === 'active' || projectStatus === 'deferred'
         : projectStatus === 'active';
+    // Finance changes (spec 3.6): the matrix OPEN states for both phases; the handlers add the tracking check.
+    case 'set_budget':
+    case 'finance_adjustment':
+      return projectStatus === 'draft' || projectStatus === 'planned' || projectStatus === 'active';
   }
 }
 

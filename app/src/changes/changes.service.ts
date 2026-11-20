@@ -7,6 +7,7 @@ import { readOptionalReason, readReason, refuseSecretsIn } from '../common/reaso
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { activeManagerSql, audienceVisibleSql } from '../discussion/audience';
+import { FINANCE_KINDS, financeRequestVisibleSql, loadProjectFinanceSettings, mayReadFinance } from '../finance/readers';
 import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { GRANT_READ_ONLY, type ProjectStatus } from '../projects/matrix';
 import { membershipState } from '../projects/membership';
@@ -25,10 +26,13 @@ export const notEnough = (need: number, have: number) => `Not enough approvers: 
 
 const KINDS: readonly ChangeKind[] = [
   'authorise_proposal', 'amend_task', 'cancel_task', 'supersede_decision', 'withdraw_decision', 'deadline_review', 'reconcile_completion', 'risk_handover',
+  'set_budget', 'finance_adjustment',
 ];
 const STATUSES: readonly RequestRow['status'][] = ['pending', 'authorised', 'rejected', 'withdrawn', 'superseded'];
-const TARGET_KINDS: readonly TargetKind[] = ['extraction_item', 'human_proposal', 'task', 'decision', 'risk'];
-const NOUN: Record<TargetKind, string> = { extraction_item: 'proposal', human_proposal: 'proposal', task: 'task', decision: 'decision', risk: 'risk' };
+const TARGET_KINDS: readonly TargetKind[] = ['extraction_item', 'human_proposal', 'task', 'decision', 'risk', 'project_budget', 'expenditure'];
+const NOUN: Record<TargetKind, string> = {
+  extraction_item: 'proposal', human_proposal: 'proposal', task: 'task', decision: 'decision', risk: 'risk', project_budget: 'budget', expenditure: 'spending entry',
+};
 const STATUS_LABEL: Record<ProjectStatus, string> = { draft: 'Draft', planned: 'Planned', active: 'Active', deferred: 'Deferred', closed: 'Closed' };
 
 /** How each kind of target is loaded and locked (its project in "projectId"). */
@@ -43,6 +47,9 @@ export const TARGET_SQL: Record<TargetKind, string> = {
   task: `SELECT x.*, x.project_id AS "projectId", to_char(x.due_on, 'YYYY-MM-DD') AS "dueOn" FROM tasks x WHERE x.id = $1 AND ${liveRecordSql('x')} FOR UPDATE`,
   decision: `SELECT x.*, x.project_id AS "projectId" FROM decisions x WHERE x.id = $1 AND ${liveRecordSql('x')} FOR UPDATE`,
   risk: `SELECT x.*, x.project_id AS "projectId", to_char(x.review_on, 'YYYY-MM-DD') AS "reviewOn" FROM risks x WHERE x.id = $1 AND ${liveRecordSql('x')} FOR UPDATE`,
+  // A budget's target is its project (target id = project id).
+  project_budget: `SELECT p.id, p.id AS "projectId" FROM projects p WHERE p.id = $1 FOR UPDATE`,
+  expenditure: `SELECT x.id, x.project_id AS "projectId", x.amount::text AS amount, x.currency FROM expenditures x WHERE x.id = $1 FOR UPDATE`,
 };
 
 const REQUEST_COLUMNS = `id, project_id AS "projectId", kind, target_kind AS "targetKind", target_id AS "targetId", batch_id AS "batchId", version,
@@ -99,8 +106,11 @@ export const eligibleApprovers = (ctx: ProjectContext): string[] => [
   ...new Set(ctx.rows.filter((m) => (m.role === 'owner' || m.role === 'sponsor') && membershipState(m, ctx.today) === 'active').map((m) => m.userId)),
 ];
 
-/** Why nobody can approve this request now (null when they can, subject to who is asking). */
-function approvalBlocked(ctx: ProjectContext, request: RequestRow): string | null {
+/**
+ * Why nobody can approve this request now (null when they can, subject to who is asking). `handlerBlock` is what the
+ * kind's handler says about the project (`approvalBlockedBy`), worked out by the caller; checked after the shared rules.
+ */
+function approvalBlocked(ctx: ProjectContext, request: RequestRow, handlerBlock: string | null = null): string | null {
   if (request.status !== 'pending') return null;
   if (ctx.missingAccountability) return MISSING_ACCOUNTABILITY;
   if (!kindAllowedIn(request.kind, ctx.project.status, 'approve', { closureBatch: isClosureBatch(request.batchId, request.projectId) })) {
@@ -108,7 +118,7 @@ function approvalBlocked(ctx: ProjectContext, request: RequestRow): string | nul
   }
   const eligible = eligibleApprovers(ctx).length;
   if (eligible < request.requiredApprovals) return notEnough(request.requiredApprovals, eligible);
-  return null;
+  return handlerBlock;
 }
 
 /**
@@ -116,11 +126,11 @@ function approvalBlocked(ctx: ProjectContext, request: RequestRow): string | nul
  * and they have not already approved its current version (`givenApproverIds`). The list view and the personal
  * dashboard's "Needs you" both use this one check.
  */
-export function changeMayApprove(ctx: ProjectContext, request: RequestRow, givenApproverIds: string[], userId: string): boolean {
+export function changeMayApprove(ctx: ProjectContext, request: RequestRow, givenApproverIds: string[], userId: string, handlerBlock: string | null = null): boolean {
   return (
     request.status === 'pending' &&
     eligibleApprovers(ctx).includes(userId) &&
-    approvalBlocked(ctx, request) === null &&
+    approvalBlocked(ctx, request, handlerBlock) === null &&
     !givenApproverIds.includes(userId)
   );
 }
@@ -128,8 +138,9 @@ export function changeMayApprove(ctx: ProjectContext, request: RequestRow, given
 /**
  * The rows of `change_requests` (unaliased) a viewer may see listed: not about a Deleted record or a held human
  * proposal, and a proposal from a note only when the viewer can read that note. `readable` is canReadContent for the
- * project; `userParam` and `todayParam` are placeholders for the viewer's id and today (UTC+8). Used by the list view
- * and by the personal dashboard.
+ * project; `userParam` and `todayParam` are placeholders for the viewer's id and today (UTC+8). Finance requests
+ * (`set_budget`, `finance_adjustment`) only for those who may read the project's finance (spec 3.6). Used by the list
+ * view and by the personal dashboard.
  */
 export function listedRequestSql(readable: boolean, userParam: string, todayParam: string): string {
   return `${liveRecordRefSql('change_requests.target_kind', 'change_requests.target_id')}
@@ -143,7 +154,9 @@ export function listedRequestSql(readable: boolean, userParam: string, todayPara
                    LEFT JOIN audiences xa ON xa.id = xs.audience_id
                   WHERE xi.id = change_requests.target_id AND ${notHeldSql('xi')}
                     AND CASE WHEN xs.publication = 'published' THEN COALESCE(${audienceVisibleSql('xa', userParam, todayParam)}, false)
-                             ELSE xs.submitted_by = ${userParam}::uuid OR ${activeManagerSql('xs.project_id', userParam, todayParam)} END)))`;
+                             ELSE xs.submitted_by = ${userParam}::uuid OR ${activeManagerSql('xs.project_id', userParam, todayParam)} END)))
+          -- A finance request is financial detail: only its project's finance readers see it, or a count of it (spec 3.6).
+          AND ${financeRequestVisibleSql('change_requests', userParam, todayParam)}`;
 }
 
 /**
@@ -242,8 +255,8 @@ export class ChangesService {
   }
 
   /** Why nobody can approve this request now (null when they can, subject to who is asking). */
-  private static blocked(ctx: ProjectContext, request: RequestRow): string | null {
-    return approvalBlocked(ctx, request);
+  private static blocked(ctx: ProjectContext, request: RequestRow, handlerBlock: string | null = null): string | null {
+    return approvalBlocked(ctx, request, handlerBlock);
   }
 
   private async audit(c: PoolClient, at: Date, action: string, actor: string, request: { id: string; projectId: string }, detail: Record<string, unknown> = {}) {
@@ -340,14 +353,29 @@ export class ChangesService {
     return this.complete(c, ctx, request, target, handler, user, at, later);
   }
 
-  /** The request's project, locked, then the request itself, locked. */
+  /**
+   * The request's project, locked, then the request itself, locked. A finance request is not found (404) by anyone who
+   * may not read the project's finance, as if it did not exist (spec 3.6).
+   */
   private async load(c: PoolClient, user: AuthUser, requestId: string, needRole: boolean) {
     if (!UUID.test(requestId)) throw new NotFoundException();
-    const peek = (await c.query(`SELECT project_id FROM change_requests WHERE id = $1`, [requestId])).rows[0];
+    const peek = (await c.query(`SELECT project_id, kind FROM change_requests WHERE id = $1`, [requestId])).rows[0];
     if (!peek) throw new NotFoundException();
+    if ((FINANCE_KINDS as readonly string[]).includes(peek.kind)) {
+      const ctx = await this.access.load(peek.project_id, user, c);
+      if (!ctx || !mayReadFinance(ctx, await loadProjectFinanceSettings(c, peek.project_id))) throw new NotFoundException();
+    }
     const ctx = needRole ? await this.actor(c, user, peek.project_id) : await this.access.context(user, peek.project_id, c, true);
     const request = await this.lockRequest(c, requestId);
     return { ctx, request };
+  }
+
+  /**
+   * What the kind's handler says about approving in this project now (`approvalBlockedBy`), or null. For callers that
+   * decide "may approve" outside this service (the personal dashboard), so they use the same check as the list.
+   */
+  async handlerBlock(db: Pool | PoolClient, ctx: ProjectContext, kind: ChangeKind): Promise<string | null> {
+    return (await this.handler(kind)?.approvalBlockedBy?.(db, ctx)) ?? null;
   }
 
   /** { version, terms? } by an Owner or Sponsor. Approving an already authorised request changes nothing. */
@@ -362,7 +390,7 @@ export class ChangesService {
       const handler = this.handler(request.kind);
       if (!handler) throw new ConflictException('This kind of change cannot be approved yet.');
       if (input.terms !== undefined && !handler.editableOnApproval) throw new BadRequestException(NOT_EDITABLE);
-      const why = ChangesService.blocked(ctx, request);
+      const why = ChangesService.blocked(ctx, request, (await handler.approvalBlockedBy?.(c, ctx)) ?? null);
       if (why) throw new ConflictException(why);
       const target = await this.lockTarget(c, request.targetKind, request.targetId, request.projectId, handler.targetInOtherProject);
       let current = request;
@@ -547,11 +575,17 @@ export class ChangesService {
         )
       ).rows) offers.set(o.riskId, { fromProject: { id: o.projectId, name: o.name }, risk: { id: o.riskId, description: o.description, severity: o.severity } });
     }
+    // What each pending kind's handler says about the project, asked once per kind.
+    const handlerBlocks = new Map<ChangeKind, string | null>();
+    for (const kind of new Set(rows.filter((r) => r.status === 'pending').map((r) => r.kind))) {
+      handlerBlocks.set(kind, await this.handlerBlock(db, ctx, kind));
+    }
     return rows.map((r) => {
       const version = versions.get(r.id) as { terms: Record<string, unknown>; reason: string | null };
       const given = approvals.get(r.id) ?? [];
       const pending = r.status === 'pending';
-      const why = ChangesService.blocked(ctx, r);
+      const handlerBlock = handlerBlocks.get(r.kind) ?? null;
+      const why = ChangesService.blocked(ctx, r, handlerBlock);
       const offer = r.kind === 'risk_handover' ? offers.get(r.targetId) : undefined;
       return {
         id: r.id,
@@ -567,7 +601,7 @@ export class ChangesService {
         submittedBy: names.get(r.submittedBy) as string,
         submittedAt: r.submittedAt,
         ...(offer ? { offer } : {}),
-        mayApprove: changeMayApprove(ctx, r, given.map((a) => a.userId), user.id),
+        mayApprove: changeMayApprove(ctx, r, given.map((a) => a.userId), user.id, handlerBlock),
         mayRevise: pending && r.submittedBy === user.id,
         // The receiving project declines a hand-over (an Owner or Sponsor rejects it); only the offerer withdraws it.
         mayWithdraw: pending && (r.submittedBy === user.id || (r.kind !== 'risk_handover' && ctx.roles.includes('pm'))),

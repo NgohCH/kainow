@@ -5,6 +5,7 @@ import { plural } from '../format.ts';
 import { DEFAULT_STATUSES, LEADERSHIP_FIELDS, type LeadershipCard, type LeadershipSummary, leadershipQuery, visibleFields } from '../leadership.ts';
 import { defaultPrefs, openChoice, type Prefs } from '../prefs.ts';
 import { STATUS_LABEL } from '../projects.ts';
+import { budgetCardLines, resourcesCardText } from '../resourceScreens.ts';
 import { Customise } from './Customise.tsx';
 
 const ALL_STATUSES = ['draft', 'planned', 'active', 'deferred', 'closed'] as const;
@@ -69,6 +70,16 @@ function FieldRow({ k, c }: { k: string; c: LeadershipCard }) {
               </ul>
             )}
           </dd>
+        </>
+      );
+    case 'resources':
+      return c.resources === undefined ? null : <><dt>Resources</dt><dd>{resourcesCardText(c.resources)}</dd></>;
+    case 'budget':
+      if (c.budget === undefined) return null;
+      return (
+        <>
+          <dt>Budget</dt>
+          <dd>{budgetCardLines(c.budget).map((t, i) => <span key={i} className={i === 0 ? undefined : 'meta'}>{i > 0 && <br />}{t}</span>)}</dd>
         </>
       );
     case 'nextDates':

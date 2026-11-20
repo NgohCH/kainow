@@ -2,6 +2,7 @@ import { COVERAGE_NOTE, MEASURES_VERSION, type PlannedEnd } from '../dashboards/
 import type { ProjectStatus } from '../projects/matrix';
 import type { AnalyticsFilters } from './filters';
 import { PROBLEM_KEYS, type ProblemsPanel, type ProgressPanel } from './panels.service';
+import type { ResourcesPanel, ResourcesTable } from './resources-panel';
 import type { SystemPanel } from './system.service';
 import { TREND_KEYS, TRENDS_NOTE, type TrendKey, type TrendsPanel } from './trends.service';
 
@@ -35,7 +36,10 @@ export function toCsv(meta: Record<string, string>, columns: string[], rows: unk
 // ---- The analytics tables as CSV ------------------------------------------------------------------------------------
 
 /** The panels that can be exported, and their names in the file. */
-export const EXPORT_PANELS = { progress: 'Project progress', problems: 'Project problems', system: 'System problems', trends: 'Trends' } as const;
+export const EXPORT_PANELS = { progress: 'Project progress', problems: 'Project problems', system: 'System problems', trends: 'Trends', resources: 'Resources and finance' } as const;
+
+export const RESOURCES_TABLE_LABELS: Record<ResourcesTable, string> = { lines: 'Resource lines', sharedItems: 'Shared items in overlap', finance: 'Finance by currency' };
+export const RESOURCES_NOTE = 'Counts resource lines and summary finance figures from recorded entries. No spending entries, notes or line text are exported.';
 export type ExportPanel = keyof typeof EXPORT_PANELS;
 
 const PERIOD_LABEL: Record<AnalyticsFilters['period'], string> = {
@@ -76,7 +80,7 @@ export const TREND_LABELS: Record<TrendKey, string> = {
 export const utc8Minute = (iso: string): string => `${new Date(Date.parse(iso) + 8 * 3_600_000).toISOString().slice(0, 16).replace('T', ' ')} (UTC+8)`;
 
 /** The `#` lines: panel, filters, period, measure definitions version, computedAt (UTC+8) and coverage. */
-export function exportMeta(panel: ExportPanel, f: AnalyticsFilters, departmentName: string | null, computedAt: string): Record<string, string> {
+export function exportMeta(panel: ExportPanel, f: AnalyticsFilters, departmentName: string | null, computedAt: string, table?: ResourcesTable): Record<string, string> {
   const parts: string[] = [];
   if (panel === 'system') parts.push('department, status, ownership and include archived do not apply (organisation-wide)');
   else {
@@ -84,14 +88,15 @@ export function exportMeta(panel: ExportPanel, f: AnalyticsFilters, departmentNa
     if (panel !== 'trends') parts.push(`status: ${f.statuses.map((s) => STATUS_LABEL[s]).join(', ')}`);
     parts.push(`ownership: ${f.departmentId ? OWNERSHIP_LABEL[f.ownership] : OWNERSHIP_LABEL.both}`);
     parts.push(panel === 'trends' ? 'status and include archived do not apply to trends' : `include archived: ${f.includeArchived ? 'yes' : 'no'}`);
+    if (panel === 'resources') parts.push('the period applies to lines finished in the period only');
   }
   return {
-    Panel: EXPORT_PANELS[panel],
+    Panel: panel === 'resources' && table ? `${EXPORT_PANELS[panel]}: ${RESOURCES_TABLE_LABELS[table]}` : EXPORT_PANELS[panel],
     Filters: parts.join('; '),
     Period: `${PERIOD_LABEL[f.period]}, ${f.from} to ${f.to}`,
     'Measure definitions version': MEASURES_VERSION,
     'Computed at': utc8Minute(computedAt),
-    Coverage: panel === 'trends' ? `${COVERAGE_NOTE} ${TRENDS_NOTE}` : COVERAGE_NOTE,
+    Coverage: panel === 'trends' ? `${COVERAGE_NOTE} ${TRENDS_NOTE}` : panel === 'resources' ? RESOURCES_NOTE : COVERAGE_NOTE,
   };
 }
 
@@ -103,7 +108,8 @@ export type PanelData =
   | { panel: 'progress'; data: ProgressPanel }
   | { panel: 'problems'; data: ProblemsPanel }
   | { panel: 'system'; data: SystemPanel }
-  | { panel: 'trends'; data: TrendsPanel };
+  | { panel: 'trends'; data: TrendsPanel }
+  | { panel: 'resources'; data: ResourcesPanel; table: ResourcesTable };
 
 /** One table per panel, from the same data the panel shows (summary rows first, then project rows). */
 export function panelTable(p: PanelData): Table {
@@ -158,9 +164,48 @@ export function panelTable(p: PanelData): Table {
       ],
     };
   }
+  if (p.panel === 'resources') return resourcesTable(p.data, p.table);
   const d = p.data;
   return {
     columns: ['Week starting', ...TREND_KEYS.map((k) => TREND_LABELS[k])],
     rows: d.weeks.map((w, i) => [w, ...TREND_KEYS.map((k) => d.series[k][i])]),
+  };
+}
+
+/** One table of the Resources and finance panel, from the same data the panel shows. */
+function resourcesTable(d: ResourcesPanel, table: ResourcesTable): Table {
+  if (table === 'lines') {
+    const nums = (r: ResourcesPanel['lines']['organisation']) => [r.needed, r.arranged, r.inUse, r.finishedInPeriod, r.neededByPassed, r.overlapping];
+    return {
+      columns: ['Level', 'Name', 'Owning department', 'Projects', 'Needed', 'Arranged', 'In use', 'Finished in the period', 'Needed-by passed', 'Lines with overlaps'],
+      rows: [
+        ['Organisation', 'All projects shown', '', d.lines.projects.length, ...nums(d.lines.organisation)],
+        ...d.lines.departments.map((r) => ['Department', r.name, '', r.projects, ...nums(r)]),
+        ...d.lines.projects.map((r) => ['Project', r.name, r.owningDepartment, '', ...nums(r)]),
+      ],
+    };
+  }
+  if (table === 'sharedItems') {
+    return {
+      columns: ['Reference', 'Name', 'Projects', 'Earliest overlap'],
+      rows: d.sharedItems.map((s) => [s.reference, s.name, s.projects, s.earliestOverlap]),
+    };
+  }
+  const rows: unknown[][] = [];
+  for (const g of d.finance) {
+    rows.push([g.currency, 'Currency total', `All ${g.currency} projects`, '', g.projectsTracking, g.budgetNotProvided, g.totalBudget, g.currency, g.totalSpent, g.currency, g.atFirst, g.atSecond, '', '', '', '']);
+    for (const r of g.projects) {
+      const percent = r.percentUsed ?? (r.budget === null ? 'Not provided' : 'Not applicable');
+      const notIn = r.notInTotals.map((n) => `${n.currency} ${n.amount}`).join('; ');
+      rows.push([g.currency, 'Project', r.name, r.owningDepartment, '', '', r.budget ?? 'Not provided', g.currency, r.spent, g.currency, '', '', percent, r.overBudget ? 'Over budget' : 'No', r.level, notIn || 'None']);
+    }
+  }
+  rows.push(['', 'Not required', 'Projects with financial tracking not required', '', d.notRequired, '', 'Not required', '', 'Not required', '', '', '', '', '', '', '']);
+  return {
+    columns: [
+      'Currency', 'Level', 'Name', 'Owning department', 'Projects', 'Budget not provided', 'Approved budget', 'Approved budget currency', 'Spent', 'Spent currency',
+      'At first threshold', 'At second threshold', 'Percent used', 'Over budget', 'Warning level', 'Not in totals (currency and amount)',
+    ],
+    rows,
   };
 }

@@ -1,0 +1,396 @@
+import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable } from '@nestjs/common';
+import type { Pool, PoolClient } from 'pg';
+import { projectMonthUsage } from '../ai/usage.service';
+import { writeAudit } from '../audit/audit';
+import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
+import { refuseSecretsIn } from '../common/reason';
+import { uuidv7 } from '../common/uuid7';
+import { PG_POOL } from '../db/database.module';
+import { ProjectAccess, type ProjectContext } from '../projects/access.service';
+import { decide } from '../projects/matrix';
+import { loadResourceSettings } from '../resources/settings.service';
+import { type Adj, type Figures, countedAmount, figures } from './figures';
+import { CURRENCIES, type Currency, parseAmount, toDecimalString } from './money';
+import { DEFAULT_FINANCE_SETTINGS, type ProjectFinanceSettings, effectiveThresholds, loadProjectFinanceSettings, mayReadFinance } from './readers';
+import { evaluateFinanceWarnings } from './warnings';
+
+type Db = Pool | PoolClient;
+
+export const NOT_READER = "Only the project's finance readers can see financial detail.";
+export const NOT_REQUIRED = 'Financial tracking is not required for this project.';
+export const HISTORY_NOTICE = 'Financial tracking is not required for this project. Earlier entries are kept here for reference.';
+const DATE = 'Enter the date the money was spent as YYYY-MM-DD.';
+const DESCRIPTION = 'Enter a description of 1 to 500 characters.';
+const REFERENCE = 'A reference can be up to 100 characters.';
+const FINANCE_KINDS = `('set_budget', 'finance_adjustment')`;
+
+const isCurrency = (v: unknown): v is Currency => typeof v === 'string' && Object.prototype.hasOwnProperty.call(CURRENCIES, v);
+/** numeric(16,2) as Postgres writes it ("100.00") into minor units. */
+const minor = (s: string): bigint => {
+  const [whole, frac = ''] = s.split('.');
+  return BigInt(whole) * 100n + BigInt(frac.padEnd(2, '0').slice(0, 2));
+};
+
+type Person = { id: string; name: string };
+
+export type FiguresView = {
+  budget: string | null;
+  spent: string;
+  balance: string | null;
+  percentUsed: number | null;
+  overBudget: boolean;
+  level: 0 | 1 | 2;
+  notInTotals: { currency: Currency; amount: string }[];
+  warnThresholds: [number, number];
+};
+
+export type PendingView = { id: string; kind: 'set_budget' | 'finance_adjustment'; targetId: string; submittedAt: Date; submittedBy: Person; terms: unknown };
+
+export type AdjView = {
+  id: string;
+  kind: Adj['kind'];
+  amount: string;
+  rate: string | null;
+  rateOn: string | null;
+  refundOn: string | null;
+  reason: string;
+  changeRequestId: string;
+  approvedAt: Date;
+};
+
+export type EntryView = {
+  id: string;
+  spentOn: string;
+  amount: string;
+  currency: Currency;
+  description: string;
+  reference: string;
+  recordedBy: Person;
+  recordedAt: Date;
+  /** In the reporting currency; null for a foreign entry not yet converted (or with no reporting currency at all). */
+  counted: string | null;
+  adjustments: AdjView[];
+  pending: PendingView | null;
+};
+
+type EntryRow = Omit<EntryView, 'counted' | 'adjustments' | 'pending'> & { adjustments: (AdjView & { minor: bigint })[] };
+
+/** Entries in date order (spent on, then recorded at) with their approved adjustments in approval order. */
+async function loadEntries(db: Db, projectId: string, entryId: string | null = null): Promise<EntryRow[]> {
+  const { rows } = await db.query(
+    `SELECT e.id, to_char(e.spent_on, 'YYYY-MM-DD') AS "spentOn", e.amount::text AS amount, e.currency, e.description, e.reference,
+            e.recorded_by AS "recordedById", u.display_name AS "recordedByName", e.recorded_at AS "recordedAt"
+       FROM expenditures e JOIN users u ON u.id = e.recorded_by
+      WHERE e.project_id = $1 AND ($2::uuid IS NULL OR e.id = $2::uuid)
+      ORDER BY e.spent_on, e.recorded_at, e.id`,
+    [projectId, entryId],
+  );
+  const { rows: adjs } = await db.query(
+    `SELECT a.id, a.expenditure_id AS "entryId", a.kind, a.amount::text AS amount, a.rate::text AS rate,
+            to_char(a.rate_on, 'YYYY-MM-DD') AS "rateOn", to_char(a.refund_on, 'YYYY-MM-DD') AS "refundOn", a.reason,
+            a.change_request_id AS "changeRequestId", a.approved_at AS "approvedAt"
+       FROM expenditure_adjustments a JOIN expenditures e ON e.id = a.expenditure_id
+      WHERE e.project_id = $1 AND ($2::uuid IS NULL OR e.id = $2::uuid)
+      ORDER BY a.approved_at, a.id`,
+    [projectId, entryId],
+  );
+  const byEntry = new Map<string, (AdjView & { minor: bigint })[]>();
+  for (const { entryId: eid, ...a } of adjs) {
+    const list = byEntry.get(eid) ?? [];
+    list.push({ ...a, minor: minor(a.amount) });
+    byEntry.set(eid, list);
+  }
+  return rows.map((r) => ({
+    id: r.id,
+    spentOn: r.spentOn,
+    amount: r.amount,
+    currency: r.currency,
+    description: r.description,
+    reference: r.reference,
+    recordedBy: { id: r.recordedById, name: r.recordedByName },
+    recordedAt: r.recordedAt,
+    adjustments: byEntry.get(r.id) ?? [],
+  }));
+}
+
+const toAdj = (a: AdjView & { minor: bigint }): Adj => ({ kind: a.kind, amount: a.minor, approvedAt: new Date(a.approvedAt) });
+
+async function loadBudgetVersions(db: Db, projectId: string) {
+  const { rows } = await db.query(
+    `SELECT id, amount::text AS amount, currency, change_request_id AS "changeRequestId", approved_at AS "approvedAt"
+       FROM budget_versions WHERE project_id = $1 ORDER BY approved_at, id`,
+    [projectId],
+  );
+  return rows as { id: string; amount: string; currency: Currency; changeRequestId: string; approvedAt: Date }[];
+}
+
+/** Works out the figures (spec 3.5): the current budget is the latest approved version. */
+async function computeFigures(db: Db, projectId: string, currency: Currency, warn: [number, number], entries?: EntryRow[]): Promise<Figures> {
+  const versions = await loadBudgetVersions(db, projectId);
+  const latest = versions[versions.length - 1];
+  const list = entries ?? (await loadEntries(db, projectId));
+  return figures({
+    budget: latest ? minor(latest.amount) : null,
+    entries: list.map((e) => ({ amount: minor(e.amount), currency: e.currency, adjustments: e.adjustments.map(toAdj) })),
+    reporting: currency,
+    warn,
+  });
+}
+
+export function figuresView(f: Figures, warn: [number, number]): FiguresView {
+  return {
+    budget: f.budget === null ? null : toDecimalString(f.budget),
+    spent: toDecimalString(f.spent),
+    balance: f.balance === null ? null : toDecimalString(f.balance),
+    percentUsed: f.percentUsed,
+    overBudget: f.overBudget,
+    level: f.level,
+    notInTotals: f.notInTotals.map((n) => ({ currency: n.currency, amount: toDecimalString(n.amount) })),
+    warnThresholds: warn,
+  };
+}
+
+/**
+ * The project's figures in its reporting currency, or null when tracking is not Enabled. For the dashboard, leadership,
+ * analytics and the report (spec 5–7); callers decide who may see them.
+ */
+export async function loadFigures(db: Db, projectId: string): Promise<(Figures & { currency: Currency; warnThresholds: [number, number] }) | null> {
+  const s = await loadProjectFinanceSettings(db, projectId);
+  if (s.tracking !== 'enabled' || s.currency === null) return null;
+  const warn = effectiveThresholds(s, await loadResourceSettings(db));
+  return { ...(await computeFigures(db, projectId, s.currency, warn)), currency: s.currency, warnThresholds: warn };
+}
+
+export type ProjectFigures = Figures & { currency: Currency; warnThresholds: [number, number] };
+
+/**
+ * `loadFigures` for many projects in a fixed number of queries (the organisation-scope leadership summary). A project with
+ * tracking not Enabled is absent from the result. Same arithmetic as `loadFigures`: both end in `figures()`.
+ */
+export async function loadFiguresMany(db: Db, projectIds: string[]): Promise<Map<string, ProjectFigures>> {
+  const out = new Map<string, ProjectFigures>();
+  if (projectIds.length === 0) return out;
+  const { rows: settings } = await db.query(
+    `SELECT project_id AS "projectId", currency, warn_first_pct AS "warnFirstPct", warn_second_pct AS "warnSecondPct"
+       FROM project_finance_settings WHERE project_id = ANY($1::uuid[]) AND tracking = 'enabled' AND currency IS NOT NULL`,
+    [projectIds],
+  );
+  if (settings.length === 0) return out;
+  const ids = settings.map((r) => r.projectId as string);
+  const org = await loadResourceSettings(db);
+  const { rows: versions } = await db.query(
+    `SELECT DISTINCT ON (project_id) project_id AS "projectId", amount::text AS amount
+       FROM budget_versions WHERE project_id = ANY($1::uuid[]) ORDER BY project_id, approved_at DESC, id DESC`,
+    [ids],
+  );
+  const budgets = new Map<string, bigint>(versions.map((v) => [v.projectId as string, minor(v.amount as string)]));
+  // An entry in the reporting currency with no approved adjustment counts at its own amount, so those are summed in the
+  // database (one row a project) and only the rest (foreign or adjusted entries) are read one by one: the same figures
+  // from a fraction of the rows (leadership summary bench, spec 13).
+  const { rows: plainRows } = await db.query(
+    `SELECT e.project_id AS "projectId", sum(e.amount)::text AS amount
+       FROM expenditures e JOIN project_finance_settings s ON s.project_id = e.project_id
+      WHERE e.project_id = ANY($1::uuid[]) AND e.currency = s.currency
+        AND NOT EXISTS (SELECT 1 FROM expenditure_adjustments a WHERE a.expenditure_id = e.id)
+      GROUP BY e.project_id`,
+    [ids],
+  );
+  const { rows: entryRows } = await db.query(
+    `SELECT e.id, e.project_id AS "projectId", e.amount::text AS amount, e.currency
+       FROM expenditures e JOIN project_finance_settings s ON s.project_id = e.project_id
+      WHERE e.project_id = ANY($1::uuid[])
+        AND (e.currency <> s.currency OR EXISTS (SELECT 1 FROM expenditure_adjustments a WHERE a.expenditure_id = e.id))`,
+    [ids],
+  );
+  const { rows: adjRows } = await db.query(
+    `SELECT a.expenditure_id AS "entryId", a.kind, a.amount::text AS amount, a.approved_at AS "approvedAt"
+       FROM expenditure_adjustments a JOIN expenditures e ON e.id = a.expenditure_id
+      WHERE e.project_id = ANY($1::uuid[]) ORDER BY a.approved_at, a.id`,
+    [ids],
+  );
+  const adjByEntry = new Map<string, Adj[]>();
+  for (const a of adjRows) {
+    const list = adjByEntry.get(a.entryId as string) ?? [];
+    list.push({ kind: a.kind, amount: minor(a.amount), approvedAt: new Date(a.approvedAt) });
+    adjByEntry.set(a.entryId as string, list);
+  }
+  const entriesByProject = new Map<string, { amount: bigint; currency: Currency; adjustments: Adj[] }[]>();
+  const reportingOf = new Map<string, Currency>(settings.map((r) => [r.projectId as string, r.currency as Currency]));
+  for (const r of plainRows) entriesByProject.set(r.projectId as string, [{ amount: minor(r.amount as string), currency: reportingOf.get(r.projectId as string) as Currency, adjustments: [] }]);
+  for (const e of entryRows) {
+    const list = entriesByProject.get(e.projectId as string) ?? [];
+    list.push({ amount: minor(e.amount), currency: e.currency, adjustments: adjByEntry.get(e.id as string) ?? [] });
+    entriesByProject.set(e.projectId as string, list);
+  }
+  for (const s of settings) {
+    const warn = effectiveThresholds({ ...DEFAULT_FINANCE_SETTINGS, warnFirstPct: s.warnFirstPct, warnSecondPct: s.warnSecondPct }, org);
+    const f = figures({ budget: budgets.get(s.projectId) ?? null, entries: entriesByProject.get(s.projectId) ?? [], reporting: s.currency, warn });
+    out.set(s.projectId, { ...f, currency: s.currency, warnThresholds: warn });
+  }
+  return out;
+}
+
+/** Pending budget and adjustment requests, each with the terms of its latest version. */
+async function loadPending(db: Db, projectId: string): Promise<PendingView[]> {
+  const { rows } = await db.query(
+    `SELECT r.id, r.kind, r.target_id AS "targetId", r.submitted_at AS "submittedAt", r.submitted_by AS "submittedById",
+            u.display_name AS "submittedByName", v.terms
+       FROM change_requests r
+       JOIN users u ON u.id = r.submitted_by
+       LEFT JOIN LATERAL (SELECT terms FROM change_request_versions WHERE request_id = r.id ORDER BY version DESC LIMIT 1) v ON true
+      WHERE r.project_id = $1 AND r.kind IN ${FINANCE_KINDS} AND r.status = 'pending'
+      ORDER BY r.submitted_at, r.id`,
+    [projectId],
+  );
+  return rows.map((r) => ({
+    id: r.id,
+    kind: r.kind,
+    targetId: r.targetId,
+    submittedAt: r.submittedAt,
+    submittedBy: { id: r.submittedById, name: r.submittedByName },
+    terms: r.terms ?? null,
+  }));
+}
+
+/** Count of pending adjustments, for the Resources tab and the dashboard. */
+export async function countPendingAdjustments(db: Db, projectId: string): Promise<number> {
+  const { rows } = await db.query(
+    `SELECT count(*)::int AS n FROM change_requests WHERE project_id = $1 AND kind = 'finance_adjustment' AND status = 'pending'`,
+    [projectId],
+  );
+  return rows[0].n;
+}
+
+export type FinanceSummary =
+  | { tracking: ProjectFinanceSettings['tracking'] }
+  | {
+      tracking: 'enabled';
+      currency: Currency;
+      figures: FiguresView;
+      pendingAdjustments: number;
+      notInTotals: FiguresView['notInTotals'];
+    };
+
+/**
+ * The finance block of the Resources tab and the project dashboard: figures for financial-detail readers while tracking
+ * is Enabled; the tracking value alone for anyone else (spec 4, 5).
+ */
+export async function financeSummaryFor(db: Db, ctx: Pick<ProjectContext, 'roles' | 'grantKinds'>, projectId: string): Promise<FinanceSummary> {
+  const s = await loadProjectFinanceSettings(db, projectId);
+  if (s.tracking !== 'enabled' || !mayReadFinance(ctx, s)) return { tracking: s.tracking };
+  const f = await loadFigures(db, projectId);
+  if (!f) return { tracking: s.tracking };
+  const figures = figuresView(f, f.warnThresholds);
+  return { tracking: 'enabled', currency: f.currency, figures, pendingAdjustments: await countPendingAdjustments(db, projectId), notInTotals: figures.notInTotals };
+}
+
+function entryViews(entries: EntryRow[], reporting: Currency | null, pending: PendingView[]): EntryView[] {
+  return entries.map(({ adjustments, ...e }) => {
+    const counted = reporting === null ? null : countedAmount({ amount: minor(e.amount), currency: e.currency }, reporting, adjustments.map(toAdj));
+    return {
+      ...e,
+      counted: counted === null ? null : toDecimalString(counted),
+      adjustments: adjustments.map(({ minor: _m, ...a }) => a),
+      pending: pending.find((p) => p.kind === 'finance_adjustment' && p.targetId === e.id) ?? null,
+    };
+  });
+}
+
+type RecordInput = { spentOn: string; amount: bigint; currency: Currency; description: string; reference: string };
+
+function readSpentOn(v: unknown): string {
+  if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v.trim())) throw new BadRequestException(DATE);
+  const s = v.trim();
+  const d = new Date(`${s}T00:00:00Z`);
+  // Year 0000 parses in JavaScript but not in Postgres (no year 0): refused here, not a 500 from the insert.
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s || s.startsWith('0000')) throw new BadRequestException(DATE);
+  return s;
+}
+
+/** Checks a new spending entry against spec 3.5 and the global text limits. */
+export function readSpending(body: unknown, enabled: Currency[]): RecordInput {
+  const b = body && typeof body === 'object' && !Array.isArray(body) ? (body as Record<string, unknown>) : {};
+  const spentOn = readSpentOn(b.spentOn);
+  const amount = parseAmount(b.amount, { allowZero: false });
+  if (!isCurrency(b.currency) || !enabled.includes(b.currency)) {
+    throw new BadRequestException(`The currency must be one of the enabled currencies: ${enabled.join(', ')}.`);
+  }
+  if (typeof b.description !== 'string') throw new BadRequestException(DESCRIPTION);
+  const description = b.description.trim();
+  if (description.length < 1 || description.length > 500) throw new BadRequestException(DESCRIPTION);
+  if (b.reference !== undefined && b.reference !== null && typeof b.reference !== 'string') throw new BadRequestException(REFERENCE);
+  const reference = typeof b.reference === 'string' ? b.reference.trim() : '';
+  if (reference.length > 100) throw new BadRequestException(REFERENCE);
+  refuseSecretsIn([description, reference]);
+  return { spentOn, amount, currency: b.currency, description, reference };
+}
+
+@Injectable()
+export class FinanceService {
+  constructor(
+    @Inject(PG_POOL) private readonly pool: Pool,
+    @Inject(CLOCK) private readonly now: Clock,
+    private readonly access: ProjectAccess,
+  ) {}
+
+  /**
+   * The finance view (spec 3.5, 4): financial-detail readers only. An outsider, including a non-participant Administrator,
+   * gets 404; any other participant or grant holder 403. With tracking Not Required it is the history view.
+   */
+  async read(user: AuthUser, projectId: string) {
+    const ctx = await this.access.authorize(user, 'project.view', projectId);
+    const s = await loadProjectFinanceSettings(this.pool, projectId);
+    if (!mayReadFinance(ctx, s)) throw new ForbiddenException(NOT_READER);
+    const warn = effectiveThresholds(s, await loadResourceSettings(this.pool));
+    const entries = await loadEntries(this.pool, projectId);
+    const pending = await loadPending(this.pool, projectId);
+    const figs = s.currency === null ? null : figuresView(await computeFigures(this.pool, projectId, s.currency, warn, entries), warn);
+    const historyOnly = s.tracking !== 'enabled';
+    const out: Record<string, unknown> = {
+      tracking: s.tracking,
+      currency: s.currency,
+      figures: figs,
+      budgetVersions: await loadBudgetVersions(this.pool, projectId),
+      entries: entryViews(entries, s.currency, pending),
+      pending,
+      historyOnly,
+      ...(historyOnly ? { notice: HISTORY_NOTICE } : {}),
+    };
+    // Shown beside the finance section to those who may view project AI usage; never added in (spec 3.5).
+    if (decide({ action: 'ai.usage.view', roles: ctx.roles, status: ctx.project.status }).allowed) {
+      out.aiSpendThisMonth = await projectMonthUsage(this.pool, projectId, this.now());
+    }
+    return out;
+  }
+
+  /** Records a spending entry: the PM or a Deputy, in an open project with tracking Enabled, in an enabled currency. */
+  async record(user: AuthUser, projectId: string, body: unknown): Promise<EntryView> {
+    const at = this.now();
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await this.access.authorize(user, 'finance.record', projectId, client, true);
+      const s = await loadProjectFinanceSettings(client, projectId, true);
+      if (s.tracking !== 'enabled' || s.currency === null) throw new ConflictException(NOT_REQUIRED);
+      // The project keeps its reporting currency even after the Administrator disables it (spec 3.1).
+      const enabled = (await loadResourceSettings(client)).enabledCurrencies;
+      const input = readSpending(body, enabled.includes(s.currency) ? enabled : [...enabled, s.currency]);
+      const id = uuidv7(at.getTime());
+      await client.query(
+        `INSERT INTO expenditures (id, project_id, spent_on, amount, currency, description, reference, recorded_by, recorded_at)
+         VALUES ($1, $2, $3, $4::numeric / 100, $5, $6, $7, $8, $9)`,
+        [id, projectId, input.spentOn, input.amount.toString(), input.currency, input.description, input.reference, user.id, at],
+      );
+      await writeAudit(client, { at, action: 'finance.spending_recorded', actorUserId: user.id, subjectType: 'project', subjectId: projectId, detail: { entryId: id } });
+      await evaluateFinanceWarnings(client, projectId, at);
+      const [entry] = entryViews(await loadEntries(client, projectId, id), s.currency, []);
+      await client.query('COMMIT');
+      return entry;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+}

@@ -127,3 +127,6 @@ export function canManageGrants(roles: ProjectRole[], isAdmin: boolean): boolean
 export function canArchive(status: ProjectStatus, roles: ProjectRole[]): boolean {
   return status === 'closed' && roles.some((r) => r === 'pm' || r === 'owner' || r === 'sponsor');
 }
+
+/** Role keys as the words people see; a key this build does not know stays as it is. */
+export const rolesText = (roles: readonly string[]): string => roles.map((r) => ROLE_LABEL[r as ProjectRole] ?? r).join(', ');

@@ -52,7 +52,7 @@ test('the web catalogue matches the server catalogue (keys, order, required flag
     label: m[2],
     required: m[3] !== undefined,
   }));
-  assert.equal(server.length, 15);
+  assert.equal(server.length, 17);
   assert.deepEqual(
     LEADERSHIP_FIELDS.map((f) => ({ key: f.key, label: f.label, required: f.required === true })),
     server,
