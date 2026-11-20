@@ -161,7 +161,6 @@ describe('withdrawing, deleting and restoring outputs', { skip: SKIP_NO_DB }, ()
     assert.deepEqual(touched(file.item_id), [], 'the file itself is never deleted');
   });
 
-  // TODO (Tasks 18 and 22): search and CSV exports of outputs must keep `deleted_at IS NULL` and test it here.
   test('delete hides the output from the register and moves files out of shared folders; restore brings them back; the external file is never deleted', async () => {
     const { out, file } = await filedOutput('Weekly status');
     const typeFolder = await parentOf(file.item_id);

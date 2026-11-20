@@ -2,7 +2,7 @@
 import { DECISION_STATUS_LABEL, QUESTION_STATUS_LABEL, REVIEW_STATUS_LABEL, RISK_STATUS_LABEL, TASK_STATUS_LABEL } from './records.ts';
 import { STATUS_LABEL as PROJECT_STATUS_LABEL } from './projects.ts';
 
-export type SearchKind = 'project' | 'person' | 'note' | 'message' | 'ai_proposal' | 'human_proposal' | 'task' | 'decision' | 'question' | 'risk';
+export type SearchKind = 'project' | 'person' | 'note' | 'message' | 'ai_proposal' | 'human_proposal' | 'task' | 'decision' | 'question' | 'risk' | 'output';
 
 export interface SearchResult {
   kind: SearchKind;
@@ -40,6 +40,7 @@ export const KIND_LABELS: Record<SearchKind, string> = {
   decision: 'Decision',
   question: 'Question',
   risk: 'Risk',
+  output: 'Output',
 };
 
 export const SEARCH_KINDS = Object.keys(KIND_LABELS) as SearchKind[];

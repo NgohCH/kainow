@@ -157,6 +157,10 @@ export function panelTable(p: PanelData): Table {
         ['Jobs', 'Jobs waiting longer than 15 minutes', d.jobs.waitingOver15m],
         ['Security', 'Credential cases awaiting review', d.security.casesAwaitingReview],
         ['Security', 'Protected key installed', d.security.protectedKeyInstalled ? 'Yes' : 'No'],
+        ['Storage', 'Files that failed to store', d.storageFailures],
+        ['Storage', 'Files waiting to be stored', d.storageWaiting],
+        ['Storage', 'Held files still in storage after removal failed', d.withholdFailures],
+        ['Storage', 'Sharing to repair', d.sharingToRepair],
       ],
     };
   }

@@ -8,9 +8,12 @@ import { inAudience } from '../discussion/audience';
 import { AudienceService } from '../discussion/audience.service';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { decide } from '../projects/matrix';
+import { loadOutputAccessRow, readsOutput } from '../outputs/readers';
 import { mayActOnRecords } from './records-deletion.service';
 import { type RecordKind, RECORD_KINDS } from './final-states';
 
+/** The output_events kinds (migration 0031). */
+export type OutputEventKind = string;
 export type SourceItemKind = 'note' | 'minutes' | 'summary';
 export type DeletedKind = 'message' | SourceItemKind | RecordKind;
 export const DELETED_KINDS: readonly DeletedKind[] = ['message', 'note', 'minutes', 'summary', ...RECORD_KINDS];
@@ -18,8 +21,9 @@ export const DELETED_KINDS: readonly DeletedKind[] = ['message', 'note', 'minute
 /** One line of the project's "Deletions and restorations" (history spec 4.6). */
 export interface HistoryLine {
   at: string;
-  kind: DeletedKind | 'credential_report' | 'ai_connection' | 'department_transfer';
-  action: 'deleted' | 'restored' | 'reported' | 'key_rejected' | 'transferred';
+  kind: DeletedKind | 'credential_report' | 'ai_connection' | 'department_transfer' | 'output';
+  /** For an output line, the output event's kind (submitted, registered, filed, deleted, ...). */
+  action: 'deleted' | 'restored' | 'reported' | 'key_rejected' | 'transferred' | OutputEventKind;
   /** Who acted; for a credential report, the reporter only for PM, Owner, Sponsor and Administrators (else null). */
   actor: string | null;
   reason: string | null;
@@ -31,6 +35,8 @@ export interface HistoryLine {
   fromDepartment?: string;
   toDepartment?: string;
   folderChoice?: 'move' | 'keep' | null;
+  /** For an output line (spec 13.2): which output; its title only while the viewer may read it now (never once it is Deleted). */
+  output?: { id: string; title: string | null };
   /** Only for a holder of Inspect Deleted Content, and only for an item that is Deleted now and that they may open. */
   title?: string;
   href?: string;
@@ -117,30 +123,64 @@ export class HistoryService {
            FROM project_department_transfers t JOIN users u ON u.id = t.actor_id
            JOIN departments f ON f.id = t.from_department_id JOIN departments d ON d.id = t.to_department_id
           WHERE t.project_id = $1
+         UNION ALL
+         SELECT e.at, 'output', e.kind, u.display_name, e.reason, o.id, NULL, e.id, NULL, NULL, NULL, NULL
+           FROM output_events e JOIN outputs o ON o.id = e.output_id LEFT JOIN users u ON u.id = e.actor_id
+          WHERE o.project_id = $1
        ) lines ORDER BY at DESC, "eventId" DESC`,
       [ctx.project.id, seesReporter],
     );
     const openable = ctx.inspectDeleted ? new Map((await this.collect(ctx, user)).map((i) => [`${i.kind}:${i.id}`, i])) : new Map<string, DeletedItem>();
     const restorable = await this.restorable(ctx, user);
     const offered = new Set<string>();
-    return rows.map((r) => {
-      const line: HistoryLine = { at: iso(r.at), kind: r.kind, action: r.action, actor: r.actor ?? null, reason: r.action === 'reported' ? null : r.reason };
-      if (r.kind === 'credential_report') return { ...line, itemKind: r.itemKind };
-      // A rejected AI key (spec 5.4): the label only; a null actor is Kainow itself.
-      if (r.kind === 'ai_connection') return { ...line, label: r.label };
-      // A department transfer (spec 10): the old and new department, the reason and the folder choice.
-      if (r.kind === 'department_transfer') return { ...line, fromDepartment: r.fromDepartment, toDepartment: r.toDepartment, folderChoice: r.folderChoice };
-      const item = openable.get(`${r.kind}:${r.itemId}`);
-      const out: HistoryLine = item ? { ...line, title: item.title, href: item.href } : line;
-      // Only the newest `deleted` line of an item that is still Deleted offers Restore.
-      const key = `${r.kind}:${r.itemId}`;
-      const target = r.action === 'deleted' && !offered.has(key) ? restorable.get(key) : undefined;
-      if (target) {
-        offered.add(key);
-        return { ...out, restore: target };
+    const outputs = await this.readableOutputs(ctx, rows.filter((r) => r.kind === 'output').map((r) => r.itemId as string));
+    return rows.flatMap((r): HistoryLine[] => {
+      // An output event is seen by those who may read the output (spec 4.6, 13.2); a Deleted output's lines stay with
+      // the people who would read it were it live, without its title.
+      if (r.kind === 'output') {
+        const seen = outputs.get(r.itemId);
+        if (!seen) return [];
+        return [{ at: iso(r.at), kind: 'output', action: r.action, actor: r.actor ?? null, reason: r.reason, output: { id: r.itemId, title: seen.title } }];
       }
-      return out;
+      return [this.line(r, openable, restorable, offered)];
     });
+  }
+
+  /**
+   * The outputs among `ids` whose events this viewer sees: those they may read, or would read were they not Deleted (so
+   * the deletion and restoration lines are not lost); never a held one. The title is given only while they read it now.
+   */
+  private async readableOutputs(ctx: ProjectContext, ids: string[]): Promise<Map<string, { title: string | null }>> {
+    const out = new Map<string, { title: string | null }>();
+    for (const id of new Set(ids)) {
+      const access = await loadOutputAccessRow(this.pool, id);
+      if (!access) continue;
+      if (await readsOutput(this.pool, ctx, access)) {
+        out.set(id, { title: (await this.pool.query(`SELECT title FROM outputs WHERE id = $1`, [id])).rows[0].title });
+      } else if (access.deletedAt && (await readsOutput(this.pool, ctx, { ...access, deletedAt: null }))) {
+        out.set(id, { title: null });
+      }
+    }
+    return out;
+  }
+
+  private line(r: Record<string, any>, openable: Map<string, DeletedItem>, restorable: Map<string, { kind: 'source' | RecordKind; id: string }>, offered: Set<string>): HistoryLine {
+    const line: HistoryLine = { at: iso(r.at), kind: r.kind, action: r.action, actor: r.actor ?? null, reason: r.action === 'reported' ? null : r.reason };
+    if (r.kind === 'credential_report') return { ...line, itemKind: r.itemKind };
+    // A rejected AI key (spec 5.4): the label only; a null actor is Kainow itself.
+    if (r.kind === 'ai_connection') return { ...line, label: r.label };
+    // A department transfer (spec 10): the old and new department, the reason and the folder choice.
+    if (r.kind === 'department_transfer') return { ...line, fromDepartment: r.fromDepartment, toDepartment: r.toDepartment, folderChoice: r.folderChoice };
+    const item = openable.get(`${r.kind}:${r.itemId}`);
+    const out: HistoryLine = item ? { ...line, title: item.title, href: item.href } : line;
+    // Only the newest `deleted` line of an item that is still Deleted offers Restore.
+    const key = `${r.kind}:${r.itemId}`;
+    const target = r.action === 'deleted' && !offered.has(key) ? restorable.get(key) : undefined;
+    if (target) {
+      offered.add(key);
+      return { ...out, restore: target };
+    }
+    return out;
   }
 
   /**

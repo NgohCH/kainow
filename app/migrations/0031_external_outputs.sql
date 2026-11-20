@@ -542,3 +542,35 @@ BEGIN
   END LOOP;
 END;
 $$;
+
+-- ---------------------------------------------------------------------------
+-- Search over the register (spec 4.7): an output's title, its report type and its categories, never file content.
+-- The same columns as search_documents (which the search service reads this view alongside). Who may see an output
+-- is decided by the service in SQL (the output readers' rule), not here; withdrawn outputs are left out here.
+-- ---------------------------------------------------------------------------
+CREATE INDEX outputs_title_trgm ON outputs USING gin (title gin_trgm_ops) WHERE deleted_at IS NULL;
+
+CREATE VIEW search_output_documents AS
+  SELECT o.project_id, 'output'::text AS kind, o.id AS item_id, NULL::uuid AS source_id, NULL::uuid AS run_id,
+         NULL::int AS version_no, NULL::int AS version_count, true AS is_current, NULL::text AS match_note,
+         o.title AS text, o.title AS ref_title, o.status AS status,
+         o.created_at AS at, NULL::date AS ends_on,
+         NULL::uuid AS audience_id, NULL::int AS message_no, NULL::text AS publication, NULL::uuid AS submitted_by
+    FROM outputs o
+   WHERE o.deleted_at IS NULL AND o.status <> 'withdrawn'
+  UNION ALL
+  SELECT o.project_id, 'output', o.id, NULL, NULL,
+         NULL, NULL, true, 'Matched the report type',
+         t.name, o.title, o.status,
+         o.created_at, NULL,
+         NULL, NULL, NULL, NULL
+    FROM outputs o JOIN report_types t ON t.id = o.report_type_id
+   WHERE o.deleted_at IS NULL AND o.status <> 'withdrawn'
+  UNION ALL
+  SELECT o.project_id, 'output', o.id, NULL, NULL,
+         NULL, NULL, true, 'Matched a category',
+         t.name, o.title, o.status,
+         o.created_at, NULL,
+         NULL, NULL, NULL, NULL
+    FROM outputs o JOIN output_categories c ON c.output_id = o.id JOIN report_types t ON t.id = c.report_type_id
+   WHERE o.deleted_at IS NULL AND o.status <> 'withdrawn';
