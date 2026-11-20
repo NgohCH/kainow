@@ -35,6 +35,19 @@ test('the detector catches every import form', () => {
   assert.ok(!mentionsOpenStorageSecret("import { sealStorageSecret } from './secret';"));
 });
 
+export function mentionsStorageTokenSource(text: string): boolean {
+  return /\bstorageTokenSource\b/.test(text);
+}
+
+test('only the connector factory and the connection check import storageTokenSource', () => {
+  const offenders = sources(SRC)
+    .map((p) => ({ rel: relative(SRC, p).split('\\').join('/'), p }))
+    .filter(({ rel }) => !ALLOWED.has(rel))
+    .filter(({ p }) => mentionsStorageTokenSource(readFileSync(p, 'utf8')))
+    .map(({ rel }) => rel);
+  assert.deepEqual(offenders, []);
+});
+
 test('only the connector factory and the connection check import openStorageSecret', () => {
   const offenders = sources(SRC)
     .map((p) => ({ rel: relative(SRC, p).split('\\').join('/'), p }))

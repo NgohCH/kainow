@@ -9,7 +9,7 @@ import { M365TokenSource, TokenError } from '../email/m365-token';
 import { PROTECTED_KEY, type ProtectedKey } from '../quarantine/protected-key';
 import { GraphConnector } from './connectors/graph';
 import { INPUT_FORMATS, OUTPUT_FORMATS, type InputFormat, type OutputFormat, type StorageSettings, loadStorageSettings } from './settings';
-import { STORAGE_CONNECTION_ID, normaliseClientSecret, openStorageSecret, sealStorageSecret } from './secret';
+import { STORAGE_CONNECTION_ID, StorageSecretUnreadable, normaliseClientSecret, openStorageSecret, sealStorageSecret } from './secret';
 
 export const NO_PROTECTED_KEY = 'Storage credentials cannot be saved until the protected key is installed. See INSTALL.md.';
 const NO_PROTECTED_KEY_FOR_LOOKUP = 'Directory lookup cannot be checked until the protected key is installed. See INSTALL.md.';
@@ -30,7 +30,7 @@ const CURRENT_SECRET = `SELECT ciphertext, nonce, tag, key_id FROM storage_conne
 
 /**
  * The token source for the storage connection, or null when the tenant, application id or secret is missing or the
- * protected key is missing or cannot open the secret. Never throws. `fetchFn` is for tests.
+ * protected key is missing or cannot open the secret. Database errors propagate. `fetchFn` is for tests.
  */
 export async function storageTokenSource(
   db: Db,
@@ -40,19 +40,25 @@ export async function storageTokenSource(
   override: { tenantId?: string | null; clientId?: string | null } = {},
 ): Promise<M365TokenSource | null> {
   if (!key) return null;
+  const s = (await db.query<{ tenant_id: string | null; client_id: string | null }>(`SELECT tenant_id, client_id FROM storage_settings`)).rows[0];
+  const tenantId = override.tenantId !== undefined ? override.tenantId : s?.tenant_id;
+  const clientId = override.clientId !== undefined ? override.clientId : s?.client_id;
+  if (!tenantId || !clientId) return null;
+  const row = (await db.query<SecretRow>(CURRENT_SECRET)).rows[0];
+  if (!row) return null;
+  let clientSecret: string;
   try {
-    const s = (await db.query<{ tenant_id: string | null; client_id: string | null }>(`SELECT tenant_id, client_id FROM storage_settings`)).rows[0];
-    const tenantId = override.tenantId !== undefined ? override.tenantId : s?.tenant_id;
-    const clientId = override.clientId !== undefined ? override.clientId : s?.client_id;
-    if (!tenantId || !clientId) return null;
-    const row = (await db.query<SecretRow>(CURRENT_SECRET)).rows[0];
-    if (!row) return null;
-    const clientSecret = openStorageSecret(key, { ciphertext: row.ciphertext, nonce: row.nonce, tag: row.tag, keyId: row.key_id }, STORAGE_CONNECTION_ID);
-    return new M365TokenSource({ tenantId, clientId, clientSecret }, fetchFn, clock, undefined, GRAPH_SCOPE);
-  } catch {
-    return null;
+    clientSecret = openSecretRow(key, row);
+  } catch (e) {
+    // Only an unreadable secret means "no credentials"; a database error is not hidden.
+    if (e instanceof StorageSecretUnreadable) return null;
+    throw e;
   }
+  return new M365TokenSource({ tenantId, clientId, clientSecret }, fetchFn, clock, undefined, GRAPH_SCOPE);
 }
+
+const openSecretRow = (key: ProtectedKey, row: SecretRow): string =>
+  openStorageSecret(key, { ciphertext: row.ciphertext, nonce: row.nonce, tag: row.tag, keyId: row.key_id }, STORAGE_CONNECTION_ID);
 
 const asObject = (body: unknown): Record<string, unknown> => {
   if (body === null || typeof body !== 'object' || Array.isArray(body)) throw new BadRequestException('Send the details as a JSON object.');
@@ -143,7 +149,15 @@ export class StorageSettingsService {
     let secret: 'none' | 'saved' | 'unreadable' = settings.hasSecret ? 'saved' : 'none';
     if (settings.hasSecret) {
       const row = (await this.pool.query<SecretRow>(CURRENT_SECRET)).rows[0];
-      if (!this.protectedKey || !row || row.key_id !== this.protectedKey.id) secret = 'unreadable';
+      if (!this.protectedKey || !row) secret = 'unreadable';
+      else {
+        try {
+          openSecretRow(this.protectedKey, row);
+        } catch (e) {
+          if (!(e instanceof StorageSecretUnreadable)) throw e;
+          secret = 'unreadable';
+        }
+      }
     }
     return {
       settings,

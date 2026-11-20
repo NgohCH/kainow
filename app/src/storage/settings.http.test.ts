@@ -10,6 +10,8 @@ import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedUser } from '../testing/projects';
 import { keyFile } from '../testing/ai-connections';
 import { StorageSettingsService, storageTokenSource } from './settings.service';
+import { sealStorageSecret } from './secret';
+import type { ProtectedKey } from '../quarantine/protected-key';
 
 const SECRET_A = 'client-secret-test-value-AAAA-0123456789';
 const SECRET_B = 'client-secret-test-value-BBBB-0123456789';
@@ -72,7 +74,7 @@ describe('storage connection settings over HTTP', { skip: SKIP_NO_DB }, () => {
     const secret = await admin.request('POST', '/admin/storage/secret', { reason: 'First secret', clientSecret: SECRET_A });
     assert.equal(secret.status, 200);
 
-    const changes = await rows(`SELECT actor_id, reason, previous, next FROM storage_settings_changes ORDER BY at, id`);
+    const changes = await rows(`SELECT actor_id, reason, previous, next FROM storage_settings_changes ORDER BY at, (next->>'hasSecret')`);
     assert.equal(changes.length, 2);
     assert.equal(changes[0].actor_id, adminId);
     assert.equal(changes[0].reason, reason);
@@ -105,7 +107,7 @@ describe('storage connection settings over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.equal(one.superseded_at, null);
 
     await admin.request('POST', '/admin/storage/secret', { reason, clientSecret: SECRET_B });
-    const all = await rows(`SELECT id, superseded_at FROM storage_connection_secrets ORDER BY saved_at, id`);
+    const all = await rows(`SELECT id, superseded_at FROM storage_connection_secrets ORDER BY saved_at, (superseded_at IS NULL)`);
     assert.equal(all.length, 2);
     assert.equal(all[0].id, one.id);
     assert.notEqual(all[0].superseded_at, null);
@@ -231,5 +233,30 @@ describe('storage connection settings over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.notEqual(await storageTokenSource(t.pool, real), null);
     const other = { ...real!, id: 'other', decrypt: () => { throw new Error('bad'); } };
     assert.equal(await storageTokenSource(t.pool, other), null);
+  });
+
+  test('a corrupted secret row gives a null token source and an unreadable secret, not a thrown error', async () => {
+    const key = (svc as unknown as { protectedKey: ProtectedKey }).protectedKey;
+    await connect();
+    await t.pool.query('ALTER TABLE storage_connection_secrets DISABLE TRIGGER storage_connection_secrets_immutable');
+    await t.pool.query(`UPDATE storage_connection_secrets SET ciphertext = '\\x00112233445566778899' WHERE superseded_at IS NULL`);
+    assert.equal(await storageTokenSource(t.pool, key), null);
+    const got = await admin.request('GET', '/admin/storage');
+    assert.equal(got.body.secret, 'unreadable');
+    assert.deepEqual((await admin.request('POST', '/admin/storage/check')).body, { state: 'refused' });
+  });
+
+  test('a secret sealed for another connection id is unreadable even with the same protected key', async () => {
+    const key = (svc as unknown as { protectedKey: ProtectedKey }).protectedKey;
+    await admin.request('PUT', '/admin/storage', { reason, tenantId: 'tenant-1', clientId: 'client-1' });
+    const sealed = sealStorageSecret(key, SECRET_A, 'other');
+    await t.pool.query(
+      `INSERT INTO storage_connection_secrets (id, ciphertext, nonce, tag, key_id, saved_by, saved_at) VALUES ($1, $2, $3, $4, $5, $6, now())`,
+      [uuidv7(), sealed.ciphertext, sealed.nonce, sealed.tag, sealed.keyId, adminId],
+    );
+    assert.equal(await storageTokenSource(t.pool, key), null);
+    const got = await admin.request('GET', '/admin/storage');
+    assert.equal(got.body.settings.hasSecret, true);
+    assert.equal(got.body.secret, 'unreadable');
   });
 });

@@ -66,6 +66,25 @@ CREATE TABLE storage_connection_secrets (
 );
 CREATE UNIQUE INDEX storage_connection_secrets_current ON storage_connection_secrets ((true)) WHERE superseded_at IS NULL;
 
+-- Append-only like ai_connection_keys (0028): no DELETE or TRUNCATE; the only UPDATE is setting superseded_at, once.
+CREATE FUNCTION storage_connection_secrets_only_supersede() RETURNS trigger LANGUAGE plpgsql AS $$
+BEGIN
+  IF OLD.superseded_at IS NOT NULL
+     OR NEW.superseded_at IS NULL
+     OR (NEW.id, NEW.ciphertext, NEW.nonce, NEW.tag, NEW.key_id, NEW.saved_by, NEW.saved_at)
+        IS DISTINCT FROM (OLD.id, OLD.ciphertext, OLD.nonce, OLD.tag, OLD.key_id, OLD.saved_by, OLD.saved_at) THEN
+    RAISE EXCEPTION 'only superseded_at of storage_connection_secrets may be set, once' USING ERRCODE = 'restrict_violation';
+  END IF;
+  RETURN NEW;
+END;
+$$;
+CREATE TRIGGER storage_connection_secrets_immutable BEFORE UPDATE ON storage_connection_secrets
+  FOR EACH ROW EXECUTE FUNCTION storage_connection_secrets_only_supersede();
+CREATE TRIGGER storage_connection_secrets_no_delete BEFORE DELETE ON storage_connection_secrets
+  FOR EACH ROW EXECUTE FUNCTION ai_config_never_removed();
+CREATE TRIGGER storage_connection_secrets_no_truncate BEFORE TRUNCATE ON storage_connection_secrets
+  FOR EACH STATEMENT EXECUTE FUNCTION ai_config_never_removed();
+
 -- ---------------------------------------------------------------------------
 -- Destinations (the source area and output libraries), their events and the folder cache.
 -- ---------------------------------------------------------------------------

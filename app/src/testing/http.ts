@@ -25,6 +25,8 @@ export interface Client {
   upload(method: string, path: string, body: Buffer, contentType: string): Promise<Reply>;
   /** A request whose answer is read as sent (a download, or headers to check): status, headers and the text. A body is sent as JSON. */
   raw(method: string, path: string, body?: unknown): Promise<{ status: number; headers: Headers; text: string }>;
+  /** Like raw, but sends the given text as the JSON body exactly as written (for malformed bodies). */
+  rawText(method: string, path: string, text: string): Promise<{ status: number; headers: Headers; text: string }>;
 }
 
 /** A queued email as the tests see it. */
@@ -108,6 +110,10 @@ export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opt
           headers: { Cookie: cookie, 'X-CSRF-Token': csrfToken, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
           body: body !== undefined ? JSON.stringify(body) : undefined,
         });
+        return { status: res.status, headers: res.headers, text: await res.text() };
+      },
+      rawText: async (method, path, text) => {
+        const res = await fetch(`${base}${path}`, { method, headers: { Cookie: cookie, 'X-CSRF-Token': csrfToken, 'Content-Type': 'application/json' }, body: text });
         return { status: res.status, headers: res.headers, text: await res.text() };
       },
     };

@@ -314,6 +314,22 @@ describe('migration 0031 (external outputs)', { skip: SKIP_NO_DB }, () => {
     assert.equal(await sqlState(pool, `UPDATE source_versions SET original_bytes = 'x' WHERE id = $1`, [version]), '23001', 'bytes cannot come back');
   });
 
+  test('storage connection secrets are append-only: no delete, no truncate, superseded_at set once', async () => {
+    const RESTRICT = '23001';
+    const id = uuidv7();
+    await pool.query(
+      `INSERT INTO storage_connection_secrets (id, ciphertext, nonce, tag, key_id, saved_by, saved_at) VALUES ($1, '\\x01', '\\x02', '\\x03', 'k1', $2, now())`,
+      [id, userId],
+    );
+    assert.equal(await sqlState(pool, `UPDATE storage_connection_secrets SET ciphertext = '\\x09' WHERE id = $1`, [id]), RESTRICT);
+    assert.equal(await sqlState(pool, `UPDATE storage_connection_secrets SET saved_at = now() WHERE id = $1`, [id]), RESTRICT);
+    assert.equal(await sqlState(pool, `DELETE FROM storage_connection_secrets`), RESTRICT);
+    assert.equal(await sqlState(pool, `TRUNCATE storage_connection_secrets`), RESTRICT);
+    assert.equal(await sqlState(pool, `UPDATE storage_connection_secrets SET superseded_at = now() WHERE id = $1`, [id]), 'ok');
+    assert.equal(await sqlState(pool, `UPDATE storage_connection_secrets SET superseded_at = now() WHERE id = $1`, [id]), RESTRICT);
+    assert.equal(await sqlState(pool, `UPDATE storage_connection_secrets SET superseded_at = NULL WHERE id = $1`, [id]), RESTRICT);
+  });
+
   test('go-live has the storage step at position 12', async () => {
     const r = await pool.query(`SELECT position FROM golive_steps WHERE key = 'storage'`);
     assert.equal(r.rowCount, 1);

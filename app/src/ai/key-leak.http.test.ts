@@ -3,43 +3,12 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
-import { Logger } from '@nestjs/common';
 import { SKIP_NO_DB } from '../testing/db';
+import { captureLogs } from '../testing/logs';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 import { KEY_A, KEY_B, ORG, keyFile, modelBody } from '../testing/ai-connections';
 import { ConnectionsService } from './connections.service';
-
-/** Everything written through the Nest logger, console and the process streams while a test runs. */
-function captureLogs() {
-  const lines: string[] = [];
-  const push = (...args: unknown[]) => {
-    lines.push(args.map((a) => (typeof a === 'string' ? a : a instanceof Error ? `${a.name}: ${a.message}\n${a.stack}` : JSON.stringify(a))).join(' '));
-  };
-  const sink = { log: push, error: push, warn: push, debug: push, verbose: push, fatal: push };
-  Logger.overrideLogger(sink);
-  const out = process.stdout.write.bind(process.stdout);
-  const err = process.stderr.write.bind(process.stderr);
-  const wrap = (orig: typeof out) =>
-    ((chunk: unknown, ...rest: unknown[]) => {
-      push(String(chunk));
-      return (orig as (...a: unknown[]) => boolean)(chunk, ...rest);
-    }) as typeof out;
-  process.stdout.write = wrap(out);
-  process.stderr.write = wrap(err);
-  const consoleKeys = ['log', 'info', 'warn', 'error', 'debug'] as const;
-  const saved = consoleKeys.map((k) => console[k]);
-  for (const k of consoleKeys) console[k] = (...a: unknown[]) => push(...a);
-  return {
-    lines,
-    stop() {
-      process.stdout.write = out;
-      process.stderr.write = err;
-      consoleKeys.forEach((k, i) => (console[k] = saved[i]));
-      Logger.overrideLogger(false);
-    },
-  };
-}
 
 describe('an AI key never leaves the process in any other form', { skip: SKIP_NO_DB }, () => {
   let t: TestApp;
