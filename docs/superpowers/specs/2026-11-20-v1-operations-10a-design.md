@@ -65,6 +65,7 @@ The real installation will run on a Linux VM or server in the cloud. Backups go 
 | Backup location | Configurable: a folder on the server, usually a mounted network share or a second disk that may be offline. |
 | Split | Sub-project 10 is split: **10a** backups, restore drill, storage protection and the Operations panel; then **10b** updater (an updater container inside Compose, A02), release signing, load test and supported browsers. |
 | Releases (for 10b) | The PO tags releases on GitHub and is the only publisher. Installations check on a regular interval and on demand. |
+| Delivery | **One PR after sub-project 9 merges.** The work not tied to 9 may be built first on this branch, but 10a is opened as a single PR only once 9 is on main and the source-area tasks (§5.4, §7.1 source reading, `restore-source-files`) are built on 9's merged interfaces. |
 | Who runs backups | **C: scheduled from the server.** The server's cron runs Kainow's own commands in one-shot containers (`docker compose run --rm ops …`). There is no always-running backup service, and the API and worker never hold the backup key or the backup folder. Each command records its result in Kainow, which raises the warnings. |
 
 ### 2.1 New Decision Register entries
