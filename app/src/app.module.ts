@@ -31,6 +31,7 @@ import { DashboardsModule } from './dashboards/dashboards.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { LeadershipModule } from './leadership/leadership.module';
 import type { StorageConnectorFactory } from './storage/connector-factory';
+import { OutputsModule } from './outputs/outputs.module';
 import { StorageModule } from './storage/storage.module';
 
 @Global()
@@ -78,6 +79,7 @@ export class AppModule {
         AuthModule.register({ codeSender: options.codeSender }),
         SpendModule,
         AiModule,
+        OutputsModule,
         OrganisationModule,
         ProjectsModule,
         NotesModule,

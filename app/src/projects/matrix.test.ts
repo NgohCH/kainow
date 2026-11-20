@@ -46,6 +46,7 @@ test('the matrix holds exactly the agreed rows', () => {
     'quarantine.copies': ['pm,deputy_pm', 'draft,planned,active,deferred,closed'],
     'ai.limits.manage': ['pm,owner,sponsor', 'draft,planned,active'],
     'ai.connections.manage': ['pm,owner,sponsor', 'draft,planned,active'],
+    'outputs.settings': ['pm,owner,sponsor', 'draft,planned,active'],
     'ai.connections.view': ['pm,deputy_pm,owner,sponsor', 'draft,planned,active,deferred,closed'],
     'ai.usage.view': ['pm,owner,sponsor', 'draft,planned,active,deferred,closed'],
   });

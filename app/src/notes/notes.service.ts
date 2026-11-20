@@ -18,6 +18,7 @@ import { STORAGE_CONNECTORS, type StorageConnectorFactory } from '../storage/con
 import { type StorageNotify, makeStorageNotify } from '../storage/notices';
 import { CHANGED_IN_STORAGE, MISSING_FROM_STORAGE, STORE_UNREACHABLE, openOriginal } from '../storage/source-files';
 import { type VersionStorage, addSourceVersionFiles, versionStorage } from '../storage/sources';
+import { assertInputFormatAllowed } from '../outputs/input-check';
 import { UploadRejected, readUpload } from './readers';
 import { NoteTextError, normaliseText, sha256Hex } from './text';
 
@@ -125,7 +126,7 @@ export class NotesService {
 
   private readonly notify: StorageNotify;
 
-  private async prepare(content: NewContent): Promise<Prepared> {
+  private async prepare(content: NewContent, projectId: string): Promise<Prepared> {
     const hasText = content.text !== undefined;
     if (hasText === Boolean(content.file)) {
       throw new BadRequestException('Send either pasted text or one file, not both and not neither');
@@ -133,6 +134,7 @@ export class NotesService {
     try {
       if (content.file) {
         const filename = cleanFilename(content.file.originalname);
+        await assertInputFormatAllowed(this.pool, projectId, filename);
         const read = await readUpload(filename, content.file.buffer);
         return { origin: 'upload', text: read.text, filename, mediaType: read.mediaType, original: content.file.buffer };
       }
@@ -162,7 +164,7 @@ export class NotesService {
     actorUserId: string;
     submission?: SubmissionInput;
   }): Promise<{ source: SourceSummary; version: VersionSummary }> {
-    const prepared = await this.prepare(input.content);
+    const prepared = await this.prepare(input.content, input.projectId);
     // Every import is checked for credentials (D79), an upload on its text after extraction; only the kind is named.
     refuseSecrets(prepared.text);
     input.submission?.refuse(prepared.text);
@@ -199,7 +201,9 @@ export class NotesService {
   }
 
   async addVersion(sourceId: string, content: NewContent, actorUserId: string): Promise<VersionSummary> {
-    const prepared = await this.prepare(content);
+    const owner = await this.pool.query<{ project_id: string }>(`SELECT project_id FROM sources s WHERE id = $1 AND ${liveSourceSql('s')}`, [sourceId]);
+    if (owner.rowCount === 0) throw new NotFoundException();
+    const prepared = await this.prepare(content, owner.rows[0].project_id);
     const at = this.now();
     const client = await this.pool.connect();
     try {

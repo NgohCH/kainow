@@ -47,6 +47,7 @@ export type ProjectAction =
   | 'quarantine.copies'
   | 'ai.limits.manage'
   | 'ai.connections.manage'
+  | 'outputs.settings'
   | 'ai.connections.view'
   | 'ai.usage.view';
 
@@ -221,6 +222,11 @@ export const PROJECT_MATRIX: Readonly<Record<ProjectAction, MatrixRow>> = {
     roles: ['pm', 'owner', 'sponsor'],
     states: OPEN,
     refusal: "Only the Project Manager, the Owner or a Sponsor can manage the project's AI connections, and only when the Administrator allows it.",
+  },
+  'outputs.settings': {
+    roles: ['pm', 'owner', 'sponsor'],
+    states: OPEN,
+    refusal: "Only the Project Manager, the Owner or a Sponsor can change the project's output settings, and not while the project is Deferred or Closed.",
   },
   'ai.connections.view': {
     roles: ['pm', 'deputy_pm', 'owner', 'sponsor'],
