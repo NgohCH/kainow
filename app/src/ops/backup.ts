@@ -7,7 +7,7 @@
  */
 import type { ChildProcess } from 'node:child_process';
 import { createReadStream, createWriteStream, existsSync, readFileSync, statSync } from 'node:fs';
-import { mkdir, rename, unlink, writeFile } from 'node:fs/promises';
+import { mkdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -18,6 +18,7 @@ import { type FailureCode, OPS_FAILURES, currentMigrationLevel, withBackupLock }
 import type { OpsConfig } from './config';
 import { type BackupKey, decryptStream, encryptStream, loadBackupKey, sha256Stream } from './crypto';
 import { type BackupKind, type BackupSummary, type Manifest, SET_FILES, type SourceFileCopier, decryptFile } from './manifest';
+import { expireBackups } from './expiry';
 import { notifyAdmins } from './notify';
 import type { PgTools } from './pg-tools';
 
@@ -258,11 +259,16 @@ async function backupLocked(kind: BackupKind, newKey: boolean, deps: BackupDeps)
     const loaded = loadBackupKey(config.backupKeyFile);
     if ('error' in loaded) throw new OpsFailure(loaded.error);
     const key = loaded;
-    const previous = (
-      await pool.query(
-        `SELECT key_id FROM backup_runs WHERE outcome = 'succeeded' AND key_id IS NOT NULL ORDER BY finished_at DESC, id DESC LIMIT 1`,
-      )
-    ).rows[0]?.key_id as string | undefined;
+    let previous: string | undefined;
+    try {
+      previous = (
+        await pool.query(
+          `SELECT key_id FROM backup_runs WHERE outcome = 'succeeded' AND key_id IS NOT NULL ORDER BY finished_at DESC, id DESC LIMIT 1`,
+        )
+      ).rows[0]?.key_id as string | undefined;
+    } catch {
+      throw new OpsFailure('database_unreachable');
+    }
     const keyChanged = previous !== undefined && previous !== key.id;
     if (keyChanged && !newKey) throw new OpsFailure('key_changed');
 
@@ -363,9 +369,16 @@ async function backupLocked(kind: BackupKind, newKey: boolean, deps: BackupDeps)
       }
     });
 
-    // Expiry (Task 5) runs here, after a success only: a run of failures can never remove the last good copy.
-
     deps.out(`Backup set ${setName} written.`);
+    // Expiry runs here, after a success only: a run of failures can never remove the last good copy. It never turns
+    // a good backup into a failed one.
+    try {
+      const expired = await expireBackups(pool, config, key, deps.now());
+      if (expired.sets > 0 || expired.files > 0) deps.out(`Expired ${expired.sets} old sets and ${expired.files} unused files.`);
+      if (expired.filesSkipped) deps.out('Unused files were not removed this time: a backup set could not be read.');
+    } catch {
+      deps.err('Old backups could not be expired this time.');
+    }
     deps.out(`run ${runId} succeeded`);
     return 0;
   } catch (err) {
@@ -404,6 +417,8 @@ async function recordFailure(
   let setName = f.setName;
   if (f.setDir && existsSync(f.setDir)) {
     try {
+      // A set with backup.json is complete by definition, so it goes first (a failure while recording the success).
+      await rm(join(f.setDir, SET_FILES.summary), { force: true });
       await rename(f.setDir, `${f.setDir}-incomplete`);
       setName = `${f.setName}-incomplete`;
     } catch {
@@ -430,6 +445,16 @@ async function recordFailure(
     });
   } catch {
     deps.err(OPS_FAILURES.database_unreachable);
+    // The combined transaction failed as a whole; still try to leave the row failed rather than running.
+    try {
+      await deps.pool.query(
+        `UPDATE backup_runs SET outcome = 'failed', failure_code = $2, failure_detail = $3, finished_at = $4, set_name = $5
+         WHERE id = $1`,
+        [f.runId, f.code, text, at, setName],
+      );
+    } catch {
+      // The database is gone; the sweep marks the row interrupted.
+    }
   }
   deps.err(text);
   deps.out(`run ${f.runId} failed ${f.code}`);

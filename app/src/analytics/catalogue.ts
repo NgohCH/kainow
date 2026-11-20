@@ -74,6 +74,7 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['ops.backup_succeeded', 'A backup run finished and its set was read back and checked.'],
     ['ops.backup_failed', 'A backup run failed, with a fixed failure code.'],
     ['ops.backup_key_changed', 'A backup ran with a new backup key (--new-key); key ids only.'],
+    ['ops.backup_expired', 'Old backup sets and unused stored files were removed after a backup; counts only.'],
   ]),
   ...audit('Projects', PERSON, 'project', [
     ['project.created', 'A project was created as a draft.'],

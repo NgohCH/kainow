@@ -307,4 +307,59 @@ describe('backup command', { skip: SKIP_NO_DB }, () => {
     for (const r of rows) assert.ok(!r.failure_detail.includes(root));
     for (const line of [...out, ...err]) assert.ok(!line.includes(root));
   });
+  /** A pool whose clients throw on any query matching `bad` (also on pool.query), for forcing failures at one step. */
+  function flaky(bad: RegExp): Pool {
+    const wrap = <T extends { query: (...a: any[]) => Promise<any> }>(c: T): T =>
+      new Proxy(c, {
+        get(target, prop) {
+          if (prop === 'query') {
+            return (text: unknown, ...rest: unknown[]) =>
+              typeof text === 'string' && bad.test(text)
+                ? Promise.reject(new Error('forced failure'))
+                : (target.query as (...a: unknown[]) => Promise<unknown>)(text, ...rest);
+          }
+          const v = Reflect.get(target, prop);
+          return typeof v === 'function' ? v.bind(target) : v;
+        },
+      });
+    return new Proxy(pool, {
+      get(target, prop) {
+        if (prop === 'connect') return async () => wrap(await target.connect());
+        if (prop === 'query') return (text: unknown, ...a: unknown[]) => (wrap(target) as unknown as { query: (...x: unknown[]) => unknown }).query(text, ...a);
+        const v = Reflect.get(target, prop);
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+  }
+
+  test('a failure at the record stage leaves an -incomplete set without backup.json', async (t) => {
+    if (!needTools(t)) return;
+    const { d, out } = deps({}, { pool: flaky(/SET outcome = 'succeeded'/) });
+    assert.equal(await runBackup([], d), 1);
+    assert.match(lastLine(out), /failed database_unreachable$/);
+    const sets = readdirSync(setsDir());
+    assert.equal(sets.length, 1);
+    assert.match(sets[0], /-incomplete$/);
+    assert.equal(existsSync(join(setsDir(), sets[0], 'backup.json')), false);
+  });
+
+  test('a database error on the previous-key query is database_unreachable, not key_invalid', async () => {
+    const { d, out } = deps({}, { pool: flaky(/SELECT key_id FROM backup_runs/) });
+    assert.equal(await runBackup([], d), 1);
+    assert.match(lastLine(out), /failed database_unreachable$/);
+    const r = await row(runIdOf(out));
+    assert.equal(r.failure_code, 'database_unreachable');
+  });
+
+  test('if the combined failure transaction fails, a bare update still leaves no running row', async () => {
+    const { d, out } = deps({ backupDir: join(root, 'missing-folder') }, { pool: flaky(/INSERT INTO audit_events/) });
+    assert.equal(await runBackup([], d), 1);
+    assert.match(lastLine(out), /failed folder_missing$/);
+    const r = await row(runIdOf(out));
+    assert.equal(r.outcome, 'failed');
+    assert.equal(r.failure_code, 'folder_missing');
+    assert.equal(r.failure_detail, OPS_FAILURES.folder_missing);
+    assert.ok(r.finished_at);
+    assert.equal((await audits(runIdOf(out))).length, 0);
+  });
 });
