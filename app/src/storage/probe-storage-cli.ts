@@ -227,7 +227,7 @@ export async function probeStorage(connector: GraphConnector, dest: DestinationR
     if (!opts.granted) return ['note', `folder invitations ${invited === 'ok' ? 'worked' : 'were refused as forbidden'} with the site permission the app holds now; say which with --granted write|fullcontrol`];
     if (opts.granted === 'fullcontrol') return ['note', 'not tested: the app holds fullcontrol; run again after the Microsoft administrator grants write only'];
     return invited === 'ok'
-      ? ['ok', 'write suffices for folder invitations: the Storage page can ask for write only']
+      ? ['ok', 'write suffices for folder invitations: write is enough on every Kainow site in this tenant (the Storage page and INSTALL.md ask for fullcontrol until this is shown)']
       : ['FAILED', 'write does not suffice for folder invitations: grant fullcontrol on output sites and the source-area site'];
   });
 

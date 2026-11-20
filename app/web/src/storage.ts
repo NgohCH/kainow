@@ -158,30 +158,29 @@ export function permissionInstructions(directoryLookup: boolean): PermissionLine
 }
 
 export interface SiteGrantExample {
-  /** The permission the Microsoft administrator grants on the site. */
-  role: 'write' | 'fullcontrol';
+  /** The permission the Microsoft administrator grants on the site (spec 5.3: fullcontrol for every Kainow site). */
+  role: 'fullcontrol';
   why: string;
   powershell: string;
   graph: string;
 }
 
 /**
- * What to run for one destination, with placeholder names only. The source area needs write on the site; an outputs
- * site needs fullcontrol, because Kainow shares folders there with the people who may read them.
+ * What to run for one destination, with placeholder names only. Every Kainow site needs fullcontrol (spec 5.3): an
+ * outputs site because Kainow shares each output folder with its readers, the source area because Kainow invites the
+ * storage Administrators to its folder. Write is enough only when `npm run probe-storage` says "write sufficed: ok".
  */
 export function siteGrantExample(purpose: DestinationPurpose, kind: DestinationKind): SiteGrantExample {
-  const role = purpose === 'source_area' ? 'write' : 'fullcontrol';
   const site = kind === 'onedrive' ? 'https://<tenant>-my.sharepoint.com/personal/<account>' : 'https://<tenant>.sharepoint.com/sites/<site-name>';
   const why =
-    role === 'write'
-      ? 'Write on the site lets Kainow store source files in the source area. It does not let Kainow change who can open the site.'
+    purpose === 'source_area'
+      ? 'Full control on the site lets Kainow store source files in the source area and give the storage Administrators you designate direct access to its folder. Kainow only removes permissions it granted itself. Write is enough only if the storage probe (npm run probe-storage) shows "write sufficed: ok" for your tenant.'
       : 'Full control on the site lets Kainow create output folders and share each one with the people who may read it. Kainow only ever grants read, and only removes permissions it granted itself.';
-  const psRole = role === 'write' ? 'Write' : 'FullControl';
   return {
-    role,
+    role: 'fullcontrol',
     why,
-    powershell: `Grant-PnPAzureADAppSitePermission -AppId "<application-id>" -DisplayName "Kainow" -Site "${site}" -Permissions ${psRole}`,
-    graph: `POST https://graph.microsoft.com/v1.0/sites/<site-id>/permissions\n{ "roles": ["${role}"], "grantedToIdentities": [ { "application": { "id": "<application-id>", "displayName": "Kainow" } } ] }`,
+    powershell: `Grant-PnPAzureADAppSitePermission -AppId "<application-id>" -DisplayName "Kainow" -Site "${site}" -Permissions FullControl`,
+    graph: `POST https://graph.microsoft.com/v1.0/sites/<site-id>/permissions\n{ "roles": ["fullcontrol"], "grantedToIdentities": [ { "application": { "id": "<application-id>", "displayName": "Kainow" } } ] }`,
   };
 }
 

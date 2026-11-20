@@ -70,14 +70,19 @@ test('permission instructions list Sites.Selected always and User.ReadBasic.All 
   assert.deepEqual(permissionInstructions(true).map((p) => p.name), ['Sites.Selected', 'User.ReadBasic.All']);
 });
 
-test('site grant examples use write for the source area, fullcontrol for outputs and placeholders only', () => {
+test('site grant examples use fullcontrol for the source area and outputs, with placeholders only', () => {
   const src = siteGrantExample('source_area', 'sharepoint_library');
   const out = siteGrantExample('outputs', 'sharepoint_library');
-  assert.equal(src.role, 'write');
+  assert.equal(src.role, 'fullcontrol');
   assert.equal(out.role, 'fullcontrol');
-  assert.match(src.powershell, /-Permissions Write$/);
+  assert.match(src.powershell, /-Permissions FullControl$/);
   assert.match(out.powershell, /-Permissions FullControl$/);
+  assert.match(src.graph, /"fullcontrol"/);
   assert.match(out.graph, /"fullcontrol"/);
+  // Storage Administrators are invited to the source area's folder; write is enough only when the probe says so.
+  assert.match(src.why, /storage Administrators/);
+  assert.match(src.why, /probe-storage/);
+  assert.match(src.why, /write sufficed/);
   for (const t of [src.powershell, src.graph, out.powershell, out.graph]) assert.match(t, /<application-id>/);
   assert.match(out.powershell, /<tenant>\.sharepoint\.com\/sites\/<site-name>/);
   assert.match(siteGrantExample('outputs', 'onedrive').powershell, /<tenant>-my\.sharepoint\.com\/personal\/<account>/);

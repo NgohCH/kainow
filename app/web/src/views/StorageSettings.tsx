@@ -77,7 +77,7 @@ function GrantExample({ purpose, kind }: { purpose: DestinationPurpose; kind: De
   const ex = siteGrantExample(purpose, kind);
   return (
     <details>
-      <summary>How the Microsoft administrator grants {ex.role === 'write' ? 'write' : 'full control'} on this site</summary>
+      <summary>How the Microsoft administrator grants full control on this site</summary>
       <p>{ex.why}</p>
       <p className="meta">With PowerShell (replace the names in angle brackets):</p>
       <pre tabIndex={0}><code>{ex.powershell}</code></pre>
