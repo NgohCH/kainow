@@ -54,4 +54,20 @@ describe('notifyAdmins', { skip: SKIP_NO_DB }, () => {
     }
     assert.deepEqual(rows.map((r) => r.outbox_id).sort(), out.rows.map((r) => r.id).sort());
   });
+  test('given a Pool, a failure part-way writes nothing (one transaction)', async () => {
+    const admins = (await pool.query(`SELECT id FROM users WHERE status = 'active' AND role = 'enterprise_administrator' ORDER BY id`)).rows;
+    assert.ok(admins.length >= 2);
+    const last = admins[admins.length - 1].id as string;
+    await pool.query(`CREATE FUNCTION ops_notify_fail() RETURNS trigger LANGUAGE plpgsql AS $$
+      BEGIN IF NEW.user_id = '${last}' AND NEW.summary = 'Atomic check.' THEN RAISE EXCEPTION 'refused'; END IF; RETURN NEW; END $$`);
+    await pool.query(`CREATE TRIGGER ops_notify_fail BEFORE INSERT ON notifications FOR EACH ROW EXECUTE FUNCTION ops_notify_fail()`);
+    try {
+      await assert.rejects(notifyAdmins(pool, { kind: 'backup_failed', summary: 'Atomic check.', link: null, now: AT, urgent: true }));
+    } finally {
+      await pool.query('DROP TRIGGER ops_notify_fail ON notifications');
+      await pool.query('DROP FUNCTION ops_notify_fail()');
+    }
+    assert.equal((await pool.query(`SELECT count(*)::int AS n FROM notifications WHERE summary = 'Atomic check.'`)).rows[0].n, 0);
+    assert.equal((await pool.query(`SELECT count(*)::int AS n FROM email_outbox WHERE subject LIKE '%Atomic check.%'`)).rows[0].n, 0);
+  });
 });

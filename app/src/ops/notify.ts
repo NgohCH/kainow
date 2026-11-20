@@ -11,21 +11,45 @@ export interface AdminNotice {
   urgent: true;
 }
 
+const isClient = (db: Pool | PoolClient): db is PoolClient => typeof (db as PoolClient).release === 'function';
+
 /**
  * One in-app notice per Active Enterprise Administrator plus one queued email each. The notice is marked email_off
  * because mailing.ts only handles trigger-based notices; the outbox row is what gets the email out (the worker sends it).
+ * Atomic: given a Pool, all rows are written in one transaction; given a PoolClient, the caller's transaction is used.
  */
 export async function notifyAdmins(db: Pool | PoolClient, n: AdminNotice): Promise<void> {
-  for (const userId of await loadAdmins(db)) {
-    const email = (await db.query('SELECT email FROM users WHERE id = $1', [userId])).rows[0]?.email as string | undefined;
+  if (isClient(db)) return writeNotices(db, n);
+  const client = await db.connect();
+  let broken = false;
+  try {
+    await client.query('BEGIN');
+    try {
+      await writeNotices(client, n);
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => (broken = true));
+      throw err;
+    }
+  } finally {
+    client.release(broken);
+  }
+}
+
+async function writeNotices(db: PoolClient, n: AdminNotice): Promise<void> {
+  const ids = await loadAdmins(db);
+  if (ids.length === 0) return;
+  const emails = new Map<string, string>(
+    (await db.query('SELECT id, email FROM users WHERE id = ANY($1::uuid[])', [ids])).rows.map((r) => [r.id, r.email]),
+  );
+  for (const userId of ids) {
+    const email = emails.get(userId);
     const outboxId = email
       ? await writeOutbox(db, {
           toUserId: userId,
           toAddress: email,
           subject: n.summary,
-          body: n.link ? `${n.summary}
-
-${n.link}` : n.summary,
+          body: n.link ? `${n.summary}\n\n${n.link}` : n.summary,
           kind: n.kind,
           projectId: null,
           initiatedBy: 'system',

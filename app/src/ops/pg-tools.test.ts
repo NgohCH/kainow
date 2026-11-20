@@ -15,4 +15,11 @@ describe('pg client tools', () => {
     }
     assert.equal(major, 16);
   });
+  test('a malformed connection string fails with a fixed message that does not repeat it', () => {
+    const tools = new PgTools('postgres://user:s3cret-pw@host:notaport/db');
+    assert.throws(
+      () => tools.dump([]),
+      (e: Error) => e.message === 'The database connection setting is not a valid URL.' && !e.message.includes('s3cret'),
+    );
+  });
 });

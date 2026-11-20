@@ -45,7 +45,13 @@ export class PgTools {
   }
 
   private connection(): Record<string, string> {
-    const u = new URL(this.connectionString);
+    let u: URL;
+    try {
+      u = new URL(this.connectionString);
+    } catch {
+      // The input is not repeated: it can carry a password.
+      throw new Error('The database connection setting is not a valid URL.');
+    }
     const docker = this.env.KAINOW_TEST_PG_DOCKER;
     return {
       PGHOST: docker ? '127.0.0.1' : u.hostname,

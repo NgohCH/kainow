@@ -70,6 +70,11 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
   ...audit('Operations', ADMIN, 'operations', [
     ['ops.settings_changed', 'Operations settings (backup retention, storage levels, safe floor, diagnostic retention) were changed, with a reason.'],
   ]),
+  ...audit('Operations', SYSTEM, 'backup run', [
+    ['ops.backup_succeeded', 'A backup run finished and its set was read back and checked.'],
+    ['ops.backup_failed', 'A backup run failed, with a fixed failure code.'],
+    ['ops.backup_key_changed', 'A backup ran with a new backup key (--new-key); key ids only.'],
+  ]),
   ...audit('Projects', PERSON, 'project', [
     ['project.created', 'A project was created as a draft.'],
     ['project.edited', 'A project’s details were edited.'],
