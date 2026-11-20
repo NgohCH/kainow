@@ -6,12 +6,12 @@ import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { refuseSecretsIn } from '../common/reason';
 import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
-import { ProjectAccess } from '../projects/access.service';
+import { ProjectAccess, type ProjectContext } from '../projects/access.service';
 import { decide } from '../projects/matrix';
 import { loadResourceSettings } from '../resources/settings.service';
 import { type Adj, type Figures, countedAmount, figures } from './figures';
 import { CURRENCIES, type Currency, parseAmount, toDecimalString } from './money';
-import { effectiveThresholds, loadProjectFinanceSettings, mayReadFinance } from './readers';
+import { type ProjectFinanceSettings, effectiveThresholds, loadProjectFinanceSettings, mayReadFinance } from './readers';
 import { evaluateFinanceWarnings } from './warnings';
 
 type Db = Pool | PoolClient;
@@ -190,6 +190,29 @@ export async function countPendingAdjustments(db: Db, projectId: string): Promis
     [projectId],
   );
   return rows[0].n;
+}
+
+export type FinanceSummary =
+  | { tracking: ProjectFinanceSettings['tracking'] }
+  | {
+      tracking: 'enabled';
+      currency: Currency;
+      figures: FiguresView;
+      pendingAdjustments: number;
+      notInTotals: FiguresView['notInTotals'];
+    };
+
+/**
+ * The finance block of the Resources tab and the project dashboard: figures for financial-detail readers while tracking
+ * is Enabled; the tracking value alone for anyone else (spec 4, 5).
+ */
+export async function financeSummaryFor(db: Db, ctx: Pick<ProjectContext, 'roles' | 'grantKinds'>, projectId: string): Promise<FinanceSummary> {
+  const s = await loadProjectFinanceSettings(db, projectId);
+  if (s.tracking !== 'enabled' || !mayReadFinance(ctx, s)) return { tracking: s.tracking };
+  const f = await loadFigures(db, projectId);
+  if (!f) return { tracking: s.tracking };
+  const figures = figuresView(f, f.warnThresholds);
+  return { tracking: 'enabled', currency: f.currency, figures, pendingAdjustments: await countPendingAdjustments(db, projectId), notInTotals: figures.notInTotals };
 }
 
 function entryViews(entries: EntryRow[], reporting: Currency | null, pending: PendingView[]): EntryView[] {

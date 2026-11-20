@@ -51,6 +51,21 @@ describe('personal dashboard endpoint', { skip: SKIP_NO_DB }, () => {
       computedAt: string;
     };
   };
+
+  async function resourceLine(project: string, o: { item?: string; kind?: string; description?: string; status?: string; neededBy?: string | null; startsOn?: string | null; endsOn?: string | null; by: string }): Promise<string> {
+    const id = uuidv7();
+    await t.pool.query(
+      `INSERT INTO resource_lines (id, project_id, item_id, one_off_kind, description, status, needed_by, starts_on, ends_on, created_by, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now(), now())`,
+      [id, project, o.item ?? null, o.item ? null : (o.kind ?? 'other'), o.item ? '' : (o.description ?? 'Dummy hire'), o.status ?? 'needed', o.neededBy ?? null, o.startsOn ?? null, o.endsOn ?? null, o.by],
+    );
+    return id;
+  }
+  async function resourceItem(reference: string, name: string, by: string): Promise<string> {
+    const id = uuidv7();
+    await t.pool.query(`INSERT INTO resource_items (id, kind, reference, name, created_by, created_at, status) VALUES ($1, 'equipment', $2, $3, $4, now(), 'active')`, [id, reference, name, by]);
+    return id;
+  }
   const kinds = (body: { needsYou: NeedsYou[] }, kind: string) => body.needsYou.filter((n) => n.kind === kind);
 
   async function task(opts: { title?: string; assignee?: string; dueOn?: string; status?: string; project?: string; review?: boolean; completedAt?: string } = {}): Promise<string> {
@@ -241,6 +256,18 @@ describe('personal dashboard endpoint', { skip: SKIP_NO_DB }, () => {
     const pm = kinds(await me('pm'), 'deadline_review');
     assert.deepEqual(pm.map((n) => [n.label, n.link]), [['Deadline review to prepare: 1 task', `#/projects/${projectId}/deadline-review`]]);
     assert.deepEqual(kinds(await me('owner'), 'deadline_review'), []);
+  });
+
+  test('resources past needed-by date need the PM or a Deputy, as one item per project', async () => {
+    await resourceLine(projectId, { neededBy: '2026-11-08', by: ids.pm });
+    await resourceLine(projectId, { neededBy: '2026-10-01', by: ids.pm });
+    await resourceLine(projectId, { neededBy: '2026-11-09', by: ids.pm });
+    await resourceLine(projectId, { neededBy: '2026-10-01', status: 'arranged', by: ids.pm });
+    await resourceLine(projectId, { neededBy: '2026-10-01', status: 'cancelled', by: ids.pm });
+    const pm = kinds(await me('pm'), 'resources');
+    assert.deepEqual(pm.map((n) => [n.label, n.link, n.projectId]), [['Resources past needed-by date: 2', `#/projects/${projectId}/resources`, projectId]]);
+    assert.deepEqual(kinds(await me('mem'), 'resources'), []);
+    assert.deepEqual(kinds(await me('owner'), 'resources'), []);
   });
 
   test('archived projects are left out unless asked for', async () => {

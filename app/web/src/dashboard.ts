@@ -46,7 +46,7 @@ export interface ProjectDashboard {
 }
 
 export interface NeedsYouItem {
-  kind: 'approval' | 'minutes' | 'question' | 'copies' | 'deadline_review';
+  kind: 'approval' | 'minutes' | 'question' | 'copies' | 'deadline_review' | 'resources';
   projectId: string;
   projectName: string;
   label: string;
@@ -96,7 +96,7 @@ export interface PersonalDashboard {
   computedAt: string;
 }
 
-export type TimelineLineKind = 'stage' | 'status' | 'archive' | 'tasks_due' | 'risk_review' | 'planned_end';
+export type TimelineLineKind = 'stage' | 'status' | 'archive' | 'tasks_due' | 'risk_review' | 'resource_needed_by' | 'planned_end';
 export interface TimelineLine {
   day: string;
   kind: TimelineLineKind;
@@ -116,6 +116,7 @@ export const TIMELINE_KIND_LABELS: Record<TimelineLineKind, string> = {
   archive: 'Archive and unarchive',
   tasks_due: 'Task due dates',
   risk_review: 'Risk reviews',
+  resource_needed_by: 'Resources needed by',
   planned_end: 'Planned end',
 };
 

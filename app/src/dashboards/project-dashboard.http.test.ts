@@ -77,6 +77,21 @@ describe('project dashboard endpoint', { skip: SKIP_NO_DB }, () => {
        VALUES ($1, $2, $3, $4, 'member', '2026-11-10', $5, $6, '2026-11-09T00:00:00Z', $7, 'invited')`,
       [uuidv7(), projectId, `${uuidv7().slice(-8)}@example.org`, name, ids.pm, uuidv7(), expiresAt],
     );
+
+  async function resourceLine(project: string, o: { item?: string; kind?: string; description?: string; status?: string; neededBy?: string | null; startsOn?: string | null; endsOn?: string | null; by: string }): Promise<string> {
+    const id = uuidv7();
+    await t.pool.query(
+      `INSERT INTO resource_lines (id, project_id, item_id, one_off_kind, description, status, needed_by, starts_on, ends_on, created_by, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now(), now())`,
+      [id, project, o.item ?? null, o.item ? null : (o.kind ?? 'other'), o.item ? '' : (o.description ?? 'Dummy hire'), o.status ?? 'needed', o.neededBy ?? null, o.startsOn ?? null, o.endsOn ?? null, o.by],
+    );
+    return id;
+  }
+  async function resourceItem(reference: string, name: string, by: string): Promise<string> {
+    const id = uuidv7();
+    await t.pool.query(`INSERT INTO resource_items (id, kind, reference, name, created_by, created_at, status) VALUES ($1, 'equipment', $2, $3, $4, now(), 'active')`, [id, reference, name, by]);
+    return id;
+  }
   const get = (person: string) => people[person].request('GET', `/projects/${projectId}/dashboard`);
 
   test('member sees figures; names hidden from member, shown to PM', async () => {
@@ -153,5 +168,45 @@ describe('project dashboard endpoint', { skip: SKIP_NO_DB }, () => {
     }
     const r = await get('pm');
     assert.deepEqual(r.body.questions.oldestOpen.map((x: { text: string }) => x.text), ['Credential removed — under review']);
+  });
+
+  test('resource counts, needed-by passed and overlapping lines', async () => {
+    const proj = await resourceItem('P-04', 'Dummy projector', ids.pm);
+    const other = await seedProject(t.pool, { status: 'active', name: 'Elsewhere', members: [{ userId: ids.stranger, role: 'pm' }, { userId: ids.stranger, role: 'owner' }] });
+    await resourceLine(projectId, { item: proj, neededBy: '2026-11-01', startsOn: '2026-12-03', endsOn: '2026-12-14', by: ids.pm });
+    await resourceLine(projectId, { item: proj, neededBy: '2026-11-09', startsOn: '2027-03-01', by: ids.pm });
+    await resourceLine(projectId, { kind: 'facility', description: 'Hall', status: 'arranged', neededBy: '2026-10-01', by: ids.pm });
+    await resourceLine(projectId, { item: proj, status: 'cancelled', neededBy: '2026-10-01', startsOn: '2026-12-05', by: ids.pm });
+    await resourceLine(other, { item: proj, startsOn: '2026-12-10', endsOn: '2026-12-20', by: ids.stranger });
+    // The other project's cancelled line overlaps nothing.
+    await resourceLine(other, { item: proj, status: 'cancelled', startsOn: '2027-03-01', by: ids.stranger });
+    for (const who of ['pm', 'mem']) {
+      const r = await get(who);
+      assert.deepEqual(r.body.resources, { byStatus: { needed: 2, arranged: 1, in_use: 0, finished: 0, cancelled: 1 }, neededByPassed: 1, overlapping: 1 }, who);
+    }
+    const list = await people.pm.request('GET', `/projects/${projectId}/resources`);
+    assert.equal(list.body.lines.filter((l: { neededByPassed: boolean }) => l.neededByPassed).length, 1);
+    assert.deepEqual(list.body.counts, (await get('pm')).body.resources.byStatus);
+  });
+
+  test('finance block: a Member sees the tracking value only, the PM sees the figures, the same as the Resources tab', async () => {
+    assert.deepEqual((await get('pm')).body.finance, { tracking: 'not_required' });
+    await t.pool.query(`INSERT INTO project_finance_settings (project_id, tracking, currency) VALUES ($1, 'enabled', 'MYR')`, [projectId]);
+    const cr = uuidv7();
+    await t.pool.query(
+      `INSERT INTO change_requests (id, project_id, kind, target_kind, target_id, version, required_approvals, status, submitted_by, submitted_at)
+       VALUES ($1, $2, 'set_budget', 'project_budget', $2, 1, 1, 'authorised', $3, now())`,
+      [cr, projectId, ids.pm],
+    );
+    await t.pool.query(`INSERT INTO budget_versions (id, project_id, amount, currency, change_request_id, approved_at) VALUES ($1, $2, '1000.00', 'MYR', $3, now())`, [uuidv7(), projectId, cr]);
+    assert.deepEqual((await get('mem')).body.finance, { tracking: 'enabled' });
+    assert.deepEqual((await get('auditor')).body.finance, { tracking: 'enabled' });
+    const pm = (await get('pm')).body.finance;
+    assert.equal(pm.tracking, 'enabled');
+    assert.equal(pm.currency, 'MYR');
+    assert.equal(pm.figures.budget, '1000.00');
+    assert.equal(pm.pendingAdjustments, 0);
+    const tab = (await people.pm.request('GET', `/projects/${projectId}/resources`)).body.finance;
+    assert.deepEqual(pm, tab);
   });
 });

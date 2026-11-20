@@ -33,7 +33,7 @@ export const LEADERSHIP_FIELDS: readonly { key: string; label: string; required?
 ];
 export const LEADERSHIP_FIXED_FIELDS: readonly string[] = LEADERSHIP_FIELDS.filter((f) => f.required).map((f) => f.key);
 
-export type TimelineKind = 'stage' | 'status' | 'archive' | 'tasks_due' | 'risk_review' | 'planned_end';
+export type TimelineKind = 'stage' | 'status' | 'archive' | 'tasks_due' | 'risk_review' | 'resource_needed_by' | 'planned_end';
 export type Theme = 'light' | 'dark';
 export const ACCENT_KEYS = ['teal', 'blue', 'plum', 'slate'] as const;
 export type AccentKey = (typeof ACCENT_KEYS)[number];

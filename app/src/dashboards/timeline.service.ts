@@ -113,6 +113,20 @@ export class TimelineService {
       });
     }
 
+    // Needed-by dates of resource lines in range; Cancelled lines are not needed.
+    const needed = (
+      await this.pool.query(
+        `SELECT l.id, to_char(l.needed_by, 'YYYY-MM-DD') AS day, i.reference, i.name, l.description
+           FROM resource_lines l LEFT JOIN resource_items i ON i.id = l.item_id
+          WHERE l.project_id = $1 AND l.status <> 'cancelled' AND l.needed_by BETWEEN $2::date AND $3::date
+          ORDER BY l.needed_by, coalesce(i.reference, l.description), l.created_at, l.id`,
+        [projectId, from, to],
+      )
+    ).rows as { id: string; day: string; reference: string | null; name: string | null; description: string }[];
+    for (const l of needed) {
+      lines.push({ day: l.day, kind: 'resource_needed_by', label: `Needed by: ${l.reference !== null ? `${l.reference} ${l.name}` : l.description}`, detail: { lineId: l.id } });
+    }
+
     return {
       range,
       today: ctx.today,

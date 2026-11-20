@@ -7,8 +7,8 @@ import { PG_POOL } from '../db/database.module';
 import { liveRecordSql } from '../history/deleted-sql';
 import { ProjectAccess, type ProjectContext } from '../projects/access.service';
 import { type ProjectRole, membershipState, todayUtc8 } from '../projects/membership';
-import { countPendingAdjustments, figuresView, loadFigures } from '../finance/finance.service';
-import { loadProjectFinanceSettings, mayReadFinance } from '../finance/readers';
+import { financeSummaryFor } from '../finance/finance.service';
+import { neededByPassedSql, overlappingLineSql } from './line-sql';
 import { LINE_STATUSES, type LineStatus, ONE_OFF_KINDS, UNITS } from './vocabulary';
 
 type Db = Pool | PoolClient;
@@ -168,11 +168,9 @@ export async function overlapsFor(
   const { rows } = await db.query(
     `SELECT DISTINCT mine.id AS "lineId", o.project_id AS "projectId", p.name, p.created_at
        FROM resource_lines mine
-       JOIN resource_lines o ON o.item_id = mine.item_id AND o.project_id <> mine.project_id AND o.status <> 'cancelled' AND o.starts_on IS NOT NULL
+       JOIN resource_lines o ON ${overlappingLineSql('mine', 'o')}
        JOIN projects p ON p.id = o.project_id
       WHERE mine.id = ANY($1::uuid[]) AND mine.status <> 'cancelled' AND mine.starts_on IS NOT NULL
-        AND (mine.ends_on IS NULL OR mine.ends_on >= o.starts_on)
-        AND (o.ends_on IS NULL OR o.ends_on >= mine.starts_on)
       ORDER BY p.name, p.created_at, o.project_id, mine.id`,
     [eligible.map((l) => l.id)],
   );
@@ -200,7 +198,7 @@ const LINE_SELECT = `
          c.name AS "itemCategory", i.status AS "itemStatus", l.one_off_kind AS "oneOffKind", l.description,
          l.quantity::text AS quantity, l.unit, to_char(l.starts_on, 'YYYY-MM-DD') AS "startsOn",
          to_char(l.ends_on, 'YYYY-MM-DD') AS "endsOn", to_char(l.needed_by, 'YYYY-MM-DD') AS "neededBy", l.notes, l.status,
-         (l.status = 'needed' AND l.needed_by IS NOT NULL AND l.needed_by < $2::date) AS "neededByPassed",
+         ${neededByPassedSql('l', '$2')} AS "neededByPassed",
          l.created_at AS "createdAt", l.updated_at AS "updatedAt"
     FROM resource_lines l
     LEFT JOIN resource_items i ON i.id = l.item_id
@@ -299,14 +297,9 @@ export class LinesService {
     return { lines, counts, people: await this.people(ctx), finance: await this.finance(ctx, projectId), computedAt };
   }
 
-  /** Figures for financial-detail readers while tracking is Enabled; the tracking value alone for anyone else (spec 4, 5). */
-  private async finance(ctx: ProjectContext, projectId: string) {
-    const s = await loadProjectFinanceSettings(this.pool, projectId);
-    if (s.tracking !== 'enabled' || !mayReadFinance(ctx, s)) return { tracking: s.tracking };
-    const f = await loadFigures(this.pool, projectId);
-    if (!f) return { tracking: s.tracking };
-    const figures = figuresView(f, f.warnThresholds);
-    return { tracking: s.tracking, currency: f.currency, figures, pendingAdjustments: await countPendingAdjustments(this.pool, projectId), notInTotals: figures.notInTotals };
+  /** The finance block (one code path with the project dashboard). */
+  private finance(ctx: ProjectContext, projectId: string) {
+    return financeSummaryFor(this.pool, ctx, projectId);
   }
 
   async history(user: AuthUser, projectId: string, lineId: string) {

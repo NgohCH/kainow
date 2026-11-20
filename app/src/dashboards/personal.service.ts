@@ -11,6 +11,7 @@ import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/
 import { archiveState } from '../projects/archive';
 import type { GrantRow } from '../projects/grants';
 import { type ProjectStatus, decide } from '../projects/matrix';
+import { neededByPassedSql } from '../resources/line-sql';
 import { membershipState, todayUtc8 } from '../projects/membership';
 import { loadAccessSettings } from '../organisation/access-settings';
 import { POSSIBLE_COPY_TEXT, possibleCopySql } from '../quarantine/labels';
@@ -19,7 +20,7 @@ import { type ProjectMeasures, loadProjectMeasures } from './measures';
 import { archivedAmong, groupBy, loadProjectContexts } from './project-contexts';
 import { shown } from './project-dashboard.service';
 
-export type NeedsYouKind = 'approval' | 'minutes' | 'question' | 'copies' | 'deadline_review';
+export type NeedsYouKind = 'approval' | 'minutes' | 'question' | 'copies' | 'deadline_review' | 'resources';
 
 export interface NeedsYouItem {
   kind: NeedsYouKind;
@@ -226,6 +227,7 @@ export class PersonalDashboardService {
       ...(await this.questions(user, readableIds, nameOf)),
       ...(await this.copies(readable.map((c) => c.ctx), nameOf)),
       ...(await this.deadlineReviews(readable.map((c) => c.ctx), nameOf)),
+      ...(await this.resourcesPastNeededBy(readable.map((c) => c.ctx), today, nameOf)),
     ];
     needsYou.sort((a, b) => {
       if (a.since !== b.since) return a.since === null ? 1 : b.since === null ? -1 : a.since.localeCompare(b.since);
@@ -373,6 +375,30 @@ export class PersonalDashboardService {
       label: `Deadline review to prepare: ${plural(r.n, 'task', 'tasks')}`,
       since: iso(r.since),
       link: `#/projects/${r.projectId}/deadline-review`,
+    }));
+  }
+
+  /** Needed lines past their needed-by date, as a count per project (PM or Deputy). */
+  private async resourcesPastNeededBy(ctxs: ProjectContext[], today: string, nameOf: (id: string) => string): Promise<NeedsYouItem[]> {
+    const ids = ctxs.filter((c) => preparesDeadlineReview(c.roles)).map((c) => c.project.id);
+    if (ids.length === 0) return [];
+    const rows = (
+      await this.pool.query(
+        `SELECT l.project_id AS "projectId", count(*)::int AS n, (min(l.needed_by)::timestamp AT TIME ZONE 'Asia/Kuala_Lumpur') AS since
+           FROM resource_lines l
+          WHERE l.project_id = ANY($1::uuid[]) AND ${neededByPassedSql('l', '$2')}
+          GROUP BY l.project_id`,
+        [ids, today],
+      )
+    ).rows as Array<{ projectId: string; n: number; since: Date }>;
+    return rows.map((r) => ({
+      kind: 'resources' as const,
+      projectId: r.projectId,
+      projectName: nameOf(r.projectId),
+      label: `Resources past needed-by date: ${r.n}`,
+      count: r.n,
+      since: iso(r.since),
+      link: `#/projects/${r.projectId}/resources`,
     }));
   }
 }

@@ -40,6 +40,21 @@ describe('project timeline endpoint', { skip: SKIP_NO_DB }, () => {
     );
     return id;
   };
+
+  async function resourceLine(project: string, o: { item?: string; kind?: string; description?: string; status?: string; neededBy?: string | null; startsOn?: string | null; endsOn?: string | null; by: string }): Promise<string> {
+    const id = uuidv7();
+    await t.pool.query(
+      `INSERT INTO resource_lines (id, project_id, item_id, one_off_kind, description, status, needed_by, starts_on, ends_on, created_by, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now(), now())`,
+      [id, project, o.item ?? null, o.item ? null : (o.kind ?? 'other'), o.item ? '' : (o.description ?? 'Dummy hire'), o.status ?? 'needed', o.neededBy ?? null, o.startsOn ?? null, o.endsOn ?? null, o.by],
+    );
+    return id;
+  }
+  async function resourceItem(reference: string, name: string, by: string): Promise<string> {
+    const id = uuidv7();
+    await t.pool.query(`INSERT INTO resource_items (id, kind, reference, name, created_by, created_at, status) VALUES ($1, 'equipment', $2, $3, $4, now(), 'active')`, [id, reference, name, by]);
+    return id;
+  }
   const get = (query = '', person = 'mem') => people[person].request('GET', `/projects/${projectId}/timeline${query}`);
   const lines = (body: { months: { lines: TimelineLine[] }[] }): TimelineLine[] => body.months.flatMap((m) => m.lines);
 
@@ -194,5 +209,22 @@ describe('project timeline endpoint', { skip: SKIP_NO_DB }, () => {
     assert.equal((await get('', 'stranger')).status, 404);
     assert.equal((await people.mem.request('GET', `/projects/${uuidv7()}/timeline`)).status, 404);
     assert.equal((await t.anonymous('GET', `/projects/${projectId}/timeline`)).status, 401);
+  });
+
+  test('needed-by dates appear as lines; Cancelled and out-of-range lines do not; the kind is a hideable preference', async () => {
+    const item = await resourceItem('P-04', 'Dummy projector', ids.pm);
+    await resourceLine(projectId, { item, neededBy: '2026-12-01', by: ids.pm });
+    await resourceLine(projectId, { kind: 'facility', description: 'Hall for the workshop', neededBy: '2026-12-02', status: 'arranged', by: ids.pm });
+    await resourceLine(projectId, { item, neededBy: '2026-12-03', status: 'cancelled', by: ids.pm });
+    await resourceLine(projectId, { item, neededBy: '2028-01-01', by: ids.pm });
+    await resourceLine(projectId, { item, by: ids.pm });
+    const r = await get('');
+    const needed = lines(r.body).filter((l) => l.kind === 'resource_needed_by');
+    assert.deepEqual(needed.map((l) => [l.day, l.label]), [
+      ['2026-12-01', 'Needed by: P-04 Dummy projector'],
+      ['2026-12-02', 'Needed by: Hall for the workshop'],
+    ]);
+    assert.equal((await people.mem.request('PUT', '/me/preferences', { timeline: { hiddenKinds: ['resource_needed_by', 'ghost'] } })).status, 200);
+    assert.deepEqual((await people.mem.request('GET', '/me/preferences')).body.timeline.hiddenKinds, ['resource_needed_by']);
   });
 });
