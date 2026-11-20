@@ -308,15 +308,17 @@ describe('backup command', { skip: SKIP_NO_DB }, () => {
     for (const line of [...out, ...err]) assert.ok(!line.includes(root));
   });
   /** A pool whose clients throw on any query matching `bad` (also on pool.query), for forcing failures at one step. */
-  function flaky(bad: RegExp): Pool {
+  function flaky(bad: RegExp, pre?: { re: RegExp; run: () => Promise<void> }): Pool {
     const wrap = <T extends { query: (...a: any[]) => Promise<any> }>(c: T): T =>
       new Proxy(c, {
         get(target, prop) {
           if (prop === 'query') {
-            return (text: unknown, ...rest: unknown[]) =>
-              typeof text === 'string' && bad.test(text)
+            return async (text: unknown, ...rest: unknown[]) => {
+              if (pre && typeof text === 'string' && pre.re.test(text)) await pre.run();
+              return typeof text === 'string' && bad.test(text)
                 ? Promise.reject(new Error('forced failure'))
                 : (target.query as (...a: unknown[]) => Promise<unknown>)(text, ...rest);
+            };
           }
           const v = Reflect.get(target, prop);
           return typeof v === 'function' ? v.bind(target) : v;
@@ -361,5 +363,21 @@ describe('backup command', { skip: SKIP_NO_DB }, () => {
     assert.equal(r.failure_detail, OPS_FAILURES.folder_missing);
     assert.ok(r.finished_at);
     assert.equal((await audits(runIdOf(out))).length, 0);
+  });
+
+  test('a run the sweep already marked interrupted gets no second failure notice or audit event', async () => {
+    const preempt = {
+      re: /SET outcome = 'failed'/,
+      run: async () => {
+        await pool.query(`UPDATE backup_runs SET outcome = 'failed', failure_code = 'interrupted', finished_at = now() WHERE outcome = 'running'`);
+      },
+    };
+    const { d, out, at } = deps({ backupDir: join(root, 'missing-folder') }, { pool: flaky(/^never-matches$/, preempt) });
+    assert.equal(await runBackup([], d), 1);
+    const r = await row(runIdOf(out));
+    assert.equal(r.outcome, 'failed');
+    assert.equal(r.failure_code, 'interrupted');
+    assert.equal((await failedNotices(at)).length, 0);
+    assert.equal((await audits(r.id)).length, 0);
   });
 });

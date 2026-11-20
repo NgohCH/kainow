@@ -430,11 +430,13 @@ async function recordFailure(
   const at = deps.now();
   try {
     await inTransaction(deps.pool, async (c) => {
-      await c.query(
+      // Only a run still `running` is failed here; if the sweep already marked it interrupted (and notified), stop.
+      const done = await c.query(
         `UPDATE backup_runs SET outcome = 'failed', finished_at = $2, failure_code = $3, failure_detail = $4, set_name = $5
-         WHERE id = $1`,
+         WHERE id = $1 AND outcome = 'running'`,
         [f.runId, at, f.code, text, setName],
       );
+      if ((done.rowCount ?? 0) === 0) return;
       await writeAudit(c, {
         at,
         action: 'ops.backup_failed',
@@ -450,7 +452,7 @@ async function recordFailure(
     try {
       await deps.pool.query(
         `UPDATE backup_runs SET outcome = 'failed', failure_code = $2, failure_detail = $3, finished_at = $4, set_name = $5
-         WHERE id = $1`,
+         WHERE id = $1 AND outcome = 'running'`,
         [f.runId, f.code, text, at, setName],
       );
     } catch {

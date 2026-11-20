@@ -38,7 +38,7 @@ describe('the ops part of the sweep', { skip: SKIP_NO_DB }, () => {
     await pool.query('DELETE FROM storage_daily');
     await pool.query('DELETE FROM restore_drills');
     await pool.query('DELETE FROM backup_runs');
-    await pool.query(`DELETE FROM audit_events WHERE action LIKE 'ops.%'`).catch(() => undefined);
+    await pool.query('DELETE FROM organisation');
   });
 
   const addRun = async (outcome: 'running' | 'succeeded' | 'failed', startedAt: Date, finishedAt: Date | null = null): Promise<string> => {
@@ -103,6 +103,9 @@ describe('the ops part of the sweep', { skip: SKIP_NO_DB }, () => {
     await register(ago(23 * H));
     await runOpsSweep(pool, NOW);
     assert.equal((await notices('backup_target_exceeded')).length, 0);
+    await register(ago(24 * H));
+    await runOpsSweep(pool, NOW);
+    assert.equal((await notices('backup_target_exceeded')).length, 0, 'exactly 24 hours is still quiet');
     await register(ago(25 * H));
     await runOpsSweep(pool, NOW);
     await runOpsSweep(pool, new Date(NOW.getTime() + MIN));
@@ -164,13 +167,63 @@ describe('the ops part of the sweep', { skip: SKIP_NO_DB }, () => {
 
   test('readings older than the retention period are deleted; daily rows stay', async () => {
     await pool.query('UPDATE operations_settings SET diagnostic_retention_days = 7');
-    await addReading('database_disk', ago(7 * 24 * H + 1000));
-    await addReading('database_disk', ago(7 * 24 * H - 1000));
-    await pool.query(`INSERT INTO storage_daily (day, location, max_used_bytes, min_free_bytes, total_bytes) VALUES ('2026-01-01', 'database_disk', 1, 1, 2)`);
+    try {
+      await addReading('database_disk', ago(7 * 24 * H + 1000));
+      await addReading('database_disk', ago(7 * 24 * H - 1000));
+      await pool.query(`INSERT INTO storage_daily (day, location, max_used_bytes, min_free_bytes, total_bytes) VALUES ('2026-01-01', 'database_disk', 1, 1, 2)`);
+      await runOpsSweep(pool, NOW);
+      assert.equal((await pool.query('SELECT count(*)::int AS n FROM storage_readings')).rows[0].n, 1);
+      assert.equal((await pool.query('SELECT count(*)::int AS n FROM storage_daily')).rows[0].n, 1);
+    } finally {
+      await pool.query('UPDATE operations_settings SET diagnostic_retention_days = 30');
+    }
+  });
+
+  /** A pool whose clients reject the notifications INSERT, so the notice step fails after the episode was written. */
+  function failingNotices(): Pool {
+    const wrap = <T extends { query: (...a: any[]) => Promise<any> }>(c: T): T =>
+      new Proxy(c, {
+        get(target, prop) {
+          if (prop === 'query') {
+            return (text: unknown, ...rest: unknown[]) =>
+              typeof text === 'string' && /INSERT INTO notifications/.test(text)
+                ? Promise.reject(new Error('forced failure'))
+                : (target.query as (...a: unknown[]) => Promise<unknown>)(text, ...rest);
+          }
+          const v = Reflect.get(target, prop);
+          return typeof v === 'function' ? v.bind(target) : v;
+        },
+      });
+    return new Proxy(pool, {
+      get(target, prop) {
+        if (prop === 'connect') return async () => wrap(await target.connect());
+        const v = Reflect.get(target, prop);
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+  }
+
+  test('a failed notice leaves no open episode, and the next sweep notifies', async () => {
+    await addRun('succeeded', ago(26 * H), ago(26 * H));
+    await assert.rejects(runOpsSweep(failingNotices(), NOW));
+    assert.equal(await openCount('backup_target_exceeded'), 0);
+    assert.equal(await openCount('storage_check_missing'), 0);
+    assert.equal((await notices('backup_target_exceeded')).length, 0);
+    await runOpsSweep(pool, new Date(NOW.getTime() + MIN));
+    assert.equal((await notices('backup_target_exceeded')).length, 2);
+    assert.equal((await notices('storage_check_missing')).length, 4);
+  });
+
+  test('a failed recovery notice leaves the episode open, and the next sweep sends it', async () => {
+    await addRun('succeeded', ago(26 * H), ago(26 * H));
     await runOpsSweep(pool, NOW);
-    assert.equal((await pool.query('SELECT count(*)::int AS n FROM storage_readings')).rows[0].n, 1);
-    assert.equal((await pool.query('SELECT count(*)::int AS n FROM storage_daily')).rows[0].n, 1);
-    await pool.query('UPDATE operations_settings SET diagnostic_retention_days = 30');
+    await addRun('succeeded', NOW, new Date(NOW.getTime() + 5 * MIN));
+    const later = new Date(NOW.getTime() + 10 * MIN);
+    await assert.rejects(runOpsSweep(failingNotices(), later));
+    assert.equal(await openCount('backup_target_exceeded'), 1);
+    await runOpsSweep(pool, later);
+    assert.equal(await openCount('backup_target_exceeded'), 0);
+    assert.equal((await notices('backup_recovered')).length, 2);
   });
 
   test('openEpisode and closeEpisode report only real changes', async () => {
