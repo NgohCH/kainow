@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { after, before, describe, test } from 'node:test';
+import { after, before, beforeEach, describe, test } from 'node:test';
 import { BadRequestException } from '@nestjs/common';
 import { Pool } from 'pg';
 import { loadDatabaseConfig } from '../config';
@@ -9,6 +9,14 @@ import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { seedUser } from '../testing/projects';
 import { OPS_DEFAULTS } from './settings';
 import { OpsSettingsService } from './settings.service';
+import type { OpsSettings } from './settings';
+
+/** Skips the service's own validation so that the database CHECK is what refuses the values. */
+class NoValidation extends OpsSettingsService {
+  protected override merge(previous: OpsSettings, body: unknown): OpsSettings {
+    return { ...previous, ...(body as Partial<OpsSettings>) };
+  }
+}
 
 const migrationsDir = loadDatabaseConfig({ DATABASE_URL: 'x' }).migrationsDir;
 const AT = new Date('2026-11-20T04:00:00Z');
@@ -24,6 +32,9 @@ describe('operations schema and settings', { skip: SKIP_NO_DB }, () => {
     await runMigrations(pool, migrationsDir);
     service = new OpsSettingsService(pool, () => AT);
     admin = await seedUser(pool, 'ops-admin@example.org', 'enterprise_administrator');
+  });
+  beforeEach(async () => {
+    await pool.query(`UPDATE operations_settings SET backup_retention_days = 30, storage_warning_pct = 80, storage_critical_pct = 90, safe_floor_gb = 5, diagnostic_retention_days = 30`);
   });
   after(async () => {
     await pool.end();
@@ -52,7 +63,15 @@ describe('operations schema and settings', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual((await service.get()).settings, OPS_DEFAULTS);
   });
 
-  test('the database CHECK maps to 400 when validation is bypassed', async () => {
+    test('a CHECK violation inside update maps to 400 and leaves no history', async () => {
+    const bypass = new NoValidation(pool, () => AT);
+    await refuses(bypass.update(admin, { storageCriticalPct: 100, reason: 'bypassed' }));
+    await refuses(bypass.update(admin, { storageWarningPct: 95, storageCriticalPct: 95, reason: 'bypassed' }));
+    assert.deepEqual((await service.get()).settings, OPS_DEFAULTS);
+    assert.equal((await service.get()).changes.length, 0);
+  });
+
+  test('the database CHECKs refuse bad values directly', async () => {
     const client = await pool.connect();
     try {
       await assert.rejects(client.query(`UPDATE operations_settings SET storage_critical_pct = 100`), (e: unknown) => (e as { code?: string }).code === '23514');

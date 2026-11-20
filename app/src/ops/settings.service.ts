@@ -33,8 +33,9 @@ export class OpsSettingsService {
     return { settings: await loadOpsSettings(this.pool), defaults: OPS_DEFAULTS, bounds: OPS_BOUNDS, changes: rows };
   }
 
-  private async merged(db: Pool | PoolClient, body: unknown, lock = false): Promise<OpsSettings> {
-    const value = { ...(await loadOpsSettings(db, lock)), ...pick(body) };
+  /** The values after applying `body` to `previous`, refused with 400 when any is outside its bounds. */
+  protected merge(previous: OpsSettings, body: unknown): OpsSettings {
+    const value = { ...previous, ...pick(body) };
     const problems = validateOpsSettings(value);
     if (problems.length > 0) throw new BadRequestException(problems.join(' '));
     return value;
@@ -49,7 +50,7 @@ export class OpsSettingsService {
     try {
       await client.query('BEGIN');
       const previous = await loadOpsSettings(client, true);
-      const value = await this.merged(client, body, true);
+      const value = this.merge(previous, body);
       try {
         await client.query(
           `UPDATE operations_settings SET backup_retention_days = $1, storage_warning_pct = $2, storage_critical_pct = $3,
