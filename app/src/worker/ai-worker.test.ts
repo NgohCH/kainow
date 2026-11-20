@@ -172,6 +172,37 @@ describe('ai worker dispatch', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual((await t.pool.query(`SELECT attempt_no FROM ai_spend_entries WHERE request_id = $1`, [runId])).rows, [{ attempt_no: 1 }]);
   });
 
+  test('protective mode: a fetched AI job is not run; it is sent again a minute later, and runs once the mode is off', async () => {
+    const runId = await queuedExtraction();
+    let calls = 0;
+    let on = true;
+    const model = { extract: async () => (calls++, extracted) };
+    const extraction = new ExtractionRunner({ pool: t.pool, spend: new SpendService(t.pool, t.clock.now), ...aiDeps(model), clock: t.clock.now });
+    await registerAiWorker(boss, { extraction, analysis: new AnalysisRunner({ pool: t.pool, clock: t.clock.now, extraction }) }, t.pool, AI_CONCURRENCY, {
+      isProtective: async () => on,
+    });
+
+    await boss.send(QUEUES.ai, { runId, resume: 2 } satisfies ExtractionJob, { ...JOB_OPTIONS, singletonKey: runId, priority: 10 });
+    await until('the job to be held', async () => {
+      const jobs = await jobsOf(runId);
+      return jobs.length === 2 && jobs[0].state === 'completed';
+    });
+    const [first, again] = await jobsOf(runId);
+    assert.equal(first.state, 'completed', 'completed, not failed: no pg-boss retry is used up');
+    assert.deepEqual(again.data, { runId, resume: 2 }, 'the data as this delivery would have run it');
+    assert.deepEqual([again.state, again.singletonKey, again.retryLimit, again.priority], ['created', runId, JOB_OPTIONS.retryLimit, 10]);
+    assert.ok(again.delay >= 59 && again.delay <= 61, `starts about a minute later (${again.delay})`);
+    const r = (await t.pool.query(`SELECT status, attempts FROM extraction_runs WHERE id = $1`, [runId])).rows[0];
+    assert.deepEqual([r.status, r.attempts], ['queued', 0], 'the request is never claimed');
+    assert.equal(calls, 0);
+
+    // Resumed: the held job runs. (The resume value is the delivery's own; without a prior claim the runner starts afresh.)
+    on = false;
+    await t.pool.query(`UPDATE ${SCHEMA}.job SET start_after = now(), data = $2 WHERE id = $1`, [again.id, JSON.stringify({ runId })]);
+    await until('the run to succeed', async () => (await t.pool.query(`SELECT status FROM extraction_runs WHERE id = $1`, [runId])).rows[0].status === 'succeeded');
+    assert.equal(calls, 1);
+  });
+
   test('a resumed attempt that ends retry is retried by pg-boss as the next attempt, on the next connection (final review I1)', async () => {
     const runId = await queuedExtraction();
     const project = (

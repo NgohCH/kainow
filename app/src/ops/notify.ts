@@ -9,6 +9,8 @@ export interface AdminNotice {
   link: string | null;
   now: Date;
   urgent: true;
+  /** An administrator who is not told (the one who did the thing, for example Resume). */
+  except?: string;
 }
 
 const isClient = (db: Pool | PoolClient): db is PoolClient => typeof (db as PoolClient).release === 'function';
@@ -37,7 +39,7 @@ export async function notifyAdmins(db: Pool | PoolClient, n: AdminNotice): Promi
 }
 
 async function writeNotices(db: PoolClient, n: AdminNotice): Promise<void> {
-  const ids = await loadAdmins(db);
+  const ids = (await loadAdmins(db)).filter((id) => id !== n.except);
   if (ids.length === 0) return;
   const emails = new Map<string, string>(
     (await db.query('SELECT id, email FROM users WHERE id = ANY($1::uuid[])', [ids])).rows.map((r) => [r.id, r.email]),

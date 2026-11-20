@@ -1,7 +1,7 @@
 import { BadRequestException, Body, Controller, Delete, ForbiddenException, Get, Inject, NotFoundException, Param, Post, Put, Query, Req, Res } from '@nestjs/common';
 import type { Pool } from 'pg';
 import { writeAudit } from '../audit/audit';
-import { RequireAction } from '../auth/access';
+import { AllowedWhenProtective, RequireAction } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { PG_POOL } from '../db/database.module';
@@ -106,6 +106,8 @@ export class AnalyticsController {
    */
   @Get('export')
   @RequireAction('analytics.view')
+  // GET audit (spec 7.3): the analytics.exported record is kept in protective mode; an export must never go unrecorded.
+  @AllowedWhenProtective()
   async export(@Query() query: Record<string, unknown>, @Req() req: HttpRequest, @Res({ passthrough: true }) res: HttpResponse): Promise<string> {
     const user = who(req);
     const panel: ExportPanel = this.panelOf(query);

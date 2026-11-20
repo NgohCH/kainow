@@ -1,6 +1,6 @@
 import { BadRequestException, Body, Controller, Get, HttpCode, Inject, Post, Req, Res, UnauthorizedException } from '@nestjs/common';
 import { APP_CONFIG, type AppConfig } from '../config';
-import { AnySignedInUser, Public, BeforeSetup } from './access';
+import { AllowedWhenProtective, AnySignedInUser, Public, BeforeSetup } from './access';
 import type { HttpRequest } from './auth.guard';
 import { AuthService } from './auth.service';
 import { clearedCookie, sessionCookie } from './cookies';
@@ -14,6 +14,7 @@ function field(body: unknown, name: string): unknown {
   return body && typeof body === 'object' ? (body as Record<string, unknown>)[name] : undefined;
 }
 
+/** Signing in and out still works in protective read-only mode (spec 7.3): each route below is marked. */
 @BeforeSetup()
 @Controller('auth')
 export class AuthController {
@@ -24,6 +25,7 @@ export class AuthController {
 
   /** Always answers the same way, whether or not the address has an account. */
   @Post('request-code')
+  @AllowedWhenProtective()
   @Public()
   @HttpCode(202)
   async requestCode(@Body() body: unknown): Promise<{ status: 'ok' }> {
@@ -36,6 +38,7 @@ export class AuthController {
   }
 
   @Post('verify')
+  @AllowedWhenProtective()
   @Public()
   @HttpCode(200)
   async verify(@Body() body: unknown, @Res({ passthrough: true }) res: HttpResponse) {
@@ -61,6 +64,7 @@ export class AuthController {
   }
 
   @Post('logout-all')
+  @AllowedWhenProtective()
   @AnySignedInUser()
   @HttpCode(204)
   async logoutAll(@Req() req: HttpRequest, @Res({ passthrough: true }) res: HttpResponse): Promise<void> {
@@ -71,6 +75,7 @@ export class AuthController {
   }
 
   @Post('logout')
+  @AllowedWhenProtective()
   @AnySignedInUser()
   @HttpCode(204)
   async logout(@Req() req: HttpRequest, @Res({ passthrough: true }) res: HttpResponse): Promise<void> {

@@ -172,3 +172,73 @@ test('the storage outbox is sent every minute and the daily storage tick runs at
     await boss.stop({ graceful: true, timeout: 5000 });
   }
 });
+
+test('protective mode: the sweep tick runs only the ops checks, analysis and quarantine wait, email still goes out', { skip: SKIP_NO_DB }, async () => {
+  const logs: string[] = [];
+  let on = true;
+  const asked: number[] = [];
+  const counts = { runIfDue: 0, opsSweep: 0, analysis: 0, quarantine: 0, dispatched: 0 };
+  const boss = await startQueues(testDatabaseUrl() as string, SCHEMA, { schedule: true });
+  await registerSchedules(boss, {
+    sweep: { runIfDue: async () => (counts.runIfDue++, true) } as unknown as Sweep,
+    dispatcher: { dispatchDue: async () => (counts.dispatched++, {}) } as unknown as EmailDispatcher,
+    analysis: { run: async () => (counts.analysis++, { started: 0 }) },
+    quarantine: { cleanWaiting: async () => (counts.quarantine++, 0) },
+    operations: { isProtective: async () => (asked.push(1), on) },
+    opsSweep: async () => void counts.opsSweep++,
+    log: (m) => logs.push(m),
+  });
+  try {
+    for (const q of [QUEUES.sweep, QUEUES.email, QUEUES.analysis, QUEUES.quarantine]) await boss.unschedule(q, 'tick');
+    await new Promise((r) => setTimeout(r, 500));
+    const base = { ...counts };
+    const askedBefore = asked.length;
+    await boss.send(QUEUES.sweep, {});
+    await boss.send(QUEUES.email, { nudge: true });
+    await boss.send(QUEUES.analysis, {});
+    await boss.send(QUEUES.quarantine, {});
+    // Sweep, analysis and quarantine each ask once; email does not ask.
+    await until(() => counts.opsSweep > base.opsSweep && counts.dispatched > base.dispatched && asked.length - askedBefore >= 3);
+    await new Promise((r) => setTimeout(r, 1000));
+    assert.equal(counts.runIfDue, base.runIfDue, 'the rest of the sweep pauses');
+    assert.equal(counts.opsSweep - base.opsSweep, 1, 'the ops part of the sweep keeps running');
+    assert.equal(counts.analysis, base.analysis, 'the analysis tick returns without work');
+    assert.equal(counts.quarantine, base.quarantine, 'quarantine cleaning returns without work');
+    assert.equal(counts.dispatched - base.dispatched, 1, 'email keeps going');
+    assert.deepEqual(logs, []);
+
+    // Resumed: the next tick runs the whole sweep (which runs the ops part itself) and the paused work.
+    on = false;
+    await boss.send(QUEUES.sweep, { again: true });
+    await boss.send(QUEUES.analysis, { again: true });
+    await boss.send(QUEUES.quarantine, { again: true });
+    await until(() => counts.runIfDue > base.runIfDue && counts.analysis > base.analysis && counts.quarantine > base.quarantine);
+    assert.equal(counts.opsSweep - base.opsSweep, 1, 'not run separately when the mode is off');
+  } finally {
+    await boss.stop({ graceful: true, timeout: 5000 });
+  }
+});
+
+test('protective mode: a failing ops check is logged with a fixed message', { skip: SKIP_NO_DB }, async () => {
+  const logs: string[] = [];
+  let calls = 0;
+  const boss = await startQueues(testDatabaseUrl() as string, SCHEMA, { schedule: true });
+  await registerSchedules(boss, {
+    sweep: { runIfDue: async () => true } as unknown as Sweep,
+    dispatcher: { dispatchDue: async () => ({}) } as unknown as EmailDispatcher,
+    operations: { isProtective: async () => true },
+    opsSweep: async () => {
+      calls++;
+      throw new Error('postgres://user:hunter2@db.example.org refused');
+    },
+    log: (m) => logs.push(m),
+  });
+  try {
+    await boss.unschedule(QUEUES.sweep, 'tick');
+    await boss.send(QUEUES.sweep, { failing: true });
+    await until(() => calls >= 1 && logs.length >= 1);
+    assert.deepEqual(logs, ['The operations checks failed; they will run again on the next tick.']);
+  } finally {
+    await boss.stop({ graceful: true, timeout: 5000 });
+  }
+});

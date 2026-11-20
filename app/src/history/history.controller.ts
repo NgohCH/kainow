@@ -1,5 +1,5 @@
 import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Req } from '@nestjs/common';
-import { AnySignedInUser } from '../auth/access';
+import { AllowedWhenProtective, AnySignedInUser } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
 import { RecordDelegationService } from './delegation.service';
@@ -42,6 +42,8 @@ export class HistoryController {
   /** One Deleted item, read-only; each opening is recorded (deleted.inspected). :kind is message, note, minutes, summary, task, decision, question or risk. */
   @Get('projects/:id/deleted-items/:kind/:itemId')
   @AnySignedInUser()
+  // GET audit (spec 7.3): the opening is recorded (deleted.inspected), in protective mode too.
+  @AllowedWhenProtective()
   deletedItem(@Param('id') id: string, @Param('kind') kind: string, @Param('itemId') itemId: string, @Req() req: HttpRequest) {
     return this.history.deletedItem(who(req), id, kind, itemId);
   }

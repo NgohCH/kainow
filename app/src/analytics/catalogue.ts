@@ -69,6 +69,7 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
   ]),
   ...audit('Operations', ADMIN, 'operations', [
     ['ops.settings_changed', 'Operations settings (backup retention, storage levels, safe floor, diagnostic retention) were changed, with a reason.'],
+    ['ops.protective_resumed', 'An Enterprise Administrator resumed normal use after protective read-only mode, with a reason, once the checks passed.'],
   ]),
   ...audit('Operations', SYSTEM, 'backup run', [
     ['ops.backup_succeeded', 'A backup run finished and its set was read back and checked.'],
