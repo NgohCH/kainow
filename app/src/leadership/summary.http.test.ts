@@ -195,4 +195,101 @@ describe('leadership summary', { skip: SKIP_NO_DB }, () => {
     assert.equal(a.blocked, 0);
     assert.deepEqual(a.nextDates, { nextTaskDue: null, nextRiskReview: null });
   });
+
+  describe('resources and budget fields', () => {
+    const line = (project: string, status: string, neededBy: string | null = null, description = 'Secret crane hire') =>
+      t.pool.query(
+        `INSERT INTO resource_lines (id, project_id, one_off_kind, description, status, needed_by, notes, created_by, created_at, updated_at)
+         VALUES ($1, $2, 'other', $3, $4, $5, 'private note', $6, now(), now())`,
+        [uuidv7(), project, description, status, neededBy, pmId],
+      );
+    const enable = async (project: string, budgetAmount: string | null, spend: string[] = []) => {
+      await t.pool.query(`INSERT INTO project_finance_settings (project_id, tracking, currency) VALUES ($1, 'enabled', 'MYR')`, [project]);
+      if (budgetAmount !== null) {
+        const cr = uuidv7();
+        await t.pool.query(
+          `INSERT INTO change_requests (id, project_id, kind, target_kind, target_id, version, required_approvals, status, submitted_by, submitted_at)
+           VALUES ($1, $2, 'set_budget', 'project_budget', $2, 1, 1, 'authorised', $3, now())`,
+          [cr, project, pmId],
+        );
+        await t.pool.query(`INSERT INTO budget_versions (id, project_id, amount, currency, change_request_id, approved_at) VALUES ($1, $2, $3, 'MYR', $4, now())`, [
+          uuidv7(),
+          project,
+          budgetAmount,
+          cr,
+        ]);
+      }
+      for (const amount of spend) {
+        await t.pool.query(
+          `INSERT INTO expenditures (id, project_id, spent_on, amount, currency, description, reference, recorded_by, recorded_at)
+           VALUES ($1, $2, '2026-11-05', $3, 'MYR', 'Secret invoice', 'REF-SECRET', $4, now())`,
+          [uuidv7(), project, amount, pmId],
+        );
+      }
+    };
+
+    test('field order, labels and counts; no line detail', async () => {
+      await grant({ kind: 'organisation' });
+      const keys = LEADERSHIP_FIELDS.map((f) => f.key);
+      assert.equal(keys.indexOf('resources'), keys.indexOf('significantRisks') + 1);
+      assert.equal(keys.indexOf('budget'), keys.indexOf('significantRisks') + 2);
+      await line(pa, 'needed', '2026-11-01');
+      await line(pa, 'needed', '2026-12-01');
+      await line(pa, 'arranged');
+      await line(pa, 'in_use');
+      await line(pa, 'finished', '2026-10-01');
+      await line(pa, 'cancelled');
+      const all = await cards();
+      const a = all.find((c) => c.id === pa) as Card;
+      assert.deepEqual(a.resources, { needed: 2, arranged: 1, inUse: 1, neededByPassed: 1 });
+      assert.deepEqual((all.find((c) => c.id === pb) as Card).resources, { needed: 0, arranged: 0, inUse: 0, neededByPassed: 0 });
+      assert.ok(!JSON.stringify(a).includes('Secret crane'));
+      assert.ok(!JSON.stringify(a).includes('private note'));
+    });
+
+    test('tracking not required', async () => {
+      await grant({ kind: 'organisation' });
+      assert.deepEqual(((await cards()).find((c) => c.id === pa) as Card).budget, { tracking: 'not_required' });
+    });
+
+    test('enabled with no approved budget gives budget null', async () => {
+      await enable(pa, null, ['40.00']);
+      await grant({ kind: 'organisation' });
+      assert.deepEqual(((await cards()).find((c) => c.id === pa) as Card).budget, {
+        tracking: 'enabled',
+        currency: 'MYR',
+        budget: null,
+        spent: '40.00',
+        percentUsed: null,
+        level: 0,
+        overBudget: false,
+      });
+    });
+
+    test('a project at 82% is at level 1, and no entry detail leaks', async () => {
+      await enable(pa, '1000.00', ['500.00', '320.00']);
+      await enable(pb, '100.00', ['150.00']);
+      await grant({ kind: 'organisation' });
+      const all = await cards();
+      const a = all.find((c) => c.id === pa) as Card;
+      assert.deepEqual(a.budget, { tracking: 'enabled', currency: 'MYR', budget: '1000.00', spent: '820.00', percentUsed: 82, level: 1, overBudget: false });
+      const b = all.find((c) => c.id === pb) as Card;
+      assert.equal(b.budget.overBudget, true);
+      assert.equal(b.budget.level, 2);
+      const text = JSON.stringify(a);
+      assert.ok(!text.includes('REF-SECRET') && !text.includes('Secret invoice'));
+    });
+
+    test('the holder still gets 404 from resources and finance, and preferences accept the new keys', async () => {
+      await grant({ kind: 'projects', projectIds: [pa] });
+      for (const path of [`/projects/${pa}/resources`, `/projects/${pa}/finance`]) assert.equal((await leader.request('GET', path)).status, 404, path);
+      const save = await leader.request('PUT', '/me/preferences', { leadership: { fields: { order: ['resources', 'budget', 'name'], hidden: ['budget'] } } });
+      assert.equal(save.status, 200);
+      const r = await summary();
+      const a = r.body.cards.find((c: Card) => c.id === pa) as Card;
+      assert.ok('resources' in a);
+      assert.ok(!('budget' in a));
+      assert.equal(r.body.fields[0].key, 'resources');
+    });
+  });
 });

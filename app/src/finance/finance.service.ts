@@ -11,7 +11,7 @@ import { decide } from '../projects/matrix';
 import { loadResourceSettings } from '../resources/settings.service';
 import { type Adj, type Figures, countedAmount, figures } from './figures';
 import { CURRENCIES, type Currency, parseAmount, toDecimalString } from './money';
-import { type ProjectFinanceSettings, effectiveThresholds, loadProjectFinanceSettings, mayReadFinance } from './readers';
+import { DEFAULT_FINANCE_SETTINGS, type ProjectFinanceSettings, effectiveThresholds, loadProjectFinanceSettings, mayReadFinance } from './readers';
 import { evaluateFinanceWarnings } from './warnings';
 
 type Db = Pool | PoolClient;
@@ -159,6 +159,59 @@ export async function loadFigures(db: Db, projectId: string): Promise<(Figures &
   if (s.tracking !== 'enabled' || s.currency === null) return null;
   const warn = effectiveThresholds(s, await loadResourceSettings(db));
   return { ...(await computeFigures(db, projectId, s.currency, warn)), currency: s.currency, warnThresholds: warn };
+}
+
+export type ProjectFigures = Figures & { currency: Currency; warnThresholds: [number, number] };
+
+/**
+ * `loadFigures` for many projects in a fixed number of queries (the organisation-scope leadership summary). A project with
+ * tracking not Enabled is absent from the result. Same arithmetic as `loadFigures`: both end in `figures()`.
+ */
+export async function loadFiguresMany(db: Db, projectIds: string[]): Promise<Map<string, ProjectFigures>> {
+  const out = new Map<string, ProjectFigures>();
+  if (projectIds.length === 0) return out;
+  const { rows: settings } = await db.query(
+    `SELECT project_id AS "projectId", currency, warn_first_pct AS "warnFirstPct", warn_second_pct AS "warnSecondPct"
+       FROM project_finance_settings WHERE project_id = ANY($1::uuid[]) AND tracking = 'enabled' AND currency IS NOT NULL`,
+    [projectIds],
+  );
+  if (settings.length === 0) return out;
+  const ids = settings.map((r) => r.projectId as string);
+  const org = await loadResourceSettings(db);
+  const { rows: versions } = await db.query(
+    `SELECT DISTINCT ON (project_id) project_id AS "projectId", amount::text AS amount
+       FROM budget_versions WHERE project_id = ANY($1::uuid[]) ORDER BY project_id, approved_at DESC, id DESC`,
+    [ids],
+  );
+  const budgets = new Map<string, bigint>(versions.map((v) => [v.projectId as string, minor(v.amount as string)]));
+  const { rows: entryRows } = await db.query(
+    `SELECT e.id, e.project_id AS "projectId", e.amount::text AS amount, e.currency FROM expenditures e WHERE e.project_id = ANY($1::uuid[])`,
+    [ids],
+  );
+  const { rows: adjRows } = await db.query(
+    `SELECT a.expenditure_id AS "entryId", a.kind, a.amount::text AS amount, a.approved_at AS "approvedAt"
+       FROM expenditure_adjustments a JOIN expenditures e ON e.id = a.expenditure_id
+      WHERE e.project_id = ANY($1::uuid[]) ORDER BY a.approved_at, a.id`,
+    [ids],
+  );
+  const adjByEntry = new Map<string, Adj[]>();
+  for (const a of adjRows) {
+    const list = adjByEntry.get(a.entryId as string) ?? [];
+    list.push({ kind: a.kind, amount: minor(a.amount), approvedAt: new Date(a.approvedAt) });
+    adjByEntry.set(a.entryId as string, list);
+  }
+  const entriesByProject = new Map<string, { amount: bigint; currency: Currency; adjustments: Adj[] }[]>();
+  for (const e of entryRows) {
+    const list = entriesByProject.get(e.projectId as string) ?? [];
+    list.push({ amount: minor(e.amount), currency: e.currency, adjustments: adjByEntry.get(e.id as string) ?? [] });
+    entriesByProject.set(e.projectId as string, list);
+  }
+  for (const s of settings) {
+    const warn = effectiveThresholds({ ...DEFAULT_FINANCE_SETTINGS, warnFirstPct: s.warnFirstPct, warnSecondPct: s.warnSecondPct }, org);
+    const f = figures({ budget: budgets.get(s.projectId) ?? null, entries: entriesByProject.get(s.projectId) ?? [], reporting: s.currency, warn });
+    out.set(s.projectId, { ...f, currency: s.currency, warnThresholds: warn });
+  }
+  return out;
 }
 
 /** Pending budget and adjustment requests, each with the terms of its latest version. */

@@ -15,6 +15,8 @@ export const LEADERSHIP_FIELDS: readonly { key: string; label: string; required?
   { key: 'overdue', label: 'Overdue tasks' },
   { key: 'blocked', label: 'Blocked tasks' },
   { key: 'significantRisks', label: 'Significant risks' },
+  { key: 'resources', label: 'Resources' },
+  { key: 'budget', label: 'Budget' },
   { key: 'nextDates', label: 'Next dates' },
   { key: 'attentionFlags', label: 'Attention flags', required: true },
   { key: 'refresh', label: 'Last refreshed', required: true },
