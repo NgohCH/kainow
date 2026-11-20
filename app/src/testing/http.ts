@@ -24,7 +24,7 @@ export interface Client {
   request(method: string, path: string, body?: unknown): Promise<Reply>;
   /** Sends raw bytes (a file upload) with the given type. */
   upload(method: string, path: string, body: Buffer, contentType: string): Promise<Reply>;
-  /** A request whose answer is read as sent (a download, or headers to check): status, headers and the text. A body is sent as JSON. */
+  /** A request whose answer is read as sent (a download, a redirect, or headers to check): status, headers and the text. A body is sent as JSON. */
   raw(method: string, path: string, body?: unknown): Promise<{ status: number; headers: Headers; text: string }>;
   /** Like raw, but sends the given text as the JSON body exactly as written (for malformed bodies). */
   rawText(method: string, path: string, text: string): Promise<{ status: number; headers: Headers; text: string }>;
@@ -110,6 +110,8 @@ export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opt
           method,
           headers: { Cookie: cookie, 'X-CSRF-Token': csrfToken, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
           body: body !== undefined ? JSON.stringify(body) : undefined,
+          // A redirect is the answer under test, not something to follow.
+          redirect: 'manual',
         });
         return { status: res.status, headers: res.headers, text: await res.text() };
       },

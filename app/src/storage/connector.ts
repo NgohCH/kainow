@@ -24,7 +24,11 @@ export interface StorageConnector {
   move(dest: DestinationRef, itemId: string, newParentId: string, newName?: string): Promise<StoredRef>;
   copyTo(src: DestinationRef, itemId: string, dst: DestinationRef, folderId: string, name: string): Promise<StoredRef>;
   removePermanently(dest: DestinationRef, itemId: string): Promise<void>;
-  listVersions(dest: DestinationRef, itemId: string): Promise<ItemVersion[]>;
+  /**
+   * The provider's version history, newest first. With `size`, a provider that must download a version to hash it
+   * (Graph gives no hashes for versions) skips versions of any other size: their providerHash is null.
+   */
+  listVersions(dest: DestinationRef, itemId: string, opts?: { size?: number }): Promise<ItemVersion[]>;
   restoreVersion(dest: DestinationRef, itemId: string, versionId: string): Promise<void>;
   lookupPerson(email: string): Promise<'account' | 'not_found' | 'unknown'>;
   grant(dest: DestinationRef, itemId: string, email: string, role: 'read' | 'write'): Promise<GrantResult>;

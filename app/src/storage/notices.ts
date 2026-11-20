@@ -7,10 +7,13 @@ import { ProjectAccess } from '../projects/access.service';
 import type { StorageNotice } from './jobs';
 import { SOURCE_FILE_CHANGED, SOURCE_FILE_MISSING } from './source-files';
 import { SHARING_PLACE_FAILED, SHARING_REVOKE_FAILED, placeFailedNotice, revokeFailedNotice } from '../outputs/sharing';
+import { OUTPUT_FILE_CHANGED, OUTPUT_FILE_MISSING, OUTPUT_FILE_MOVED } from '../outputs/checks';
+import { contentReaderContexts, loadOutputAccessRow, readsOutput } from '../outputs/readers';
 
 /**
  * The in-app notices storage work raises. Each kind is worded here; Task 13 and 17 add theirs. Storage notices go to the
- * Enterprise Administrators and to the storage Administrators (spec 8.4), in the app only.
+ * Enterprise Administrators and to the storage Administrators (spec 8.4), in the app only; output file checks tell the
+ * project's PM and Deputies (spec 5.8).
  */
 export type StorageNotify = (c: PoolClient, n: StorageNotice) => Promise<void>;
 
@@ -92,6 +95,34 @@ export function makeStorageNotify(pool: Pool, clock: Clock): StorageNotify {
     await toAdministrators(c, n.kind, o.project_id, placeFailedNotice(o.project_name));
   }
 
+  /**
+   * An output file newly found changed, moved or missing (spec 5.8): to the project's PM and Deputies who read the
+   * output, in the app only, naming the output.
+   */
+  async function outputFileFound(c: PoolClient, n: StorageNotice, what: string): Promise<void> {
+    const o = (
+      await c.query<{ output_id: string; title: string; project_id: string; project_name: string }>(
+        `SELECT o.id AS output_id, o.title, p.id AS project_id, p.name AS project_name
+           FROM output_versions v JOIN outputs o ON o.id = v.output_id JOIN projects p ON p.id = o.project_id
+          WHERE v.stored_file_id = $1`,
+        [n.subjectId],
+      )
+    ).rows[0];
+    if (!o) return;
+    const row = await loadOutputAccessRow(c, o.output_id);
+    if (!row) return;
+    const at = clock();
+    for (const ctx of await contentReaderContexts(c, o.project_id, at)) {
+      if (!ctx.roles.some((r) => r === 'pm' || r === 'deputy_pm')) continue;
+      if (!(await readsOutput(c, ctx, row))) continue;
+      await c.query(
+        `INSERT INTO notifications (id, user_id, project_id, kind, urgent, summary, link, created_at, email_off)
+         VALUES ($1, $2, $3, $4, false, $5, $6, $7, true)`,
+        [uuidv7(at.getTime()), ctx.viewerId, o.project_id, n.kind, `The file of output "${o.title}" in ${o.project_name} ${what}`, `#/projects/${o.project_id}/outputs/${o.output_id}`, at],
+      );
+    }
+  }
+
   async function toAdministrators(c: PoolClient, kind: string, projectId: string, summary: string): Promise<void> {
     const recipients = [...new Set([...(await loadAdmins(c)), ...(await loadStorageAdmins(c))])].sort();
     const at = clock();
@@ -111,6 +142,12 @@ export function makeStorageNotify(pool: Pool, clock: Clock): StorageNotify {
       await placeFailed(c, n);
     } else if (n.kind === SOURCE_FILE_CHANGED) {
       await sourceFileChanged(c, n, 'has changed in storage since Kainow recorded it. It has been flagged for the storage Administrators.');
+    } else if (n.kind === OUTPUT_FILE_CHANGED) {
+      await outputFileFound(c, n, 'has changed in storage since Kainow recorded it.');
+    } else if (n.kind === OUTPUT_FILE_MOVED) {
+      await outputFileFound(c, n, 'has been moved or renamed in storage.');
+    } else if (n.kind === OUTPUT_FILE_MISSING) {
+      await outputFileFound(c, n, 'is missing from storage, or is somewhere Kainow may not look.');
     } else if (n.kind === SOURCE_FILE_MISSING) {
       await sourceFileChanged(c, n, 'is no longer in storage. It has been flagged for the storage Administrators.');
     }

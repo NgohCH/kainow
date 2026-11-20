@@ -193,6 +193,8 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['output.audience_changed', 'The PM, Owner or a Sponsor changed who may read an output, with a reason.'],
     ['output.review_cleared', 'The access review of an output was cleared, with a reason: it went back to its audience.'],
     ['output.withdrawn', 'An output was withdrawn, with a reason.'],
+    ['output.relinked', 'The PM or a Deputy linked a moved or missing output file to where it is now.'],
+    ['output.changed_registered', 'The PM or a Deputy registered an output file changed in storage as a new version.'],
     ['analysis_settings.changed', 'The organisation analysis settings were changed.'],
     ['analysis_settings.project_changed', 'A project’s analysis settings were changed.'],
     ['extraction.requested', 'An extraction was requested.'],

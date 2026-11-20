@@ -35,6 +35,8 @@ import '../storage/sources';
 import '../storage/source-files';
 // Register the file-output handler, its final failure and the daily drop of unfiled output bytes.
 import '../outputs/filing';
+// Register the output file check job and the daily output check.
+import '../outputs/checks';
 // Register folder sharing (share-sync, place-output), its final failure notice and the daily reconciliation.
 import '../outputs/sharing';
 

@@ -17,12 +17,12 @@ import { MAX_UPLOAD_BYTES } from '../notes/text';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { decide } from '../projects/matrix';
 import { todayUtc8 } from '../projects/membership';
-import type { StorageConnector } from '../storage/connector';
 import { STORAGE_CONNECTORS, type StorageConnectorFactory, StorageWaitingForKey } from '../storage/connector-factory';
 import { type OutputFormat, loadStorageSettings } from '../storage/settings';
-import { type DestinationRef, type ItemState, StorageError } from '../storage/types';
+import { type ItemState, StorageError } from '../storage/types';
 import { DOES_NOT_APPROVE_COMMITMENTS, approveOutputHandler, endOutputApprovalRequests } from './approval-handler';
 import { checkOutputAudience, createOutputAudience, writeOutputAudience } from './audience';
+import { type CheckStatus, NOT_RECOVERED, approvedPlaceOf, changeRegisteredSql, checkActions, checkLabel, pathInDestination } from './checks';
 import { ALREADY_FILED, BEING_FILED, LINKED_NOT_FILED, NOT_KEPT, NO_DESTINATION, REGISTER_FIRST, filingFailedLabel, requestFiling } from './filing';
 import { effectiveFormats, outputRefusal } from './formats';
 import { outputFileName } from './naming';
@@ -54,8 +54,6 @@ const BAD_DEPARTMENT = 'Choose departments from the active departments.';
 const BAD_TYPE = 'Choose a report type from the list.';
 const NOTHING_TO_CHANGE = 'Nothing to change.';
 const STORAGE_UNAVAILABLE = 'The storage service cannot be reached right now, so the link could not be checked. Try again later.';
-/** How many folders up a link's parents are followed before giving up. */
-const MAX_FOLDER_DEPTH = 64;
 const ACCEPT_INTO_ITSELF = 'Choose another output to add this submission to.';
 const ACCEPT_INTO_REGISTERED = 'A submission can be added only to a registered output.';
 const SAME_TIME = 'Someone else changed this output at the same time. Try again.';
@@ -106,6 +104,14 @@ export interface Filing {
   path?: string | null;
   /** Filing failed and the PM or a Deputy may file it again ("Try again"). */
   tryAgain?: true;
+  /** Checked, Changed, Moved, Missing, Access denied or Unverified (spec 5.8), for a filed or linked file. */
+  checkLabel?: string;
+  /** "The approved content could not be recovered from storage", when a registered change left the original Changed. */
+  recovery?: string;
+  /** What the PM or a Deputy can do about the check result: `register_changed`, `relink`, `add_version`. */
+  actions?: string[];
+  /** A file relinked into another destination is labelled with it (D32); PM, Deputies, Owner and Sponsors only. */
+  destination?: string;
 }
 
 export interface OutputVersionView {
@@ -311,30 +317,23 @@ export class OutputsService {
       const resolved = await connector.resolveLink(url);
       const ref = resolved.dest;
       if (!ref?.driveId) throw new BadRequestException(LINK_REFUSED);
-      const candidates = (
-        await this.pool.query<{ id: string; connector: 'graph' | 'local'; rootItemId: string | null }>(
-          `SELECT id, connector, root_item_id AS "rootItemId" FROM storage_destinations
-            WHERE purpose = 'outputs' AND status = 'approved' AND drive_id = $1 ORDER BY created_at, id`,
-          [ref.driveId],
-        )
-      ).rows;
-      for (const dest of candidates) {
-        if (!dest.rootItemId || !(await this.liesUnder(connector, ref, resolved.item, dest.rootItemId))) continue;
-        const item = resolved.item;
-        return {
-          origin: 'link',
-          format: LINK_FORMATS[extOf(item.name)] ?? 'other',
-          bytes: null,
-          sha256: '',
-          size: item.size,
-          draftVersionId: null,
-          aiAssisted: false,
-          material: null,
-          link: { destinationId: dest.id, connector: dest.connector, driveId: ref.driveId, item },
-          defaultTypeId: null,
-        };
-      }
-      throw new BadRequestException(LINK_REFUSED);
+      // Any approved output destination counts, the earliest approved first (spec 4.1).
+      const dest = await approvedPlaceOf(this.pool, connector, ref, resolved.item, { driveRootId: ref.rootItemId });
+      if (!dest) throw new BadRequestException(LINK_REFUSED);
+      // Kept relative to the destination's own folder, as the checks compare it (spec 5.8).
+      const item = { ...resolved.item, path: await pathInDestination(connector, ref, dest.rootItemId, resolved.item.path) };
+      return {
+        origin: 'link',
+        format: LINK_FORMATS[extOf(item.name)] ?? 'other',
+        bytes: null,
+        sha256: '',
+        size: item.size,
+        draftVersionId: null,
+        aiAssisted: false,
+        material: null,
+        link: { destinationId: dest.id, connector: dest.connector, driveId: ref.driveId, item },
+        defaultTypeId: null,
+      };
     } catch (err) {
       if (err instanceof StorageWaitingForKey) throw new ServiceUnavailableException(STORAGE_UNAVAILABLE);
       if (err instanceof StorageError) {
@@ -344,22 +343,6 @@ export class OutputsService {
       }
       throw err;
     }
-  }
-
-  /**
-   * Whether the item lies under the destination's root folder: its parents are walked up through the provider until
-   * that folder (inside) or the drive's own root (outside) is reached. A destination rooted at the drive root holds
-   * everything in the drive.
-   */
-  private async liesUnder(connector: StorageConnector, ref: DestinationRef, item: ItemState, rootItemId: string): Promise<boolean> {
-    if (rootItemId === ref.rootItemId) return true;
-    let parent = item.parentId;
-    for (let depth = 0; depth < MAX_FOLDER_DEPTH; depth++) {
-      if (parent === rootItemId) return true;
-      if (!parent || parent === ref.rootItemId) return false;
-      parent = (await connector.getItem(ref, parent)).parentId;
-    }
-    return false;
   }
 
   private async assertOutputFormat(projectId: string, format: OutputFormat): Promise<void> {
@@ -851,9 +834,14 @@ export class OutputsService {
       `SELECT v.version_no AS no, v.origin, v.format, v.status, v.size_bytes AS "sizeBytes", v.created_at AS "createdAt",
               v.created_by AS "createdById", u.display_name AS "createdByName",
               f.state AS "fileState", f.failure_code AS "failureCode", f.check_status AS "checkStatus", f.last_checked_at AS "lastCheckedAt", f.path,
-              b.output_version_id IS NOT NULL AND b.bytes IS NOT NULL AS kept
+              b.output_version_id IS NOT NULL AND b.bytes IS NOT NULL AS kept,
+              CASE WHEN f.destination_id IS DISTINCT FROM s.destination_id THEN d.label END AS "otherDestination",
+              ${changeRegisteredSql('v.id')} AS "changeRegistered"
          FROM output_versions v JOIN users u ON u.id = v.created_by
+         JOIN outputs o ON o.id = v.output_id
+         LEFT JOIN project_output_settings s ON s.project_id = o.project_id
          LEFT JOIN stored_files f ON f.id = v.stored_file_id
+         LEFT JOIN storage_destinations d ON d.id = f.destination_id
          LEFT JOIN output_version_bytes b ON b.output_version_id = v.id
         WHERE v.output_id = $1 ORDER BY v.version_no`,
       [outputId],
@@ -874,6 +862,13 @@ export class OutputsService {
       } else {
         filing = { state: r.fileState, label: STORED_LABELS[r.fileState] ?? r.fileState, checkStatus: r.checkStatus, lastCheckedAt: r.lastCheckedAt };
       }
+      if (r.fileState === 'stored' || r.fileState === 'linked') {
+        const status = r.checkStatus as CheckStatus;
+        filing.checkLabel = checkLabel(status, r.status);
+        filing.actions = checkActions(status, mayFile);
+        if (status === 'changed' && r.changeRegistered) filing.recovery = NOT_RECOVERED;
+        if (seesPath && r.otherDestination) filing.destination = r.otherDestination;
+      }
       if (seesPath && r.fileState) filing.path = r.path;
       return {
         no: r.no,
@@ -893,13 +888,21 @@ export class OutputsService {
   // -------------------------------------------------------------------------------------------------------------------
 
   /** The output, for someone who may see it now: 404 for anyone else (before any 403, so its existence is not revealed). */
-  private async visible(user: AuthUser, projectId: string, outputId: string, db: Db = this.pool, lock = false): Promise<{ ctx: ProjectContext; row: OutputAccessRow }> {
+  async visible(user: AuthUser, projectId: string, outputId: string, db: Db = this.pool, lock = false): Promise<{ ctx: ProjectContext; row: OutputAccessRow }> {
     if (!UUID.test(outputId)) throw new NotFoundException();
     const ctx = await this.access.context(user, projectId, db, lock);
     if (lock) await db.query(`SELECT 1 FROM outputs WHERE id = $1 FOR UPDATE`, [outputId]);
     const row = await loadOutputAccessRow(db, outputId);
     if (!row || row.projectId !== projectId || !(await readsOutput(db, ctx, row))) throw new NotFoundException();
     return { ctx, row };
+  }
+
+  /** The output, for the PM or a Deputy (`output.manage`), not locked: 404, then 403 with the matrix's reason. */
+  async assertManage(user: AuthUser, projectId: string, outputId: string): Promise<{ ctx: ProjectContext; row: OutputAccessRow }> {
+    const seen = await this.visible(user, projectId, outputId);
+    const verdict = decide({ action: 'output.manage', roles: seen.ctx.roles, status: seen.ctx.project.status });
+    if (!verdict.allowed) throw new ForbiddenException(verdict.reason);
+    return seen;
   }
 
   /** The output locked for a change by the PM or a Deputy (`output.manage`): 404, then 403 with the matrix's reason. */

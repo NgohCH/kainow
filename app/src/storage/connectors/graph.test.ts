@@ -51,6 +51,23 @@ runContractSuite('graph', async () => {
   };
 });
 
+test('listVersions with a size downloads only versions of that size to hash them', async () => {
+  const s = await setup();
+  try {
+    const f = await s.connector.ensureFolder(s.dest, null, 'History');
+    const first = Buffer.from('recorded content');
+    const ref = await s.connector.upload(s.dest, f.itemId, 'report.md', first, { conflict: 'fail' });
+    s.fake.changeContent(s.dest.driveId, ref.itemId, Buffer.from('a longer edited content'));
+    s.fake.changeContent(s.dest.driveId, ref.itemId, Buffer.from('even longer edited content here'));
+    s.fake.calls.length = 0;
+    const versions = await s.connector.listVersions(s.dest, ref.itemId, { size: first.length });
+    assert.equal(versions.length, 3);
+    const match = versions.filter((v) => v.providerHash !== null);
+    assert.deepEqual(match.map((v) => [v.size, v.providerHash]), [[first.length, quickXorHash(first)]]);
+    assert.equal(s.fake.calls.filter((c) => c.method === 'GET' && /\/versions\/[^/]+\/content$/.test(c.path)).length, 1, 'one download');
+  } finally { await s.fake.close(); }
+});
+
 test('token request uses the Graph scope', async () => {
   const s = await setup();
   try {

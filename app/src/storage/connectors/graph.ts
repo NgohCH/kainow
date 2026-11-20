@@ -452,10 +452,15 @@ export class GraphConnector implements StorageConnector {
   }
 
   /** Graph lists versions without hashes, so each version's content is read and hashed here. */
-  async listVersions(dest: DestinationRef, itemId: string): Promise<ItemVersion[]> {
+  async listVersions(dest: DestinationRef, itemId: string, opts: { size?: number } = {}): Promise<ItemVersion[]> {
     const versions = await this.listAll<{ id: string; size?: number; lastModifiedDateTime?: string }>(`${this.itemPath(dest, itemId)}/versions`);
     const out: ItemVersion[] = [];
     for (const v of versions) {
+      // Graph gives no hash for a version: only a version of the wanted size is downloaded to hash it.
+      if (opts.size !== undefined && typeof v.size === 'number' && v.size !== opts.size) {
+        out.push({ id: v.id, size: v.size, providerHash: null, modifiedAt: v.lastModifiedDateTime ?? '' });
+        continue;
+      }
       const c = await this.call('GET', `${this.itemPath(dest, itemId)}/versions/${enc(v.id)}/content`, { read: 'bytes', timeoutMs: this.chunkTimeoutMs });
       const bytes = c.bytes ?? Buffer.alloc(0);
       out.push({ id: v.id, size: typeof v.size === 'number' ? v.size : bytes.length, providerHash: quickXorHash(bytes), modifiedAt: v.lastModifiedDateTime ?? '' });

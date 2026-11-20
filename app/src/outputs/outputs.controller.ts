@@ -1,4 +1,5 @@
-import { BadRequestException, Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Put, Query, Req, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Put, Query, Req, Res, UploadedFile, UseInterceptors } from '@nestjs/common';
+import type { Response } from 'express';
 import { AnySignedInUser } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
@@ -6,6 +7,7 @@ import { UUID } from '../common/uuid7';
 import { noteUpload } from '../notes/notes.controller';
 import { parsePatchBody, parseRegisterBody, parseSubmitBody } from './outputs-input';
 import { type OutputAudienceInput, OutputAudienceService } from './audience';
+import { OutputFilesService } from './output-files.service';
 import { OutputsService } from './outputs.service';
 
 type UploadedBuffer = { originalname: string; buffer: Buffer } | undefined;
@@ -21,6 +23,13 @@ const ids = (...values: string[]): void => {
 const STATUSES = ['submitted', 'registered', 'declined', 'withdrawn'];
 const AUDIENCE_BODY = 'Choose Project-wide, or Restricted with the people who may read it.';
 const field = (body: unknown, name: string): unknown => (body && typeof body === 'object' ? (body as Record<string, unknown>)[name] : undefined);
+const MAX_LINK = 2048;
+const LINK_BODY = 'Give the link to where the file is now, or nothing to relink the same file.';
+/** A version number from the path: 404 for anything else. */
+const versionNo = (n: string): number => {
+  if (!/^[1-9][0-9]{0,8}$/.test(n)) throw new NotFoundException();
+  return Number(n);
+};
 
 /** `{ mode: 'project' }` or `{ mode: 'restricted', userIds }`. */
 function parseAudienceBody(body: unknown): OutputAudienceInput {
@@ -37,6 +46,7 @@ export class OutputsController {
   constructor(
     private readonly outputs: OutputsService,
     private readonly audiences: OutputAudienceService,
+    private readonly files: OutputFilesService,
   ) {}
 
   @Get()
@@ -134,6 +144,57 @@ export class OutputsController {
     ids(projectId, outputId);
     if (!/^[1-9][0-9]{0,8}$/.test(n)) throw new NotFoundException();
     return this.outputs.requestApproval(who(req), projectId, outputId, Number(n));
+  }
+
+  /**
+   * Opens a filed or linked version (spec 5.7): 303 to the file's web URL after a quick check. A file found Changed,
+   * Missing or Access denied (or a version with no file) answers 409 with `{ state, label, actions }` instead.
+   */
+  @Get(':outputId/versions/:n/open')
+  @AnySignedInUser()
+  async open(@Param('projectId') projectId: string, @Param('outputId') outputId: string, @Param('n') n: string, @Req() req: HttpRequest, @Res() res: Response): Promise<void> {
+    ids(projectId, outputId);
+    const target = await this.files.open(who(req), projectId, outputId, versionNo(n));
+    res.set({ 'Cache-Control': 'private, no-store' });
+    res.redirect(303, target);
+  }
+
+  /** "Download a copy" (readers): the file streamed through Kainow from the provider, always as a download. */
+  @Get(':outputId/versions/:n/download')
+  @AnySignedInUser()
+  async download(@Param('projectId') projectId: string, @Param('outputId') outputId: string, @Param('n') n: string, @Req() req: HttpRequest, @Res() res: Response): Promise<void> {
+    ids(projectId, outputId);
+    const file = await this.files.download(who(req), projectId, outputId, versionNo(n));
+    const ascii = file.filename.replace(/[^\x20-\x7e]/g, '_').replace(/"/g, '_');
+    res.set({
+      'Content-Type': file.mediaType,
+      'Content-Length': String(file.bytes.length),
+      'Content-Disposition': `attachment; filename="${ascii}"; filename*=UTF-8''${encodeURIComponent(file.filename)}`,
+      'X-Content-Type-Options': 'nosniff',
+      'Content-Security-Policy': "default-src 'none'; sandbox",
+      'Cache-Control': 'private, no-store',
+    });
+    res.end(file.bytes);
+  }
+
+  /** `{ url? }` (PM or Deputy): a moved or missing file linked to where it is now (spec 5.8). */
+  @Post(':outputId/versions/:n/relink')
+  @AnySignedInUser()
+  @HttpCode(200)
+  relink(@Param('projectId') projectId: string, @Param('outputId') outputId: string, @Param('n') n: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    ids(projectId, outputId);
+    const url = field(body, 'url');
+    if (url !== undefined && url !== null && (typeof url !== 'string' || url.trim() === '' || url.length > MAX_LINK)) throw new BadRequestException(LINK_BODY);
+    return this.files.relink(who(req), projectId, outputId, versionNo(n), typeof url === 'string' ? url.trim() : null);
+  }
+
+  /** PM or Deputy: a changed file's content registered as a new Draft version, the original restored where possible (spec 5.8). */
+  @Post(':outputId/versions/:n/register-changed')
+  @AnySignedInUser()
+  @HttpCode(200)
+  registerChanged(@Param('projectId') projectId: string, @Param('outputId') outputId: string, @Param('n') n: string, @Req() req: HttpRequest) {
+    ids(projectId, outputId);
+    return this.files.registerChanged(who(req), projectId, outputId, versionNo(n));
   }
 
   /**
