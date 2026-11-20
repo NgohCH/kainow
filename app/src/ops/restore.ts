@@ -9,7 +9,9 @@
  *
  * Output and stored text are fixed: never a key, a secret, a connection string, a host path or file content.
  * Once pg_restore has started, any failure (a decryption error included) leaves a partial database: afterRestore never runs
- * on it, and the operator is told to recreate the target empty before trying again.
+ * on it, and the operator is told to recreate the target empty before trying again. The one exception is a row-count
+ * mismatch after pg_restore committed: the target is full, so afterRestore still runs (protective mode on, queued work
+ * ended) before the command stops with the recreate text, and the copy is never left live.
  */
 import { join } from 'node:path';
 import type { Pool, PoolClient } from 'pg';
@@ -37,6 +39,10 @@ export interface RestoreDeps {
   protectedKeyPresent: boolean;
   /** Space poll interval while pg_restore runs (spec: 30 s). */
   pollMs?: number;
+  /** pg_restore is killed after this long (R22: 6 hours). */
+  toolTimeoutMs?: number;
+  /** Test seam: called with the target just before the row counts are compared. */
+  beforeRowCounts?(db: Pool): Promise<void>;
 }
 
 const RECREATE = 'Recreate the target database empty before trying again.';
@@ -59,7 +65,9 @@ export const RESTORE_TEXT = {
   decryptFailed: `The backup could not be decrypted while restoring; the restore was rolled back. ${RECREATE}`,
   spaceLow: `Free space ran too low during the restore; the restore was rolled back. ${RECREATE}`,
   restoreFailed: `The restore into the target database failed. ${RECREATE}`,
+  restoreTimeout: `The restore did not finish within 6 hours and was stopped; it was rolled back. ${RECREATE}`,
   rowCounts: (tables: string[]) => `Row counts differ from the backup: ${tables.join(', ')}. ${RECREATE}`,
+  rowCountsInert: 'The restored copy was put into protective read-only mode and its queued emails and jobs were ended, so nothing in it runs. Do not use it.',
   afterFailed: `The restored database could not be put into protective read-only mode. ${RECREATE}`,
   unexpected: `The restore stopped unexpectedly. Do not start Kainow on the target database: drop and recreate it empty, then run restore again.`,
   noProtectedKey:
@@ -193,10 +201,19 @@ async function restoreLocked(args: Args, deps: RestoreDeps): Promise<number> {
     restored = 'failed';
   }
   if (restored !== 'ok') {
-    deps.err(restored === 'crypto' ? RESTORE_TEXT.decryptFailed : restored === 'space_low' ? RESTORE_TEXT.spaceLow : RESTORE_TEXT.restoreFailed);
+    deps.err(
+      restored === 'crypto'
+        ? RESTORE_TEXT.decryptFailed
+        : restored === 'space_low'
+          ? RESTORE_TEXT.spaceLow
+          : restored === 'timeout'
+            ? RESTORE_TEXT.restoreTimeout
+            : RESTORE_TEXT.restoreFailed,
+    );
     return 1;
   }
 
+  await deps.beforeRowCounts?.(pool);
   const differ: string[] = [];
   for (const t of manifest.tables) {
     let n: number | null = null;
@@ -207,20 +224,23 @@ async function restoreLocked(args: Args, deps: RestoreDeps): Promise<number> {
     }
     if (n !== t.rows) differ.push(`${t.schema}.${t.table}`);
   }
-  if (differ.length > 0) {
-    deps.err(RESTORE_TEXT.rowCounts(differ));
-    return 1;
-  }
-  deps.out(`Row counts match for ${manifest.tables.length} tables.`);
+  if (differ.length === 0) deps.out(`Row counts match for ${manifest.tables.length} tables.`);
 
-  // After restoring, in one transaction (spec 8.2 step 5).
+  // After restoring, in one transaction (spec 8.2 step 5). Also when the row counts differ: pg_restore has committed, so
+  // the target is full, and it must not be left with protective mode off and its queued work live (M1).
   const setTime = new Date(chosen.summary.startedAt);
   const now = deps.now();
   let result: Awaited<ReturnType<typeof afterRestore>>;
   try {
     result = await inTransaction(pool, (c) => afterRestore(c, { setTime, setName: chosen.name, reason: args.reason, now, summary: chosen.summary }));
   } catch {
+    if (differ.length > 0) deps.err(RESTORE_TEXT.rowCounts(differ));
     deps.err(RESTORE_TEXT.afterFailed);
+    return 1;
+  }
+  if (differ.length > 0) {
+    deps.err(RESTORE_TEXT.rowCounts(differ));
+    deps.err(RESTORE_TEXT.rowCountsInert);
     return 1;
   }
   const ended = Object.values(result.work).reduce((a, b) => a + b, 0);

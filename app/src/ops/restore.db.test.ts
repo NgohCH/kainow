@@ -15,7 +15,10 @@ import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 import { BOSS_SCHEMA, QUEUES, startQueues } from '../worker/queues';
-import { afterRestore } from './after-restore';
+import { scheduledDigestDue } from '../digests/digest';
+import { mailDue } from '../notifications/mailing';
+import { todayUtc8 } from '../projects/membership';
+import { MAY_HAVE_BEEN_SENT, afterRestore } from './after-restore';
 import { runBackup } from './backup';
 import type { OpsConfig } from './config';
 import { PgTools } from './pg-tools';
@@ -293,6 +296,29 @@ describe('restore', { skip: SKIP_NO_DB }, () => {
     await assertEmpty(into.db);
   });
 
+  test('M1: row counts that differ after pg_restore committed still make the full target inert: protective on, work ended, exit 1', async (t) => {
+    if (!needTools(t)) return;
+    const { startedAt } = await backup();
+    const into = await target();
+    const r = await restore(into, ['--set', 'latest', '--reason', 'Disaster recovery'], {
+      // One extra row in a restored table: the counts no longer match the manifest.
+      beforeRowCounts: async (db) => {
+        await db.query(`INSERT INTO backup_runs (id, kind, started_at, outcome) VALUES ($1, 'manual', now(), 'failed')`, [uuidv7()]);
+      },
+    });
+    assert.equal(r.code, 1);
+    assert.deepEqual(r.err, [RESTORE_TEXT.rowCounts(['public.backup_runs']), RESTORE_TEXT.rowCountsInert]);
+    assert.ok(!r.out.some((l) => l.startsWith('set ')), 'never reported as restored');
+    // The damage case really asserts protective mode: the target is full, and it is read-only with the set time.
+    const state = (await into.db.query('SELECT protective, reason, detail FROM operations_state')).rows;
+    assert.equal(state.length, 1);
+    assert.deepEqual([state[0].protective, state[0].reason, state[0].detail.setTime], [true, 'restored_from_backup', startedAt]);
+    assert.equal(Number((await into.db.query('SELECT count(*) AS n FROM sessions')).rows[0].n), 0);
+    const mail = (await into.db.query(`SELECT status FROM email_outbox WHERE subject = 'Queued before the backup'`)).rows[0];
+    assert.equal(mail.status, 'not_sent_restored');
+    assert.match(RESTORE_TEXT.rowCounts(['x']), /Recreate the target database empty/);
+  });
+
   test('the refusal and stop texts tell the operator to drop and recreate the target empty, never to start Kainow on it', () => {
     for (const text of [RESTORE_TEXT.notEmpty, RESTORE_TEXT.unexpected]) {
       assert.match(text, /drop and recreate (it|the target database) empty/);
@@ -479,6 +505,86 @@ describe('afterRestore', { skip: SKIP_NO_DB }, () => {
     assert.equal(audit[0].detail.setName, '2026-11-08T0200Z-x');
     assert.equal(audit[0].detail.setTime, setTime.toISOString());
     assert.equal(audit[0].detail.reason, 'Server lost in the flood');
+  });
+
+  test('I1: a notice still waiting for its email is never emailed after the restore; its in-app notice stays', async () => {
+    const now = t.clock.now();
+    const firedAt = new Date(now.getTime() - 60_000);
+    const notice = async (summary: string, at: Date): Promise<string> => {
+      const trigger = uuidv7();
+      await t.pool.query(
+        `INSERT INTO notification_triggers (id, key, kind, project_id, record_kind, record_id, fire_at, decided_at, outcome, recipients)
+         VALUES ($1, $2, 'task_due', $3, 'project', $3, $4, $4, 'sent', ARRAY[$5]::uuid[])`,
+        [trigger, `test:${trigger}`, project, at, ids.pm],
+      );
+      const id = uuidv7();
+      await t.pool.query(
+        `INSERT INTO notifications (id, user_id, trigger_id, project_id, kind, urgent, summary, link, created_at) VALUES ($1, $2, $3, $4, 'task_due', true, $5, '#/projects', $6)`,
+        [id, ids.pm, trigger, project, summary, at],
+      );
+      return id;
+    };
+    // Urgent, fired a minute ago, not yet carried into an email: mailDue would write it at the next sweep.
+    const held = await notice('Held before the backup', firedAt);
+    const result = await inTx((c) => afterRestore(c, { setTime: new Date('2026-11-08T02:00:00Z'), setName: 's', reason: 'r', now }));
+    assert.equal(result.emails, 1, 'counted with the emails not sent');
+    const row = (await t.pool.query('SELECT email_off, outbox_id, read_at FROM notifications WHERE id = $1', [held])).rows[0];
+    assert.deepEqual([row.email_off, row.outbox_id, row.read_at], [true, null, null], 'email off; the in-app notice is still unread');
+    // A notice that fires after the restore (the control) is still mailed; the held one is not.
+    const fresh = await notice('Fired after the restore', now);
+    t.clock.advanceMinutes(1);
+    assert.equal(await mailDue(t.pool, t.clock.now(), 'https://kainow.test'), 1);
+    assert.equal((await t.pool.query('SELECT outbox_id FROM notifications WHERE id = $1', [held])).rows[0].outbox_id, null);
+    assert.ok((await t.pool.query('SELECT outbox_id FROM notifications WHERE id = $1', [fresh])).rows[0].outbox_id);
+    // The restore notices of afterRestore itself still go out by email.
+    const own = (await t.pool.query(`SELECT o.status FROM notifications n JOIN email_outbox o ON o.id = n.outbox_id WHERE n.kind = 'restored_from_backup'`)).rows;
+    assert.equal(own.length, 2);
+    assert.ok(own.every((o) => o.status === 'queued'));
+  });
+
+  test('I2: an email that was being sent becomes uncertain, a possible duplicate with a fixed reason, with its uncertain attempt row', async () => {
+    const now = t.clock.now();
+    const claimedAt = new Date(now.getTime() - 120_000);
+    const id = uuidv7();
+    await t.pool.query(
+      `INSERT INTO email_outbox (id, to_address, subject, text_body, kind, initiated_by, status, attempts, next_attempt_at, created_at)
+       VALUES ($1, 'someone@example.org', 's', 'b', 'test', 'system', 'sending', 1, $2, $2)`,
+      [id, claimedAt],
+    );
+    await inTx((c) => afterRestore(c, { setTime: new Date('2026-11-08T02:00:00Z'), setName: 's', reason: 'r', now }));
+    const o = (await t.pool.query('SELECT status, possible_duplicate, next_attempt_at, last_reason, first_failure_at FROM email_outbox WHERE id = $1', [id])).rows[0];
+    assert.deepEqual([o.status, o.possible_duplicate, o.next_attempt_at, o.last_reason], ['uncertain', true, null, MAY_HAVE_BEEN_SENT]);
+    assert.equal(new Date(o.first_failure_at).getTime(), claimedAt.getTime());
+    const attempts = (await t.pool.query('SELECT attempt_no, started_at, finished_at, outcome FROM email_attempts WHERE outbox_id = $1', [id])).rows;
+    assert.equal(attempts.length, 1);
+    assert.deepEqual([attempts[0].attempt_no, attempts[0].finished_at, attempts[0].outcome], [1, null, 'uncertain']);
+    assert.equal(new Date(attempts[0].started_at).getTime(), claimedAt.getTime());
+    const audit = (await t.pool.query(`SELECT detail FROM audit_events WHERE action = 'ops.restored_from_backup'`)).rows[0];
+    assert.equal(audit.detail.uncertainEmails, 1);
+  });
+
+  test("M8: today's scheduled digest is recorded as done for every project, so it is not sent a second time", async () => {
+    const now = t.clock.now();
+    await inTx((c) => afterRestore(c, { setTime: new Date('2026-11-08T02:00:00Z'), setName: 's', reason: 'r', now }));
+    const today = todayUtc8(now);
+    const rows = (
+      await t.pool.query(`SELECT project_id, outcome, recipients, detail FROM notification_triggers WHERE kind = 'digest' AND key = $1`, [
+        `project:${project}:digest:${today}`,
+      ])
+    ).rows;
+    assert.equal(rows.length, 1);
+    assert.deepEqual([rows[0].project_id, rows[0].outcome, rows[0].recipients, rows[0].detail], [project, 'skipped_obsolete', [], { reason: 'restored from backup' }]);
+    // The sweep reads the newest recorded digest date: today's, so nothing is due today, whatever the schedule.
+    const last = (await t.pool.query(`SELECT max(substring(key from '[^:]+$')) AS d FROM notification_triggers WHERE project_id = $1 AND kind = 'digest'`, [project])).rows[0].d;
+    assert.equal(scheduledDigestDue({ mode: 'calendar' } as never, { frequency: 'daily', time: '00:00', weekday: null } as never, now, last), null);
+  });
+
+  test('M2: a missing operations_state row is written, never left reading "not protective"', async () => {
+    await t.pool.query('DELETE FROM operations_state');
+    const now = t.clock.now();
+    await inTx((c) => afterRestore(c, { setTime: new Date('2026-11-08T02:00:00Z'), setName: 's', reason: 'r', now }));
+    const state = (await t.pool.query('SELECT protective, reason FROM operations_state')).rows;
+    assert.deepEqual(state, [{ protective: true, reason: 'restored_from_backup' }]);
   });
 
   test('a later analysis tick does not rewrite the ended rows', async () => {

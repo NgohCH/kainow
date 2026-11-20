@@ -7,7 +7,12 @@
  *   login_codes            unused codes deleted; used ones kept as history
  *   setup_invitations      open setup and recovery links expired (expires_at = now)
  *   email_outbox           queued, retry_wait -> not_sent_restored ("Not sent — restored from backup");
- *                          sending -> uncertain with no automatic retry; uncertain loses its automatic retry
+ *                          sending -> uncertain, possible_duplicate, with an uncertain email_attempts row and no automatic
+ *                          retry (as the dispatcher's own stale-send rule); uncertain loses its automatic retry
+ *   notifications          notices still waiting for their email (outbox_id NULL, email_off false) -> email_off: the old
+ *                          installation may have mailed them after the backup; the in-app notice stays
+ *   notification_triggers  today's scheduled digest recorded as done (skipped_obsolete) for every project: the old
+ *                          installation may have sent it after the backup; the next one goes out as usual
  *   ai_requests            (AI assist: answers, report drafts, summaries) queued, running -> failed restored_from_backup
  *   analysis_runs          queued, running -> failed restored_from_backup
  *   extraction_runs        queued, running -> failed restored_from_backup
@@ -20,9 +25,12 @@
  * Not ended, with the reason in the task report: quarantine_cases waiting for the key (local and idempotent; ending it would
  * leave the secret uncleaned), digest_runs and sweep_runs (records of finished work, no queued state), project invitations.
  */
+import { randomUUID } from 'node:crypto';
 import type { PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { uuidv7 } from '../common/uuid7';
+import { todayUtc8 } from '../projects/membership';
+import { OPS_FAILURES } from './common';
 import type { BackupSummary } from './manifest';
 import { notifyAdmins } from './notify';
 import { BOSS_SCHEMA } from '../worker/queues';
@@ -30,6 +38,8 @@ import { BOSS_SCHEMA } from '../worker/queues';
 export const RESTORED_CODE = 'restored_from_backup';
 export const NOT_RUN = 'Not run — restored from backup';
 export const NOT_SENT = 'Not sent — restored from backup';
+/** The reason on an email that was being sent when the backup was taken (Deliveries shows its duplicate warning). */
+export const MAY_HAVE_BEEN_SENT = 'Restored from backup: it may already have been sent';
 const SPEND_NOTE = 'restored from backup; the outcome is not known';
 const LINK = '#/admin/operations';
 
@@ -54,6 +64,7 @@ export interface AfterRestoreInput {
 }
 
 export interface AfterRestoreResult {
+  /** Emails not sent: queued outbox rows plus notices whose email was still to be written. */
   emails: number;
   jobs: number;
   work: Record<string, number>;
@@ -73,15 +84,49 @@ export async function afterRestore(c: PoolClient, input: AfterRestoreInput): Pro
   );
 
   // Email: nothing queued is sent. A send that may have happened stays uncertain, for an Administrator, never retried.
-  const emails =
+  const outboxEmails =
     (
       await c.query(
         `UPDATE email_outbox SET status = 'not_sent_restored', next_attempt_at = NULL, last_reason = $1 WHERE status IN ('queued', 'retry_wait')`,
         [NOT_SENT],
       )
     ).rowCount ?? 0;
-  await c.query(`UPDATE email_outbox SET status = 'uncertain', next_attempt_at = NULL WHERE status = 'sending'`);
+  // A row `sending` at backup time was very probably delivered by the old installation. As the dispatcher's stale-send
+  // rule (markUncertain): an uncertain attempt row for the attempt in flight, possible_duplicate so Deliveries warns
+  // before any resend, and no automatic retry.
+  const sending = (
+    await c.query(`SELECT id, attempts, first_failure_at, next_attempt_at FROM email_outbox WHERE status = 'sending' ORDER BY created_at, id`)
+  ).rows as Array<{ id: string; attempts: number; first_failure_at: Date | null; next_attempt_at: Date | null }>;
+  for (const r of sending) {
+    const startedAt = r.next_attempt_at ?? now;
+    await c.query(
+      `INSERT INTO email_attempts (id, outbox_id, attempt_no, started_at, finished_at, outcome) VALUES ($1, $2, $3, $4, NULL, 'uncertain')`,
+      [randomUUID(), r.id, Math.max(1, r.attempts), startedAt],
+    );
+    await c.query(
+      `UPDATE email_outbox SET status = 'uncertain', possible_duplicate = true, first_failure_at = $2, next_attempt_at = NULL, last_reason = $3
+        WHERE id = $1`,
+      [r.id, r.first_failure_at ?? startedAt, MAY_HAVE_BEEN_SENT],
+    );
+  }
   await c.query(`UPDATE email_outbox SET next_attempt_at = NULL WHERE status = 'uncertain' AND next_attempt_at IS NOT NULL`);
+  // Notices whose email was still to be written (a daily slot, an away period, a project not Active): the sweep's mailDue
+  // would write and send them after Resume, though the old installation may have mailed them after the backup. The
+  // in-app notice stays. Done before notifyAdmins below, whose own notices carry their own outbox row.
+  const heldNotices = (await c.query(`UPDATE notifications SET email_off = true WHERE outbox_id IS NULL AND NOT email_off`)).rowCount ?? 0;
+  const emails = outboxEmails + heldNotices;
+
+  // Today's scheduled digest: the old installation may have sent it after the backup, and the restored data cannot tell.
+  // Recording it as done (the key the sweep checks) skips it for today only; one missed digest beats a second copy.
+  const today = todayUtc8(now);
+  const projects = (await c.query(`SELECT id FROM projects ORDER BY id`)).rows as Array<{ id: string }>;
+  for (const p of projects) {
+    await c.query(
+      `INSERT INTO notification_triggers (id, key, kind, project_id, record_kind, record_id, fire_at, decided_at, outcome, recipients, detail)
+       VALUES ($1, $2, 'digest', $3, 'project', $3, $4, $4, 'skipped_obsolete', '{}'::uuid[], $5::jsonb) ON CONFLICT (key) DO NOTHING`,
+      [uuidv7(now.getTime()), `project:${p.id}:digest:${today}`, p.id, now, JSON.stringify({ reason: 'restored from backup' })],
+    );
+  }
 
   // Domain work: each table's own failed state with the fixed reason.
   const work: Record<string, number> = {};
@@ -114,7 +159,7 @@ export async function afterRestore(c: PoolClient, input: AfterRestoreInput): Pro
   }
   await c.query(
     `UPDATE backup_runs SET outcome = 'failed', failure_code = 'interrupted', failure_detail = $2, finished_at = $1 WHERE outcome = 'running'`,
-    [now, 'The run was interrupted before it finished.'],
+    [now, OPS_FAILURES.interrupted],
   );
   await c.query(`UPDATE restore_drills SET outcome = 'failed', failure_code = 'interrupted', finished_at = $1 WHERE outcome = 'running'`, [now]);
 
@@ -127,10 +172,13 @@ export async function afterRestore(c: PoolClient, input: AfterRestoreInput): Pro
 
   // Protective mode, whatever the dumped state was (a backup can run while the mode is on for low space).
   const detail = { setTime: input.setTime.toISOString(), setName: input.setName };
-  await c.query(
-    `UPDATE operations_state SET protective = true, reason = 'restored_from_backup', since = $1, detail = $2, changed_by = NULL`,
+  // An upsert: a missing row would read as "not protective" (state.ts), the one way a restore could finish read-write.
+  const state = await c.query(
+    `INSERT INTO operations_state (id, protective, reason, since, detail, changed_by) VALUES (true, true, 'restored_from_backup', $1, $2, NULL)
+     ON CONFLICT (id) DO UPDATE SET protective = true, reason = 'restored_from_backup', since = $1, detail = $2, changed_by = NULL`,
     [now, JSON.stringify(detail)],
   );
+  if (state.rowCount !== 1) throw new Error('protective mode was not recorded');
   await c.query(`INSERT INTO operations_state_changes (id, at, action, actor_id, reason, detail) VALUES ($1, $2, 'entered', NULL, $3, $4)`, [
     uuidv7(now.getTime()),
     now,
@@ -142,7 +190,7 @@ export async function afterRestore(c: PoolClient, input: AfterRestoreInput): Pro
     at: now,
     action: 'ops.restored_from_backup',
     subjectType: 'backup_set',
-    detail: { ...detail, reason: input.reason, emailsNotSent: emails, jobsCancelled: jobs, workEnded: work },
+    detail: { ...detail, reason: input.reason, emailsNotSent: emails, uncertainEmails: sending.length, jobsCancelled: jobs, workEnded: work },
   });
 
   // Written last, so their own emails stay queued and go out once the worker starts.
