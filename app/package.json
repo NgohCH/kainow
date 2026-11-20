@@ -28,6 +28,7 @@
     "protected-key": "node dist/quarantine/protected-key-cli.js",
     "backup": "node dist/ops/backup-cli.js",
     "backup-key": "node dist/ops/backup-key-cli.js",
+    "storage-check": "node dist/ops/storage-check-cli.js",
     "recover-admin": "node dist/golive/recover-admin-cli.js",
     "seed-demo": "node dist/users/seed-demo-cli.js",
     "apply-mvp-spend-settings": "node dist/spend/apply-mvp-settings-cli.js",

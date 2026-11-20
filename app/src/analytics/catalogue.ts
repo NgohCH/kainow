@@ -77,6 +77,10 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['ops.backup_expired', 'Old backup sets and unused stored files were removed after a backup; counts only.'],
     ['ops.backup_interrupted', 'A backup run still unfinished after 6 hours was marked failed (interrupted) by the sweep.'],
   ]),
+  ...audit('Operations', SYSTEM, 'storage check', [
+    ['ops.protective_entered', 'Kainow turned on protective read-only mode (the database disk fell below the safe floor, or a restore was made); free bytes only.'],
+    ['ops.storage_level_changed', 'A disk crossed the warning or critical storage level, or fell back to normal; location and percentage only.'],
+  ]),
   ...audit('Operations', SYSTEM, 'restore drill', [
     ['ops.restore_drill_interrupted', 'A restore drill still unfinished after 6 hours was marked failed (interrupted) by the sweep.'],
   ]),
