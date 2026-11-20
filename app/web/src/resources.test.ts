@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { lineDefaultFilter, overlapText, statusLabel, unitLabel, validateLineForm, type LineForm } from './resources.ts';
+import { eventText, resourceActions, lineDefaultFilter, overlapText, statusLabel, unitLabel, validateLineForm, type LineForm } from './resources.ts';
 
 const TAIL = "This is not a booking. Arrange use with the resource's owner outside Kainow.";
 
@@ -57,4 +57,25 @@ test('validateLineForm uses the server messages', () => {
   assert.equal(validateLineForm({ ...ok, endsOn: '2026-11-30' }), 'The end date cannot be before the start date.');
   assert.equal(validateLineForm({ ...ok, endsOn: '' }), null);
   assert.equal(validateLineForm({ ...ok, notes: 'n'.repeat(2001) }), 'Notes can be up to 2,000 characters.');
+});
+
+test('resourceActions: buttons by role and project status', () => {
+  const a = (roles: string[], status = 'active') => resourceActions(roles, status);
+  assert.deepEqual(a(['pm']), { editLines: true, recordSpending: true, proposeBudget: true, adjustSpending: true, readOnly: false });
+  assert.deepEqual(a(['deputy_pm']), { editLines: true, recordSpending: true, proposeBudget: true, adjustSpending: true, readOnly: false });
+  assert.deepEqual(a(['owner']), { editLines: true, recordSpending: false, proposeBudget: true, adjustSpending: false, readOnly: false });
+  assert.deepEqual(a(['sponsor']), { editLines: true, recordSpending: false, proposeBudget: true, adjustSpending: false, readOnly: false });
+  assert.deepEqual(a(['member']), { editLines: false, recordSpending: false, proposeBudget: false, adjustSpending: false, readOnly: false });
+  assert.deepEqual(a([]), { editLines: false, recordSpending: false, proposeBudget: false, adjustSpending: false, readOnly: false });
+  for (const s of ['deferred', 'closed']) assert.deepEqual(a(['pm', 'owner'], s), { editLines: false, recordSpending: false, proposeBudget: false, adjustSpending: false, readOnly: true });
+});
+
+test('eventText words the history', () => {
+  assert.equal(eventText({ kind: 'created', reason: null, detail: { previous: null, next: { status: 'needed' } } }), 'Added');
+  assert.equal(eventText({ kind: 'status_changed', reason: null, detail: { previous: { status: 'needed' }, next: { status: 'in_use' } } }), 'Status changed. Status: Needed → In use');
+  assert.equal(
+    eventText({ kind: 'cancelled', reason: 'No longer needed', detail: { previous: { status: 'needed' }, next: { status: 'cancelled' } } }),
+    'Cancelled. Status: Needed → Cancelled. Reason: No longer needed',
+  );
+  assert.equal(eventText({ kind: 'edited', reason: null, detail: { previous: { quantity: '2.00', unit: 'items' }, next: { quantity: '3.00', unit: 'hours' } } }), 'Edited. Quantity: 2.00 → 3.00; Unit: Items → Hours');
 });

@@ -28,6 +28,7 @@ import { Drafts } from './Drafts.tsx';
 import { mayReviewAnswers, mayReviewSummaries } from '../assist.ts';
 import { Discussion } from './Discussion.tsx';
 import { Work } from './Work.tsx';
+import { Resources } from './Resources.tsx';
 import { DeliveryHistory } from './Deliveries.tsx';
 import { DigestSend, EscalationFlags } from './DigestSend.tsx';
 import { Feedback } from './Feedback.tsx';
@@ -44,7 +45,7 @@ import { DeletionsList } from './HistoryList.tsx';
 import { CopiesAwaitingList, HeldForReviewList } from './HeldReview.tsx';
 import { type Act, ArchivePanel, DepartmentMove, GrantsSection, HandoverForm, HoldActions } from './ProjectAccessPanels.tsx';
 
-type Tab = 'overview' | 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | 'timeline';
+type Tab = 'overview' | 'resources' | 'resources/report' | 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | 'timeline';
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
@@ -105,6 +106,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
     ['overview', 'Overview'],
     ['people', 'People'],
     ...(contentAllowed ? ([['timeline', 'Timeline']] as Array<[Tab, string]>) : []),
+    ['resources', 'Resources'],
     ...(contentAllowed ? ([['notes', 'Notes & discussion'], ['work', 'Work'], ['drafts', 'Drafts']] as Array<[Tab, string]>) : []),
     ...(contentAllowed && (mayReviewAnswers(roles) || mayReviewSummaries(roles)) ? ([['review', 'Review']] as Array<[Tab, string]>) : []),
     ...(contentAllowed ? ([['feedback', 'Feedback']] as Array<[Tab, string]>) : []),
@@ -156,7 +158,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
       <EscalationFlags projectId={project.id} />
       <nav aria-label="Project" className="tabs">
         {tabs.map(([t, label]) => (
-          <a key={t} href={t === 'overview' ? base : `${base}/${t}`} aria-current={tab === t ? 'page' : undefined}>
+          <a key={t} href={t === 'overview' ? base : `${base}/${t}`} aria-current={tab === t || (t === 'resources' && tab === 'resources/report') ? 'page' : undefined}>
             {label}
           </a>
         ))}
@@ -182,6 +184,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
       {tab === 'settings' && <ProjectSettings projectId={project.id} />}
       {tab === 'ai' && mayViewAiTab(roles, project.isAdmin) && <ProjectAi projectId={project.id} mayViewUsage={mayViewAiUsage(roles)} />}
       {tab === 'deleted' && project.inspectDeleted && <DeletedItemsList projectId={project.id} />}
+      {(tab === 'resources' || tab === 'resources/report') && <Resources projectId={project.id} roles={roles} status={project.status} />}
       {tab === 'closing' && <Closing project={project} act={act} />}
       {tab === 'deadline-review' && <DeadlineReview project={project} />}
       {tab === 'people' && <People project={project} act={act} />}

@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { adjustmentLabel, figuresLines, money, normaliseAmountInput, notInTotalsLines, pendingLabel, type FiguresView } from './finance.ts';
+import { aiSpendText, adjustmentLabel, figuresLines, money, normaliseAmountInput, notInTotalsLines, pendingLabel, type FiguresView , validateAmountInput, validateRateInput } from './finance.ts';
 
 const base: FiguresView = { budget: '120000.00', spent: '98400.00', balance: '21600.00', percentUsed: 82, overBudget: false, level: 1, notInTotals: [], warnThresholds: [80, 100] };
 
@@ -64,4 +64,24 @@ test('adjustmentLabel and pendingLabel', () => {
   assert.equal(pendingLabel({ kind: 'set_budget', terms: { amount: '10.00' } }), 'Awaiting approval: budget');
   assert.equal(pendingLabel({ kind: 'finance_adjustment', terms: { type: 'refund' } }), 'Awaiting approval: refund');
   assert.equal(pendingLabel({ kind: 'finance_adjustment', terms: null }), 'Awaiting approval: adjustment');
+});
+
+test('aiSpendText', () => {
+  assert.equal(aiSpendText({ usedMyr: '312.400000' }), 'AI spending this month (separate, not included): MYR 312.40');
+  assert.equal(aiSpendText({ usedMyr: '0.000000' }), 'AI spending this month (separate, not included): MYR 0.00');
+  assert.equal(aiSpendText({ usedMyr: '1.234500' }), 'AI spending this month (separate, not included): MYR 1.2345');
+  assert.equal(aiSpendText(undefined), null);
+});
+
+test('validateAmountInput and validateRateInput', () => {
+  assert.equal(validateAmountInput('1,250.50'), null);
+  assert.equal(validateAmountInput(' 12 000 '), null);
+  assert.equal(validateAmountInput('0', { allowZero: true }), null);
+  assert.notEqual(validateAmountInput('0'), null);
+  assert.notEqual(validateAmountInput('1.234'), null);
+  assert.notEqual(validateAmountInput('-5'), null);
+  assert.notEqual(validateAmountInput(''), null);
+  assert.equal(validateRateInput('4.12345678'), null);
+  assert.notEqual(validateRateInput('0'), null);
+  assert.notEqual(validateRateInput('4.123456789'), null);
 });

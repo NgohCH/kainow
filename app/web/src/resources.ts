@@ -161,3 +161,69 @@ export function validateLineForm(form: LineForm): string | null {
   if (form.notes.trim().length > 2000) return NOTES;
   return null;
 }
+
+/** Which controls the Resources tab shows (spec 4, 9). The server still decides; this only keeps buttons the person may not use out of sight. */
+export interface ResourceActions {
+  editLines: boolean;
+  recordSpending: boolean;
+  proposeBudget: boolean;
+  adjustSpending: boolean;
+  /** Deferred or Closed: everything read-only, with the standard explanation. */
+  readOnly: boolean;
+}
+
+export const READ_ONLY_NOTE = 'Resources and finance cannot be changed while the project is Deferred or Closed.';
+
+export function resourceActions(roles: readonly string[], status: string): ResourceActions {
+  const open = ['draft', 'planned', 'active'].includes(status);
+  const has = (...r: string[]) => roles.some((x) => r.includes(x));
+  return {
+    editLines: open && has('pm', 'deputy_pm', 'owner', 'sponsor'),
+    recordSpending: open && has('pm', 'deputy_pm'),
+    proposeBudget: open && has('pm', 'deputy_pm', 'owner', 'sponsor'),
+    adjustSpending: open && has('pm', 'deputy_pm'),
+    readOnly: !open,
+  };
+}
+
+export interface LineEvent {
+  id: string;
+  kind: string;
+  at: string;
+  actor: string;
+  reason: string | null;
+  detail: { previous?: Record<string, unknown> | null; next?: Record<string, unknown> | null } | null;
+}
+
+const FIELD_LABEL: Record<string, string> = {
+  itemId: 'Catalogue item',
+  oneOffKind: 'Kind',
+  description: 'Description',
+  quantity: 'Quantity',
+  unit: 'Unit',
+  startsOn: 'Starts',
+  endsOn: 'Ends',
+  neededBy: 'Needed by',
+  notes: 'Notes',
+  status: 'Status',
+};
+
+const shown = (field: string, v: unknown): string => {
+  if (v === null || v === undefined || v === '') return 'none';
+  if (field === 'status') return statusLabel(String(v));
+  if (field === 'unit') return unitLabel(String(v));
+  if (field === 'itemId') return 'a catalogue item';
+  return String(v);
+};
+
+/** One history event in words: "Needed → Arranged", or the fields changed with previous → new. */
+export function eventText(e: Pick<LineEvent, 'kind' | 'reason' | 'detail'>): string {
+  const next = e.detail?.next ?? null;
+  const prev = e.detail?.previous ?? null;
+  if (e.kind === 'created') return 'Added';
+  const parts: string[] = [];
+  for (const f of Object.keys(next ?? {})) parts.push(`${FIELD_LABEL[f] ?? f}: ${shown(f, prev?.[f])} → ${shown(f, next?.[f])}`);
+  const head = e.kind === 'cancelled' ? 'Cancelled' : e.kind === 'status_changed' ? 'Status changed' : 'Edited';
+  const body = parts.length > 0 ? `${head}. ${parts.join('; ')}` : head;
+  return e.reason ? `${body}. Reason: ${e.reason}` : body;
+}

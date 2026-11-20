@@ -11,7 +11,9 @@ export type ChangeKind =
   | 'withdraw_decision'
   | 'deadline_review'
   | 'reconcile_completion'
-  | 'risk_handover';
+  | 'risk_handover'
+  | 'set_budget'
+  | 'finance_adjustment';
 
 export interface RequestView {
   id: string;
@@ -44,6 +46,8 @@ const LABELS: Record<ChangeKind, string> = {
   deadline_review: 'Review a deadline',
   reconcile_completion: 'Confirm work finished during a pause',
   risk_handover: 'Take over a risk',
+  set_budget: 'Set the budget',
+  finance_adjustment: 'Adjust a spending entry',
 };
 
 export const kindLabel = (kind: ChangeKind): string => LABELS[kind] ?? kind;
@@ -71,6 +75,8 @@ export interface CurrentView {
   names?: Record<string, string>;
   /** Unfinished subtask id → title. */
   subtaskTitles?: Record<string, string>;
+  /** The reporting currency, for finance requests. */
+  currency?: string;
 }
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '');
@@ -127,6 +133,18 @@ export function termsRows(kind: ChangeKind, terms: Record<string, unknown>, curr
     case 'risk_handover':
       if (str(terms.responsibleId)) add('Responsible person', '', nameOf(str(terms.responsibleId)));
       add('Review date', '', str(terms.reviewOn));
+      break;
+    case 'set_budget':
+      add('Budget', '', `${current.currency ?? ''} ${str(terms.amount)}`.trim());
+      add('Reason', '', str(terms.reason));
+      break;
+    case 'finance_adjustment':
+      add('Kind', '', str(terms.type));
+      add('Amount', '', `${current.currency ?? ''} ${str(terms.amount)}`.trim());
+      add('Rate', '', str(terms.rate));
+      add('Rate date', '', str(terms.rateOn));
+      add('Refund date', '', str(terms.refundOn));
+      add('Reason', '', str(terms.reason));
       break;
     case 'authorise_proposal':
       add('Assignee', '', person(terms));

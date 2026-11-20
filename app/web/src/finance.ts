@@ -169,3 +169,32 @@ export function pendingLabel(p: Pick<PendingView, 'kind' | 'terms'>): string {
   if (p.kind === 'set_budget') return 'Awaiting approval: budget';
   return `Awaiting approval: ${p.terms?.type ?? 'adjustment'}`;
 }
+
+const AMOUNT_RE = /^\d{1,12}(\.\d{1,2})?$/;
+const RATE_RE = /^\d{1,10}(\.\d{1,8})?$/;
+
+/** The first problem with an amount the person typed (after removing spaces and commas), or null. */
+export function validateAmountInput(raw: string, opts: { allowZero?: boolean } = {}): string | null {
+  const s = normaliseAmountInput(raw);
+  if (!AMOUNT_RE.test(s)) return 'Enter an amount of up to 12 digits with at most 2 decimal places.';
+  if (!opts.allowZero && /^0+(\.0+)?$/.test(s)) return 'Enter an amount above 0.';
+  return null;
+}
+
+export function validateRateInput(raw: string): string | null {
+  const s = raw.trim();
+  if (!RATE_RE.test(s) || /^0+(\.0+)?$/.test(s)) return 'Enter a rate above 0 with at most 8 decimal places.';
+  return null;
+}
+
+/** Kinds of finance requests the Resources tab lists for approval. */
+export const FINANCE_REQUEST_KINDS = ['set_budget', 'finance_adjustment'] as const;
+
+/** The project's AI spend this month as the finance view sends it (micro-ringgit strings), trimmed to 2 decimals when the rest is zero. */
+export function aiSpendText(v: unknown): string | null {
+  const used = (v as { usedMyr?: unknown } | null | undefined)?.usedMyr;
+  if (typeof used !== 'string' || !/^\d+(\.\d+)?$/.test(used)) return null;
+  const [whole, frac = ''] = used.split('.');
+  const cut = /^0*$/.test(frac.slice(2)) ? frac.slice(0, 2).padEnd(2, '0') : frac.replace(/0+$/, '');
+  return `AI spending this month (separate, not included): MYR ${whole}.${cut}`;
+}
