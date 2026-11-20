@@ -375,6 +375,7 @@ async function backupLocked(kind: BackupKind, newKey: boolean, deps: BackupDeps)
     try {
       const expired = await expireBackups(pool, config, key, deps.now());
       if (expired.sets > 0 || expired.files > 0) deps.out(`Expired ${expired.sets} old sets and ${expired.files} unused files.`);
+      if (expired.recordingFailed) deps.err('Expired backups could not all be recorded in the database.');
       if (expired.filesSkipped) deps.out('Unused files were not removed this time: a backup set could not be read.');
     } catch {
       deps.err('Old backups could not be expired this time.');

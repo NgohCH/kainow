@@ -2,10 +2,11 @@
  * Backup expiry (spec 5.7, D110): run by the backup command after a success, never after a failure.
  *
  * Sets older than the retention period go, except the newest succeeded set and the newest succeeded pre_update set;
- * `-incomplete` sets (and folders with no backup_runs row) go after a day. Then files in `files/` that no remaining
+ * `-incomplete` sets (and row-less folders without backup.json) go after a day. A row-less folder WITH backup.json is a
+ * complete set (for example after a restore) and follows normal retention. Then files in `files/` that no remaining
  * set's manifest lists go, but only once every remaining manifest has been decrypted and read.
  */
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { readdir, rm, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Pool } from 'pg';
@@ -58,7 +59,22 @@ export function parseSetName(name: string): { at: Date; kind: BackupKind; runId:
   return { at, kind: m[6] as BackupKind, runId: m[7], incomplete: m[8] !== undefined };
 }
 
-export type ExpiryResult = { sets: number; files: number; filesSkipped: boolean };
+/** backup.json's kind and finish time, or null when it is missing. Present but unreadable still counts as a set. */
+function readSummary(dir: string): { kind?: BackupKind; finishedAt?: Date } | null {
+  const file = join(dir, SET_FILES.summary);
+  if (!existsSync(file)) return null;
+  try {
+    const j = JSON.parse(readFileSync(file, 'utf8')) as { kind?: unknown; finishedAt?: unknown };
+    const kind = j.kind === 'daily' || j.kind === 'manual' || j.kind === 'pre_update' ? j.kind : undefined;
+    const t = typeof j.finishedAt === 'string' ? new Date(j.finishedAt) : undefined;
+    return { kind, finishedAt: t && !Number.isNaN(t.getTime()) ? t : undefined };
+  } catch {
+    return {};
+  }
+}
+
+/** recordingFailed is present (true) only when an expired_at update or the audit event could not be written. */
+export type ExpiryResult = { sets: number; files: number; filesSkipped: boolean; recordingFailed?: true };
 
 export async function expireBackups(pool: Pool, config: OpsConfig, key: BackupKey, now: Date): Promise<ExpiryResult> {
   const setsDir = join(config.backupDir, 'kainow', 'sets');
@@ -80,16 +96,15 @@ export async function expireBackups(pool: Pool, config: OpsConfig, key: BackupKe
 
   const sets: ExpirySet[] = parsed.map((p) => {
     const row = rows.get(p.runId);
-    const incomplete = p.incomplete || !row;
-    const succeeded = !incomplete && row?.outcome === 'succeeded';
-    return {
-      name: p.name,
-      runId: p.runId,
-      kind: p.kind,
-      finishedAt: incomplete ? p.at : (row?.finishedAt ?? p.at),
-      succeeded,
-      incomplete,
-    };
+    const unfinished: ExpirySet = { name: p.name, runId: p.runId, kind: p.kind, finishedAt: p.at, succeeded: false, incomplete: true };
+    if (p.incomplete) return unfinished;
+    if (!row) {
+      // No row (for example after a restore): complete if it has backup.json, and then a succeeded set by its own summary.
+      const summary = readSummary(join(setsDir, p.name));
+      if (!summary) return unfinished;
+      return { ...unfinished, kind: summary.kind ?? p.kind, finishedAt: summary.finishedAt ?? p.at, succeeded: true, incomplete: false };
+    }
+    return { ...unfinished, finishedAt: row.finishedAt ?? p.at, succeeded: row.outcome === 'succeeded', incomplete: false };
   });
 
   // 1. Sets.
@@ -136,16 +151,23 @@ export async function expireBackups(pool: Pool, config: OpsConfig, key: BackupKe
     }
   }
 
-  // 3. Recording.
-  if (removed.length > 0) {
-    await pool.query(`UPDATE backup_runs SET expired_at = $2 WHERE id = ANY($1::uuid[]) AND expired_at IS NULL`, [
-      removed.map((s) => s.runId),
-      now,
-    ]);
+  // 3. Recording, best effort: the folders and files are already gone, so a database error here must not abort.
+  let recordingFailed = false;
+  for (const s of removed) {
+    try {
+      await pool.query(`UPDATE backup_runs SET expired_at = $2 WHERE id = $1 AND expired_at IS NULL`, [s.runId, now]);
+    } catch {
+      recordingFailed = true;
+    }
   }
   const result: ExpiryResult = { sets: removed.length, files, filesSkipped };
   if (result.sets > 0 || result.files > 0 || result.filesSkipped) {
-    await writeAudit(pool, { at: now, action: 'ops.backup_expired', subjectType: 'backup_run', detail: { ...result } });
+    try {
+      await writeAudit(pool, { at: now, action: 'ops.backup_expired', subjectType: 'backup_run', detail: { ...result } });
+    } catch {
+      recordingFailed = true;
+    }
   }
+  if (recordingFailed) result.recordingFailed = true;
   return result;
 }

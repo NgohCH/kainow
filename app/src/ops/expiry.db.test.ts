@@ -56,7 +56,7 @@ describe('backup expiry', { skip: SKIP_NO_DB }, () => {
   };
 
   /** A finished set on disk with a real encrypted manifest, plus its backup_runs row. */
-  async function makeSet(ageDays: number, files: string[], kind: BackupKind = 'daily', succeeded = true) {
+  async function makeSet(ageDays: number, files: string[], kind: BackupKind = 'daily', succeeded = true, withRow = true) {
     const runId = uuidv7();
     const finished = new Date(NOW.getTime() - ageDays * DAY);
     const name = `${setStamp(finished)}-${kind}-${runId}`;
@@ -74,12 +74,14 @@ describe('backup expiry', { skip: SKIP_NO_DB }, () => {
     writeFileSync(join(dir, 'database.dump.enc'), 'd');
     writeFileSync(
       join(dir, 'backup.json'),
-      JSON.stringify({ formatVersion: 1, runId, kind, files: { 'manifest.json.enc': { sha256: hash.digest(), bytes: 1 } } }),
+      JSON.stringify({ formatVersion: 1, runId, kind, finishedAt: finished.toISOString(), files: { 'manifest.json.enc': { sha256: hash.digest(), bytes: 1 } } }),
     );
-    await pool.query(
-      `INSERT INTO backup_runs (id, kind, started_at, finished_at, outcome, set_name) VALUES ($1, $2, $3, $3, $4, $5)`,
-      [runId, kind, finished, succeeded ? 'succeeded' : 'failed', name],
-    );
+    if (withRow) {
+      await pool.query(
+        `INSERT INTO backup_runs (id, kind, started_at, finished_at, outcome, set_name) VALUES ($1, $2, $3, $3, $4, $5)`,
+        [runId, kind, finished, succeeded ? 'succeeded' : 'failed', name],
+      );
+    }
     return { runId, name, dir };
   }
 
@@ -160,7 +162,7 @@ describe('backup expiry', { skip: SKIP_NO_DB }, () => {
     assert.equal((await audit())[0].detail.filesSkipped, true);
   });
 
-  test('a folder without a row is incomplete: removed after a day, kept before', async () => {
+  test('a folder without a row or backup.json is incomplete: removed after a day, kept before', async () => {
     const mk = (hoursOld: number) => {
       const d = join(setsDir(), `${setStamp(new Date(NOW.getTime() - hoursOld * 3_600_000))}-daily-${uuidv7()}`);
       mkdirSync(d, { recursive: true });
@@ -193,6 +195,51 @@ describe('backup expiry', { skip: SKIP_NO_DB }, () => {
   test('nothing to expire records no audit event; a missing sets folder is fine', async () => {
     assert.deepEqual(await expireBackups(pool, config(), key, NOW), { sets: 0, files: 0, filesSkipped: false });
     assert.equal((await audit()).length, 0);
+  });
+
+  test('a row-less complete set (restored DB case) follows normal retention', async () => {
+    const [f1, f2] = ['a', 'b'].map(sha);
+    putFile(f1);
+    putFile(f2);
+    const fresh = await makeSet(1, [f2], 'daily', true, false);
+    const tenDays = await makeSet(10, [f2], 'daily', true, false);
+    const old = await makeSet(40, [f1], 'daily', true, false);
+    const r = await expireBackups(pool, config(), key, NOW);
+    assert.equal(r.sets, 1);
+    assert.equal(existsSync(old.dir), false);
+    assert.equal(existsSync(tenDays.dir) && existsSync(fresh.dir), true);
+    assert.equal(present(f1), false);
+    assert.equal(present(f2), true);
+  });
+
+  test('row-less newest complete set and newest pre_update are kept even at 400 days', async () => {
+    const newest = await makeSet(400, [], 'daily', true, false);
+    const older = await makeSet(401, [], 'daily', true, false);
+    const pre = await makeSet(405, [], 'pre_update', true, false);
+    const r = await expireBackups(pool, config(), key, NOW);
+    assert.equal(r.sets, 1);
+    assert.equal(existsSync(newest.dir) && existsSync(pre.dir), true);
+    assert.equal(existsSync(older.dir), false);
+  });
+
+  test('if recording fails after removal, expiry still completes and reports it', async () => {
+    const a = await makeSet(40, []);
+    await makeSet(1, []);
+    const bad = new Proxy(pool, {
+      get(target, prop) {
+        if (prop === 'query') {
+          return (text: unknown, ...rest: unknown[]) =>
+            typeof text === 'string' && /SET expired_at|INSERT INTO audit_events/.test(text)
+              ? Promise.reject(new Error('forced'))
+              : (target.query as (...x: unknown[]) => unknown)(text, ...rest);
+        }
+        const v = Reflect.get(target, prop);
+        return typeof v === 'function' ? v.bind(target) : v;
+      },
+    });
+    const r = await expireBackups(bad, config(), key, NOW);
+    assert.deepEqual(r, { sets: 1, files: 0, filesSkipped: false, recordingFailed: true });
+    assert.equal(existsSync(a.dir), false);
   });
 
   test('a failed backup run never calls expiry', async () => {
