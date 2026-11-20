@@ -1,4 +1,5 @@
 import { join } from 'node:path';
+import { DEFAULT_SIGN_IN_LIMITS, type SignInLimits } from './auth/request-limit';
 
 /** Accepted passwordless sign-in defaults (MVP decision R05), plus one abuse-protection detail. */
 export interface AuthSettings {
@@ -32,6 +33,12 @@ export interface AppConfig extends DatabaseConfig {
   appUrl: string;
   /** File holding the protected key (32 bytes); null means quarantine cleaning waits for it. */
   protectedKeyFile: string | null;
+  /** KAINOW_REQUIRE_PROTECTED_KEY=true: refuse to start unless the protected key loads. */
+  requireProtectedKey: boolean;
+  /** Request limits on the public sign-in steps (review G03). */
+  signInLimits: SignInLimits;
+  /** TRUST_PROXY: how many reverse proxies in front of Kainow append to X-Forwarded-For; 0 ignores that header. */
+  trustProxyHops: number;
 }
 
 export const DEFAULT_AUTH_SETTINGS: AuthSettings = {
@@ -59,11 +66,33 @@ export function loadDatabaseConfig(env: NodeJS.ProcessEnv = process.env): Databa
 
 const missing = (name: string, when: string): Error => new Error(`${name} must be set when ${when}`);
 
+/** True for an address only this computer can open: localhost, 127.x.x.x or ::1. */
+export function isLocalOnlyUrl(url: string): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return host === 'localhost' || host === '[::1]' || host === '::1' || /^127(\.\d{1,3}){3}$/.test(host);
+}
+
 /**
  * Chooses the email provider. EMAIL_PROVIDER unset keeps the older rules: SMTP_URL (with SMTP_FROM) gives smtp,
  * else LOG_SIGN_IN_CODES=true gives log. Messages name variables, never their values.
  */
 export function loadEmailConfig(env: NodeJS.ProcessEnv): EmailConfig {
+  const email = chooseEmailConfig(env);
+  // Printed codes are as good as passwords: a production server that other people reach must email them (review G02).
+  if (email.provider === 'log' && env.NODE_ENV === 'production' && !isLocalOnlyUrl(appUrlFrom(env))) {
+    throw new Error(
+      'LOG_SIGN_IN_CODES (the log email provider) is refused in production unless APP_URL is a localhost address: set EMAIL_PROVIDER to m365 or smtp',
+    );
+  }
+  return email;
+}
+
+function chooseEmailConfig(env: NodeJS.ProcessEnv): EmailConfig {
   const provider = env.EMAIL_PROVIDER || undefined;
   if (provider === 'm365') {
     const need = (name: string): string => {
@@ -106,6 +135,18 @@ function protectedKeyFileFrom(env: NodeJS.ProcessEnv): string | null {
   return env.KAINOW_PROTECTED_KEY_FILE?.trim() || null;
 }
 
+/** KAINOW_REQUIRE_PROTECTED_KEY: unset or false means optional; true means the key file must be set (review G05). */
+function protectedKeySettings(env: NodeJS.ProcessEnv): { protectedKeyFile: string | null; requireProtectedKey: boolean } {
+  const raw = env.KAINOW_REQUIRE_PROTECTED_KEY?.trim() || 'false';
+  if (raw !== 'true' && raw !== 'false') throw new Error('KAINOW_REQUIRE_PROTECTED_KEY must be true or false');
+  const requireProtectedKey = raw === 'true';
+  const protectedKeyFile = protectedKeyFileFrom(env);
+  if (requireProtectedKey && !protectedKeyFile) {
+    throw new Error('KAINOW_PROTECTED_KEY_FILE must be set when KAINOW_REQUIRE_PROTECTED_KEY=true');
+  }
+  return { protectedKeyFile, requireProtectedKey };
+}
+
 /** Reads configuration from the environment. Secrets come only from here, never from files in the repo. */
 export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
   const database = loadDatabaseConfig(env);
@@ -123,6 +164,12 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
 
   const email = loadEmailConfig(env);
 
+  const rawHops = env.TRUST_PROXY?.trim() || '0';
+  const trustProxyHops = Number(rawHops);
+  if (!/^\d+$/.test(rawHops) || trustProxyHops > 10) {
+    throw new Error('TRUST_PROXY must be the number of reverse proxies in front of Kainow, from 0 to 10');
+  }
+
   return {
     ...database,
     port,
@@ -132,7 +179,9 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     cookieSecure: env.COOKIE_SECURE !== 'false',
     appUrl: appUrlFrom(env),
     email,
-    protectedKeyFile: protectedKeyFileFrom(env),
+    ...protectedKeySettings(env),
+    signInLimits: { ...DEFAULT_SIGN_IN_LIMITS },
+    trustProxyHops,
   };
 }
 
@@ -147,8 +196,9 @@ export interface WorkerConfig extends DatabaseConfig {
   /** Where people open Kainow; used for links in notification emails. */
   appUrl: string;
   protectedKeyFile: string | null;
+  requireProtectedKey: boolean;
 }
 
 export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
-  return { ...loadDatabaseConfig(env), email: loadEmailConfig(env), appUrl: appUrlFrom(env), protectedKeyFile: protectedKeyFileFrom(env) };
+  return { ...loadDatabaseConfig(env), email: loadEmailConfig(env), appUrl: appUrlFrom(env), ...protectedKeySettings(env) };
 }

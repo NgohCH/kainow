@@ -139,3 +139,38 @@ test('the protected key file path is optional and trimmed, for the API and the w
   assert.equal(loadConfig({ ...base, KAINOW_PROTECTED_KEY_FILE: ' /run/keys/p.key ' }).protectedKeyFile, '/run/keys/p.key');
   assert.equal(loadWorkerConfig({ ...base, KAINOW_PROTECTED_KEY_FILE: '/run/keys/p.key' }).protectedKeyFile, '/run/keys/p.key');
 });
+
+// G02: sign-in codes must never be printed to the log of a production server that other people reach.
+test('in production, codes are logged only for a server reached at a localhost address', () => {
+  const prod = { ...base, NODE_ENV: 'production' };
+  for (const appUrl of [undefined, 'http://localhost:3000', 'http://127.0.0.1:8080', 'http://[::1]:3000']) {
+    assert.deepEqual(loadConfig({ ...prod, APP_URL: appUrl }).email, { provider: 'log' }, String(appUrl));
+    assert.deepEqual(loadWorkerConfig({ ...prod, APP_URL: appUrl }).email, { provider: 'log' }, String(appUrl));
+  }
+  for (const appUrl of ['https://kainow.example.org', 'http://10.0.0.5:3000', 'http://localhost.example.org']) {
+    assert.throws(() => loadConfig({ ...prod, APP_URL: appUrl }), /LOG_SIGN_IN_CODES/, appUrl);
+    assert.throws(() => loadWorkerConfig({ ...prod, APP_URL: appUrl }), /LOG_SIGN_IN_CODES/, appUrl);
+    assert.throws(() => loadConfig({ ...prod, APP_URL: appUrl, LOG_SIGN_IN_CODES: undefined, EMAIL_PROVIDER: 'log' }), /LOG_SIGN_IN_CODES|log/, appUrl);
+  }
+  // Outside production (development and tests) the log provider stays available at any address.
+  assert.deepEqual(loadConfig({ ...base, APP_URL: 'https://kainow.example.org' }).email, { provider: 'log' });
+  // A real email provider is unaffected.
+  assert.equal(loadConfig({ ...prod, APP_URL: 'https://kainow.example.org', SMTP_URL: 'smtp://mail.example.org', SMTP_FROM: 'a@example.org' }).email.provider, 'smtp');
+});
+
+// G05: an AI-enabled production deployment can require the protected key, and then refuses to start without it.
+test('KAINOW_REQUIRE_PROTECTED_KEY=true refuses to start without a protected key file', () => {
+  const req = { ...base, KAINOW_REQUIRE_PROTECTED_KEY: 'true' };
+  assert.throws(() => loadConfig(req), /KAINOW_PROTECTED_KEY_FILE/);
+  assert.throws(() => loadWorkerConfig(req), /KAINOW_PROTECTED_KEY_FILE/);
+  assert.equal(loadConfig({ ...req, KAINOW_PROTECTED_KEY_FILE: '/run/keys/p.key' }).requireProtectedKey, true);
+  assert.equal(loadWorkerConfig({ ...req, KAINOW_PROTECTED_KEY_FILE: '/run/keys/p.key' }).requireProtectedKey, true);
+  assert.equal(loadConfig(base).requireProtectedKey, false);
+  assert.throws(() => loadConfig({ ...base, KAINOW_REQUIRE_PROTECTED_KEY: 'yes' }), /KAINOW_REQUIRE_PROTECTED_KEY/);
+});
+
+test('TRUST_PROXY is a small count of proxies and defaults to none', () => {
+  assert.equal(loadConfig(base).trustProxyHops, 0);
+  assert.equal(loadConfig({ ...base, TRUST_PROXY: '1' }).trustProxyHops, 1);
+  for (const bad of ['-1', 'true', '1.5', '11']) assert.throws(() => loadConfig({ ...base, TRUST_PROXY: bad }), /TRUST_PROXY/, bad);
+});

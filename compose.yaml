@@ -61,7 +61,10 @@ services:
       M365_CLIENT_SECRET: ${M365_CLIENT_SECRET:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
       APP_URL: ${APP_URL:-http://localhost:${KAINOW_PORT:-3000}}
-    # Protected key for quarantined credentials (INSTALL.md, "Protected key"). Optional: without it, cleaning waits.
+      KAINOW_REQUIRE_PROTECTED_KEY: ${KAINOW_REQUIRE_PROTECTED_KEY:-false}
+      TRUST_PROXY: ${TRUST_PROXY:-0}
+    # Protected key for quarantined credentials and AI keys (INSTALL.md, "Protected key"). Optional for a trial: without it,
+    # cleaning waits and AI keys cannot be saved. With KAINOW_REQUIRE_PROTECTED_KEY=true, api and worker refuse to start without it.
     # To use it, create the file with `npm run protected-key -- --create <path>`, then uncomment on BOTH api and worker:
     #   environment:  KAINOW_PROTECTED_KEY_FILE: /run/secrets/kainow-protected.key
     #   volumes:      - ./secrets/kainow-protected.key:/run/secrets/kainow-protected.key:ro
@@ -90,6 +93,7 @@ services:
       M365_CLIENT_ID: ${M365_CLIENT_ID:-}
       M365_CLIENT_SECRET: ${M365_CLIENT_SECRET:-}
       APP_URL: ${APP_URL:-http://localhost:${KAINOW_PORT:-3000}}
+      KAINOW_REQUIRE_PROTECTED_KEY: ${KAINOW_REQUIRE_PROTECTED_KEY:-false}
     # Same two lines as on api (environment KAINOW_PROTECTED_KEY_FILE and the read-only volume); see the note there.
     depends_on:
       migrate: { condition: service_completed_successfully }

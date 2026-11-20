@@ -40,10 +40,10 @@ describe('sign-in over HTTP', { skip: SKIP_NO_DB }, () => {
   }
 
   let csrf = '';
-  async function call(method: string, path: string, body?: unknown, cookie?: string): Promise<Reply> {
+  async function call(method: string, path: string, body?: unknown, cookie?: string, extra: Record<string, string> = {}): Promise<Reply> {
     const res = await fetch(`${base}${path}`, {
       method,
-      headers: { ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(cookie ? { Cookie: cookie } : {}), ...(cookie && csrf ? { 'X-CSRF-Token': csrf } : {}) },
+      headers: { ...extra, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}), ...(cookie ? { Cookie: cookie } : {}), ...(cookie && csrf ? { 'X-CSRF-Token': csrf } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,
     });
     const text = await res.text();
@@ -174,5 +174,59 @@ describe('sign-in over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.equal((await call('GET', '/auth/me', undefined, cookie)).status, 200);
     clock.advanceMinutes(2);
     assert.equal((await call('GET', '/auth/me', undefined, cookie)).status, 401);
+  });
+  // Review G03: the public sign-in steps are limited per address and overall, and unknown addresses cannot flood the audit.
+  describe('request limits', () => {
+    const limits = { requestCodePerAddress: 3, requestCodeOverall: 5, verifyPerAddress: 3, verifyOverall: 5, ignoredAuditPerMinute: 2 };
+    const from = (ip: string) => ({ 'X-Forwarded-For': ip });
+    const ignoredAudits = async () => {
+      const pool = new Pool({ connectionString: testDatabaseUrl() });
+      try {
+        return (await pool.query(`SELECT detail FROM audit_events WHERE action = 'auth.code_request_ignored' ORDER BY occurred_at, id`)).rows.map((r) => r.detail);
+      } finally {
+        await pool.end();
+      }
+    };
+
+    test('one address is refused with 429 after its limit, then allowed again a minute later', async () => {
+      await start({ signInLimits: limits, trustProxyHops: 1 });
+      for (let i = 0; i < 3; i++) assert.equal((await call('POST', '/auth/request-code', { email: `n${i}@example.org` }, undefined, from('203.0.113.1'))).status, 202);
+      const refused = await call('POST', '/auth/request-code', { email: 'n9@example.org' }, undefined, from('203.0.113.1'));
+      assert.equal(refused.status, 429);
+      assert.equal(refused.body.message, 'Too many sign-in requests. Wait a minute and try again.');
+      assert.equal((await call('POST', '/auth/request-code', { email: 'n9@example.org' }, undefined, from('203.0.113.2'))).status, 202, 'another address is not affected');
+      clock.advanceSeconds(60);
+      assert.equal((await call('POST', '/auth/request-code', { email: 'n9@example.org' }, undefined, from('203.0.113.1'))).status, 202);
+    });
+
+    test('the overall limit holds across many addresses', async () => {
+      await start({ signInLimits: limits, trustProxyHops: 1 });
+      const statuses: number[] = [];
+      for (let i = 0; i < 7; i++) statuses.push((await call('POST', '/auth/request-code', { email: `n${i}@example.org` }, undefined, from(`198.51.100.${i}`))).status);
+      assert.deepEqual(statuses, [202, 202, 202, 202, 202, 429, 429]);
+    });
+
+    test('verify is limited too, so codes cannot be guessed across many accounts from one address', async () => {
+      await start({ signInLimits: limits, trustProxyHops: 1 });
+      const statuses: number[] = [];
+      for (let i = 0; i < 4; i++) statuses.push((await call('POST', '/auth/verify', { email: `n${i}@example.org`, code: '123456' }, undefined, from('203.0.113.7'))).status);
+      assert.deepEqual(statuses, [401, 401, 401, 429]);
+    });
+
+    test('without a trusted proxy, X-Forwarded-For is ignored and the connection address is used', async () => {
+      await start({ signInLimits: limits, trustProxyHops: 0 });
+      const statuses: number[] = [];
+      for (let i = 0; i < 4; i++) statuses.push((await call('POST', '/auth/request-code', { email: `n${i}@example.org` }, undefined, from(`198.51.100.${i}`))).status);
+      assert.deepEqual(statuses, [202, 202, 202, 429]);
+    });
+
+    test('ignored requests for unknown addresses are audited at most N per minute, with a count of the rest', async () => {
+      await start({ signInLimits: { ...limits, requestCodePerAddress: 100, requestCodeOverall: 100 } });
+      for (let i = 0; i < 5; i++) await call('POST', '/auth/request-code', { email: `n${i}@example.org` });
+      assert.deepEqual(await ignoredAudits(), [{ reason: 'unknown_or_disabled' }, { reason: 'unknown_or_disabled' }]);
+      clock.advanceSeconds(60);
+      await call('POST', '/auth/request-code', { email: 'later@example.org' });
+      assert.deepEqual((await ignoredAudits()).at(-1), { reason: 'unknown_or_disabled', suppressed: 3 });
+    });
   });
 });
