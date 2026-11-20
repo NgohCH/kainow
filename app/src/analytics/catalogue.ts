@@ -83,6 +83,8 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['ops.storage_level_changed', 'A disk crossed the warning or critical storage level, or fell back to normal; location and percentage only.'],
   ]),
   ...audit('Operations', SYSTEM, 'restore drill', [
+    ['ops.restore_drill_passed', 'A restore drill restored a backup set into a temporary database and its checks passed (possibly over the 4-hour target); no secrets.'],
+    ['ops.restore_drill_failed', 'A restore drill failed: a failing check or a fixed failure code; no secrets.'],
     ['ops.restore_drill_interrupted', 'A restore drill still unfinished after 6 hours was marked failed (interrupted) by the sweep.'],
   ]),
   ...audit('Projects', PERSON, 'project', [

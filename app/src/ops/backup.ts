@@ -111,7 +111,7 @@ function parseArgs(argv: string[]): { kind: BackupKind; newKey: boolean } | null
 }
 
 /** Resolves with the exit code, or null when the process could not be started. Never rejects. */
-function exitOf(child: ChildProcess): Promise<number | null> {
+export function exitOf(child: ChildProcess): Promise<number | null> {
   return new Promise((resolve) => {
     let done = false;
     const finish = (c: number | null) => {
@@ -129,7 +129,7 @@ function exitOf(child: ChildProcess): Promise<number | null> {
  * A sink that feeds a child's stdin but keeps consuming after the child stops reading (pg_restore --list may exit
  * once it has the table of contents), so the whole stream is still hashed. The child's exit code is the judge.
  */
-function feed(stdin: Writable): Writable {
+export function feed(stdin: Writable): Writable {
   let open = true;
   stdin.on('error', () => (open = false));
   stdin.on('close', () => (open = false));

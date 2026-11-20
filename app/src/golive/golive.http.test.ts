@@ -56,7 +56,7 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     assert.equal(step(body, 'organisation').text, 'Register your organisation: its name and email domains');
     assert.equal(step(body, 'organisation').link, '#/organisation');
     assert.ok(body.steps.every((s: any) => s.explanation.length > 0 && s.explanation.length <= 160));
-    assert.deepEqual(body.steps.map((s: any) => s.mode), ['auto', 'auto_or_skip', 'auto', 'confirm', 'confirm', 'confirm', 'confirm', 'confirm', 'auto', 'auto', 'auto', 'auto_or_skip']);
+    assert.deepEqual(body.steps.map((s: any) => s.mode), ['auto', 'auto_or_skip', 'auto', 'confirm', 'confirm', 'confirm', 'confirm', 'auto', 'auto', 'auto', 'auto', 'auto_or_skip']);
     assert.deepEqual([body.closedAt, body.notDoneAtClose], [null, []]);
   });
 
@@ -143,20 +143,20 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
   });
 
   test('tick, note, untick and skip are recorded, and a note is limited to 200 characters', async () => {
-    const ticked = await admin.request('POST', '/go-live/steps/backups/tick', { note: 'Restore tested on 3 Dec' });
+    const ticked = await admin.request('POST', '/go-live/steps/calendar/tick', { note: 'Restore tested on 3 Dec' });
     assert.equal(ticked.status, 200);
-    const b = step(ticked.body, 'backups');
+    const b = step(ticked.body, 'calendar');
     assert.deepEqual([b.done, b.tickedBy, b.note], [true, { id: adminId, name: 'admin' }, 'Restore tested on 3 Dec']);
     assert.equal((await admin.request('POST', '/go-live/steps/recovery/tick', { note: 'x'.repeat(201) })).status, 400);
-    const un = await admin.request('POST', '/go-live/steps/backups/untick');
-    assert.deepEqual([step(un.body, 'backups').done, step(un.body, 'backups').note], [false, null]);
+    const un = await admin.request('POST', '/go-live/steps/calendar/untick');
+    assert.deepEqual([step(un.body, 'calendar').done, step(un.body, 'calendar').note], [false, null]);
     const skipped = await admin.request('POST', '/go-live/steps/logos/skip', { note: 'Later' });
     assert.deepEqual([step(skipped.body, 'logos').done, step(skipped.body, 'logos').skipped, step(skipped.body, 'logos').tickedBy.id], [true, true, adminId]);
     assert.equal(step((await admin.request('POST', '/go-live/steps/logos/untick')).body, 'logos').skipped, false);
     assert.equal((await admin.request('POST', '/go-live/steps/nonsense/tick', {})).status, 404);
     const rows = (await events(t)).filter((e) => e.actor_id === adminId);
     assert.deepEqual(rows.map((r) => [r.step_key, r.action, r.note]), [
-      ['backups', 'ticked', 'Restore tested on 3 Dec'], ['backups', 'unticked', null], ['logos', 'ticked', 'Skipped. Later'], ['logos', 'unticked', null],
+      ['calendar', 'ticked', 'Restore tested on 3 Dec'], ['calendar', 'unticked', null], ['logos', 'ticked', 'Skipped. Later'], ['logos', 'unticked', null],
     ]);
   });
 
@@ -243,6 +243,8 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
   });
 
   test('Kainow-ticked steps cannot be ticked or unticked by a person', async () => {
+    const backups = await admin.request('POST', '/go-live/steps/backups/tick', {});
+    assert.deepEqual([backups.status, backups.body.message], [409, 'Kainow ticks this step itself.'], 'step 8 follows the restore drill');
     for (const key of ['organisation', 'department']) {
       const r = await admin.request('POST', `/go-live/steps/${key}/tick`, {});
       assert.deepEqual([r.status, r.body.message], [409, 'Kainow ticks this step itself.']);
