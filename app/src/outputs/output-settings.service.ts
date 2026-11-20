@@ -5,21 +5,15 @@ import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { readReason } from '../common/reason';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
-import { loadAccessSettings } from '../organisation/access-settings';
-import { ProjectAccess, canReadContent } from '../projects/access.service';
+import { ProjectAccess } from '../projects/access.service';
 import { PROJECT_MATRIX, decide } from '../projects/matrix';
-import type { ProjectRole } from '../projects/membership';
 import { INPUT_FORMATS, OUTPUT_FORMATS, loadStorageSettings } from '../storage/settings';
+import { DEFAULT_EXPORT_ROLES, EXPORT_ROLES, loadExportPolicy, mayExport } from './export-policy';
 import { effectiveFormats } from './formats';
 
 const ACTION = 'outputs.settings';
 
-export const EXPORT_ROLES = ['pm', 'deputy', 'owner', 'sponsor', 'member', 'audit', 'oversight'] as const;
-export type ExportRole = (typeof EXPORT_ROLES)[number];
-export const DEFAULT_EXPORT_ROLES: readonly ExportRole[] = ['pm', 'deputy', 'owner', 'sponsor'];
-
-/** The stored export role value for a project role (the spec says "deputy"; the code's role is deputy_pm). */
-export const exportRoleOf = (role: ProjectRole): ExportRole => (role === 'deputy_pm' ? 'deputy' : role);
+export { DEFAULT_EXPORT_ROLES, EXPORT_ROLES, type ExportRole, exportRoleOf } from './export-policy';
 
 export interface ProjectOutputSettingsRow {
   inputFormats: string[] | null;
@@ -132,13 +126,10 @@ export class OutputSettingsService {
       /** Whether this person may submit outputs now (`output.submit`), so a screen offers "Submit" only to them. */
       maySubmit: decide({ action: 'output.submit', roles: ctx.roles, status: ctx.project.status }).allowed,
       /** Whether this person may export now (D106, the same rule as `mayExport` in exports.ts), so "Export CSV" is hidden otherwise. */
-      mayExport: await this.mayExport(ctx, own?.exportRoles ?? [...DEFAULT_EXPORT_ROLES]),
+      mayExport: mayExport(ctx, await loadExportPolicy(this.pool, projectId)),
+      /** Whether this person may manage outputs now (`output.manage`: add versions, so save an export into an existing output). */
+      mayManage: decide({ action: 'output.manage', roles: ctx.roles, status: ctx.project.status }).allowed,
     };
-  }
-
-  private async mayExport(ctx: Awaited<ReturnType<ProjectAccess['context']>>, roles: string[]): Promise<boolean> {
-    if (!(await loadAccessSettings(this.pool)).projectExportsAllowed || !canReadContent(ctx)) return false;
-    return ctx.roles.some((r) => roles.includes(exportRoleOf(r))) || ctx.grantKinds.some((k) => roles.includes(k));
   }
 
   async update(user: AuthUser, projectId: string, patch: OutputSettingsPatch, reason: string): Promise<void> {

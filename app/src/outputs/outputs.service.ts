@@ -148,6 +148,8 @@ export interface OutputVersionView {
   createdAt: Date;
   createdBy: Person;
   filing: Filing;
+  /** The approval reference (spec 12): the change request that approved this version; null until one did. */
+  approvalRequestId: string | null;
 }
 
 /** What a registrar sees after registering an output whose audience leaves them out. */
@@ -971,7 +973,7 @@ export class OutputsService {
   private async versions(ctx: ProjectContext, outputId: string): Promise<OutputVersionView[]> {
     const seesPath = ctx.roles.some((r) => OUTPUT_MANAGER_ROLES.includes(r));
     const { rows } = await this.pool.query(
-      `SELECT v.version_no AS no, v.origin, v.format, v.status, v.size_bytes AS "sizeBytes", v.created_at AS "createdAt",
+      `SELECT v.version_no AS no, v.origin, v.format, v.status, v.size_bytes AS "sizeBytes", v.created_at AS "createdAt", v.approval_request_id AS "approvalRequestId",
               v.created_by AS "createdById", u.display_name AS "createdByName",
               f.state AS "fileState", f.failure_code AS "failureCode", f.check_status AS "checkStatus", f.last_checked_at AS "lastCheckedAt", f.path,
               b.output_version_id IS NOT NULL AND b.bytes IS NOT NULL AS kept,
@@ -1042,6 +1044,7 @@ export class OutputsService {
         createdAt: r.createdAt,
         createdBy: { id: r.createdById, displayName: r.createdByName },
         filing,
+        approvalRequestId: r.approvalRequestId ?? null,
       };
     });
   }

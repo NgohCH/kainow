@@ -6,12 +6,12 @@ import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { UUID } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { DELETED_LINK, liveRecordSql } from '../history/deleted-sql';
-import { loadAccessSettings } from '../organisation/access-settings';
-import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
+import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { todayUtc8 } from '../projects/membership';
 import { POSSIBLE_COPY_TEXT, UNDER_REVIEW_TEXT, possibleCopySql } from '../quarantine/labels';
 import { KEPT_LABEL, NOT_KEPT, STORED_LABELS, filingFailedLabel } from './filing';
-import { DEFAULT_EXPORT_ROLES, exportRoleOf } from './output-settings.service';
+import { loadExportPolicy, mayExport } from './export-policy';
+export { type ExportPolicy, loadExportPolicy, mayExport } from './export-policy';
 import { isWholeProject, loadOutputAccessRow, readsOutput } from './readers';
 
 /**
@@ -110,28 +110,6 @@ export function parseExportFilters(kind: ExportKind, input: unknown): ExportFilt
     }
   }
   return out;
-}
-
-export interface ExportPolicy {
-  allowed: boolean;
-  roles: string[];
-}
-
-/** The organisation's switch and the project's export roles (the default four when the project has none of its own). */
-export async function loadExportPolicy(db: Pool | PoolClient, projectId: string): Promise<ExportPolicy> {
-  const allowed = (await loadAccessSettings(db)).projectExportsAllowed;
-  const own = (await db.query<{ roles: string[] }>(`SELECT export_roles AS roles FROM project_output_settings WHERE project_id = $1`, [projectId])).rows[0];
-  return { allowed, roles: own?.roles ?? [...DEFAULT_EXPORT_ROLES] };
-}
-
-/**
- * Export allowed = project exports allowed AND the person may read the project's content AND one of their current
- * roles (or an Active Audit/Oversight grant's kind) is among the export roles (spec 7.1). Open to any project state:
- * exports only read.
- */
-export function mayExport(ctx: ProjectContext, policy: ExportPolicy): boolean {
-  if (!policy.allowed || !canReadContent(ctx)) return false;
-  return ctx.roles.some((r) => policy.roles.includes(exportRoleOf(r))) || ctx.grantKinds.some((k) => policy.roles.includes(k));
 }
 
 /** 403 with the plain reason when the person may not export now. */

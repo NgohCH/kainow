@@ -89,6 +89,7 @@ describe('approving an output version', { skip: SKIP_NO_DB }, () => {
     const req = await asked(c.pm, out);
     assert.equal(req.status, 'pending');
     assert.deepEqual(await statuses(out), ['1:draft']);
+    assert.equal((await c.pm.request('GET', url(`/${out}`))).body.versions[0].approvalRequestId, null);
 
     const done = await approve(c.owner, req);
     assert.equal(done.status, 200, JSON.stringify(done.body));
@@ -99,6 +100,7 @@ describe('approving an output version', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual((await events(out)).sort(), ['approval_requested:1', 'approved:1', 'registered', 'submitted:1']);
     const detail = await c.pm.request('GET', url(`/${out}`));
     assert.equal(detail.body.versions[0].status, 'approved');
+    assert.equal(detail.body.versions[0].approvalRequestId, req.id, 'the register shows the approval reference');
     assert.ok(detail.body.history.some((h: { kind: string; versionNo: number }) => h.kind === 'approved' && h.versionNo === 1));
   });
 

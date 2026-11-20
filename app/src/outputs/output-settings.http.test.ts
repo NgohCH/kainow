@@ -77,6 +77,10 @@ describe('project output settings over HTTP', { skip: SKIP_NO_DB }, () => {
   test('says whether this person may submit outputs and export now, so screens can hide what they may not do', async () => {
     let r = (await ann.request('GET', url())).body;
     assert.equal(r.maySubmit, true);
+    assert.equal(r.mayManage, false, 'a Member may submit but not add versions to existing outputs');
+    assert.equal((await pm.request('GET', url())).body.mayManage, true);
+    assert.equal((await deputy.request('GET', url())).body.mayManage, true);
+    assert.equal((await owner.request('GET', url())).body.mayManage, false);
     assert.equal(r.mayExport, false, 'project exports are off by default');
     assert.equal((await pm.request('GET', url())).body.mayExport, false);
     await t.pool.query(`UPDATE access_settings SET project_exports_allowed = true`);
@@ -89,6 +93,7 @@ describe('project output settings over HTTP', { skip: SKIP_NO_DB }, () => {
     await t.pool.query(`UPDATE projects SET status = 'closed', closure_outcome = 'abandoned' WHERE id = $1`, [projectId]);
     r = (await ann.request('GET', url())).body;
     assert.equal(r.maySubmit, false, 'no submissions while Closed');
+    assert.equal((await pm.request('GET', url())).body.mayManage, false, 'no versions added while Closed');
     assert.equal(r.mayExport, true, 'exports only read, so they stay open while Closed');
   });
 
