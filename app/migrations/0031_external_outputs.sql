@@ -164,7 +164,14 @@ CREATE TABLE stored_files (
   upload_name            text,
   -- The Kainow folder an output file was last confirmed in (filing, then each move), so the daily reconciliation finds
   -- any file not where its output's readers need it (spec 5.5).
-  folder_id              uuid  REFERENCES storage_folders (id)
+  folder_id              uuid  REFERENCES storage_folders (id),
+  -- Withholding for a quarantine case (spec 8.5): the case it is withheld for (set when withholding is queued; kept on a
+  -- source text file replaced by its cleaned text, so a false-alarm release finds it), when its provider item was
+  -- permanently removed (NULL while it is still in storage), and when the Administrators were told removing it keeps
+  -- failing (once).
+  withhold_case_id       uuid  REFERENCES quarantine_cases (id),
+  removed_at             timestamptz,
+  remove_notice_at       timestamptz
 );
 -- One reference per provider item: Kainow never adopts a file another stored file already stands for.
 CREATE UNIQUE INDEX stored_files_item_once ON stored_files (drive_id, item_id) WHERE item_id IS NOT NULL AND state <> 'linked';
@@ -172,6 +179,7 @@ CREATE INDEX stored_files_project_idx ON stored_files (project_id, purpose);
 CREATE INDEX stored_files_state_idx ON stored_files (state, created_at);
 CREATE INDEX stored_files_check_idx ON stored_files (last_checked_at NULLS FIRST) WHERE state = 'stored';
 CREATE INDEX stored_files_destination_idx ON stored_files (destination_id) WHERE destination_id IS NOT NULL;
+CREATE INDEX stored_files_withhold_idx ON stored_files (withhold_case_id) WHERE withhold_case_id IS NOT NULL;
 
 CREATE TABLE stored_file_moves (
   id                  uuid PRIMARY KEY,

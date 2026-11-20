@@ -53,7 +53,9 @@ export type ProjectAction =
   | 'output.submit'
   | 'output.manage'
   | 'output.approve_request'
-  | 'output.audience';
+  | 'output.audience'
+  | 'output.delete'
+  | 'output.restore';
 
 interface MatrixRow {
   roles: ReadonlyArray<ProjectRole | 'participant'>;
@@ -267,6 +269,17 @@ export const PROJECT_MATRIX: Readonly<Record<ProjectAction, MatrixRow>> = {
     roles: ['pm', 'owner', 'sponsor'],
     states: ALL,
     refusal: 'Only the Project Manager, the Owner or a Sponsor can change who may read an output.',
+  },
+  // Deleting a register entry follows sub-project 5: open projects only; restoring is protective, so in every state.
+  'output.delete': {
+    roles: ['pm', 'deputy_pm'],
+    states: OPEN,
+    refusal: 'Only the Project Manager or a Deputy can delete an output, and not while the project is Deferred or Closed.',
+  },
+  'output.restore': {
+    roles: ['pm', 'deputy_pm'],
+    states: ALL,
+    refusal: 'Only the Project Manager or a Deputy can restore an output.',
   },
 };
 

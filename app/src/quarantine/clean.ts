@@ -24,6 +24,11 @@
  *    it is derived when shown from an unrestored quarantine_originals row for extraction_items.quote
  *    (quoteChangedItems).
  *  - JSON keys are never rewritten (they are fixed by code); only string leaves are cleaned.
+ *  - Stored files (external outputs spec 8.5): a cleaned version's original and text file already in the managed source
+ *    area are withheld (the `withhold` job keeps their content encrypted here as table `stored_files`, column
+ *    `content`, then removes them permanently), and the version shows its original withheld. An output held by the
+ *    case has its unfiled bytes withheld like an upload. Restoring hands encrypted files back to `restore-withheld`;
+ *    those rows are never written back by restoreOriginals itself nor shown by readOriginals.
  */
 import { createHash } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
@@ -31,6 +36,8 @@ import { uuidv7 } from '../common/uuid7';
 import { type Edit, cleanEdges, cleanJson, cleanText, mapOffset, removedSpans, searchForms } from './clean-text';
 import type { ProtectedKey } from './protected-key';
 import { locateQuote } from '../notes/text';
+import { queueStorageJob } from '../storage/outbox';
+import { FILE_CONTENT_COLUMN, FILE_CONTENT_TABLE, IS_FILE_CONTENT, queueWithhold } from '../storage/withhold';
 import { TEXT_COLUMNS, type ItemKind, type TextColumn } from './registry';
 
 export const QUOTE_CHANGED_TEXT = 'Quote changed: credential removed — review';
@@ -64,6 +71,7 @@ const VERSION_TEXTS: Array<{ table: 'source_versions' | 'message_versions'; colu
 ];
 
 function codecOf(table: string, column: string): Codec {
+  if (table === FILE_CONTENT_TABLE && column === FILE_CONTENT_COLUMN) return 'bytes';
   const reg = REGISTERED.get(`${table}.${column}`);
   if (reg) return reg.binary ? 'bytes' : reg.json || reg.array ? 'json' : 'text';
   if (OFFSET_COLUMNS[table]?.includes(column)) return 'json';
@@ -229,6 +237,10 @@ interface Change {
 /** The changes planned for one item, row by row. */
 class Plan {
   readonly rows = new Map<string, { table: string; key: Row; newKey: Row; cols: Map<string, Change> }>();
+  /** Stored files (sub-project 9) holding a cleaned version's original or text: withheld (spec 8.5). */
+  readonly files = new Set<string>();
+  /** Versions whose uploaded original is in a stored file being withheld: shown withheld (quarantined_at). */
+  readonly storedOriginals = new Set<string>();
 
   has(table: string, key: Row, column: string): boolean {
     return this.rows.get(rowId(table, key))?.cols.has(column) ?? false;
@@ -329,6 +341,22 @@ async function planDerived(
 
   const uploads = await c.query(`SELECT id, original_bytes FROM source_versions WHERE id = ANY($1::uuid[]) AND original_bytes IS NOT NULL`, [ids]);
   for (const u of uploads.rows) plan.set('source_versions', { id: u.id }, 'original_bytes', u.original_bytes, null);
+
+  // Files already in the managed source area hold the secret too (the original, and text.txt): they are withheld. A
+  // file still being stored is not: its upload is discarded when it finds the version cleaned (store-source).
+  const stored = await c.query<{ id: string; original_id: string | null; original_state: string | null; text_id: string | null; text_state: string | null }>(
+    `SELECT v.id, o.id AS original_id, o.state AS original_state, t.id AS text_id, t.state AS text_state
+       FROM source_versions v LEFT JOIN stored_files o ON o.id = v.original_stored_file_id LEFT JOIN stored_files t ON t.id = v.text_stored_file_id
+      WHERE v.id = ANY($1::uuid[]) AND v.original_bytes IS NULL`,
+    [ids],
+  );
+  for (const r of stored.rows) {
+    if (r.original_id && r.original_state === 'stored') {
+      plan.files.add(r.original_id);
+      plan.storedOriginals.add(r.id);
+    }
+    if (r.text_id && r.text_state === 'stored') plan.files.add(r.text_id);
+  }
 }
 
 /**
@@ -437,9 +465,20 @@ export async function cleanItem(
       plan.set(col.table, rowKey, col.column, r.value, after);
     }
   }
+
+  // 3. An output held by this case: bytes kept in the database until filing cannot be cleaned, so they are withheld
+  // (its stored files are withheld when it is held; external outputs spec 4.7, 8.5).
+  if (kind === 'output' && (await c.query(`SELECT 1 FROM outputs WHERE id = $1 AND held_case_id = $2`, [itemId, caseId])).rowCount) {
+    const bytes = await c.query<{ output_version_id: string; bytes: Buffer }>(
+      `SELECT b.output_version_id, b.bytes FROM output_version_bytes b JOIN output_versions v ON v.id = b.output_version_id
+        WHERE v.output_id = $1 AND b.bytes IS NOT NULL ORDER BY b.output_version_id`,
+      [itemId],
+    );
+    for (const b of bytes.rows) plan.set('output_version_bytes', { output_version_id: b.output_version_id }, 'bytes', b.bytes, null);
+  }
   if (plan.rows.size === 0) return { rows: 0 };
 
-  // 3. Originals first (encrypted, keyed by the cleaned row key), then the cleaned values.
+  // 4. Originals first (encrypted, keyed by the cleaned row key), then the cleaned values.
   try {
     await openWrite(c, caseId);
     return await writePlan(c, key, caseId, kind, itemId, plan);
@@ -448,7 +487,7 @@ export async function cleanItem(
   }
 }
 
-async function writePlan(c: Db, key: ProtectedKey, caseId: string, kind: ItemKind, itemId: string, plan: Plan): Promise<{ rows: number }> {
+async function writePlan(c: PoolClient, key: ProtectedKey, caseId: string, kind: ItemKind, itemId: string, plan: Plan): Promise<{ rows: number }> {
   const originals: unknown[] = [];
   const writes: RowWrite[] = [];
   for (const row of plan.rows.values()) {
@@ -482,6 +521,12 @@ async function writePlan(c: Db, key: ProtectedKey, caseId: string, kind: ItemKin
     throw quiet(err, 'quarantine_originals');
   }
   await writeRows(c, writes);
+  if (plan.storedOriginals.size > 0) {
+    await c.query(`UPDATE source_versions SET quarantined_at = now() WHERE id = ANY($1::uuid[]) AND original_bytes IS NULL AND quarantined_at IS NULL`, [
+      [...plan.storedOriginals],
+    ]);
+  }
+  await queueWithhold(c, [...plan.files], caseId);
   return { rows: writes.length };
 }
 
@@ -565,10 +610,68 @@ export async function restoreOriginals(
   caseId: string,
   scope?: { kind: ItemKind; id: string },
 ): Promise<{ restored: number; changed: Array<{ table: string; rowKey: unknown }> }> {
+  const out = await restoreRows(c, key, caseId, scope);
+  await releaseWithheldFiles(c, caseId, scope);
+  return out;
+}
+
+/**
+ * Stored files withheld for the case (in scope) come back (external outputs spec 8.5): one with an encrypted copy is
+ * handed to the `restore-withheld` job (its `withhold_case_id` cleared, which is what tells that job and the `withhold`
+ * job the release happened); one not yet encrypted was never removed, so it is simply `stored` again. A version whose
+ * stored original comes back is no longer shown withheld. The rows are locked first, then the encrypted copies are
+ * looked for in a statement of their own, so a `withhold` job encrypting at the same moment is seen either way.
+ */
+async function releaseWithheldFiles(c: PoolClient, caseId: string, scope?: { kind: ItemKind; id: string }): Promise<void> {
+  const inScope = scope ? REGISTERED.get('stored_files.name')?.itemSql?.[scope.kind] : undefined;
+  if (scope && !inScope) return;
+  const files = (
+    await c.query<{ id: string; state: string; present: boolean; purpose: string }>(
+      `SELECT f.id, f.state, f.removed_at IS NULL AS present, f.purpose FROM stored_files f
+        WHERE ${inScope ? `f.withhold_case_id = $2 AND f.id IN (SELECT s.id FROM (${inScope}) s)` : 'f.withhold_case_id = $1'}
+        ORDER BY f.id FOR UPDATE OF f`,
+      scope ? [scope.id, caseId] : [caseId],
+    )
+  ).rows;
+  if (files.length === 0) return;
+  const originals: string[] = [];
+  for (const f of files) {
+    const encrypted = await c.query(
+      `SELECT 1 FROM quarantine_originals q WHERE ${IS_FILE_CONTENT('q')} AND q.case_id = $1 AND q.restored_at IS NULL AND q.row_key->>'id' = $2::text LIMIT 1`,
+      [caseId, f.id],
+    );
+    if (encrypted.rowCount) {
+      await c.query(`UPDATE stored_files SET withhold_case_id = NULL WHERE id = $1`, [f.id]);
+      await queueStorageJob(c, 'restore-withheld', f.id);
+    } else if (f.state === 'withheld' && f.present) {
+      await c.query(`UPDATE stored_files SET state = 'stored', withhold_case_id = NULL, remove_notice_at = NULL WHERE id = $1`, [f.id]);
+    } else {
+      await c.query(`UPDATE stored_files SET withhold_case_id = NULL WHERE id = $1`, [f.id]);
+    }
+    if (f.purpose === 'source_original') originals.push(f.id);
+  }
+  if (originals.length === 0) return;
+  try {
+    await openWrite(c, caseId);
+    await c.query(
+      `UPDATE source_versions SET quarantined_at = NULL WHERE original_stored_file_id = ANY($1::uuid[]) AND original_bytes IS NULL AND quarantined_at IS NOT NULL`,
+      [originals],
+    );
+  } finally {
+    await closeWrite(c);
+  }
+}
+
+async function restoreRows(
+  c: PoolClient,
+  key: ProtectedKey,
+  caseId: string,
+  scope?: { kind: ItemKind; id: string },
+): Promise<{ restored: number; changed: Array<{ table: string; rowKey: unknown }> }> {
   const { rows } = await c.query<Original>(
     `SELECT id, table_name, row_key, column_name, sweep, ciphertext, nonce, tag, key_id, cleaned_sha256
        FROM quarantine_originals
-      WHERE case_id = $1 AND restored_at IS NULL ${scope ? 'AND item_kind = $2 AND item_id = $3' : ''}
+      WHERE case_id = $1 AND restored_at IS NULL AND NOT ${IS_FILE_CONTENT('quarantine_originals')} ${scope ? 'AND item_kind = $2 AND item_id = $3' : ''}
       ORDER BY sweep DESC`,
     scope ? [caseId, scope.kind, scope.id] : [caseId],
   );
@@ -674,7 +777,7 @@ export async function readOriginals(c: Db, key: ProtectedKey, caseId: string, sc
   const { rows } = await c.query<Original>(
     `SELECT id, table_name, row_key, column_name, sweep, ciphertext, nonce, tag, key_id, cleaned_sha256
        FROM quarantine_originals
-      WHERE case_id = $1 AND item_kind = $2 AND item_id = $3
+      WHERE case_id = $1 AND item_kind = $2 AND item_id = $3 AND NOT ${IS_FILE_CONTENT('quarantine_originals')}
       ORDER BY sweep, table_name, column_name, id`,
     [caseId, scope.kind, scope.id],
   );

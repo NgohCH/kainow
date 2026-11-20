@@ -6,6 +6,7 @@ import {
   type StorageDeps, type StorageFailureCode, registerStorageDailyTask, registerStorageFinalFailure, registerStorageHandler,
 } from '../storage/jobs';
 import { queueStorageJob } from '../storage/outbox';
+import { queueWithhold } from '../storage/withhold';
 import { quickXorHash } from '../storage/quickxor';
 import { type DestinationRef, type FolderRef, StorageError, type StoredRef } from '../storage/types';
 import { MAX_NAME, PathTooLong, RESTRICTED_SUFFIX, fitPath, outputFileName, safeName } from './naming';
@@ -302,6 +303,7 @@ async function placementFolder(deps: StorageDeps, dest: DestinationRef, placemen
 interface JobRow {
   version_id: string; output_id: string; version_no: number; format: string; stored_file_id: string | null;
   version_held: boolean; title: string; project_id: string; status: string; deleted: boolean; output_held: boolean;
+  sha256: string; size_bytes: string;
   file_state: string | null; destination_id: string | null; bytes: Buffer | null;
   upload_destination_id: string | null; upload_folder_id: string | null; upload_name: string | null;
 }
@@ -309,7 +311,7 @@ interface JobRow {
 async function loadJob(deps: StorageDeps, versionId: string): Promise<JobRow | undefined> {
   return (
     await deps.pool.query<JobRow>(
-      `SELECT v.id AS version_id, v.output_id, v.version_no, v.format, v.stored_file_id, v.held_case_id IS NOT NULL AS version_held,
+      `SELECT v.id AS version_id, v.output_id, v.version_no, v.format, v.stored_file_id, v.held_case_id IS NOT NULL AS version_held, v.sha256, v.size_bytes,
               o.title, o.project_id, o.status, o.deleted_at IS NOT NULL AS deleted, o.held_case_id IS NOT NULL AS output_held,
               f.state AS file_state, f.destination_id, b.bytes, f.upload_destination_id, f.upload_folder_id, f.upload_name
          FROM output_versions v JOIN outputs o ON o.id = v.output_id
@@ -355,6 +357,8 @@ async function fileLocked(deps: StorageDeps, versionId: string): Promise<void> {
   if (!v || !v.stored_file_id || !v.destination_id) return;
   if (v.file_state !== 'pending' && v.file_state !== 'storing') return;
   if (v.status !== 'registered' || v.deleted || v.output_held || v.version_held) {
+    // An earlier upload whose answer was lost may sit where readers can open it: a held version's is taken away (CF6).
+    if (v.output_held || v.version_held) await removeHeldUpload(deps, v);
     await markFilingFailed(deps, versionId, NOT_FILEABLE);
     return;
   }
@@ -398,7 +402,24 @@ async function fileLocked(deps: StorageDeps, versionId: string): Promise<void> {
       await c.query<{ stored_file_id: string | null }>(`SELECT stored_file_id FROM output_versions WHERE id = $1 FOR UPDATE`, [versionId])
     ).rows[0];
     const state = (await c.query<{ state: string }>(`SELECT state FROM stored_files WHERE id = $1 FOR UPDATE`, [fileId])).rows[0]?.state;
-    if (now?.stored_file_id === fileId && state === 'storing') {
+    // Held while it uploaded (CF6): the upload is recorded where it is, withheld for the case, and the withhold job moves
+    // it out of any shared folder, keeps it encrypted and removes it. It is never reported filed.
+    const heldBy = (
+      await c.query<{ held: string | null }>(
+        `SELECT COALESCE(v.held_case_id, o.held_case_id) AS held FROM output_versions v JOIN outputs o ON o.id = v.output_id WHERE v.id = $1`,
+        [versionId],
+      )
+    ).rows[0]?.held;
+    if (now?.stored_file_id === fileId && state === 'storing' && heldBy) {
+      await c.query(
+        `UPDATE stored_files SET state = 'stored', destination_id = $2, connector = $3, drive_id = $4, item_id = $5, path = $6, name = $7,
+                size_bytes = $8, sha256 = $9, provider_hash = $10, etag = $11, ctag = $12, web_url = $13, stored_at = $14, failure_code = NULL, folder_id = $15
+          WHERE id = $1`,
+        [fileId, dest.id, dest.connector, dest.driveId, ref.itemId, parts.join('/'), ref.name, ref.size, sha256(bytes), ref.providerHash, ref.etag, ref.ctag, ref.webUrl, at, folder.recordId],
+      );
+      await queueWithhold(c, [fileId], heldBy);
+      recorded = true;
+    } else if (now?.stored_file_id === fileId && state === 'storing') {
       await c.query(
         `UPDATE stored_files SET state = 'stored', destination_id = $2, connector = $3, drive_id = $4, item_id = $5, path = $6, name = $7,
                 size_bytes = $8, sha256 = $9, provider_hash = $10, etag = $11, ctag = $12, web_url = $13, stored_at = $14, failure_code = NULL,
@@ -436,6 +457,25 @@ async function removeUnrecorded(deps: StorageDeps, connector: StorageConnector, 
     logFixed(deps, UNRECORDED_REMOVED);
   } catch {
     logFixed(deps, UNRECORDED_KEPT);
+  }
+}
+
+/**
+ * A held version's earlier upload, if one whose answer was lost sits where it was last sent (CF6): taken away
+ * permanently when it is exactly the version's file (size and SHA-256) and no stored file stands for it. Its content is
+ * the version's own, kept in the database (and withheld with the output) until then. Best effort.
+ */
+async function removeHeldUpload(deps: StorageDeps, v: JobRow): Promise<void> {
+  if (!v.upload_destination_id || !v.upload_folder_id || !v.upload_name) return;
+  try {
+    const { connector, dest } = await deps.connectors.forDestination(v.upload_destination_id);
+    const found = await connector.findChild(dest, v.upload_folder_id, v.upload_name);
+    if (!found || found.size !== Number(v.size_bytes) || (await referencedElsewhere(deps, null, dest.driveId, found.itemId))) return;
+    if (sha256(await connector.download(dest, found.itemId)) !== v.sha256) return;
+    await connector.removePermanently(dest, found.itemId);
+    logFixed(deps, STRAY_REMOVED);
+  } catch {
+    logFixed(deps, STRAY_KEPT);
   }
 }
 

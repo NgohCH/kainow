@@ -53,6 +53,8 @@ test('the matrix holds exactly the agreed rows', () => {
     'output.manage': ['pm,deputy_pm', 'draft,planned,active'],
     'output.approve_request': ['pm,deputy_pm', 'planned,active'],
     'output.audience': ['pm,owner,sponsor', 'draft,planned,active,deferred,closed'],
+    'output.delete': ['pm,deputy_pm', 'draft,planned,active'],
+    'output.restore': ['pm,deputy_pm', 'draft,planned,active,deferred,closed'],
   });
   assert.equal(PROJECT_MATRIX['proposal.review'].refusal, 'Only the Owner or a Sponsor can approve or reject proposals, and only while the project is Planned or Active.');
 });

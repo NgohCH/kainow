@@ -30,7 +30,8 @@ export const LATER_VERSION_APPROVED = 'A later version of the output was approve
 export async function endOutputApprovalRequests(
   c: PoolClient,
   outputId: string,
-  by: string,
+  /** Who ended them; null when Kainow did (an output held on Kainow's own report). */
+  by: string | null,
   at: Date,
   opts: { beforeVersionNo?: number } = {},
 ): Promise<number> {

@@ -21,7 +21,7 @@ import { STORAGE_CONNECTORS, type StorageConnectorFactory, StorageWaitingForKey 
 import { type OutputFormat, loadStorageSettings } from '../storage/settings';
 import { type ItemState, StorageError } from '../storage/types';
 import { DOES_NOT_APPROVE_COMMITMENTS, approveOutputHandler, endOutputApprovalRequests } from './approval-handler';
-import { checkOutputAudience, createOutputAudience, writeOutputAudience } from './audience';
+import { checkOutputAudience, createOutputAudience, withdrawOutput, writeOutputAudience } from './audience';
 import { type CheckStatus, NOT_RECOVERED, REGISTER_FAILED, REGISTER_PENDING, approvedPlaceOf, changeStateSql, checkActions, checkLabel, pathInDestination } from './checks';
 import { ALREADY_FILED, BEING_FILED, LINKED_NOT_FILED, NOT_KEPT, NO_DESTINATION, REGISTER_FIRST, filingFailedLabel, requestFiling } from './filing';
 import { effectiveFormats, outputRefusal } from './formats';
@@ -34,6 +34,7 @@ import { loadDocumentHeader } from './render/header';
 import { renderMarkdown } from './render/markdown';
 import { renderPdf } from './render/pdf';
 import { notSharedFor } from './sharing';
+import { queueOutputPlacement } from './sharing-queue';
 
 type Db = Pool | PoolClient;
 
@@ -59,6 +60,16 @@ const ACCEPT_INTO_REGISTERED = 'A submission can be added only to a registered o
 const SAME_TIME = 'Someone else changed this output at the same time. Try again.';
 const AUDIENCE_SET_AT_REGISTRATION = 'Set when the output was registered';
 const AUDIENCE_SET_AT_SUBMISSION = 'Restricted when submitted: built from material some of the project’s readers cannot read';
+
+/** A deleted output as the PM or a Deputy sees it to restore it (sub-project 5: who, when, why). */
+export interface DeletedOutput {
+  id: string;
+  title: string;
+  status: OutputSummary['status'];
+  deletedAt: Date;
+  deletedBy: Person;
+  reason: string;
+}
 
 /** D77 draft kinds and the report type each is suggested as (spec 4.4). */
 export const DEFAULT_REPORT_TYPES: Readonly<Record<ReportKind, string>> = {
@@ -701,6 +712,104 @@ export class OutputsService {
       request = made.request;
     });
     return { request: request as RequestView, notice: DOES_NOT_APPROVE_COMMITMENTS };
+  }
+
+  // -------------------------------------------------------------------------------------------------------------------
+  // Withdrawing, deleting and restoring (spec 4.3, 4.7; PM or Deputy)
+  // -------------------------------------------------------------------------------------------------------------------
+
+  /**
+   * Withdraws a Submitted or Registered output with a reason (spec 4.3): a final state; its pending approval requests
+   * end and its files move to its own output folder, which has no Kainow grants (spec 5.5).
+   */
+  async withdrawOutput(user: AuthUser, projectId: string, outputId: string, reasonInput: unknown): Promise<OutputDetail> {
+    await this.visible(user, projectId, outputId);
+    const reason = readReason(reasonInput);
+    const at = this.clock();
+    await this.tx(async (c) => {
+      await this.manage(c, user, projectId, outputId);
+      await withdrawOutput(c, outputId, user.id, reason, at);
+    });
+    return this.get(user, projectId, outputId);
+  }
+
+  /**
+   * Deletes a register entry (spec 4.7, sub-project 5's rules): by the PM or a Deputy who reads it, with a reason, while
+   * the project is open. Nothing is removed: the output gains who, when and why, leaves every view and list, its
+   * pending approval requests end, and its files move to its own output folder, which has no Kainow grants. The
+   * external file is never deleted. A held output is not found here until its case is released.
+   */
+  async deleteOutput(user: AuthUser, projectId: string, outputId: string, reasonInput: unknown): Promise<{ id: string; deleted: true }> {
+    await this.visible(user, projectId, outputId);
+    const at = this.clock();
+    await this.tx(async (c) => {
+      const { ctx, row } = await this.visible(user, projectId, outputId, c, true);
+      const verdict = decide({ action: 'output.delete', roles: ctx.roles, status: ctx.project.status });
+      if (!verdict.allowed) throw new ForbiddenException(verdict.reason);
+      const reason = readReason(reasonInput);
+      await c.query(`UPDATE outputs SET deleted_at = $2, deleted_by = $3, delete_reason = $4 WHERE id = $1`, [outputId, at, user.id, reason]);
+      await this.event(c, outputId, 'deleted', user.id, at, { reason, detail: { status: row.status } });
+      await endOutputApprovalRequests(c, outputId, user.id, at);
+      if (row.status === 'registered') await queueOutputPlacement(c, outputId, 'narrow');
+      await writeAudit(c, { at, action: 'output.deleted', actorUserId: user.id, subjectType: 'output', subjectId: outputId, detail: { projectId, status: row.status } });
+    });
+    return { id: outputId, deleted: true };
+  }
+
+  /**
+   * Restores a deleted output with a reason, in any project state (sub-project 5). The restorer must hold
+   * `output.restore` and would read it once restored (its audience and review rules are checked again now); anyone who
+   * would not read it is told nothing (404). Its files move back where its readers need them, and are shared again.
+   */
+  async restoreOutput(user: AuthUser, projectId: string, outputId: string, reasonInput: unknown): Promise<OutputDetail> {
+    await this.deletedFor(this.pool, user, projectId, outputId);
+    const at = this.clock();
+    await this.tx(async (c) => {
+      const { row } = await this.deletedFor(c, user, projectId, outputId, true);
+      const reason = readReason(reasonInput);
+      await c.query(`UPDATE outputs SET deleted_at = NULL, deleted_by = NULL, delete_reason = NULL WHERE id = $1`, [outputId]);
+      await this.event(c, outputId, 'restored', user.id, at, { reason, detail: { status: row.status } });
+      if (row.status === 'registered') await queueOutputPlacement(c, outputId, 'widen');
+      await writeAudit(c, { at, action: 'output.restored', actorUserId: user.id, subjectType: 'output', subjectId: outputId, detail: { projectId, status: row.status } });
+    });
+    return this.get(user, projectId, outputId);
+  }
+
+  /** The project's deleted outputs this person may restore (each one they would read once restored), newest deletion first. */
+  async deletedOutputs(user: AuthUser, projectId: string): Promise<DeletedOutput[]> {
+    const ctx = await this.access.context(user, projectId);
+    if (!decide({ action: 'output.restore', roles: ctx.roles, status: ctx.project.status }).allowed) return [];
+    const { rows } = await this.pool.query(
+      `SELECT o.id, o.title, o.status, o.deleted_at AS "deletedAt", o.deleted_by AS "deletedById", u.display_name AS "deletedByName", o.delete_reason AS reason
+         FROM outputs o JOIN users u ON u.id = o.deleted_by
+        WHERE o.project_id = $1 AND o.deleted_at IS NOT NULL AND o.held_case_id IS NULL
+        ORDER BY o.deleted_at DESC, lower(o.title), o.id`,
+      [projectId],
+    );
+    const out: DeletedOutput[] = [];
+    for (const r of rows) {
+      const row = await loadOutputAccessRow(this.pool, r.id);
+      if (!row || !(await readsOutput(this.pool, ctx, { ...row, deletedAt: null }))) continue;
+      out.push({ id: r.id, title: r.title, status: r.status, deletedAt: r.deletedAt, deletedBy: { id: r.deletedById, displayName: r.deletedByName }, reason: r.reason });
+    }
+    return out;
+  }
+
+  /**
+   * A deleted output for someone who may restore it: 404 unless it is deleted (and not held) in this project and they
+   * would read it once restored; then 403 unless they hold `output.restore`. With `lock`, the project and output rows
+   * are locked.
+   */
+  private async deletedFor(db: Db, user: AuthUser, projectId: string, outputId: string, lock = false): Promise<{ ctx: ProjectContext; row: OutputAccessRow }> {
+    if (!UUID.test(outputId)) throw new NotFoundException();
+    const ctx = await this.access.context(user, projectId, db, lock);
+    if (lock) await db.query(`SELECT 1 FROM outputs WHERE id = $1 FOR UPDATE`, [outputId]);
+    const row = await loadOutputAccessRow(db, outputId);
+    if (!row || row.projectId !== projectId || !row.deletedAt || row.heldCaseId) throw new NotFoundException();
+    if (!(await readsOutput(db, ctx, { ...row, deletedAt: null }))) throw new NotFoundException();
+    const verdict = decide({ action: 'output.restore', roles: ctx.roles, status: ctx.project.status });
+    if (!verdict.allowed) throw new ForbiddenException(verdict.reason);
+    return { ctx, row };
   }
 
   // -------------------------------------------------------------------------------------------------------------------

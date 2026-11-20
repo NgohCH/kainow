@@ -302,7 +302,8 @@ describe('source downloads from storage and the source check', { skip: SKIP_NO_D
     );
     await t.pool.query(`INSERT INTO storage_admins (id, user_id, designated_by, designated_at, reason) VALUES ($1, $2, $3, now(), 'Looks after sources')`, [uuidv7(), ids.reader, ids.plainadmin]);
     const a = await storedUpload('Held notes.txt');
-    await standaloneCases(t.pool, t.clock.now).report('kainow', { projectId: project, kind: 'source', id: a.sourceId, marked: ['Zebrafish'], reason: null });
+    // Held without the protected key, so its stored file is not withheld yet (with the key it is withheld at once, spec 8.5).
+    await standaloneCases(t.pool, t.clock.now, false).report('kainow', { projectId: project, kind: 'source', id: a.sourceId, marked: ['Zebrafish'], reason: null });
     assert.ok((await rows(`SELECT held_case_id FROM sources WHERE id = $1`, [a.sourceId]))[0].held_case_id, 'the source is held');
     const title = (await rows(`SELECT title FROM sources WHERE id = $1`, [a.sourceId]))[0].title as string;
     assert.equal(await flagStoredFileNow(a.fileId), true);

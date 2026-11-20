@@ -60,6 +60,14 @@ export class OutputsController {
     return { outputs: await this.outputs.list(who(req), projectId, filters) };
   }
 
+  /** Deleted outputs the PM or a Deputy may restore (sub-project 5: who, when, why). */
+  @Get('deleted')
+  @AnySignedInUser()
+  async deleted(@Param('projectId') projectId: string, @Req() req: HttpRequest) {
+    ids(projectId);
+    return { outputs: await this.outputs.deletedOutputs(who(req), projectId) };
+  }
+
   @Get(':outputId')
   @AnySignedInUser()
   get(@Param('projectId') projectId: string, @Param('outputId') outputId: string, @Req() req: HttpRequest) {
@@ -93,6 +101,33 @@ export class OutputsController {
     ids(projectId, outputId);
     const reason = body && typeof body === 'object' ? (body as Record<string, unknown>).reason : undefined;
     return this.outputs.decline(who(req), projectId, outputId, reason);
+  }
+
+  /** `{ reason }`: withdrawn (spec 4.3), a final state. */
+  @Post(':outputId/withdraw')
+  @AnySignedInUser()
+  @HttpCode(200)
+  withdraw(@Param('projectId') projectId: string, @Param('outputId') outputId: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    ids(projectId, outputId);
+    return this.outputs.withdrawOutput(who(req), projectId, outputId, field(body, 'reason'));
+  }
+
+  /** `{ reason }`: logically deleted (spec 4.7); the external file is never deleted. */
+  @Post(':outputId/delete')
+  @AnySignedInUser()
+  @HttpCode(200)
+  remove(@Param('projectId') projectId: string, @Param('outputId') outputId: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    ids(projectId, outputId);
+    return this.outputs.deleteOutput(who(req), projectId, outputId, field(body, 'reason'));
+  }
+
+  /** `{ reason }`: a deleted output restored (spec 4.7). */
+  @Post(':outputId/restore')
+  @AnySignedInUser()
+  @HttpCode(200)
+  restore(@Param('projectId') projectId: string, @Param('outputId') outputId: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    ids(projectId, outputId);
+    return this.outputs.restoreOutput(who(req), projectId, outputId, field(body, 'reason'));
   }
 
   /** `{ targetOutputId }`: a Submitted output's versions become new versions of a Registered one (spec 4.3). */

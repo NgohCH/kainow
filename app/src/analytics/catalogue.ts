@@ -196,6 +196,8 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['output.relinked', 'The PM or a Deputy linked a moved or missing output file to where it is now.'],
     ['output.changed_registered', 'The PM or a Deputy registered an output file changed in storage as a new version.'],
     ['output.change_register_requested', 'The PM or a Deputy asked for an output file changed in storage to be registered as a new version.'],
+    ['output.deleted', 'The PM or a Deputy deleted an output from the register, with a reason; its files were kept.'],
+    ['output.restored', 'The PM or a Deputy restored a deleted output, with a reason.'],
     ['analysis_settings.changed', 'The organisation analysis settings were changed.'],
     ['analysis_settings.project_changed', 'A project’s analysis settings were changed.'],
     ['extraction.requested', 'An extraction was requested.'],
@@ -232,6 +234,8 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
   ]),
   ...audit('Storage', ADMIN, 'storage connection', [
     ['storage.connection_changed', 'The storage connection settings or client secret were changed, with a reason; no secret is kept.'],
+    ['storage.file_withheld', 'A stored file holding a suspected credential was kept encrypted and removed from storage for a security case.'],
+    ['storage.file_restored', 'A withheld file was put back in storage after its security case was released unchanged.'],
   ]),
 
   // ---- per-domain event tables --------------------------------------------------------------------------------------

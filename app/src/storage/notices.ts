@@ -9,6 +9,12 @@ import { SOURCE_FILE_CHANGED, SOURCE_FILE_MISSING } from './source-files';
 import { SHARING_PLACE_FAILED, SHARING_REVOKE_FAILED, placeFailedNotice, revokeFailedNotice } from '../outputs/sharing';
 import { OUTPUT_FILE_CHANGED, OUTPUT_FILE_MISSING, OUTPUT_FILE_MOVED } from '../outputs/checks';
 import { contentReaderContexts, loadOutputAccessRow, readsOutput } from '../outputs/readers';
+import { HELD_FILE_NOT_REMOVED, HELD_FILE_NOT_REMOVED_TEXT } from './withhold';
+
+/** The notice when a held output has a linked document Kainow cannot remove (spec 4.7), worded exactly as the spec. */
+export const HELD_LINK = 'held_link';
+export const heldLinkNotice = (projectName: string): string =>
+  `A document registered in ${projectName} may contain a credential. Kainow has hidden it, but the file is still in storage at its existing location and must be dealt with there.`;
 
 /**
  * The in-app notices storage work raises. Each kind is worded here; Task 13 and 17 add theirs. Storage notices go to the
@@ -135,8 +141,17 @@ export function makeStorageNotify(pool: Pool, clock: Clock): StorageNotify {
     }
   }
 
+  /** A held file that could not be removed (spec 8.5): to the Administrators, naming only the project, never the secret. */
+  async function heldFileNotRemoved(c: PoolClient, n: StorageNotice): Promise<void> {
+    const f = (await c.query<{ project_id: string }>(`SELECT project_id FROM stored_files WHERE id = $1`, [n.subjectId])).rows[0];
+    if (!f) return;
+    await toAdministrators(c, n.kind, f.project_id, HELD_FILE_NOT_REMOVED_TEXT);
+  }
+
   return async (c, n) => {
-    if (n.kind === SHARING_REVOKE_FAILED) {
+    if (n.kind === HELD_FILE_NOT_REMOVED) {
+      await heldFileNotRemoved(c, n);
+    } else if (n.kind === SHARING_REVOKE_FAILED) {
       await revokeFailed(c, n);
     } else if (n.kind === SHARING_PLACE_FAILED) {
       await placeFailed(c, n);
@@ -153,4 +168,29 @@ export function makeStorageNotify(pool: Pool, clock: Clock): StorageNotify {
     }
     // Other kinds are worded by the features that raise them.
   };
+}
+
+/**
+ * A held output with a linked document (spec 4.7): Kainow did not create it and never deletes it, so it is hidden in
+ * Kainow only and the Enterprise Administrators, the storage Administrators and the project's PM are told, in the app.
+ * Names the project only.
+ */
+export async function noticeHeldLink(c: PoolClient, outputId: string, at: Date): Promise<number> {
+  const o = (
+    await c.query<{ project_id: string; project_name: string }>(
+      `SELECT p.id AS project_id, p.name AS project_name FROM outputs o JOIN projects p ON p.id = o.project_id WHERE o.id = $1`,
+      [outputId],
+    )
+  ).rows[0];
+  if (!o) return 0;
+  const pms = (await contentReaderContexts(c, o.project_id, at)).filter((ctx) => ctx.roles.includes('pm')).map((ctx) => ctx.viewerId);
+  const recipients = [...new Set([...(await loadAdmins(c)), ...(await loadStorageAdmins(c)), ...pms])].sort();
+  for (const userId of recipients) {
+    await c.query(
+      `INSERT INTO notifications (id, user_id, project_id, kind, urgent, summary, link, created_at, email_off)
+       VALUES ($1, $2, $3, $4, true, $5, $6, $7, true)`,
+      [uuidv7(at.getTime()), userId, o.project_id, HELD_LINK, heldLinkNotice(o.project_name), `#/projects/${o.project_id}`, at],
+    );
+  }
+  return recipients.length;
 }
