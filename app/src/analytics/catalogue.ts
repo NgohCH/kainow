@@ -67,6 +67,9 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['department.restored', 'A retired department was brought back.'],
     ['access_settings.changed', 'Access and records settings were changed, with a reason (D90).'],
   ]),
+  ...audit('Operations', ADMIN, 'operations', [
+    ['ops.settings_changed', 'Operations settings (backup retention, storage levels, safe floor, diagnostic retention) were changed, with a reason.'],
+  ]),
   ...audit('Projects', PERSON, 'project', [
     ['project.created', 'A project was created as a draft.'],
     ['project.edited', 'A project’s details were edited.'],
@@ -312,6 +315,11 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['revoked', 'A leadership grant was revoked, with a reason.'],
   ]),
   ...group('access_settings_changes', 'Organisation', ADMIN, 'access settings', [['changed', 'Access and records settings changed: previous and new values, with a reason.']]),
+  ...group('operations_settings_changes', 'Operations', ADMIN, 'operations settings', [['changed', 'Operations settings changed: previous and new values, with a reason.']]),
+  ...group('operations_state_changes', 'Operations', SYSTEM, 'protective mode', [
+    ['entered', 'Kainow entered protective (read-only) mode, with the reason and detail.'],
+    ['resumed', 'An Enterprise Administrator resumed normal use after protective mode, with a reason.'],
+  ]),
   ...group('resource_line_events', 'Resources', PERSON, 'resource line', [
     ['created', 'A resource line was added to a project.'],
     ['edited', 'A resource line was edited: previous and new values.'],
