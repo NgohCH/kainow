@@ -115,6 +115,25 @@ describe('project finance settings over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.equal((await changes()).length, 0);
   });
 
+  test('the change history (reasons, previous and next) goes to finance readers and the Administrator only', async () => {
+    assert.equal((await pm.request('PUT', url(), { ...ENABLE, reason: 'Private reason for the change' })).status, 200);
+    for (const c of [pm, deputy, owner, admin]) {
+      const r = await c.request('GET', url());
+      assert.equal(r.status, 200);
+      assert.equal(r.body.changes.length, 1);
+      assert.equal(r.body.changes[0].reason, 'Private reason for the change');
+    }
+    for (const c of [ann, auditor]) {
+      const r = await c.request('GET', url());
+      assert.equal(r.status, 200);
+      assert.deepEqual(r.body.changes, []);
+      assert.doesNotMatch(JSON.stringify(r.body), /Private reason/);
+    }
+    // Widened readers see it too.
+    assert.equal((await pm.request('PUT', url(), { membersRead: true, grantsRead: true, reason: 'Widen readers' })).status, 200);
+    for (const c of [ann, auditor]) assert.equal((await c.request('GET', url())).body.changes.length, 2);
+  });
+
   test('Deferred refuses changes, even for the Administrator, and editable is false', async () => {
     await t.pool.query(`UPDATE projects SET status = 'deferred' WHERE id = $1`, [projectId]);
     assert.equal((await pm.request('GET', url())).body.editable, false);

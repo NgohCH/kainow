@@ -95,6 +95,17 @@ describe('resource and finance settings, catalogue maintainers (D94)', { skip: S
     assert.equal(second.body.changes[0].reason, 'Later');
   });
 
+  test('an unchanged save is refused with Nothing to change and writes no history or audit', async () => {
+    const current = (await admin.request('GET', SETTINGS)).body.settings;
+    for (const body of [{}, current, { warnFirstPct: current.warnFirstPct }, { enabledCurrencies: [...current.enabledCurrencies].reverse() }]) {
+      const r = await put(body);
+      assert.equal(r.status, 400, JSON.stringify(body));
+      assert.equal(r.body.message, 'Nothing to change.');
+    }
+    assert.equal((await t.pool.query(`SELECT 1 FROM resource_settings_changes`)).rowCount, 0);
+    assert.equal((await t.pool.query(`SELECT 1 FROM audit_events WHERE action = 'resources.settings_changed'`)).rowCount, 0);
+  });
+
   test('a refused change writes nothing', async () => {
     await put({ warnFirstPct: 90, warnSecondPct: 90 });
     assert.equal((await t.pool.query(`SELECT 1 FROM resource_settings_changes`)).rowCount, 0);

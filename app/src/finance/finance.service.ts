@@ -302,7 +302,8 @@ function readSpentOn(v: unknown): string {
   if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v.trim())) throw new BadRequestException(DATE);
   const s = v.trim();
   const d = new Date(`${s}T00:00:00Z`);
-  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) throw new BadRequestException(DATE);
+  // Year 0000 parses in JavaScript but not in Postgres (no year 0): refused here, not a 500 from the insert.
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s || s.startsWith('0000')) throw new BadRequestException(DATE);
   return s;
 }
 
@@ -371,7 +372,9 @@ export class FinanceService {
       await this.access.authorize(user, 'finance.record', projectId, client, true);
       const s = await loadProjectFinanceSettings(client, projectId, true);
       if (s.tracking !== 'enabled' || s.currency === null) throw new ConflictException(NOT_REQUIRED);
-      const input = readSpending(body, (await loadResourceSettings(client)).enabledCurrencies);
+      // The project keeps its reporting currency even after the Administrator disables it (spec 3.1).
+      const enabled = (await loadResourceSettings(client)).enabledCurrencies;
+      const input = readSpending(body, enabled.includes(s.currency) ? enabled : [...enabled, s.currency]);
       const id = uuidv7(at.getTime());
       await client.query(
         `INSERT INTO expenditures (id, project_id, spent_on, amount, currency, description, reference, recorded_by, recorded_at)

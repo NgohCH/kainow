@@ -89,20 +89,26 @@ export class FinanceSettingsService {
     const delegated = org.projectsMayManageFinance;
     const stateOk = PROJECT_MATRIX[ACTION].states.includes(ctx.project.status);
     const allowed = decide({ action: ACTION, roles: ctx.roles, status: ctx.project.status }).allowed;
-    const { rows: changes } = await this.pool.query(
-      `SELECT h.id, h.at, h.reason, h.actor_id AS "actorId", u.display_name AS actor, h.previous, h.next
-         FROM project_finance_changes h JOIN users u ON u.id = h.actor_id
-        WHERE h.project_id = $1
-        ORDER BY h.at DESC, h.id DESC`,
-      [projectId],
-    );
+    // The change history carries free-text reasons and earlier settings: finance readers and the Administrator only.
+    const seesFinance = ctx.isAdmin || mayReadFinance(ctx, settings);
+    const changes = seesFinance
+      ? (
+          await this.pool.query(
+            `SELECT h.id, h.at, h.reason, h.actor_id AS "actorId", u.display_name AS actor, h.previous, h.next
+               FROM project_finance_changes h JOIN users u ON u.id = h.actor_id
+              WHERE h.project_id = $1
+              ORDER BY h.at DESC, h.id DESC`,
+            [projectId],
+          )
+        ).rows
+      : [];
     return {
       settings,
       effective: { thresholds: effectiveThresholds(settings, org), inherited: settings.warnFirstPct === null },
       organisation: { defaultCurrency: org.defaultCurrency, enabledCurrencies: org.enabledCurrencies, warnFirstPct: org.warnFirstPct, warnSecondPct: org.warnSecondPct },
       editable: stateOk && (ctx.isAdmin || (allowed && delegated)),
       delegated,
-      currencyFixed: await currencyFixed(this.pool, projectId, ctx.isAdmin || mayReadFinance(ctx, settings)),
+      currencyFixed: await currencyFixed(this.pool, projectId, seesFinance),
       changes,
     };
   }

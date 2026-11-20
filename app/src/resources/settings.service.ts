@@ -82,6 +82,8 @@ export class ResourceSettingsService {
       const check = validateResourceSettings({ ...previous, ...pick(next) });
       if (!check.ok) throw new BadRequestException(check.message);
       const value = check.value;
+      const fields = KEYS.filter((k) => JSON.stringify(previous[k]) !== JSON.stringify(value[k]));
+      if (fields.length === 0) throw new BadRequestException('Nothing to change.');
       await client.query(
         `UPDATE resource_settings SET projects_may_manage_finance = $1, default_currency = $2, enabled_currencies = $3, warn_first_pct = $4, warn_second_pct = $5 WHERE id`,
         [value.projectsMayManageFinance, value.defaultCurrency, value.enabledCurrencies, value.warnFirstPct, value.warnSecondPct],
@@ -89,7 +91,6 @@ export class ResourceSettingsService {
       await client.query(`INSERT INTO resource_settings_changes (id, actor_id, at, reason, previous, next) VALUES ($1, $2, $3, $4, $5, $6)`, [
         uuidv7(at.getTime()), user.id, at, reason, JSON.stringify(previous), JSON.stringify(value),
       ]);
-      const fields = KEYS.filter((k) => JSON.stringify(previous[k]) !== JSON.stringify(value[k]));
       await writeAudit(client, { at, action: 'resources.settings_changed', actorUserId: user.id, subjectType: 'organisation', detail: { fields } });
       await client.query('COMMIT');
       return value;

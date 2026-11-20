@@ -150,6 +150,8 @@ describe('project resource lines over HTTP', { skip: SKIP_NO_DB }, () => {
     await refuse({ itemId: item, quantity: '1.234', unit: 'items' }, 'Enter a quantity above 0 with at most 2 decimal places.');
     await refuse({ itemId: item, quantity: '2', unit: 'crates' }, 'Choose a unit from the list.');
     await refuse({ itemId: item, startsOn: '2026-12-10', endsOn: '2026-12-09' }, 'The end date cannot be before the start date.');
+    await refuse({ itemId: item, startsOn: '0000-12-10' }, 'Enter dates as YYYY-MM-DD.');
+    await refuse({ oneOffKind: 'other', description: 'Pegs', neededBy: '0000-01-01' }, 'Enter dates as YYYY-MM-DD.');
     await refuse({ oneOffKind: 'other', description: '' }, 'Enter a description of 1 to 200 characters.');
     await refuse({ oneOffKind: 'other', description: 'x'.repeat(201) }, 'Enter a description of 1 to 200 characters.');
     await refuse({ itemId: item, notes: 'x'.repeat(2001) }, 'Notes can be up to 2,000 characters.');

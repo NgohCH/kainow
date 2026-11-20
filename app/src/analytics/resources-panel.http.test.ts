@@ -303,6 +303,8 @@ describe('analytics Resources and finance panel', { skip: SKIP_NO_DB }, () => {
     assert.equal(dept.body.notRequired, 1);
     const zetaDrill = await drill(`level=project&id=${zeta}&measure=financeBudgetNotProvided`);
     assert.equal(zetaDrill.body.notRequired, 1);
+    // Not required has no finance figure: the total is null, never 0.
+    assert.equal(zetaDrill.body.counts.total, null);
     assert.equal((await drill('level=org&measure=financeAtFirst')).body.notRequired, 1);
     assert.equal((await drill('level=org&measure=linesNeeded')).body.notRequired, undefined);
     assert.equal((await drill(`level=org&measure=financeBudgetNotProvided`)).body.counts.total, 1);

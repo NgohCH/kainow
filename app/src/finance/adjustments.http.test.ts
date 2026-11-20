@@ -192,6 +192,8 @@ describe('spending adjustments through change requests over HTTP', { skip: SKIP_
       [usd, { type: 'conversion', amount: '440', rate: '4.4' }, 400, 'A conversion needs a rate and the date of the rate.'],
       [usd, { type: 'conversion', amount: '440', rate: '0', rateOn: '2026-11-18' }, 400, 'Enter a rate above 0 with at most 8 decimal places.'],
       [usd, { type: 'conversion', amount: '440', rate: '4.4', rateOn: '18/11/2026' }, 400, 'Enter the date as YYYY-MM-DD.'],
+      [usd, { type: 'conversion', amount: '440', rate: '4.4', rateOn: '0000-11-18' }, 400, 'Enter the date as YYYY-MM-DD.'],
+      [myr, { type: 'refund', amount: '10', refundOn: '0000-01-01', reason: 'Returned' }, 400, 'Enter the date as YYYY-MM-DD.'],
       [usd, { type: 'conversion', amount: '0', rate: '4.4', rateOn: '2026-11-18' }, 400, 'Enter an amount above 0.'],
       [myr, { type: 'refund', amount: '10' }, 400, 'A refund needs the date of the refund.'],
       [myr, { type: 'refund', amount: '0', refundOn: '2026-11-18' }, 400, 'Enter an amount above 0.'],

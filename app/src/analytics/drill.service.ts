@@ -46,7 +46,8 @@ export interface DrillResult {
   level: DrillLevel;
   id: string | null;
   measure: DrillMeasure;
-  counts: { total: DrillValue; breakdown?: Array<{ id: string; name: string; value: DrillValue }> };
+  /** `total` is null only for a project whose financial tracking is Not required (a finance measure has no figure there). */
+  counts: { total: DrillValue | null; breakdown?: Array<{ id: string; name: string; value: DrillValue }> };
   records?: DrillRecord[];
   /** Resource line detail (the Resources tab's fields), for a participant only; never any finance detail. */
   lines?: LineView[];
@@ -156,7 +157,7 @@ export class DrillService {
 
     const row = rows.find((r) => r.id === id);
     // A project whose financial tracking is Not required is in scope but has no finance figure: say so, never 0.
-    if (!row && notRequired?.some((r) => r.id === id)) return { level: 'project', id, measure: m, counts: { total: 0 }, notRequired: 1, computedAt };
+    if (!row && notRequired?.some((r) => r.id === id)) return { level: 'project', id, measure: m, counts: { total: null }, notRequired: 1, computedAt };
     if (!row) throw new NotFoundException();
     const out: DrillResult = { level: 'project', id, measure: m, counts: { total: row.value }, computedAt };
     const listing = LISTING[m];

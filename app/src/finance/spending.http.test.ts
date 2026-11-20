@@ -221,6 +221,27 @@ describe('spending entries and the finance view over HTTP', { skip: SKIP_NO_DB }
     assert.equal(ok.body.entry.description, 'Pegs');
   });
 
+  test('the reporting currency stays usable after the Administrator disables it; other disabled currencies are refused', async () => {
+    await settings({ currency: 'SGD' });
+    await t.pool.query(`UPDATE resource_settings SET enabled_currencies = ARRAY['MYR','USD'] WHERE id`);
+    const kept = await pm.request('POST', url('/spending'), { ...ENTRY, currency: 'SGD' });
+    assert.equal(kept.status, 201, JSON.stringify(kept.body));
+    const refused = await pm.request('POST', url('/spending'), { ...ENTRY, currency: 'EUR' });
+    assert.equal(refused.status, 400);
+    assert.equal(refused.body.message, 'The currency must be one of the enabled currencies: MYR, USD, SGD.');
+    assert.equal((await pm.request('POST', url('/spending'), { ...ENTRY, currency: 'USD' })).status, 201);
+  });
+
+  test('a year before 0001 is refused with 400, not a server error', async () => {
+    await settings({});
+    for (const spentOn of ['0000-01-01', '0000-12-31']) {
+      const r = await pm.request('POST', url('/spending'), { ...ENTRY, spentOn });
+      assert.equal(r.status, 400, JSON.stringify(r.body));
+      assert.equal(r.body.message, 'Enter the date the money was spent as YYYY-MM-DD.');
+    }
+    assert.equal((await pm.request('POST', url('/spending'), { ...ENTRY, spentOn: '0001-01-01' })).status, 201);
+  });
+
   test('tracking off refuses recording with 409; a reader still sees the entries as history', async () => {
     await settings({});
     await pm.request('POST', url('/spending'), ENTRY);

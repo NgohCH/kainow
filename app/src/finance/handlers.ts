@@ -38,7 +38,8 @@ function readDate(v: unknown): string {
   if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v.trim())) throw new BadRequestException(DATE);
   const s = v.trim();
   const d = new Date(`${s}T00:00:00Z`);
-  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) throw new BadRequestException(DATE);
+  // Year 0000 parses in JavaScript but not in Postgres (no year 0): refused here, not a 500 from the insert.
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s || s.startsWith('0000')) throw new BadRequestException(DATE);
   return s;
 }
 
