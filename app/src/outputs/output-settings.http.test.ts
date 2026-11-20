@@ -74,6 +74,24 @@ describe('project output settings over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.equal((await outsider.request('PUT', url(), { reason, inputFormats: ['md'] })).status, 404);
   });
 
+  test('says whether this person may submit outputs and export now, so screens can hide what they may not do', async () => {
+    let r = (await ann.request('GET', url())).body;
+    assert.equal(r.maySubmit, true);
+    assert.equal(r.mayExport, false, 'project exports are off by default');
+    assert.equal((await pm.request('GET', url())).body.mayExport, false);
+    await t.pool.query(`UPDATE access_settings SET project_exports_allowed = true`);
+    assert.equal((await pm.request('GET', url())).body.mayExport, true);
+    assert.equal((await deputy.request('GET', url())).body.mayExport, true, 'the stored role "deputy" matches deputy_pm');
+    assert.equal((await ann.request('GET', url())).body.mayExport, false, 'members are not export roles by default');
+    assert.equal((await pm.request('PUT', url(), { reason, exportRoles: ['pm', 'member'] })).status, 200);
+    assert.equal((await ann.request('GET', url())).body.mayExport, true);
+    assert.equal((await owner.request('GET', url())).body.mayExport, false);
+    await t.pool.query(`UPDATE projects SET status = 'closed', closure_outcome = 'abandoned' WHERE id = $1`, [projectId]);
+    r = (await ann.request('GET', url())).body;
+    assert.equal(r.maySubmit, false, 'no submissions while Closed');
+    assert.equal(r.mayExport, true, 'exports only read, so they stay open while Closed');
+  });
+
   test('each value is labelled with where it comes from, not just whether the project has a row', async () => {
     assert.equal((await pm.request('PUT', url(), { reason, inputFormats: ['md'] })).status, 200);
     let r = (await pm.request('GET', url())).body;
