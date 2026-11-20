@@ -1,3 +1,4 @@
+import { money } from './finance.ts';
 /**
  * Change requests (sub-project 2b): types and the plain-words helpers the request panel uses. The server decides
  * who may approve, revise or withdraw (`mayApprove`, `mayRevise`, `mayWithdraw`, `why`); nothing here re-derives that.
@@ -81,6 +82,7 @@ export interface CurrentView {
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '');
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
+const amountText = (amount: unknown, currency?: string) => (str(amount) === '' ? '' : money(str(amount), currency ?? '').trim());
 const count = (n: number) => (n === 0 ? 'None' : `${n} ${n === 1 ? 'item' : 'items'}`);
 
 /** Side-by-side rows for a request's terms. Rows with nothing to show are left out. */
@@ -135,12 +137,12 @@ export function termsRows(kind: ChangeKind, terms: Record<string, unknown>, curr
       add('Review date', '', str(terms.reviewOn));
       break;
     case 'set_budget':
-      add('Budget', '', `${current.currency ?? ''} ${str(terms.amount)}`.trim());
+      add('Budget', '', amountText(terms.amount, current.currency));
       add('Reason', '', str(terms.reason));
       break;
     case 'finance_adjustment':
-      add('Kind', '', str(terms.type));
-      add('Amount', '', `${current.currency ?? ''} ${str(terms.amount)}`.trim());
+      add('Kind', '', str(terms.type).charAt(0).toUpperCase() + str(terms.type).slice(1));
+      add('Amount', '', amountText(terms.amount, current.currency));
       add('Rate', '', str(terms.rate));
       add('Rate date', '', str(terms.rateOn));
       add('Refund date', '', str(terms.refundOn));

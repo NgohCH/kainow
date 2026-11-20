@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { aiSpendText, adjustmentLabel, figuresLines, money, normaliseAmountInput, notInTotalsLines, pendingLabel, type FiguresView , validateAmountInput, validateRateInput } from './finance.ts';
+import { aiSpendText, adjustmentLabel, figuresLines, money, normaliseAmountInput, notInTotalsLines, pendingLabel, type FiguresView, validateAmountInput, validateRateInput } from './finance.ts';
 
 const base: FiguresView = { budget: '120000.00', spent: '98400.00', balance: '21600.00', percentUsed: 82, overBudget: false, level: 1, notInTotals: [], warnThresholds: [80, 100] };
 

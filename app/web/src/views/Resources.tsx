@@ -126,7 +126,7 @@ export function Resources({ projectId, roles, status }: { projectId: string; rol
           <ul className="plain">
             {data.people.map((p) => (
               <li key={p.userId}>
-                <strong>{p.name}</strong> · {p.roles.join(', ')}
+                <a href={`#/projects/${projectId}/work`}>{p.name}</a> · {p.roles.join(', ')}
                 {p.department ? ` · ${p.department}` : ''} · {plural(p.openTasks, 'open task')}
                 {p.overdue > 0 ? ` (${p.overdue} overdue)` : ''}
               </li>
@@ -153,16 +153,20 @@ function LineRow({ projectId, line: l, canEdit, editing, onEdit, onChanged }: { 
   const [history, setHistory] = useState<LineEvent[] | null>(null);
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+  const [pickedStatus, setPickedStatus] = useState<string>(l.status);
   const [busy, setBusy] = useState(false);
   const overlap = overlapText(l.overlap);
+  useEffect(() => setPickedStatus(l.status), [l.status]);
 
   useEffect(() => {
     if (mode !== 'history') return;
     let stale = false;
     setHistory(null);
+    setHistoryError(null);
     api.get<{ events: LineEvent[] }>(`/projects/${projectId}/resources/lines/${l.id}/history`).then(
       (r) => !stale && setHistory(r.events),
-      (e: unknown) => !stale && setError(errText(e)),
+      (e: unknown) => !stale && setHistoryError(errText(e)),
     );
     return () => {
       stale = true;
@@ -222,12 +226,15 @@ function LineRow({ projectId, line: l, canEdit, editing, onEdit, onChanged }: { 
         {canEdit && (
           <label>
             Status of {lineName(l)}
-            <select value={l.status} disabled={busy} onChange={(e) => void setStatus(e.target.value)}>
+            <select value={pickedStatus} disabled={busy} onChange={(e) => setPickedStatus(e.target.value)}>
               {STATUS_CHOICES.map((s) => (
                 <option key={s} value={s}>{LINE_STATUSES[s]}</option>
               ))}
             </select>
           </label>
+        )}
+        {canEdit && (
+          <button type="button" disabled={busy || pickedStatus === l.status} onClick={() => void setStatus(pickedStatus)}>Set status</button>
         )}
         {canEdit && (
           <button type="button" aria-expanded={editing} onClick={onEdit}>{editing ? 'Close edit' : 'Edit'}</button>
@@ -257,7 +264,9 @@ function LineRow({ projectId, line: l, canEdit, editing, onEdit, onChanged }: { 
       {mode === 'history' && (
         <div>
           <h3>History</h3>
-          {history === null ? (
+          {historyError ? (
+            <p role="alert" className="error">{historyError}</p>
+          ) : history === null ? (
             <p className="loading">Loading</p>
           ) : (
             <ul className="plain">

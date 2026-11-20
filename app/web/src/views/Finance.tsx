@@ -56,13 +56,14 @@ export function FinanceSection({
         </section>
       );
     }
-    return <NotRequired projectId={projectId} />;
+    return <NotRequired projectId={projectId} onChanged={onChanged} />;
   }
   return <FinanceReader projectId={projectId} summary={summary} actions={actions} computedAt={computedAt} onChanged={onChanged} />;
 }
 
 /** Tracking off: the line for everyone, and a Finance history link for people who can read the kept entries. */
-function NotRequired({ projectId }: { projectId: string }) {
+function NotRequired({ projectId, onChanged }: { projectId: string; onChanged: (message: string) => void }) {
+  const { requests, reload } = useRequests(projectId);
   const [history, setHistory] = useState<FinanceView | null>(null);
   const [showing, setShowing] = useState(false);
   useEffect(() => {
@@ -87,6 +88,19 @@ function NotRequired({ projectId }: { projectId: string }) {
           {showing && <FinanceDetail view={history} actions={null} currency={history.currency} requests={[]} onChanged={() => undefined} />}
         </>
       )}
+      {history &&
+        requests
+          .filter((r) => (FINANCE_REQUEST_KINDS as readonly string[]).includes(r.kind))
+          .map((r) => (
+            <ChangeRequestPanel
+              key={r.id}
+              request={{ ...r, currentTerms: history.currency ? { currency: history.currency } : {} }}
+              onChanged={(m) => {
+                reload();
+                onChanged(m);
+              }}
+            />
+          ))}
     </section>
   );
 }
@@ -179,7 +193,6 @@ function FinanceReader({
           Spending list
         </button>
       </div>
-      {actions.readOnly && <p className="meta">Finance cannot be changed while the project is Deferred or Closed.</p>}
       {panel === 'spending' && <RecordSpendingForm projectId={projectId} currency={currency} onSaved={changed} onCancel={() => setPanel(null)} />}
       {panel === 'budget' && <BudgetForm projectId={projectId} currency={currency} onSaved={changed} onCancel={() => setPanel(null)} />}
       {panel === 'list' && view && (
@@ -318,6 +331,16 @@ function RecordSpendingForm({ projectId, currency, onSaved, onCancel }: { projec
   const [spentOn, setSpentOn] = useState('');
   const [amount, setAmount] = useState('');
   const [cur, setCur] = useState<Currency>(currency);
+  const [enabled, setEnabled] = useState<readonly Currency[]>(CURRENCIES);
+  useEffect(() => {
+    api.get<{ organisation?: { enabledCurrencies?: Currency[] } }>(`/projects/${projectId}/settings/finance`).then(
+      (r) => {
+        const list = r.organisation?.enabledCurrencies;
+        if (list && list.length > 0) setEnabled(list.includes(currency) ? list : [currency, ...list]);
+      },
+      () => undefined,
+    );
+  }, [projectId, currency]);
   const [description, setDescription] = useState('');
   const [reference, setReference] = useState('');
   const [error, setError] = useState<string | null>(null);
@@ -350,7 +373,7 @@ function RecordSpendingForm({ projectId, currency, onSaved, onCancel }: { projec
       <label>
         Currency
         <select value={cur} onChange={(e) => setCur(e.target.value as Currency)}>
-          {CURRENCIES.map((c) => (
+          {enabled.map((c) => (
             <option key={c} value={c}>{c}</option>
           ))}
         </select>
