@@ -37,7 +37,7 @@ import { type Edit, cleanEdges, cleanJson, cleanText, mapOffset, removedSpans, s
 import type { ProtectedKey } from './protected-key';
 import { locateQuote } from '../notes/text';
 import { queueStorageJob } from '../storage/outbox';
-import { FILE_CONTENT_COLUMN, FILE_CONTENT_TABLE, IS_FILE_CONTENT, queueWithhold } from '../storage/withhold';
+import { FILE_CONTENT_COLUMN, FILE_CONTENT_TABLE, IS_FILE_CONTENT, queueWithhold, releaseWithheld, withheldBy } from '../storage/withhold';
 import { TEXT_COLUMNS, type ItemKind, type TextColumn } from './registry';
 
 export const QUOTE_CHANGED_TEXT = 'Quote changed: credential removed — review';
@@ -350,12 +350,14 @@ async function planDerived(
       WHERE v.id = ANY($1::uuid[]) AND v.original_bytes IS NULL`,
     [ids],
   );
+  // A file another case already withholds is held by this case too, so it comes back only once neither holds it.
+  const inStorage = (state: string | null) => state === 'stored' || state === 'withheld';
   for (const r of stored.rows) {
-    if (r.original_id && r.original_state === 'stored') {
+    if (r.original_id && inStorage(r.original_state)) {
       plan.files.add(r.original_id);
-      plan.storedOriginals.add(r.id);
+      if (r.original_state === 'stored') plan.storedOriginals.add(r.id);
     }
-    if (r.text_id && r.text_state === 'stored') plan.files.add(r.text_id);
+    if (r.text_id && inStorage(r.text_state)) plan.files.add(r.text_id);
   }
 }
 
@@ -466,15 +468,21 @@ export async function cleanItem(
     }
   }
 
-  // 3. An output held by this case: bytes kept in the database until filing cannot be cleaned, so they are withheld
-  // (its stored files are withheld when it is held; external outputs spec 4.7, 8.5).
-  if (kind === 'output' && (await c.query(`SELECT 1 FROM outputs WHERE id = $1 AND held_case_id = $2`, [itemId, caseId])).rowCount) {
+  // 3. An output (the reported one, or a place): its files cannot be cleaned or masked, so they are withheld, held by
+  // this case until it decides them (a place dismissed gets them back); bytes kept in the database until filing are
+  // withheld like an upload (external outputs spec 4.7, 8.5).
+  if (kind === 'output') {
     const bytes = await c.query<{ output_version_id: string; bytes: Buffer }>(
       `SELECT b.output_version_id, b.bytes FROM output_version_bytes b JOIN output_versions v ON v.id = b.output_version_id
         WHERE v.output_id = $1 AND b.bytes IS NOT NULL ORDER BY b.output_version_id`,
       [itemId],
     );
     for (const b of bytes.rows) plan.set('output_version_bytes', { output_version_id: b.output_version_id }, 'bytes', b.bytes, null);
+    const files = await c.query<{ id: string }>(
+      `SELECT f.id FROM output_versions v JOIN stored_files f ON f.id = v.stored_file_id WHERE v.output_id = $1 AND f.state IN ('stored', 'withheld') ORDER BY f.id`,
+      [itemId],
+    );
+    for (const f of files.rows) plan.files.add(f.id);
   }
   if (plan.rows.size === 0) return { rows: 0 };
 
@@ -527,6 +535,7 @@ async function writePlan(c: PoolClient, key: ProtectedKey, caseId: string, kind:
     ]);
   }
   await queueWithhold(c, [...plan.files], caseId);
+  await queueRenames(c, writes);
   return { rows: writes.length };
 }
 
@@ -612,54 +621,38 @@ export async function restoreOriginals(
 ): Promise<{ restored: number; changed: Array<{ table: string; rowKey: unknown }> }> {
   const out = await restoreRows(c, key, caseId, scope);
   await releaseWithheldFiles(c, caseId, scope);
+  // An upload withheld before it was ever stored (no file in storage) has its bytes back: it is stored now.
+  const pending = await c.query<{ id: string }>(
+    `UPDATE stored_files f SET state = 'pending', failure_code = NULL
+       FROM source_versions v
+      WHERE v.original_stored_file_id = f.id AND f.state = 'withheld' AND f.item_id IS NULL AND v.original_bytes IS NOT NULL
+      RETURNING v.id`,
+  );
+  for (const v of pending.rows) await queueStorageJob(c, 'store-source', v.id);
   return out;
 }
 
 /**
- * Stored files withheld for the case (in scope) come back (external outputs spec 8.5): one with an encrypted copy is
- * handed to the `restore-withheld` job (its `withhold_case_id` cleared, which is what tells that job and the `withhold`
- * job the release happened); one not yet encrypted was never removed, so it is simply `stored` again. A version whose
- * stored original comes back is no longer shown withheld. The rows are locked first, then the encrypted copies are
- * looked for in a statement of their own, so a `withhold` job encrypting at the same moment is seen either way.
+ * The case asks for its withheld stored files back (in scope: a dismissed place; all of them: a false-alarm release).
+ * Each comes back once no other case still holds it (storage/withhold.ts). Exported for a place dismissed before it
+ * was masked (held for want of the key), whose files may already be withheld.
  */
-async function releaseWithheldFiles(c: PoolClient, caseId: string, scope?: { kind: ItemKind; id: string }): Promise<void> {
+export async function releaseWithheldFiles(c: PoolClient, caseId: string, scope?: { kind: ItemKind; id: string }): Promise<void> {
   const inScope = scope ? REGISTERED.get('stored_files.name')?.itemSql?.[scope.kind] : undefined;
   if (scope && !inScope) return;
-  const files = (
-    await c.query<{ id: string; state: string; present: boolean; purpose: string }>(
-      `SELECT f.id, f.state, f.removed_at IS NULL AS present, f.purpose FROM stored_files f
-        WHERE ${inScope ? `f.withhold_case_id = $2 AND f.id IN (SELECT s.id FROM (${inScope}) s)` : 'f.withhold_case_id = $1'}
-        ORDER BY f.id FOR UPDATE OF f`,
-      scope ? [scope.id, caseId] : [caseId],
-    )
-  ).rows;
-  if (files.length === 0) return;
-  const originals: string[] = [];
-  for (const f of files) {
-    const encrypted = await c.query(
-      `SELECT 1 FROM quarantine_originals q WHERE ${IS_FILE_CONTENT('q')} AND q.case_id = $1 AND q.restored_at IS NULL AND q.row_key->>'id' = $2::text LIMIT 1`,
-      [caseId, f.id],
-    );
-    if (encrypted.rowCount) {
-      await c.query(`UPDATE stored_files SET withhold_case_id = NULL WHERE id = $1`, [f.id]);
-      await queueStorageJob(c, 'restore-withheld', f.id);
-    } else if (f.state === 'withheld' && f.present) {
-      await c.query(`UPDATE stored_files SET state = 'stored', withhold_case_id = NULL, remove_notice_at = NULL WHERE id = $1`, [f.id]);
-    } else {
-      await c.query(`UPDATE stored_files SET withhold_case_id = NULL WHERE id = $1`, [f.id]);
-    }
-    if (f.purpose === 'source_original') originals.push(f.id);
-  }
-  if (originals.length === 0) return;
-  try {
-    await openWrite(c, caseId);
-    await c.query(
-      `UPDATE source_versions SET quarantined_at = NULL WHERE original_stored_file_id = ANY($1::uuid[]) AND original_bytes IS NULL AND quarantined_at IS NOT NULL`,
-      [originals],
-    );
-  } finally {
-    await closeWrite(c);
-  }
+  const ids = scope
+    ? (await c.query<{ id: string }>(`SELECT s.id FROM (${inScope}) s ORDER BY s.id`, [scope.id])).rows.map((r) => r.id)
+    : null;
+  await releaseWithheld(c, caseId, await withheldBy(c, caseId, ids));
+}
+
+/**
+ * Names in storage follow an output's title (spec 5.4): when the engine writes a title (cleaned, or restored by a
+ * release), the output's folder and files are renamed in storage (`rename-output`), urgently.
+ */
+async function queueRenames(c: PoolClient, writes: RowWrite[]): Promise<void> {
+  const outputs = [...new Set(writes.filter((w) => w.table === 'outputs' && 'title' in w.set).map((w) => w.key.id as string))].sort();
+  for (const id of outputs) await queueStorageJob(c, 'rename-output', id, { priority: 'urgent' });
 }
 
 async function restoreRows(
@@ -738,6 +731,7 @@ async function restoreRows(
   } finally {
     await closeWrite(c);
   }
+  await queueRenames(c, writes.map((w) => ({ table: w.table, key: w.loadKey, set: w.set })));
   if (restored.length > 0) await c.query(`UPDATE quarantine_originals SET restored_at = now() WHERE id = ANY($1::uuid[])`, [restored]);
   return { restored: restored.length, changed: [...changed.values()] };
 }

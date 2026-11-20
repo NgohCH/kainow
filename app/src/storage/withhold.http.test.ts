@@ -12,7 +12,7 @@ import { SKIP_NO_DB } from '../testing/db';
 import { type FakeGraph, startFakeGraph } from '../testing/fake-graph';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedDepartment, seedProject, seedUser } from '../testing/projects';
-import { projectHolding } from '../testing/quarantine';
+import { projectHolding, standaloneCases } from '../testing/quarantine';
 import type { StorageConnectorFactory } from './connector-factory';
 import { GraphConnector } from './connectors/graph';
 import { type StorageDeps, type StorageJob, onFinalFailure, storageHandler } from './jobs';
@@ -69,7 +69,9 @@ describe('withholding held files in storage', { skip: SKIP_NO_DB }, () => {
     forNew: async () => connector,
   };
   const driveRoot = (): DestinationRef => ({ id: 'drive', connector: 'graph', driveId: drive.driveId, rootItemId: drive.rootItemId });
-  const deps = (): StorageDeps => ({ pool: t.pool, connectors: factory, key, clock: t.clock.now, notify: makeStorageNotify(t.pool, t.clock.now), log: (m) => void logs.push(m) });
+  const deps = (withKey = true): StorageDeps => ({
+    pool: t.pool, connectors: factory, key: withKey ? key : null, clock: t.clock.now, notify: makeStorageNotify(t.pool, t.clock.now), log: (m) => void logs.push(m),
+  });
   const rows = async (sql: string, params: unknown[] = []) => (await t.pool.query(sql, params)).rows;
   const typeId = async (name: string) => (await rows(`SELECT id FROM report_types WHERE name = $1`, [name]))[0].id as string;
   const url = (p = '') => `/projects/${project}/outputs${p}`;
@@ -87,10 +89,27 @@ describe('withholding held files in storage', { skip: SKIP_NO_DB }, () => {
   const callIndex = (from: number, test: (x: { method: string; path: string }) => boolean) => fake.calls.findIndex((x, i) => i >= from && test(x));
   const permanentlyDeleted = (itemId: string) => fake.calls.some((x) => x.method === 'POST' && x.path.endsWith(`/items/${itemId}/permanentDelete`));
   const recycled = (itemId: string) => fake.recycleBin(drive.driveId).includes(itemId) || fake.calls.some((x) => x.method === 'DELETE' && x.path.endsWith(`/items/${itemId}`));
+  /** Every item in the drive, by name (folders and files), as the provider lists them. */
+  async function driveNames(): Promise<string[]> {
+    const out: string[] = [];
+    const walk = async (id: string): Promise<void> => {
+      const r = await fake.fetch(`${fake.graphBase}/drives/${drive.driveId}/items/${id}/children`, { headers: { Authorization: `Bearer ${fake.token}` } });
+      for (const it of ((await r.json()) as { value: Array<{ id: string; name: string; folder?: unknown }> }).value) {
+        out.push(it.name);
+        if (it.folder) await walk(it.id);
+      }
+    };
+    await walk(drive.rootItemId);
+    return out;
+  }
+  /** No text column of these tables holds the secret (row text; bytea columns are hex there). */
+  async function noPlainCopy(tables = ['outputs', 'stored_files', 'stored_file_moves', 'storage_folders']): Promise<void> {
+    for (const table of tables) assert.equal((await rows(`SELECT count(*)::int AS n FROM ${table} x WHERE strpos(x::text, $1) > 0`, [SECRET]))[0].n, 0, table);
+  }
   const contentOriginals = async (fileId: string) =>
     rows(`SELECT * FROM quarantine_originals WHERE table_name = 'stored_files' AND column_name = 'content' AND row_key->>'id' = $1 ORDER BY sweep`, [fileId]);
 
-  async function drain(): Promise<Array<{ job: StorageJob; subjectId: string; failed?: string }>> {
+  async function drain(withKey = true): Promise<Array<{ job: StorageJob; subjectId: string; failed?: string }>> {
     const ran: Array<{ job: StorageJob; subjectId: string; failed?: string }> = [];
     for (let i = 0; i < 100; i++) {
       const next = (
@@ -99,7 +118,7 @@ describe('withholding held files in storage', { skip: SKIP_NO_DB }, () => {
       if (!next) return ran;
       const entry: { job: StorageJob; subjectId: string; failed?: string } = { job: next.job, subjectId: next.subject_id };
       try {
-        await storageHandler(next.job)!(deps(), next.subject_id, 1);
+        await storageHandler(next.job)!(deps(withKey), next.subject_id, 1);
       } catch (err) {
         entry.failed = (err as { code?: string }).code ?? 'internal';
       }
@@ -354,6 +373,142 @@ The vault code is ${SECRET}.
     assert.deepEqual(key.decrypt((await contentOriginals(f.id))[0]), bytes);
     assert.equal((await rows(`SELECT count(*)::int AS n FROM output_events WHERE output_id = $1 AND kind = 'filed'`, [out]))[0].n, 0);
     assert.equal((await c.pm.request('GET', url(`/${out}`))).status, 404);
+    // What was recorded at the confirm, and on the move out of the shared folder, came from the cleaned title.
+    assert.match(f.name, /\[credential removed\] v1\.md$/);
+    await noPlainCopy();
+    assert.deepEqual((await driveNames()).filter((n) => n.includes(SECRET)), []);
+  });
+
+  test('a hold without the protected key moves the file out of the shared folder without naming anything after the title', async () => {
+    const title = `Valve audit ${SECRET}`;
+    const { out, file } = await filedOutput(title);
+    assert.ok((await driveNames()).some((n) => n.includes(SECRET)), 'filed under its title');
+    const cases = standaloneCases(t.pool, t.clock.now, false);
+    const { caseId } = await cases.report({ id: ids.pm, email: 'pm@example.org', displayName: 'pm', role: 'member' } as never, {
+      projectId: project, kind: 'output', id: out, marked: [SECRET], reason: 'Looks like the plant room vault code',
+    });
+    assert.equal((await fileRow(out)).state, 'withheld');
+    const ran = await drain(false);
+    assert.ok(ran.some((r) => r.job === 'withhold'));
+    // Step 0 ran: the file left the project folder for the (restricted) root, under a name of ids; no folder was named
+    // after the title; nothing else could be done without the key.
+    const root = (await rows(`SELECT id, item_id FROM storage_folders WHERE level = 'restricted_root' AND key = $1`, [`${dept}/${project}/restricted`]))[0];
+    assert.ok(root);
+    const item = await connector.getItem(driveRoot(), file.item_id);
+    assert.equal(item.parentId, root.item_id);
+    assert.equal(item.name, `Withheld ${file.id}.md`);
+    assert.deepEqual((await driveNames()).filter((n) => n.includes(SECRET)), []);
+    assert.equal((await rows(`SELECT count(*)::int AS n FROM storage_folders WHERE level = 'output'`))[0].n, 0);
+    assert.equal((await contentOriginals(file.id)).length, 0);
+    assert.deepEqual((await heldCase(caseId)).stillInStorage, { label: STILL_IN_STORAGE, files: 1, links: 0 });
+  });
+
+  test('an output found as a place has its files withheld until decided: renamed in storage at once, back when dismissed, kept when confirmed', async () => {
+    const reported = await filedOutput(`Valve audit ${SECRET}`);
+    // Two other outputs carry the same text in their titles: one restricted (its own folder named after it), one project-wide.
+    const m1 = multipart({ title: `Board pack ${SECRET}` }, { name: 'report.md', bytes: Buffer.from('# Board pack\n') });
+    const y = (await c.pm.upload('POST', url(), m1.body, m1.type)).body.id as string;
+    assert.equal((await c.pm.request('POST', url(`/${y}/register`), { reportTypeId: await typeId('Status reports'), issueDate: '2026-11-09', audience: { mode: 'restricted', namedUserIds: [ids.pm, ids.ada] } })).status, 200);
+    assert.equal((await c.pm.request('POST', url(`/${y}/versions/1/file`))).status, 200);
+    const z = await filedOutput(`Pump log ${SECRET}`);
+    await drain();
+    const yFile = await fileRow(y);
+    // Removal fails for the restricted one, so its file stays in storage for a while: it is renamed there at once.
+    fake.fault({ method: 'POST', pathIncludes: `${yFile.item_id}/permanentDelete` }, '503', 1);
+    const caseId = await report('output', reported.out);
+    assert.deepEqual((await rows(`SELECT state FROM stored_files WHERE id = ANY($1::uuid[]) ORDER BY id`, [[yFile.id, z.file.id]])).map((r) => r.state), ['withheld', 'withheld']);
+    await drain();
+    // Nothing in storage is named after the secret any more: the place's folder and its waiting file were renamed.
+    assert.deepEqual((await driveNames()).filter((n) => n.includes(SECRET)), []);
+    assert.equal(await exists(yFile.item_id), true);
+    assert.match((await connector.getItem(driveRoot(), yFile.item_id)).name, /\[credential removed\]/);
+    await noPlainCopy();
+    // The PM dismisses one place and confirms the other.
+    const decided = await c.pm.request('POST', `/quarantine/cases/${caseId}/copies`, {
+      decisions: [{ kind: 'output', id: y, decision: 'dismissed' }, { kind: 'output', id: z.out, decision: 'confirmed' }],
+    });
+    assert.equal(decided.status, 200, JSON.stringify(decided.body));
+    await drain();
+    const yNow = await fileRow(y);
+    assert.equal(yNow.state, 'stored', 'the dismissed place has its file back');
+    assert.equal(await exists(yNow.item_id), true);
+    const zNow = await fileRow(z.out);
+    assert.equal(zNow.state, 'withheld', 'the confirmed place keeps its file withheld');
+    assert.ok(zNow.removed_at);
+    assert.equal(await exists(z.file.item_id), false);
+  });
+
+  test('a file withheld by two cases comes back only when neither holds it', async () => {
+    const OTHER = 'KX4LOCKER5521BETA';
+    const bytes = Buffer.from(`Plant room notes.\nThe vault code is ${SECRET} and the locker code ${OTHER}.\n`);
+    const { source, version } = await t.app.get(NotesService).createSource({
+      projectId: project, content: { file: { originalname: 'Site notes.txt', buffer: bytes } }, actorUserId: ids.pm,
+    });
+    await storeSourceVersion(deps(), version.id);
+    await drain();
+    const [original, text] = await rows(
+      `SELECT f.* FROM source_versions v JOIN stored_files f ON f.id IN (v.original_stored_file_id, v.text_stored_file_id) WHERE v.id = $1 ORDER BY f.purpose`,
+      [version.id],
+    );
+    // Case A: the source itself. Its original and text are withheld; the text comes back cleaned.
+    const a = await report('source', source.id);
+    await drain();
+    // Case B: a note repeating the other code finds the same source as a place, and holds its files too.
+    const n = await c.pm.request('POST', `/projects/${project}/notes`, { title: 'Locker list', text: `The locker code is ${OTHER}.` });
+    assert.equal(n.status, 201, JSON.stringify(n.body));
+    const r = await c.pm.request('POST', `/projects/${project}/secret-reports`, { kind: 'source', id: n.body.source.id, marked: [OTHER], reason: 'Another code' });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    const b = r.body.caseId as string;
+    t.clock.advanceSeconds(1);
+    await drain();
+    const holders = async (fileId: string) =>
+      (await rows(`SELECT case_id FROM stored_file_withholds WHERE stored_file_id = $1 AND release_requested_at IS NULL ORDER BY case_id`, [fileId])).map((x) => x.case_id);
+    assert.deepEqual(await holders(original.id), [a, b].sort());
+    // A is a false alarm: while B still holds them, nothing is put back.
+    await releaseUnchanged(a);
+    await drain();
+    const o1 = (await rows(`SELECT * FROM stored_files WHERE id = $1`, [original.id]))[0];
+    assert.equal(o1.state, 'withheld');
+    assert.equal(o1.withhold_case_id, b);
+    assert.ok(o1.removed_at);
+    const t1 = (await rows(`SELECT * FROM stored_files WHERE id = $1`, [text.id]))[0];
+    assert.ok(!(await download(t1.item_id)).toString('utf8').includes(OTHER), 'the text in storage is still cleaned of B');
+    assert.ok((await rows(`SELECT quarantined_at FROM source_versions WHERE id = $1`, [version.id]))[0].quarantined_at, 'still shown withheld');
+    // B is a false alarm too: now no case holds them, and they come back.
+    const g = await c.rev.request('POST', '/security/grants', { caseIds: [b], purpose: 'Decide whether this is a live credential' });
+    assert.equal(g.status, 201, JSON.stringify(g.body));
+    assert.equal((await c.admin2.request('POST', `/security/grants/${g.body.grantId}/decide`, { decision: 'approved', reason: 'Purpose is clear' })).status, 200);
+    assert.equal((await c.rev.request('POST', `/security/cases/${b}/release-unchanged`, { reason: 'False alarm: a printed example code' })).status, 200);
+    await drain();
+    const o2 = (await rows(`SELECT * FROM stored_files WHERE id = $1`, [original.id]))[0];
+    assert.equal(o2.state, 'stored');
+    assert.deepEqual(await download(o2.item_id), bytes);
+    const t2 = (await rows(`SELECT * FROM stored_files WHERE id = $1`, [text.id]))[0];
+    assert.equal((await download(t2.item_id)).toString('utf8'), (await rows(`SELECT text_content FROM source_versions WHERE id = $1`, [version.id]))[0].text_content);
+    assert.ok((await download(t2.item_id)).toString('utf8').includes(OTHER), 'B\u2019s text is back');
+    assert.equal((await rows(`SELECT quarantined_at FROM source_versions WHERE id = $1`, [version.id]))[0].quarantined_at, null);
+    assert.equal(await holders(original.id).then((h) => h.length), 0);
+  });
+
+  test('a release whose file cannot be put back keeps it withheld and attributed, still shown withheld, and tells the Administrators', async () => {
+    const s = await storedSource();
+    const caseId = await report('source', s.sourceId);
+    await drain();
+    await releaseUnchanged(caseId);
+    // Released in the database, but the original's file is not back yet: still shown withheld. Then storage refuses it.
+    assert.ok((await rows(`SELECT quarantined_at FROM source_versions WHERE id = $1`, [s.versionId]))[0].quarantined_at);
+    fake.fault({ method: 'PUT', pathIncludes: 'original.txt' }, '403', 100);
+    fake.fault({ method: 'POST', pathIncludes: 'original.txt' }, '403', 100);
+    const ran = await drain();
+    assert.ok(ran.some((r) => r.job === 'restore-withheld' && r.failed === 'forbidden'), JSON.stringify(ran));
+    await onFinalFailure(deps(), 'restore-withheld', s.original.id, 'forbidden');
+    const f = (await rows(`SELECT state FROM stored_files WHERE id = $1`, [s.original.id]))[0];
+    assert.equal(f.state, 'withheld');
+    assert.deepEqual((await rows(`SELECT case_id FROM stored_file_withholds WHERE stored_file_id = $1`, [s.original.id])).map((x) => x.case_id), [caseId]);
+    assert.ok((await rows(`SELECT quarantined_at FROM source_versions WHERE id = $1`, [s.versionId]))[0].quarantined_at);
+    const notices = await rows(`SELECT user_id, summary FROM notifications WHERE kind = 'held_file_not_restored' ORDER BY user_id`);
+    assert.deepEqual(notices.map((x) => x.user_id).sort(), [ids.admin, ids.admin2, ids.store].sort());
+    for (const x of notices) assert.equal(x.summary, 'A withheld file could not be put back in storage');
   });
 
   test('false-alarm release re-uploads the original to the same folder and re-syncs sharing', async () => {

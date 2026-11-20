@@ -9,7 +9,7 @@ import { SOURCE_FILE_CHANGED, SOURCE_FILE_MISSING } from './source-files';
 import { SHARING_PLACE_FAILED, SHARING_REVOKE_FAILED, placeFailedNotice, revokeFailedNotice } from '../outputs/sharing';
 import { OUTPUT_FILE_CHANGED, OUTPUT_FILE_MISSING, OUTPUT_FILE_MOVED } from '../outputs/checks';
 import { contentReaderContexts, loadOutputAccessRow, readsOutput } from '../outputs/readers';
-import { HELD_FILE_NOT_REMOVED, HELD_FILE_NOT_REMOVED_TEXT } from './withhold';
+import { HELD_FILE_NOT_REMOVED, HELD_FILE_NOT_REMOVED_TEXT, HELD_FILE_NOT_RESTORED, HELD_FILE_NOT_RESTORED_TEXT } from './withhold';
 
 /** The notice when a held output has a linked document Kainow cannot remove (spec 4.7), worded exactly as the spec. */
 export const HELD_LINK = 'held_link';
@@ -141,15 +141,15 @@ export function makeStorageNotify(pool: Pool, clock: Clock): StorageNotify {
     }
   }
 
-  /** A held file that could not be removed (spec 8.5): to the Administrators, naming only the project, never the secret. */
+  /** A held file that could not be removed, or put back (spec 8.5): to the Administrators, naming only the project, never the secret. */
   async function heldFileNotRemoved(c: PoolClient, n: StorageNotice): Promise<void> {
     const f = (await c.query<{ project_id: string }>(`SELECT project_id FROM stored_files WHERE id = $1`, [n.subjectId])).rows[0];
     if (!f) return;
-    await toAdministrators(c, n.kind, f.project_id, HELD_FILE_NOT_REMOVED_TEXT);
+    await toAdministrators(c, n.kind, f.project_id, n.kind === HELD_FILE_NOT_RESTORED ? HELD_FILE_NOT_RESTORED_TEXT : HELD_FILE_NOT_REMOVED_TEXT);
   }
 
   return async (c, n) => {
-    if (n.kind === HELD_FILE_NOT_REMOVED) {
+    if (n.kind === HELD_FILE_NOT_REMOVED || n.kind === HELD_FILE_NOT_RESTORED) {
       await heldFileNotRemoved(c, n);
     } else if (n.kind === SHARING_REVOKE_FAILED) {
       await revokeFailed(c, n);

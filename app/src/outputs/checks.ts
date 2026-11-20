@@ -9,7 +9,7 @@ import { queueStorageJob } from '../storage/outbox';
 import { quickXorHash } from '../storage/quickxor';
 import { loadStorageSettings } from '../storage/settings';
 import { type DestinationRef, type ItemState, StorageError, type StoredRef } from '../storage/types';
-import { afterFiled, ensureOutputFolder } from './filing';
+import { afterFiled, ensureOutputFolder, moveNamed } from './filing';
 import { PathTooLong, fitPath, outputFileName } from './naming';
 import { isWholeProject } from './readers';
 
@@ -402,8 +402,14 @@ export async function relinkFile(deps: CheckDeps, fileId: string, actorId: strin
   if (contentDiffers(f, item)) throw new FileActionRefused(NOT_SAME_FILE);
   // The path as seen from the destination it is in now.
   const there = await deps.connectors.forDestination(place.id);
-  const now = await there.connector.getItem(there.dest, item.itemId);
-  const path = plainPath(now.path);
+  let now = await there.connector.getItem(there.dest, item.itemId);
+  // A file Kainow filed keeps the name Kainow gave it (from the output's title as recorded, cleaned if a case cleaned
+  // it): renamed back where it is now, and that name is what is recorded, never the provider's. A linked document is
+  // someone else's and keeps its own name.
+  let name = now.name;
+  if (f.state === 'stored' && now.name !== f.name) ({ ref: now, name } = await moveNamed(there.connector, there.dest, item.itemId, now.parentId, f.name));
+  const seen = plainPath(now.path);
+  const path = seen.includes('/') ? `${seen.slice(0, seen.lastIndexOf('/'))}/${name}` : name;
   const at = deps.clock();
 
   const c = await deps.pool.connect();
@@ -427,7 +433,7 @@ export async function relinkFile(deps: CheckDeps, fileId: string, actorId: strin
       `UPDATE stored_files SET destination_id = $2, connector = $3, drive_id = $4, item_id = $5, path = $6, name = $7, etag = $8, ctag = $9,
               web_url = $10, check_status = 'ok', last_checked_at = $11, folder_id = $12
         WHERE id = $1`,
-      [f.id, place.id, place.connector, ref.driveId, item.itemId, path, now.name, now.etag, now.ctag, now.webUrl, at, folder],
+      [f.id, place.id, place.connector, ref.driveId, item.itemId, path, name, now.etag, now.ctag, now.webUrl, at, folder],
     );
     await c.query(
       `INSERT INTO stored_file_moves (id, stored_file_id, reason, old_destination_id, old_drive_id, old_item_id, old_path,

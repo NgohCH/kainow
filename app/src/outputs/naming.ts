@@ -91,3 +91,11 @@ export function fitPath(parts: string[], fileName: string, limit = MAX_PATH): st
   if (over() > 0) throw new PathTooLong();
   return join();
 }
+
+/** ` (n)` before the extension (the name itself for 1), the base cut so the name stays within the limit. */
+export function suffixedName(name: string, n: number): string {
+  if (n <= 1) return name;
+  const ext = /\.[^.]+$/.exec(name)?.[0] ?? '';
+  const tail = ` (${n})`;
+  return `${name.slice(0, name.length - ext.length).slice(0, MAX_NAME - ext.length - tail.length)}${tail}${ext}`;
+}

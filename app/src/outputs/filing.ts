@@ -9,7 +9,7 @@ import { queueStorageJob } from '../storage/outbox';
 import { queueWithhold } from '../storage/withhold';
 import { quickXorHash } from '../storage/quickxor';
 import { type DestinationRef, type FolderRef, StorageError, type StoredRef } from '../storage/types';
-import { MAX_NAME, PathTooLong, RESTRICTED_SUFFIX, fitPath, outputFileName, safeName } from './naming';
+import { MAX_NAME, PathTooLong, RESTRICTED_SUFFIX, fitPath, outputFileName, safeName, suffixedName } from './naming';
 import { isWholeProject } from './readers';
 import { sharingAfterFiled } from './sharing';
 
@@ -171,9 +171,10 @@ const recordedFolder = async (deps: StorageDeps, destinationId: string, level: F
  */
 export async function ensureOutputFolder(
   deps: StorageDeps, dest: DestinationRef, projectId: string, outputId: string, wholeProject: boolean, connector?: StorageConnector,
+  opts: { restrictedRootOnly?: boolean } = {},
 ): Promise<OutputFolder> {
   const f = await folderFacts(deps, projectId, outputId);
-  const placed = await placementFolder(deps, dest, f.placementFolderId, wholeProject);
+  const placed = opts.restrictedRootOnly ? null : await placementFolder(deps, dest, f.placementFolderId, wholeProject);
   if (placed) return placed;
 
   const conn = connector ?? (await deps.connectors.forDestination(dest.id)).connector;
@@ -214,6 +215,9 @@ export async function ensureOutputFolder(
         },
       },
     );
+    // Only the `(restricted)` root, which has no Kainow grants and is named after the project: for a held output whose
+    // title may still hold the secret, no folder is ever named after it (spec 4.7).
+    if (opts.restrictedRootOnly) levels.pop();
   }
 
   const lockKey = `${dest.id}/${projectId}`;
@@ -296,6 +300,62 @@ async function placementFolder(deps: StorageDeps, dest: DestinationRef, placemen
   return { itemId: rec.item_id, name: rec.name, recordId: rec.id, path: [...path, rec.name] };
 }
 
+/**
+ * The path of a recorded folder from the destination root, rebuilt from the names recorded in `storage_folders` (never
+ * the provider's): those names are registered with the quarantine engine and cleaned with the output. Null when a
+ * folder above it is not recorded.
+ */
+export async function recordedFolderPath(db: Pick<PoolClient, 'query'>, folderId: string): Promise<string[] | null> {
+  const rec = (await db.query<FolderRecord & { destination_id: string }>(`SELECT id, item_id, name, level, key, destination_id FROM storage_folders WHERE id = $1`, [folderId])).rows[0];
+  if (!rec) return null;
+  const [d, proj, third] = rec.key.split('/');
+  const above: Record<string, Array<[FolderLevel, string]>> = {
+    department: [],
+    project: [['department', d]],
+    year: [['department', d], ['project', `${d}/${proj}`]],
+    report_type: [['department', d], ['project', `${d}/${proj}`], ['year', `${d}/${proj}/${third}`]],
+    restricted_root: [['department', d]],
+    output: [['department', d], ['restricted_root', `${d}/${proj}/restricted`]],
+  };
+  const path: string[] = [];
+  for (const [level, key] of above[rec.level] ?? []) {
+    const a = (await db.query<{ name: string }>(`SELECT name FROM storage_folders WHERE destination_id = $1 AND level = $2 AND key = $3`, [rec.destination_id, level, key])).rows[0];
+    if (!a) return null;
+    path.push(a.name);
+  }
+  return [...path, rec.name];
+}
+
+/** A version's file name under the output's title as it is now, shortened to fit under `path` (spec 5.4). */
+export function versionFileName(path: string[], title: string, versionNo: number, format: string, suffix = 1): string {
+  const parts = fitPath(path, outputFileName(title, versionNo, format, suffix));
+  return parts[parts.length - 1];
+}
+
+/**
+ * Moves (or renames, with the same parent) a provider item to `name`; a name already taken there gets ` (2)`, ` (3)` …
+ * so nothing is overwritten. Returns the provider's answer and the name Kainow gave, which is what is recorded.
+ */
+export async function moveNamed(
+  connector: StorageConnector, dest: DestinationRef, itemId: string, parentId: string, name: string,
+): Promise<{ ref: StoredRef; name: string }> {
+  for (let n = 1; n <= MAX_SUFFIX; n++) {
+    const tryName = suffixedName(name, n);
+    try {
+      return { ref: await connector.move(dest, itemId, parentId, tryName), name: tryName };
+    } catch (err) {
+      if (!(err instanceof StorageError && err.code === 'conflict')) throw err;
+    }
+  }
+  throw new StorageError('conflict');
+}
+
+/** The ` (n)` a file name was given (1 when none). */
+export function suffixOf(name: string): number {
+  const m = / v\d+ \((\d+)\)\.[^.]+$/.exec(name);
+  return m ? Number(m[1]) : 1;
+}
+
 // ---------------------------------------------------------------------------------------------------------------------
 // The file-output job
 // ---------------------------------------------------------------------------------------------------------------------
@@ -373,7 +433,7 @@ async function fileLocked(deps: StorageDeps, versionId: string): Promise<void> {
   const bytes = v.bytes;
 
   await deps.pool.query(`UPDATE stored_files SET state = 'storing' WHERE id = $1 AND state = 'pending'`, [fileId]);
-  let placed: { ref: StoredRef; parts: string[]; folder: OutputFolder };
+  let placed: { ref: StoredRef; suffix: number; folder: OutputFolder };
   try {
     const wholeProject = await isWholeProject(deps.pool, v.output_id, deps.clock());
     const folder = await ensureOutputFolder(deps, dest, v.project_id, v.output_id, wholeProject, connector);
@@ -390,7 +450,7 @@ async function fileLocked(deps: StorageDeps, versionId: string): Promise<void> {
   }
 
   const at = deps.clock();
-  const { ref, parts, folder } = placed;
+  const { ref, suffix: sent, folder } = placed;
   const c = await deps.pool.connect();
   let recorded = false;
   try {
@@ -404,19 +464,26 @@ async function fileLocked(deps: StorageDeps, versionId: string): Promise<void> {
     const state = (await c.query<{ state: string }>(`SELECT state FROM stored_files WHERE id = $1 FOR UPDATE`, [fileId])).rows[0]?.state;
     // Held while it uploaded (CF6): the upload is recorded where it is, withheld for the case, and the withhold job moves
     // it out of any shared folder, keeps it encrypted and removes it. It is never reported filed.
-    const heldBy = (
-      await c.query<{ held: string | null }>(
-        `SELECT COALESCE(v.held_case_id, o.held_case_id) AS held FROM output_versions v JOIN outputs o ON o.id = v.output_id WHERE v.id = $1`,
+    const cur = (
+      await c.query<{ held: string | null; title: string }>(
+        `SELECT COALESCE(v.held_case_id, o.held_case_id) AS held, o.title FROM output_versions v JOIN outputs o ON o.id = v.output_id WHERE v.id = $1`,
         [versionId],
       )
-    ).rows[0]?.held;
+    ).rows[0];
+    const heldBy = cur?.held;
+    // What is recorded comes from the database as it is now, under the lock: the title (cleaned if a case cleaned it
+    // while the file uploaded) and the recorded folder names, never names captured before the upload or the provider's.
+    const folderPath = (await recordedFolderPath(c, folder.recordId)) ?? folder.path;
+    const name = cur ? versionFileName(folderPath, cur.title, v.version_no, v.format, sent) : ref.name;
+    const path = [...folderPath, name].join('/');
     if (now?.stored_file_id === fileId && state === 'storing' && heldBy) {
       await c.query(
         `UPDATE stored_files SET state = 'stored', destination_id = $2, connector = $3, drive_id = $4, item_id = $5, path = $6, name = $7,
                 size_bytes = $8, sha256 = $9, provider_hash = $10, etag = $11, ctag = $12, web_url = $13, stored_at = $14, failure_code = NULL, folder_id = $15
           WHERE id = $1`,
-        [fileId, dest.id, dest.connector, dest.driveId, ref.itemId, parts.join('/'), ref.name, ref.size, sha256(bytes), ref.providerHash, ref.etag, ref.ctag, ref.webUrl, at, folder.recordId],
+        [fileId, dest.id, dest.connector, dest.driveId, ref.itemId, path, name, ref.size, sha256(bytes), ref.providerHash, ref.etag, ref.ctag, null, at, folder.recordId],
       );
+      // The withhold job moves it out of any shared folder under this (cleaned) name, then removes it.
       await queueWithhold(c, [fileId], heldBy);
       recorded = true;
     } else if (now?.stored_file_id === fileId && state === 'storing') {
@@ -425,8 +492,10 @@ async function fileLocked(deps: StorageDeps, versionId: string): Promise<void> {
                 size_bytes = $8, sha256 = $9, provider_hash = $10, etag = $11, ctag = $12, web_url = $13, stored_at = $14, failure_code = NULL,
                 folder_id = $15, check_status = 'ok', last_checked_at = $14
           WHERE id = $1`,
-        [fileId, dest.id, dest.connector, dest.driveId, ref.itemId, parts.join('/'), ref.name, ref.size, sha256(bytes), ref.providerHash, ref.etag, ref.ctag, ref.webUrl, at, folder.recordId],
+        [fileId, dest.id, dest.connector, dest.driveId, ref.itemId, path, name, ref.size, sha256(bytes), ref.providerHash, ref.etag, ref.ctag, ref.webUrl, at, folder.recordId],
       );
+      // The title was cleaned while the file uploaded: the file in storage still has the old name until it is renamed.
+      if (name !== ref.name) await queueStorageJob(c, 'rename-output', v.output_id, { priority: 'urgent' });
       // Confirming the size and hash is the check at filing (spec 5.8): the file is Checked from now.
       // The output's versions all go here from now on (spec 5.4: every version lives in the same place).
       await c.query(`UPDATE outputs SET placement_folder_id = $2 WHERE id = $1 AND placement_folder_id IS DISTINCT FROM $2`, [v.output_id, folder.recordId]);
@@ -495,7 +564,7 @@ async function referencedElsewhere(deps: StorageDeps, fileId: string | null, dri
  */
 async function put(
   deps: StorageDeps, connector: StorageConnector, dest: DestinationRef, folder: OutputFolder, v: JobRow, bytes: Buffer,
-): Promise<{ ref: StoredRef; parts: string[] }> {
+): Promise<{ ref: StoredRef; suffix: number }> {
   const fileId = v.stored_file_id as string;
   const hash = quickXorHash(bytes);
   const matches = (r: StoredRef) => r.size === bytes.length && r.providerHash === hash;
@@ -503,7 +572,7 @@ async function put(
     if (v.upload_destination_id === dest.id && v.upload_folder_id === folder.itemId) {
       const found = await connector.findChild(dest, folder.itemId, v.upload_name);
       if (found && matches(found) && !(await referencedElsewhere(deps, fileId, dest.driveId, found.itemId))) {
-        return { ref: found, parts: [...folder.path, found.name] };
+        return { ref: found, suffix: suffixOf(v.upload_name) };
       }
     } else {
       await removeStray(deps, fileId, v.upload_destination_id, v.upload_folder_id, v.upload_name, matches);
@@ -528,7 +597,7 @@ async function put(
       await connector.removePermanently(dest, ref.itemId).catch(() => undefined);
       throw new StorageError('server');
     }
-    return { ref, parts };
+    return { ref, suffix };
   }
   throw new StorageError('conflict');
 }

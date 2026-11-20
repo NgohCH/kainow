@@ -424,12 +424,14 @@ describe('opening, checking and reconciling output files', { skip: SKIP_NO_DB },
     const r = await c.deputy.request('POST', vUrl(out, 1, 'relink'), {});
     assert.equal(r.status, 200, JSON.stringify(r.body));
     const f = await fileRow(out);
-    assert.deepEqual([f.path, f.name, f.check_status, f.item_id, f.destination_id], ['Archive/Weekly status (old).md', 'Weekly status (old).md', 'ok', file.item_id, destId]);
+    // Kainow's own file keeps the name Kainow gave it: renamed back where it now is, and that name recorded (never the provider's).
+    assert.deepEqual([f.path, f.name, f.check_status, f.item_id, f.destination_id], ['Archive/Weekly status v1.md', 'Weekly status v1.md', 'ok', file.item_id, destId]);
+    assert.equal((await connector.getItem(driveRoot(), file.item_id)).name, 'Weekly status v1.md');
     const moves = await rows(`SELECT * FROM stored_file_moves WHERE stored_file_id = $1`, [file.id]);
     assert.equal(moves.length, 1);
-    assert.deepEqual([moves[0].old_path, moves[0].new_path, moves[0].actor_id], [file.path, 'Archive/Weekly status (old).md', ids.deputy]);
+    assert.deepEqual([moves[0].old_path, moves[0].new_path, moves[0].actor_id], [file.path, 'Archive/Weekly status v1.md', ids.deputy]);
     assert.equal(await events(out, 'relinked'), 1);
-    assert.equal((await c.pm.request('GET', url(`/${out}`))).body.versions[0].filing.path, 'Archive/Weekly status (old).md');
+    assert.equal((await c.pm.request('GET', url(`/${out}`))).body.versions[0].filing.path, 'Archive/Weekly status v1.md');
     // A file where Kainow recorded it has nothing to relink, nor has a changed one.
     assert.equal((await c.pm.request('POST', vUrl(out, 1, 'relink'), {})).status, 409);
     fake.changeContent(drive.driveId, file.item_id, Buffer.from('Edited.'));

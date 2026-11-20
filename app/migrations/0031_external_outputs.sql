@@ -165,13 +165,14 @@ CREATE TABLE stored_files (
   -- The Kainow folder an output file was last confirmed in (filing, then each move), so the daily reconciliation finds
   -- any file not where its output's readers need it (spec 5.5).
   folder_id              uuid  REFERENCES storage_folders (id),
-  -- Withholding for a quarantine case (spec 8.5): the case it is withheld for (set when withholding is queued; kept on a
-  -- source text file replaced by its cleaned text, so a false-alarm release finds it), when its provider item was
-  -- permanently removed (NULL while it is still in storage), and when the Administrators were told removing it keeps
-  -- failing (once).
+  -- Withholding for quarantine cases (spec 8.5; which cases hold it is in stored_file_withholds): the case the withhold
+  -- job works for (a case still holding it; NULL once none does), when its provider item was permanently removed (NULL
+  -- while it is still in storage), and when the Administrators were told removing it, or putting it back, keeps failing
+  -- (once each).
   withhold_case_id       uuid  REFERENCES quarantine_cases (id),
   removed_at             timestamptz,
-  remove_notice_at       timestamptz
+  remove_notice_at       timestamptz,
+  restore_notice_at      timestamptz
 );
 -- One reference per provider item: Kainow never adopts a file another stored file already stands for.
 CREATE UNIQUE INDEX stored_files_item_once ON stored_files (drive_id, item_id) WHERE item_id IS NOT NULL AND state <> 'linked';
@@ -180,6 +181,19 @@ CREATE INDEX stored_files_state_idx ON stored_files (state, created_at);
 CREATE INDEX stored_files_check_idx ON stored_files (last_checked_at NULLS FIRST) WHERE state = 'stored';
 CREATE INDEX stored_files_destination_idx ON stored_files (destination_id) WHERE destination_id IS NOT NULL;
 CREATE INDEX stored_files_withhold_idx ON stored_files (withhold_case_id) WHERE withhold_case_id IS NOT NULL;
+
+-- Which cases withhold a stored file (spec 8.5). A file is put back only once no case still holds it: every case that
+-- withheld it has asked for it back (a false-alarm release, or a dismissed place) and the restore-withheld job has done
+-- it (released_at). A case closed with the credential removed keeps holding its files.
+CREATE TABLE stored_file_withholds (
+  stored_file_id        uuid        NOT NULL REFERENCES stored_files (id),
+  case_id               uuid        NOT NULL REFERENCES quarantine_cases (id),
+  at                    timestamptz NOT NULL,
+  release_requested_at  timestamptz,
+  released_at           timestamptz,
+  PRIMARY KEY (stored_file_id, case_id)
+);
+CREATE INDEX stored_file_withholds_case_idx ON stored_file_withholds (case_id);
 
 CREATE TABLE stored_file_moves (
   id                  uuid PRIMARY KEY,
@@ -284,7 +298,9 @@ ALTER TABLE source_versions ADD CONSTRAINT source_versions_upload_has_original C
 );
 
 -- Versions stay immutable (0004, 0027) except for the move of storage: the store-source job may clear original_bytes
--- and set original_stored_file_id and text_stored_file_id once each. Nothing else about a version can change.
+-- and set original_stored_file_id and text_stored_file_id once each, and a version whose original is in a stored file
+-- may be marked withheld or no longer withheld (quarantined_at: the stored file is withheld for a case, then put back by
+-- the restore-withheld job, spec 8.5). Nothing else about a version can change.
 CREATE OR REPLACE FUNCTION source_versions_immutable() RETURNS trigger AS $$
 DECLARE
   n source_versions%ROWTYPE;
@@ -297,6 +313,9 @@ BEGIN
     n.original_bytes := OLD.original_bytes;
     n.original_stored_file_id := OLD.original_stored_file_id;
     n.text_stored_file_id := OLD.text_stored_file_id;
+    IF NEW.original_bytes IS NULL AND NEW.original_stored_file_id IS NOT NULL THEN
+      n.quarantined_at := OLD.quarantined_at;
+    END IF;
     IF n IS NOT DISTINCT FROM OLD
        AND (NEW.original_bytes IS NULL OR NEW.original_bytes IS NOT DISTINCT FROM OLD.original_bytes)
        AND (OLD.original_stored_file_id IS NULL OR NEW.original_stored_file_id IS NOT DISTINCT FROM OLD.original_stored_file_id)

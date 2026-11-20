@@ -39,6 +39,10 @@ import '../outputs/filing';
 import '../outputs/checks';
 // Register folder sharing (share-sync, place-output), its final failure notice and the daily reconciliation.
 import '../outputs/sharing';
+// Register withholding held files (withhold, restore-withheld), its final-failure notice and the daily retry.
+import '../storage/withhold';
+// Register renaming an output's folder and files after its title is cleaned or restored.
+import '../outputs/rename';
 
 async function main(): Promise<void> {
   const config = loadWorkerConfig();

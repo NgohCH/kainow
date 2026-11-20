@@ -107,7 +107,7 @@ describe('migration 0031 (external outputs)', { skip: SKIP_NO_DB }, () => {
       'storage_destination_events', 'storage_folders', 'stored_files', 'stored_file_moves', 'storage_outbox', 'storage_attempts',
       'storage_grants', 'storage_admins', 'storage_admin_events', 'project_output_settings', 'project_output_settings_changes',
       'outputs', 'output_categories', 'output_contributors', 'output_versions', 'output_version_bytes', 'output_events',
-      'project_department_transfers',
+      'project_department_transfers', 'stored_file_withholds',
     ];
     const { rows } = await pool.query(`SELECT table_name FROM information_schema.tables WHERE table_schema = 'public'`);
     const have = new Set(rows.map((r) => r.table_name as string));

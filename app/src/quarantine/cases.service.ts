@@ -44,7 +44,7 @@ import { loadOutputAccessRow, readsOutput } from '../outputs/readers';
 import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { grantGivesAccess } from '../projects/grants';
 import { effectiveRoles } from '../projects/membership';
-import { cleanItem, findPlaces, restoreOriginals } from './clean';
+import { cleanItem, findPlaces, releaseWithheldFiles, restoreOriginals } from './clean';
 import { MARKER, searchForms } from './clean-text';
 import { POSSIBLE_COPY_TEXT } from './labels';
 import { MAX_MARK_CHARS, MIN_MARK } from './mark-limits';
@@ -909,6 +909,8 @@ export class CasesService {
           restored = r.restored;
         } else {
           await unhold(db, d.kind, d.id, c.id, at);
+          // An output place held for want of the key may already have its files withheld: they come back.
+          await releaseWithheldFiles(db, c.id, { kind: d.kind, id: d.id });
         }
         await db.query(
           `UPDATE quarantine_possible_copies SET decision = $4, decided_by = $5, decided_at = $6 WHERE case_id = $1 AND item_kind = $2 AND item_id = $3`,

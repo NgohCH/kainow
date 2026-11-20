@@ -3,8 +3,7 @@ import { uuidv7 } from '../common/uuid7';
 import type { StorageConnector } from '../storage/connector';
 import { type StorageDeps, registerStorageDailyTask, registerStorageFinalFailure, registerStorageHandler } from '../storage/jobs';
 import { type DestinationRef, type PermissionInfo, StorageError, type StoredRef } from '../storage/types';
-import { type OutputFolder, ensureOutputFolder } from './filing';
-import { MAX_NAME } from './naming';
+import { type OutputFolder, ensureOutputFolder, moveNamed } from './filing';
 import { contentReaderContexts, isWholeProject, outputReaders } from './readers';
 import { queueFolderSharing, queueOutputPlacement } from './sharing-queue';
 
@@ -58,8 +57,6 @@ const KAINOW_PLACED = `(f.folder_id IS NOT NULL OR f.destination_id IS NOT DISTI
 const MOVE_REASON = 'Readers changed';
 /** Logged (fixed text) when revocations after a failed narrowing move fail too; the rows stay listed to repair. */
 const REVOKE_AFTER_MOVE_FAILED = 'Removing access after a failed output move failed too; it stays listed under Sharing to repair.';
-/** How many ` (n)` names are tried when a moved file's name is taken in its new folder. */
-const MAX_SUFFIX = 20;
 
 interface FolderRow { id: string; destination_id: string; level: string; key: string; item_id: string }
 type GrantState = 'pending' | 'granted' | 'not_found' | 'revoking' | 'failed' | 'external';
@@ -483,17 +480,11 @@ export async function noticePlaceFailed(deps: StorageDeps, outputId: string): Pr
   });
 }
 
-/** ` (n)` before the extension, the base cut so the name stays within the limit. */
-function suffixed(name: string, n: number): string {
-  const ext = /\.[^.]+$/.exec(name)?.[0] ?? '';
-  const tail = ` (${n})`;
-  return `${name.slice(0, name.length - ext.length).slice(0, MAX_NAME - ext.length - tail.length)}${tail}${ext}`;
-}
-
 /**
- * Moves one stored file into the folder unless it is already there (a move whose answer was lost is found done). A
- * name already taken there gets ` (2)`, ` (3)` …; nothing is overwritten. A file no longer in storage is left to the
- * file checks (it is in no folder to leak from).
+ * Moves one stored file into the folder unless it is already there (a move whose answer was lost is found done), under
+ * its recorded name. A name already taken there gets ` (2)`, ` (3)` …; nothing is overwritten. What is recorded is the
+ * name Kainow gave and the recorded folder names, never the provider's (which could still hold a cleaned title, spec
+ * 4.7). A file no longer in storage is left to the file checks (it is in no folder to leak from).
  */
 async function moveInto(deps: StorageDeps, connector: StorageConnector, dest: DestinationRef, folder: OutputFolder, file: PlacedFile): Promise<void> {
   let item: StoredRef;
@@ -504,15 +495,16 @@ async function moveInto(deps: StorageDeps, connector: StorageConnector, dest: De
     throw err;
   }
   let ref = item;
+  let name = file.name;
   if (item.parentId !== folder.itemId) {
-    ref = await moveFree(connector, dest, file.item_id, folder.itemId, item.name);
+    ({ ref, name } = await moveNamed(connector, dest, file.item_id, folder.itemId, file.name));
   }
-  const path = [...folder.path, ref.name].join('/');
-  if (path === file.path && ref.name === file.name && file.folder_id === folder.recordId) return;
+  const path = [...folder.path, name].join('/');
+  if (path === file.path && name === file.name && file.folder_id === folder.recordId) return;
   const at = deps.clock();
   await withTx(deps, async (c) => {
     await c.query(`UPDATE stored_files SET path = $2, name = $3, etag = $4, ctag = $5, web_url = $6, folder_id = $7 WHERE id = $1`, [
-      file.id, path, ref.name, ref.etag, ref.ctag, ref.webUrl, folder.recordId,
+      file.id, path, name, ref.etag, ref.ctag, ref.webUrl, folder.recordId,
     ]);
     if (path !== file.path) {
       await c.query(
@@ -525,16 +517,6 @@ async function moveInto(deps: StorageDeps, connector: StorageConnector, dest: De
   });
 }
 
-async function moveFree(connector: StorageConnector, dest: DestinationRef, itemId: string, parentId: string, name: string): Promise<StoredRef> {
-  for (let n = 1; n <= MAX_SUFFIX; n++) {
-    try {
-      return await connector.move(dest, itemId, parentId, n === 1 ? undefined : suffixed(name, n));
-    } catch (err) {
-      if (!(err instanceof StorageError && err.code === 'conflict')) throw err;
-    }
-  }
-  throw new StorageError('conflict');
-}
 
 // ---------------------------------------------------------------------------------------------------------------------
 // After filing
