@@ -1,7 +1,8 @@
-import { Body, Controller, Get, HttpCode, NotFoundException, Post, Put, Req } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Put, Req } from '@nestjs/common';
 import { RequireAction } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
+import { DestinationsService, parseAddBody } from './destinations.service';
 import { StorageSettingsService, parseSecretBody, parseSettingsBody } from './settings.service';
 
 const who = (req: HttpRequest): AuthUser => {
@@ -13,7 +14,7 @@ const who = (req: HttpRequest): AuthUser => {
 /** Enterprise Administrator only. The secret body is parsed here and never logged, echoed or put in an error text. */
 @Controller('admin/storage')
 export class StorageController {
-  constructor(private readonly settings: StorageSettingsService) {}
+  constructor(private readonly settings: StorageSettingsService, private readonly destinations: DestinationsService) {}
 
   @Get()
   @RequireAction('storage.manage')
@@ -44,5 +45,38 @@ export class StorageController {
   @HttpCode(200)
   check() {
     return this.settings.check();
+  }
+
+  @Get('destinations')
+  @RequireAction('storage.manage')
+  listDestinations() {
+    return this.destinations.list();
+  }
+
+  @Post('destinations')
+  @RequireAction('storage.manage')
+  addDestination(@Body() body: unknown, @Req() req: HttpRequest) {
+    return this.destinations.add(who(req), parseAddBody(body));
+  }
+
+  @Post('destinations/:id/check')
+  @RequireAction('storage.manage')
+  @HttpCode(200)
+  checkDestination(@Param('id') id: string, @Req() req: HttpRequest) {
+    return this.destinations.check(who(req), id);
+  }
+
+  @Post('destinations/:id/approve')
+  @RequireAction('storage.manage')
+  @HttpCode(200)
+  approveDestination(@Param('id') id: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    return this.destinations.approve(who(req), id, (body as { reason?: unknown } | null)?.reason as string);
+  }
+
+  @Post('destinations/:id/withdraw')
+  @RequireAction('storage.manage')
+  @HttpCode(200)
+  withdrawDestination(@Param('id') id: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    return this.destinations.withdraw(who(req), id, (body as { reason?: unknown } | null)?.reason as string);
   }
 }

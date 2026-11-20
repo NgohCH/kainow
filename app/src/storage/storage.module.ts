@@ -1,10 +1,21 @@
-import { Module } from '@nestjs/common';
+import { type DynamicModule, Module, type Provider } from '@nestjs/common';
+import { DbStorageConnectorFactory, STORAGE_CONNECTORS, type StorageConnectorFactory } from './connector-factory';
+import { DestinationsService } from './destinations.service';
 import { StorageController } from './storage.controller';
 import { StorageSettingsService } from './settings.service';
 
-@Module({
-  controllers: [StorageController],
-  providers: [StorageSettingsService],
-  exports: [StorageSettingsService],
-})
-export class StorageModule {}
+@Module({})
+export class StorageModule {
+  /** `connectors` replaces the real factory in tests only. */
+  static register(connectors?: StorageConnectorFactory): DynamicModule {
+    const factory: Provider = connectors
+      ? { provide: STORAGE_CONNECTORS, useValue: connectors }
+      : { provide: STORAGE_CONNECTORS, useClass: DbStorageConnectorFactory };
+    return {
+      module: StorageModule,
+      controllers: [StorageController],
+      providers: [StorageSettingsService, DestinationsService, factory],
+      exports: [StorageSettingsService, DestinationsService, STORAGE_CONNECTORS],
+    };
+  }
+}

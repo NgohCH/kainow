@@ -6,6 +6,7 @@ import type { AutomaticAnalysis } from '../discussion/automatic-analysis';
 import type { AnalysisQueue } from '../analysis/queue';
 import type { AssistQueue } from '../assist/queue';
 import { NO_MEETING_END_HOOK, type MeetingEndHook } from '../discussion/meetings.service';
+import type { StorageConnectorFactory } from '../storage/connector-factory';
 import { loadConfig } from '../config';
 import { runMigrations } from '../db/migrate';
 import { resetPublicSchema, testDatabaseUrl } from './db';
@@ -72,7 +73,7 @@ async function send(base: string, method: string, path: string, body: unknown, h
  * The organisation is already set up unless `organisation: false` (for onboarding tests).
  */
 /** Ending a meeting does nothing unless a test gives a hook, or an analysis queue (then the real hook requests the final draft). */
-export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opts: { organisation?: boolean; emailNudge?: { nudge(): Promise<void> }; meetingEndHook?: MeetingEndHook; automaticAnalysis?: AutomaticAnalysis; analysisQueue?: AnalysisQueue; assistQueue?: AssistQueue; protectedKeyFile?: string } = {}): Promise<TestApp> {
+export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opts: { organisation?: boolean; emailNudge?: { nudge(): Promise<void> }; meetingEndHook?: MeetingEndHook; automaticAnalysis?: AutomaticAnalysis; analysisQueue?: AnalysisQueue; assistQueue?: AssistQueue; protectedKeyFile?: string; storageConnectors?: StorageConnectorFactory } = {}): Promise<TestApp> {
   const sender = new CaptureSender();
   const clock = new FakeClock(startAt);
   const config = loadConfig({ ...testEnv(testDatabaseUrl() as string), ...(opts.protectedKeyFile ? { KAINOW_PROTECTED_KEY_FILE: opts.protectedKeyFile } : {}) });
@@ -80,7 +81,7 @@ export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opt
   await resetPublicSchema(pool);
   await runMigrations(pool, config.migrationsDir);
   if (opts.organisation !== false) await seedOrganisation(pool);
-  const app = await createApp(config, { codeSender: sender, clock: clock.now, logger: false, extractionQueue: { enqueue: async () => undefined }, emailNudge: opts.emailNudge ?? { nudge: async () => undefined }, meetingEndHook: opts.meetingEndHook ?? (opts.analysisQueue ? undefined : NO_MEETING_END_HOOK), automaticAnalysis: opts.automaticAnalysis, analysisQueue: opts.analysisQueue ?? { enqueue: async () => undefined }, assistQueue: opts.assistQueue ?? { enqueue: async () => undefined } });
+  const app = await createApp(config, { codeSender: sender, clock: clock.now, logger: false, extractionQueue: { enqueue: async () => undefined }, emailNudge: opts.emailNudge ?? { nudge: async () => undefined }, meetingEndHook: opts.meetingEndHook ?? (opts.analysisQueue ? undefined : NO_MEETING_END_HOOK), automaticAnalysis: opts.automaticAnalysis, analysisQueue: opts.analysisQueue ?? { enqueue: async () => undefined }, assistQueue: opts.assistQueue ?? { enqueue: async () => undefined }, storageConnectors: opts.storageConnectors });
   await app.listen(0);
   const base = await app.getUrl();
 
