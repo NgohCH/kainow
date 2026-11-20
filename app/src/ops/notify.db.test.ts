@@ -21,7 +21,7 @@ describe('notifyAdmins', { skip: SKIP_NO_DB }, () => {
     await pool.end();
   });
 
-  test('one urgent, email-on row per Active administrator', async () => {
+  test('one urgent notice and one queued email per Active administrator', async () => {
     const a1 = await seedUser(pool, 'ops-a1@example.org', 'enterprise_administrator');
     const a2 = await seedUser(pool, 'ops-a2@example.org', 'enterprise_administrator');
     const off = await seedUser(pool, 'ops-a3@example.org', 'enterprise_administrator');
@@ -37,9 +37,21 @@ describe('notifyAdmins', { skip: SKIP_NO_DB }, () => {
     for (const r of rows) {
       assert.equal(r.kind, 'backup_failed');
       assert.equal(r.urgent, true);
-      assert.equal(r.email_off, false);
-      assert.equal(r.outbox_id, null);
+      assert.equal(r.email_off, true);
+      assert.ok(r.outbox_id);
       assert.equal(r.created_at.toISOString(), AT.toISOString());
     }
+    const out = await pool.query(
+      `SELECT id, to_user_id, to_address, kind, status, initiated_by, text_body FROM email_outbox ORDER BY to_user_id`,
+    );
+    assert.deepEqual(out.rows.map((r) => r.to_user_id).sort(), [a1, a2].sort());
+    for (const r of out.rows) {
+      assert.equal(r.status, 'queued');
+      assert.equal(r.initiated_by, 'system');
+      assert.equal(r.kind, 'backup_failed');
+      assert.match(r.text_body, /The backup failed\./);
+      assert.match(r.text_body, /\/admin\/operations/);
+    }
+    assert.deepEqual(rows.map((r) => r.outbox_id).sort(), out.rows.map((r) => r.id).sort());
   });
 });

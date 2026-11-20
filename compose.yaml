@@ -110,14 +110,18 @@ services:
     environment:
       <<: *kainow-env
       KAINOW_BACKUP_DIR: /backups
-      KAINOW_BACKUP_DIR_LABEL: ${KAINOW_BACKUP_DIR}
+      KAINOW_BACKUP_DIR_LABEL: ${KAINOW_BACKUP_DIR:-not set}
       KAINOW_BACKUP_KEY_FILE: /run/secrets/kainow-backup.key
       KAINOW_DB_DATA_DIR: /pgdata
       # Protected key: needed once the protected source area is in use (see the note on api). Same line as there.
       #   KAINOW_PROTECTED_KEY_FILE: /run/secrets/kainow-protected.key
     volumes:
       # The folder must be writable by uid 1000 (the node user); INSTALL.md gives the chown line.
-      - ${KAINOW_BACKUP_DIR:?Set KAINOW_BACKUP_DIR in .env}:/backups
+      # Unset or missing: only `ops` runs fail (the folder is never created for you); other commands are unaffected.
+      - type: bind
+        source: ${KAINOW_BACKUP_DIR:-./kainow-backup-folder-not-set}
+        target: /backups
+        bind: { create_host_path: false }
       # Only measured, to know how full the database disk is.
       - kainow-db:/pgdata:ro
       # Backup key (create with `npm run backup-key -- --create <path>`), then uncomment:
