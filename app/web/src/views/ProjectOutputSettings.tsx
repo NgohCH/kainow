@@ -113,6 +113,7 @@ export function ProjectOutputSettings({ projectId }: { projectId: string }) {
         <dd>
           {view.destination ? view.destination.label : 'None chosen: outputs cannot be filed yet'}
           {view.destination?.needsNewLocation && <span className="warn inline">No longer approved: choose another destination</span>}
+          {view.destination?.libraryWarning && <span className="warn inline">{view.destination.libraryWarning}</span>}
           <span className="hint">{effectiveSourceLabel(view.sources.destination)}. Changing it applies to new filings only; filed files stay where they are. {who(view.editable.destination)}</span>
         </dd>
         <dt>Formats it accepts (notes and documents)</dt>

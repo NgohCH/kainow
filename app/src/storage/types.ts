@@ -57,4 +57,7 @@ export interface DestinationCheck {
   quotaBytes: number | null;
   usedBytes: number | null;
   others: PermissionInfo[];
+  /** Set by the daily output-library check (spec 5.5): the Storage page warning, and the problems already told. */
+  libraryWarning?: string;
+  libraryProblemIds?: string[];
 }

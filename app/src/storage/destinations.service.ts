@@ -9,7 +9,10 @@ import { GraphConnector } from './connectors/graph';
 import { queueFolderSharing } from '../outputs/sharing-queue';
 import { queueStorageJob } from './outbox';
 import { loadStorageSettings } from './settings';
-import { StorageError, type DestinationCheck, type PermissionInfo } from './types';
+import { libraryAllowance, libraryPermissionProblems } from './library-permissions';
+import { StorageError, type DestinationCheck } from './types';
+
+export { type LibraryAllowance, libraryAllowance, libraryPermissionProblems } from './library-permissions';
 
 export type DestinationKind = 'sharepoint_library' | 'onedrive' | 'local';
 export type DestinationPurpose = 'source_area' | 'outputs';
@@ -42,12 +45,6 @@ export interface AddDestinationInput {
   reason: string;
 }
 
-export interface LibraryAllowance {
-  storageAdminUserEmails: string[];
-  kainowGrantPermissionIds: Set<string>;
-  /** A OneDrive destination's own account: its root lists the owner as a user. */
-  oneDriveAccountEmail?: string | null;
-}
 
 const OPEN_TO_OTHERS = (who: string) => `Others can open everything in this library: ${who}. Limit the library to site owners before approving it.`;
 const ONLY_OWNERS = 'Only site owners and administrators can open the library';
@@ -62,46 +59,7 @@ export const DESTINATION_EVENTS_ORDER = `at, CASE kind WHEN 'proposed' THEN 1 WH
 const SECOND_SOURCE_AREA = 'Another source area is already approved. Withdraw it first.';
 const MOVING = 'The source area is being moved. Wait until every file has moved.';
 
-/**
- * What the library permission check refuses (D103): everything except the site's owners group, site collection
- * administrators, Kainow's own application and Kainow's own grants (and, for the source area, storage Administrators).
- */
-export function libraryPermissionProblems(perms: PermissionInfo[], allowed: LibraryAllowance): PermissionInfo[] {
-  const admins = new Set(allowed.storageAdminUserEmails.map((e) => e.trim().toLowerCase()));
-  return perms.filter((p) => {
-    if (p.kind === 'owner_group' || p.kind === 'site_admin' || p.kind === 'app') return false;
-    if (allowed.kainowGrantPermissionIds.has(p.id)) return false;
-    if (p.kind === 'user' && admins.has(p.principal.trim().toLowerCase())) return false;
-    if (p.kind === 'user' && allowed.oneDriveAccountEmail && p.principal.trim().toLowerCase() === allowed.oneDriveAccountEmail.trim().toLowerCase()) return false;
-    return true;
-  });
-}
-
 type Db = Pool | PoolClient;
-
-/**
- * What the library permission check allows on a destination: Kainow's own live grants there (never `external` ones),
- * and for the source area its designated storage Administrators. One definition for the approval check and the daily one.
- */
-export async function libraryAllowance(
-  db: Db, dest: { id: string; kind: string; purpose: string; account_email: string | null },
-): Promise<LibraryAllowance> {
-  return {
-    oneDriveAccountEmail: dest.kind === 'onedrive' ? dest.account_email : null,
-    storageAdminUserEmails: dest.purpose === 'source_area'
-      ? (await db.query<{ email: string }>(
-          `SELECT u.email FROM storage_admins a JOIN users u ON u.id = a.user_id WHERE a.ended_at IS NULL ORDER BY u.email`,
-        )).rows.map((r) => r.email)
-      : [],
-    kainowGrantPermissionIds: new Set(
-      (await db.query<{ permission_id: string }>(
-        `SELECT g.permission_id FROM storage_grants g JOIN storage_folders f ON f.id = g.folder_id
-          WHERE f.destination_id = $1 AND g.permission_id IS NOT NULL AND g.state IN ('pending', 'granted', 'revoking', 'failed')`,
-        [dest.id],
-      )).rows.map((r) => r.permission_id),
-    ),
-  };
-}
 
 interface Row {
   id: string; connector: 'graph' | 'local'; kind: DestinationKind; purpose: DestinationPurpose; label: string;
@@ -286,7 +244,14 @@ export class DestinationsService {
     }
     const at = this.clock();
     await this.inTransaction(async (c) => {
-      await c.query(`UPDATE storage_destinations SET last_check = $2, last_checked_at = $3 WHERE id = $1`, [id, JSON.stringify(result), at]);
+      // The daily library check's record (what it already told the Administrators) is kept across a manual check.
+      await c.query(
+        `UPDATE storage_destinations
+            SET last_check = $2::jsonb || jsonb_strip_nulls(jsonb_build_object('libraryWarning', last_check->'libraryWarning', 'libraryProblemIds', last_check->'libraryProblemIds')),
+                last_checked_at = $3
+          WHERE id = $1`,
+        [id, JSON.stringify(result), at],
+      );
       await this.recordEvent(c, id, 'checked', user.id, at, null, { ok: result.ok, failed: result.lines.filter((l) => !l.ok).map((l) => l.key) });
     });
     return result;

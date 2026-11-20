@@ -98,7 +98,7 @@ export type FormatSource = 'organisation' | 'project';
 export type ExportRole = 'pm' | 'deputy' | 'owner' | 'sponsor' | 'member' | 'audit' | 'oversight';
 
 export interface OutputSettingsView {
-  destination: { id: string; label: string; kind: string; status: string; needsNewLocation: boolean } | null;
+  destination: { id: string; label: string; kind: string; status: string; needsNewLocation: boolean; libraryWarning?: string | null } | null;
   availableDestinations: Array<{ id: string; label: string; kind: string }>;
   formats: { input: Array<{ format: string; source: FormatSource }>; output: Array<{ format: string; source: FormatSource }> };
   approvedFormats: { input: string[]; output: string[] };

@@ -37,7 +37,7 @@ export interface Destination {
   accountEmail: string | null;
   folderPath: string | null;
   status: keyof typeof STATUS_LABELS;
-  lastCheck: (CheckResult & { sourceAreaWarning?: string }) | null;
+  lastCheck: (CheckResult & { sourceAreaWarning?: string; libraryWarning?: string }) | null;
   lastCheckedAt: string | null;
 }
 export interface Summary {

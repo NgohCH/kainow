@@ -120,6 +120,7 @@ function DestinationCard({ d, reload, setNotice }: { d: Destination; reload: () 
         {shown ? ` · Space the provider reports: ${quotaLabel(shown.quotaBytes)}` : ''}
       </p>
       {d.lastCheck?.sourceAreaWarning && <p className="warn" role="status">{d.lastCheck.sourceAreaWarning}</p>}
+      {d.lastCheck?.libraryWarning && d.purpose === 'outputs' && d.status !== 'withdrawn' && <p className="warn" role="status">{d.lastCheck.libraryWarning}</p>}
       {shown && <CheckLines check={shown} />}
       {error && <p role="alert" className="error">{error}</p>}
       {d.kind !== 'local' && active && <GrantExample purpose={d.purpose} kind={d.kind} />}

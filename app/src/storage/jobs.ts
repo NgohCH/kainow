@@ -81,6 +81,11 @@ export function registerStorageDailyTask(name: string, task: StorageDailyTask): 
   dailyTasks.set(name, task);
 }
 
+/** The names of the daily tasks registered so far, in the order they run. */
+export function storageDailyTaskNames(): string[] {
+  return [...dailyTasks.keys()];
+}
+
 /** Runs every daily task in turn; one failing is logged with a fixed message and does not stop the others. */
 export async function runStorageDaily(deps: StorageDeps, log: (message: string) => void): Promise<void> {
   for (const [name, task] of dailyTasks) {

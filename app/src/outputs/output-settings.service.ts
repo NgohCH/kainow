@@ -7,6 +7,7 @@ import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { ProjectAccess } from '../projects/access.service';
 import { PROJECT_MATRIX, decide } from '../projects/matrix';
+import { PROJECT_LIBRARY_WARNING } from '../storage/library-permissions';
 import { INPUT_FORMATS, OUTPUT_FORMATS, loadStorageSettings } from '../storage/settings';
 import { DEFAULT_EXPORT_ROLES, EXPORT_ROLES, loadExportPolicy, mayExport } from './export-policy';
 import { effectiveFormats } from './formats';
@@ -97,7 +98,7 @@ export class OutputSettingsService {
     const decided = decide({ action: ACTION, roles: ctx.roles, status: ctx.project.status });
     const may = (delegated: boolean) => stateOk && (ctx.isAdmin || (decided.allowed && delegated));
     const dest = own?.destinationId
-      ? ((await this.pool.query(`SELECT id, label, kind, status FROM storage_destinations WHERE id = $1`, [own.destinationId])).rows[0] ?? null)
+      ? ((await this.pool.query(`SELECT id, label, kind, status, last_check->>'libraryWarning' AS library_warning FROM storage_destinations WHERE id = $1`, [own.destinationId])).rows[0] ?? null)
       : null;
     const available = (
       await this.pool.query(
@@ -106,7 +107,13 @@ export class OutputSettingsService {
       )
     ).rows;
     return {
-      destination: dest ? { id: dest.id, label: dest.label, kind: dest.kind, status: dest.status, needsNewLocation: dest.status !== 'approved' } : null,
+      destination: dest
+        ? {
+            id: dest.id, label: dest.label, kind: dest.kind, status: dest.status, needsNewLocation: dest.status !== 'approved',
+            // The daily library check found people beyond Kainow's shares can open the library (spec 5.5).
+            libraryWarning: dest.library_warning && dest.status !== 'withdrawn' ? PROJECT_LIBRARY_WARNING : null,
+          }
+        : null,
       availableDestinations: available,
       formats: effectiveFormats(storage, own ? { inputFormats: own.inputFormats, outputFormats: own.outputFormats } : null),
       approvedFormats: { input: storage.approvedInputFormats, output: storage.approvedOutputFormats },

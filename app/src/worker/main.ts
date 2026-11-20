@@ -4,9 +4,6 @@ import { MinutesRunner } from '../analysis/minutes-runner';
 import { AnalysisTick } from '../analysis/tick';
 import { bossAnalysisQueue } from '../analysis/queue';
 import { AssistRunner } from '../assist/assist-runner';
-// Register the report and summary kinds' input, completion and removal check with the assist runner.
-import '../assist/reports.service';
-import '../assist/summaries.service';
 import { ExtractionRunner } from '../extraction/runner';
 import { realClientFactory } from '../ai/client-factory';
 import { SpendService } from '../spend/spend.service';
@@ -29,24 +26,8 @@ import { type StorageDeps, runStorageDaily } from '../storage/jobs';
 import { makeStorageNotify } from '../storage/notices';
 import { sendStorageOutbox } from '../storage/outbox';
 import { registerStorageWorker } from '../storage/storage-worker';
-// Register the source-area handlers (store-source, backfill-sources) and their daily tick.
-import '../storage/sources';
-// Register the daily source-file check.
-import '../storage/source-files';
-// Register the file-output handler, its final failure and the daily drop of unfiled output bytes.
-import '../outputs/filing';
-// Register the output file check job and the daily output check.
-import '../outputs/checks';
-// Register folder sharing (share-sync, place-output), its final failure notice and the daily reconciliation.
-import '../outputs/sharing';
-// Register withholding held files (withhold, restore-withheld), its final-failure notice and the daily retry.
-import '../storage/withhold';
-// Register relocating stored files (relocate), its final failure and the daily retry and move completion.
-import '../storage/relocate';
-// Register renaming an output's folder and files after its title is cleaned or restored.
-import '../outputs/rename';
-// Register moving a project's folders into its new owning department (transfer-folders) and its final failure.
-import '../projects/department-transfer';
+// Every job handler, final-failure hook and daily task the worker runs registers itself on import (one list, tested).
+import './registrations';
 
 async function main(): Promise<void> {
   const config = loadWorkerConfig();
