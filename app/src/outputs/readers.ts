@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from 'pg';
+import { type MaterialRef, readableMaterial } from '../assist/material';
 import { type DraftRow, draftAccess, loadDraftRow } from '../assist/reports.service';
 import type { AuthUser } from '../auth/tokens';
 import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
@@ -6,6 +7,9 @@ import { grantGivesAccess } from '../projects/grants';
 import { type ProjectRole, effectiveRoles } from '../projects/membership';
 
 type Db = Pool | PoolClient;
+
+/** Shown on an output whose material was removed, to the people who review it (D101, spec 4.5). */
+export const ACCESS_REVIEW_LABEL = 'Access review required';
 
 /** PM, Deputy, Owner and Sponsor: the default audience of an output built from restricted material (D101). */
 export const OUTPUT_MANAGER_ROLES: readonly ProjectRole[] = ['pm', 'deputy_pm', 'owner', 'sponsor'];
@@ -102,47 +106,86 @@ export async function loadOutputAccessRow(db: Db, outputId: string): Promise<Out
 const restricted = (row: OutputAccessRow): boolean => row.audienceMode === 'restricted';
 const inOutputAudience = (ctx: ProjectContext, row: OutputAccessRow): boolean => !restricted(row) || row.audienceUserIds.includes(ctx.viewerId);
 
-/** Whether the person may read the material of every version of the output built from a D77 draft. */
-export async function readsAllMaterial(db: Db, ctx: ProjectContext, row: Pick<OutputAccessRow, 'draftVersionIds'>): Promise<boolean> {
-  for (const id of row.draftVersionIds) {
-    const draft = await draftOfVersion(db, id);
-    if (!draft || !(await readsDraftMaterial(db, ctx, draft))) return false;
-  }
-  return true;
+/**
+ * The material the output's draft versions were built from: what every AI version of each of those drafts sent (as
+ * `draftAccess` judges a draft by all of its AI versions), less what was dropped at start.
+ */
+async function outputMaterialRefs(db: Db, draftVersionIds: string[]): Promise<MaterialRef[]> {
+  if (draftVersionIds.length === 0) return [];
+  const { rows } = await db.query<MaterialRef>(
+    `SELECT DISTINCT m.passage_id AS "passageId", m.record_kind AS "recordKind", m.record_id AS "recordId", m.record_audience_id AS "recordAudienceId"
+       FROM report_draft_versions dv
+       JOIN report_draft_versions av ON av.draft_id = dv.draft_id AND av.origin = 'ai'
+       JOIN ai_request_material m ON m.request_id = av.request_id AND NOT m.dropped_at_start
+      WHERE dv.id = ANY($1::uuid[])
+      ORDER BY 1, 2, 3, 4`,
+    [draftVersionIds],
+  );
+  return rows;
 }
+
+/**
+ * Whether the person may read all the material of the output that is still there (D101, spec 4.5: "who can still read
+ * the remaining material"). Material since deleted, hidden or held is no longer anyone's to read, so it is left out;
+ * material still there must be readable by the person (a tightened source audience leaves out those outside it). The
+ * draft's own state (shared, in review, withdrawn) does not count: the output is its own copy, reviewed on its own.
+ */
+export async function readsRemainingMaterial(db: Db, ctx: ProjectContext, row: Pick<OutputAccessRow, 'draftVersionIds'>): Promise<boolean> {
+  const refs = await outputMaterialRefs(db, row.draftVersionIds);
+  if (refs.length === 0) return true;
+  const mine = await readableMaterial(db, { kind: 'personal', ctx }, refs);
+  if (mine.every(Boolean)) return true;
+  const there = await readableMaterial(db, { kind: 'existing', ctx }, refs);
+  return mine.every((ok, i) => ok || !there[i]);
+}
+
+/** The project's content readers who may read all of the output's remaining material; null when it has no Kainow material. */
+export async function remainingMaterialReaders(db: Db, row: OutputAccessRow, at: Date): Promise<Set<string> | null> {
+  if (row.draftVersionIds.length === 0) return null;
+  const out = new Set<string>();
+  for (const ctx of await contentReaderContexts(db, row.projectId, at)) {
+    if (await readsRemainingMaterial(db, ctx, row)) out.add(ctx.viewerId);
+  }
+  return out;
+}
+
+/** Whether the review rule applies: "Access review required" on an output that is still live (Submitted or Registered). */
+export const inReview = (row: Pick<OutputAccessRow, 'reviewState' | 'status'>): boolean =>
+  row.reviewState === 'review_required' && (row.status === 'registered' || row.status === 'submitted');
 
 /**
  * Whether this person may see the output now (spec 4.6, 4.5, D101). Only content readers of its project (Active roles,
  * Audit/Oversight grants within their dates; never Leadership grants or the Administrator alone). A Restricted output
  * is read by the people named in its audience only (an output's audience is exactly its named people; roles add
- * nobody). Submitted, Declined and Withdrawn: its submitter, the PM and Deputies, within the audience. Registered and
- * in "Access review required": the PM, Deputies, Owner and Sponsors within the audience who can still read all its
- * material (D101 limits; it never widens). Deleted or
- * held: nobody here, except that `lookThroughCase` (a security review of that case) sees a held output as if it were not.
+ * nobody). Submitted, Declined and Withdrawn: its submitter, the PM and Deputies, within the audience. Registered: its
+ * audience. In "Access review required" (a Submitted or Registered output whose material was removed): only the PM,
+ * Deputies, Owner and Sponsors among those, who can still read all its remaining material (D101 limits; it never
+ * widens). Deleted or held: nobody here, except that `lookThroughCase` (a security review of that case) sees a held
+ * output as if it were not.
  */
 export async function readsOutput(db: Db, ctx: ProjectContext | null, row: OutputAccessRow, opts: { lookThroughCase?: string | null } = {}): Promise<boolean> {
   if (!canReadContent(ctx) || ctx.project.id !== row.projectId) return false;
   if (row.deletedAt) return false;
   if (row.heldCaseId && row.heldCaseId !== opts.lookThroughCase) return false;
-  if (row.status !== 'registered') {
-    const mayRegister = ctx.roles.some((r) => REGISTRARS.includes(r));
-    return (row.authorId === ctx.viewerId || mayRegister) && inOutputAudience(ctx, row);
+  const base = row.status === 'registered' ? inOutputAudience(ctx, row) : (row.authorId === ctx.viewerId || ctx.roles.some((r) => REGISTRARS.includes(r))) && inOutputAudience(ctx, row);
+  if (!base) return false;
+  if (inReview(row)) return ctx.roles.some((r) => OUTPUT_MANAGER_ROLES.includes(r)) && (await readsRemainingMaterial(db, ctx, row));
+  return true;
+}
+
+/** Everyone who would read the output as it is in `row` (spec 4.6), on the UTC+8 day of `at`; also for previews of a change. */
+export async function readersOfRow(db: Db, row: OutputAccessRow, at: Date, opts: { lookThroughCase?: string | null } = {}): Promise<Set<string>> {
+  const out = new Set<string>();
+  for (const ctx of await contentReaderContexts(db, row.projectId, at)) {
+    if (await readsOutput(db, ctx, row, opts)) out.add(ctx.viewerId);
   }
-  if (row.reviewState === 'review_required') {
-    return ctx.roles.some((r) => OUTPUT_MANAGER_ROLES.includes(r)) && inOutputAudience(ctx, row) && (await readsAllMaterial(db, ctx, row));
-  }
-  return inOutputAudience(ctx, row);
+  return out;
 }
 
 /** The ids of everyone who may read the output on the UTC+8 day of `at` (spec 4.6). */
 export async function outputReaders(db: Db, outputId: string, at: Date, opts: { lookThroughCase?: string | null } = {}): Promise<Set<string>> {
   const row = await loadOutputAccessRow(db, outputId);
-  const out = new Set<string>();
-  if (!row) return out;
-  for (const ctx of await contentReaderContexts(db, row.projectId, at)) {
-    if (await readsOutput(db, ctx, row, opts)) out.add(ctx.viewerId);
-  }
-  return out;
+  return row ? readersOfRow(db, row, at, opts) : new Set();
 }
 
 /**

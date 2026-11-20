@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ChangesModule } from '../changes/changes.module';
 import { ProjectsModule } from '../projects/projects.module';
+import { OutputAudienceService } from './audience';
 import { OutputSettingsService } from './output-settings.service';
 import { OutputsController } from './outputs.controller';
 import { OutputsService } from './outputs.service';
@@ -10,7 +11,7 @@ import { SettingsController } from './settings.controller';
 @Module({
   imports: [ProjectsModule, ChangesModule],
   controllers: [SettingsController, OutputsController],
-  providers: [ReportTypesService, OutputSettingsService, OutputsService],
+  providers: [ReportTypesService, OutputSettingsService, OutputsService, OutputAudienceService],
   exports: [ReportTypesService, OutputSettingsService, OutputsService],
 })
 export class OutputsModule {}

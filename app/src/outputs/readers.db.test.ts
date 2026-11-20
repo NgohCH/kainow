@@ -123,11 +123,19 @@ describe('output readers', { skip: SKIP_NO_DB }, () => {
     const review = await output({ review: 'review_required', draftVersionId: seeded.aiVersionId });
     assert.deepEqual(names(await outputReaders(t.pool, review, at)), ['deputy', 'owner', 'pm', 'sponsor']);
     assert.equal(await isWholeProject(t.pool, review, at), false);
-    // A draft in review is read only by its reviewers, so its material narrows to them.
-    await t.pool.query(`UPDATE report_drafts SET review_state = 'review_required' WHERE id = $1`, [seeded.draftId]);
-    assert.deepEqual(names(await outputReaders(t.pool, review, at)), ['deputy', 'pm'], 'only reviewers of a draft in review read its material');
-    // Cleared: back to its audience.
+    // The draft's own state does not narrow the output: it is its own copy, reviewed on its own (D101). Otherwise an
+    // output built from an unshared draft (withdrawn by the removal) would have nobody left to clear or withdraw it.
+    for (const draftState of ['review_required', 'withdrawn']) {
+      await t.pool.query(`UPDATE report_drafts SET review_state = $2 WHERE id = $1`, [seeded.draftId, draftState]);
+      assert.deepEqual(names(await outputReaders(t.pool, review, at)), ['deputy', 'owner', 'pm', 'sponsor'], draftState);
+    }
     await t.pool.query(`UPDATE report_drafts SET review_state = 'none' WHERE id = $1`, [seeded.draftId]);
+    // Removed material (the message hidden) is no longer anyone's to read: it is left out, so its reviewers remain.
+    const pumpMessage = `SELECT message_id FROM message_versions WHERE body = 'The pump service is booked for Thursday morning.'`;
+    await t.pool.query(`UPDATE discussion_messages SET state = 'hidden', state_reason = 'Off topic', state_by = $1, state_at = now() WHERE id IN (${pumpMessage})`, [ids.pm]);
+    assert.deepEqual(names(await outputReaders(t.pool, review, at)), ['deputy', 'owner', 'pm', 'sponsor'], 'the remaining material decides');
+    await t.pool.query(`UPDATE discussion_messages SET state = 'visible', state_reason = NULL, state_by = NULL, state_at = NULL WHERE id IN (${pumpMessage})`);
+    // Cleared: back to its audience.
     const cleared = await output({ review: 'cleared', draftVersionId: seeded.aiVersionId });
     assert.deepEqual(names(await outputReaders(t.pool, cleared, at)), everyone);
 

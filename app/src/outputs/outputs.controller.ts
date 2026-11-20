@@ -5,6 +5,7 @@ import type { AuthUser } from '../auth/tokens';
 import { UUID } from '../common/uuid7';
 import { noteUpload } from '../notes/notes.controller';
 import { parsePatchBody, parseRegisterBody, parseSubmitBody } from './outputs-input';
+import { type OutputAudienceInput, OutputAudienceService } from './audience';
 import { OutputsService } from './outputs.service';
 
 type UploadedBuffer = { originalname: string; buffer: Buffer } | undefined;
@@ -18,11 +19,25 @@ const ids = (...values: string[]): void => {
   for (const v of values) if (!UUID.test(v)) throw new NotFoundException();
 };
 const STATUSES = ['submitted', 'registered', 'declined', 'withdrawn'];
+const AUDIENCE_BODY = 'Choose Project-wide, or Restricted with the people who may read it.';
+const field = (body: unknown, name: string): unknown => (body && typeof body === 'object' ? (body as Record<string, unknown>)[name] : undefined);
+
+/** `{ mode: 'project' }` or `{ mode: 'restricted', userIds }`. */
+function parseAudienceBody(body: unknown): OutputAudienceInput {
+  const mode = field(body, 'mode');
+  if (mode === 'project') return { kind: 'project' };
+  const userIds = field(body, 'userIds');
+  if (mode === 'restricted' && Array.isArray(userIds) && userIds.every((u) => typeof u === 'string' && UUID.test(u))) return { kind: 'restricted', userIds };
+  throw new BadRequestException(AUDIENCE_BODY);
+}
 
 /** The output register (spec 14). Who may do what is decided in the service: 404 for anyone who may not see, then 403. */
 @Controller('projects/:projectId/outputs')
 export class OutputsController {
-  constructor(private readonly outputs: OutputsService) {}
+  constructor(
+    private readonly outputs: OutputsService,
+    private readonly audiences: OutputAudienceService,
+  ) {}
 
   @Get()
   @AnySignedInUser()
@@ -119,5 +134,45 @@ export class OutputsController {
     ids(projectId, outputId);
     if (!/^[1-9][0-9]{0,8}$/.test(n)) throw new NotFoundException();
     return this.outputs.requestApproval(who(req), projectId, outputId, Number(n));
+  }
+
+  /**
+   * `{ mode, userIds?, reason, preview? }` (spec 4.5): the PM, Owner or a Sponsor changes who may read the output. With
+   * `preview: true` nothing is saved: `{ gaining, losing }` says who would gain and who would lose access.
+   */
+  @Put(':outputId/audience')
+  @AnySignedInUser()
+  @HttpCode(200)
+  async audience(@Param('projectId') projectId: string, @Param('outputId') outputId: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    ids(projectId, outputId);
+    const user = who(req);
+    const input = parseAudienceBody(body);
+    return this.audiences.setOutputAudience(user, projectId, outputId, input, field(body, 'reason'), field(body, 'preview') === true);
+  }
+
+  /** `{ reason }`: "Access review required" cleared; the output goes back to its audience. */
+  @Post(':outputId/review/clear')
+  @AnySignedInUser()
+  @HttpCode(200)
+  async clearReview(@Param('projectId') projectId: string, @Param('outputId') outputId: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    ids(projectId, outputId);
+    await this.audiences.clearReview(who(req), projectId, outputId, field(body, 'reason'));
+    return this.outputs.get(who(req), projectId, outputId);
+  }
+
+  /** `{ reason }`: "Access review required" ended by withdrawing the output (final). */
+  @Post(':outputId/review/withdraw')
+  @AnySignedInUser()
+  @HttpCode(200)
+  async withdrawForReview(@Param('projectId') projectId: string, @Param('outputId') outputId: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    ids(projectId, outputId);
+    await this.audiences.withdrawForReview(who(req), projectId, outputId, field(body, 'reason'));
+    try {
+      return await this.outputs.get(who(req), projectId, outputId);
+    } catch (err) {
+      // An Owner or Sponsor does not read a withdrawn output (spec 4.6): they are told only that it was withdrawn.
+      if (err instanceof NotFoundException) return { id: outputId, status: 'withdrawn', readable: false };
+      throw err;
+    }
   }
 }

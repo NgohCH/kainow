@@ -11,7 +11,6 @@ import { UUID, uuidv7 } from '../common/uuid7';
 import { APP_CONFIG, type AppConfig } from '../config';
 import { PG_POOL } from '../db/database.module';
 import type { AudienceChange, Person } from '../discussion/audience';
-import { NAMED_OUTSIDE } from '../discussion/audience.service';
 import { refuseSecrets } from '../discussion/messages';
 import { UploadRejected, readUpload } from '../notes/readers';
 import { MAX_UPLOAD_BYTES } from '../notes/text';
@@ -23,17 +22,18 @@ import { STORAGE_CONNECTORS, type StorageConnectorFactory, StorageWaitingForKey 
 import { type OutputFormat, loadStorageSettings } from '../storage/settings';
 import { type DestinationRef, type ItemState, StorageError } from '../storage/types';
 import { DOES_NOT_APPROVE_COMMITMENTS, approveOutputHandler, endOutputApprovalRequests } from './approval-handler';
+import { checkOutputAudience, createOutputAudience, writeOutputAudience } from './audience';
 import { ALREADY_FILED, BEING_FILED, LINKED_NOT_FILED, NOT_KEPT, NO_DESTINATION, REGISTER_FIRST, filingFailedLabel, requestFiling } from './filing';
 import { effectiveFormats, outputRefusal } from './formats';
 import { outputFileName } from './naming';
 import { type ContributorInput, type OutputPatch, type RegisterInput, type SubmitInput, readTitle } from './outputs-input';
-import { OUTPUT_MANAGER_ROLES, type OutputAccessRow, contentReaderContexts, loadOutputAccessRow, materialReaders, readsOutput } from './readers';
+import { ACCESS_REVIEW_LABEL, OUTPUT_MANAGER_ROLES, type OutputAccessRow, contentReaderContexts, loadOutputAccessRow, materialReaders, readsOutput } from './readers';
 import { RenderTooLarge, parseBlocks } from './render/blocks';
 import { renderDocx } from './render/docx';
 import { loadDocumentHeader } from './render/header';
 import { renderMarkdown } from './render/markdown';
 import { renderPdf } from './render/pdf';
-import { notSharedFor, queueOutputPlacement } from './sharing';
+import { notSharedFor } from './sharing';
 
 type Db = Pool | PoolClient;
 
@@ -44,10 +44,7 @@ export const LINK_REFUSED = 'Kainow can only register documents in approved stor
 export const KEPT_LABEL = 'Kept at its existing location';
 export const SHARING_OUTSIDE = 'Sharing for this document is managed outside Kainow';
 const UPLOAD_KINDS = 'Upload a Markdown, DOCX, PDF or CSV file. Other documents can be registered by link.';
-const MUST_RESTRICT = 'This output uses material some of the project’s readers cannot read, so it must be Restricted to people who can read it.';
-const OUTSIDE_MATERIAL = 'Only people who can read all the material this output was built from can be in its audience.';
 const NARROW_FIRST = 'This version uses material some of this output’s readers cannot read. Narrow its audience to people who can read it first.';
-const NAME_SOMEONE = 'Name at least one person for a Restricted audience.';
 const NOT_SUBMITTED = 'Only a submitted output can be registered or declined.';
 const ALREADY_REGISTERED = 'This output is already registered.';
 const NOT_REGISTERED = 'Versions are added to a registered output.';
@@ -134,6 +131,8 @@ export interface OutputSummary {
   title: string;
   status: 'submitted' | 'registered' | 'declined' | 'withdrawn';
   reviewRequired: boolean;
+  /** "Access review required" while in review (only its reviewers read it then); null otherwise. */
+  reviewLabel: string | null;
   reportType: { id: string; name: string } | null;
   categories: Array<{ id: string; name: string }>;
   issueDate: string | null;
@@ -152,7 +151,7 @@ export interface OutputDetail extends Omit<OutputSummary, 'audience'> {
   contributors: { people: Array<Person & { departmentId: string | null; departmentName: string | null }>; departments: Array<{ id: string; name: string }> };
   versions: OutputVersionView[];
   history: Array<{ kind: string; at: Date; actor: Person | null; reason: string | null; versionNo: number | null }>;
-  may: { register: boolean; decline: boolean; update: boolean; addVersion: boolean };
+  may: { register: boolean; decline: boolean; update: boolean; addVersion: boolean; changeAudience: boolean; review: boolean };
   /** PM, Deputies, Owner and Sponsors only: "Not shared in SharePoint — no Microsoft account found for <email>". */
   notShared?: Array<{ person: Person; message: string }>;
 }
@@ -201,7 +200,7 @@ export class OutputsService {
     const id = uuidv7(at.getTime());
     await this.tx(async (c) => {
       await this.access.authorize(user, 'output.submit', projectId, c, true);
-      const audienceId = audience ? await this.createAudience(c, projectId, audience, user.id, at, AUDIENCE_SET_AT_SUBMISSION) : null;
+      const audienceId = audience ? await createOutputAudience(c, projectId, audience, user.id, at, AUDIENCE_SET_AT_SUBMISSION) : null;
       await c.query(
         `INSERT INTO outputs (id, project_id, title, report_type_id, audience_id, status, ai_assisted, author_id, created_at)
          VALUES ($1, $2, $3, $4, $5, 'submitted', $6, $7, $8)`,
@@ -398,33 +397,6 @@ export class OutputsService {
     for (const id of ids) await this.activeType(db, id);
     return ids;
   }
-
-  /** A new Restricted audience (sub-project 4a row) for an output, recorded as a change from Project-wide. */
-  private async createAudience(c: PoolClient, projectId: string, people: string[], actorId: string, at: Date, reason: string): Promise<string> {
-    const id = uuidv7(at.getTime());
-    await c.query(`INSERT INTO audiences (id, project_id, mode, created_at) VALUES ($1, $2, 'restricted', $3)`, [id, projectId, at]);
-    for (const userId of people) {
-      await c.query(`INSERT INTO audience_members (audience_id, user_id, added_by, added_at) VALUES ($1, $2, $3, $4)`, [id, userId, actorId, at]);
-    }
-    await this.audienceEvent(c, id, actorId, { mode: 'project', named: [] }, { mode: 'restricted', named: people }, reason, at);
-    return id;
-  }
-
-  private async audienceEvent(
-    c: PoolClient,
-    audienceId: string,
-    actorId: string,
-    from: { mode: 'project' | 'restricted'; named: string[] },
-    to: { mode: 'project' | 'restricted'; named: string[] },
-    reason: string,
-    at: Date,
-  ): Promise<void> {
-    await c.query(
-      `INSERT INTO audience_events (id, audience_id, actor_id, from_mode, to_mode, from_named, to_named, reason, at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [uuidv7(at.getTime()), audienceId, actorId, from.mode, to.mode, from.named, to.named, reason, at],
-    );
-  }
-
 
   private async insertVersion(c: PoolClient, outputId: string, projectId: string, versionNo: number, p: PreparedVersion, actorId: string, at: Date): Promise<string> {
     const versionId = uuidv7(at.getTime());
@@ -680,47 +652,8 @@ export class OutputsService {
    */
   private async setAudience(c: PoolClient, row: OutputAccessRow, change: AudienceChange, actorId: string, at: Date, reason: string): Promise<'project' | 'restricted'> {
     const readers = new Set((await contentReaderContexts(c, row.projectId, at)).map((r) => r.viewerId));
-    const material = await this.outputMaterial(c, row, at);
-    if (change.mode === 'project') {
-      if (material && [...readers].some((id) => !material.has(id))) throw new BadRequestException(MUST_RESTRICT);
-      if (row.audienceId && row.audienceMode === 'restricted') {
-        await c.query(`UPDATE audiences SET mode = 'project' WHERE id = $1`, [row.audienceId]);
-        await c.query(`DELETE FROM audience_members WHERE audience_id = $1`, [row.audienceId]);
-        await this.audienceEvent(c, row.audienceId, actorId, { mode: 'restricted', named: row.audienceUserIds }, { mode: 'project', named: [] }, reason, at);
-      }
-      if (row.audienceId) await c.query(`UPDATE outputs SET audience_id = NULL WHERE id = $1`, [row.id]);
-      if (row.audienceMode === 'restricted') await this.placeAfterAudience(c, row, 'widen');
-      return 'project';
-    }
-    if (change.namedUserIds.length === 0) throw new BadRequestException(NAME_SOMEONE);
-    for (const id of change.namedUserIds) {
-      if (!readers.has(id)) throw new BadRequestException(NAMED_OUTSIDE);
-      if (material && !material.has(id)) throw new BadRequestException(OUTSIDE_MATERIAL);
-    }
-    const named = [...change.namedUserIds].sort();
-    if (row.audienceId && row.audienceMode === 'restricted') {
-      const before = row.audienceUserIds;
-      if (before.length === named.length && before.every((id) => named.includes(id))) return 'restricted';
-      await c.query(`DELETE FROM audience_members WHERE audience_id = $1 AND NOT (user_id = ANY($2::uuid[]))`, [row.audienceId, named]);
-      for (const id of named.filter((x) => !before.includes(x))) {
-        await c.query(`INSERT INTO audience_members (audience_id, user_id, added_by, added_at) VALUES ($1, $2, $3, $4)`, [row.audienceId, id, actorId, at]);
-      }
-      await this.audienceEvent(c, row.audienceId, actorId, { mode: 'restricted', named: before }, { mode: 'restricted', named }, reason, at);
-      await this.placeAfterAudience(c, row, before.some((id) => !named.includes(id)) ? 'narrow' : 'widen');
-      return 'restricted';
-    }
-    const audienceId = await this.createAudience(c, row.projectId, named, actorId, at, reason);
-    await c.query(`UPDATE outputs SET audience_id = $2 WHERE id = $1`, [row.id, audienceId]);
-    await this.placeAfterAudience(c, row, 'narrow');
-    return 'restricted';
-  }
-
-  /**
-   * A registered output whose audience changed has its files placed where its readers need them and its folder synced
-   * (spec 5.5): narrowing moves the files out of the project folder first, urgently. A submitted output has no files.
-   */
-  private async placeAfterAudience(c: PoolClient, row: OutputAccessRow, direction: 'narrow' | 'widen'): Promise<void> {
-    if (row.status === 'registered') await queueOutputPlacement(c, row.id, direction);
+    checkOutputAudience(change, readers, await this.outputMaterial(c, row, at));
+    return writeOutputAudience(c, row, change, actorId, at, reason);
   }
 
   // -------------------------------------------------------------------------------------------------------------------
@@ -852,6 +785,7 @@ export class OutputsService {
       )
     ).rows;
     const manage = decide({ action: 'output.manage', roles: ctx.roles, status: ctx.project.status }).allowed;
+    const audience = decide({ action: 'output.audience', roles: ctx.roles, status: ctx.project.status }).allowed;
     // People Kainow could not share the files with, for the PM, Deputies, Owner and Sponsors (spec 5.5).
     const notShared = ctx.roles.some((r) => OUTPUT_MANAGER_ROLES.includes(r)) ? await notSharedFor(this.pool, outputId) : undefined;
     return {
@@ -871,6 +805,8 @@ export class OutputsService {
         decline: manage && s.status === 'submitted',
         update: manage && (s.status === 'submitted' || s.status === 'registered'),
         addVersion: manage && s.status === 'registered',
+        changeAudience: audience && (s.status === 'submitted' || s.status === 'registered'),
+        review: audience && s.reviewRequired && (s.status === 'submitted' || s.status === 'registered'),
       },
     };
   }
@@ -898,6 +834,7 @@ export class OutputsService {
       title: o.title,
       status: o.status,
       reviewRequired: o.reviewState === 'review_required',
+      reviewLabel: o.reviewState === 'review_required' ? ACCESS_REVIEW_LABEL : null,
       reportType: o.typeId ? { id: o.typeId, name: o.typeName } : null,
       categories,
       issueDate: o.issueDate,
