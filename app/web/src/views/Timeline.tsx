@@ -35,6 +35,8 @@ function Line({ line, projectId }: { line: TimelineLine; projectId: string }) {
           <button type="button" className="quiet" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
             {line.label}
           </button>
+        ) : line.kind === 'resource_needed_by' ? (
+          <a href={`#/projects/${projectId}/resources`}>{line.label}</a>
         ) : (
           line.label
         )}

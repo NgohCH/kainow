@@ -29,6 +29,7 @@ import { mayReviewAnswers, mayReviewSummaries } from '../assist.ts';
 import { Discussion } from './Discussion.tsx';
 import { Work } from './Work.tsx';
 import { Resources } from './Resources.tsx';
+import { ResourcesReport } from './ResourcesReport.tsx';
 import { DeliveryHistory } from './Deliveries.tsx';
 import { DigestSend, EscalationFlags } from './DigestSend.tsx';
 import { Feedback } from './Feedback.tsx';
@@ -181,10 +182,11 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
       {tab === 'drafts' && contentAllowed && <Drafts projectId={project.id} draftId={itemId} />}
       {tab === 'review' && contentAllowed && <AssistReview projectId={project.id} roles={roles} />}
       {tab === 'feedback' && contentAllowed && <Feedback projectId={project.id} />}
-      {tab === 'settings' && <ProjectSettings projectId={project.id} />}
+      {tab === 'settings' && <ProjectSettings projectId={project.id} showFinance={project.isAdmin || roles.some((r) => ['pm', 'deputy_pm', 'owner', 'sponsor'].includes(r))} />}
       {tab === 'ai' && mayViewAiTab(roles, project.isAdmin) && <ProjectAi projectId={project.id} mayViewUsage={mayViewAiUsage(roles)} />}
       {tab === 'deleted' && project.inspectDeleted && <DeletedItemsList projectId={project.id} />}
-      {(tab === 'resources' || tab === 'resources/report') && <Resources projectId={project.id} roles={roles} status={project.status} />}
+      {tab === 'resources' && <Resources projectId={project.id} roles={roles} status={project.status} />}
+      {tab === 'resources/report' && <ResourcesReport projectId={project.id} />}
       {tab === 'closing' && <Closing project={project} act={act} />}
       {tab === 'deadline-review' && <DeadlineReview project={project} />}
       {tab === 'people' && <People project={project} act={act} />}

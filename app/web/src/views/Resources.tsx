@@ -23,12 +23,12 @@ const ORDER: LineStatus[] = ['needed', 'arranged', 'in_use', 'finished', 'cancel
 const STATUS_CHOICES: LineStatus[] = ['needed', 'arranged', 'in_use', 'finished'];
 const KIND_LABEL: Record<string, string> = { equipment: 'Equipment', facility: 'Facility', other: 'Other' };
 
-function lineName(l: LineView): string {
+export function lineName(l: LineView): string {
   if (l.item) return `${l.item.reference} · ${l.item.name}${l.item.retired ? ' (retired)' : ''}`;
   return `${l.description} (one-off, ${KIND_LABEL[l.oneOffKind ?? ''] ?? 'Other'})`;
 }
 
-function periodText(l: LineView): string {
+export function periodText(l: LineView): string {
   if (!l.startsOn) return 'Period not provided';
   return l.endsOn ? `${l.startsOn} to ${l.endsOn}` : `from ${l.startsOn}`;
 }

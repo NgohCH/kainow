@@ -35,6 +35,13 @@ describe('organisation resource catalogue', { skip: SKIP_NO_DB }, () => {
   const tick = () => t.clock.advanceSeconds(1);
   const events = async () => (await t.pool.query(`SELECT * FROM resource_catalogue_events WHERE subject_kind IN ('item','category') ORDER BY at, id`)).rows;
 
+  test('GET /me tells the menu whether to show the catalogue: Administrator and listed maintainer yes, others no', async () => {
+    assert.equal((await t.anonymous('GET', `${CAT}/me`)).status, 401);
+    assert.deepEqual((await admin.request('GET', `${CAT}/me`)).body, { maintainer: true });
+    assert.deepEqual((await keeper.request('GET', `${CAT}/me`)).body, { maintainer: true });
+    assert.deepEqual((await member.request('GET', `${CAT}/me`)).body, { maintainer: false });
+  });
+
   test('anonymous gets 401; a member cannot write but can list active entries', async () => {
     assert.equal((await t.anonymous('GET', CAT)).status, 401);
     const cat = await category();

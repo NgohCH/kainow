@@ -526,3 +526,10 @@ a.meter { text-decoration: underline; }
 /* Analytics definitions */
 .definitions dt { font-weight: 600; margin-top: 0.75rem; }
 .definitions dd { margin: 0.25rem 0 0; overflow-wrap: anywhere; }
+
+/* The resources report prints on its own: no bar, tabs, buttons or footer. */
+@media print {
+  .bar, .foot, .skip, .tabs, .no-print, .ask-panel, main.page > p > button, main.page > p > a { display: none !important; }
+  .report .warn { background: none; color: inherit; border: 1px solid currentColor; }
+  .report ul.plain > li { break-inside: avoid; }
+}

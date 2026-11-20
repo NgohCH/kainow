@@ -142,7 +142,7 @@ test('drill values, definition code spans and layout moves', () => {
   assert.deepEqual(moveItem(['a', 'b', 'c'], 'b', -1), ['b', 'a', 'c']);
   assert.deepEqual(moveItem(['a', 'b', 'c'], 'c', 1), ['a', 'b', 'c']);
   const d = defaultViewConfig();
-  assert.deepEqual(d.panels.order, ['progress', 'problems', 'system', 'trends', 'aiUsage']);
+  assert.deepEqual(d.panels.order, ['progress', 'problems', 'system', 'trends', 'resources', 'aiUsage']);
   assert.deepEqual(d.filters, DEFAULT_FILTERS);
   assert.equal(d.charts['progress.onTime'], 'chart');
 });

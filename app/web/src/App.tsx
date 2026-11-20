@@ -37,6 +37,8 @@ import { LeadershipGrants } from './views/LeadershipGrants.tsx';
 import { AccessSettings } from './views/AccessSettings.tsx';
 import { Analytics } from './views/Analytics.tsx';
 import { Definitions } from './views/Definitions.tsx';
+import { ResourceAdmin } from './views/ResourceAdmin.tsx';
+import { ResourceCatalogue } from './views/ResourceCatalogue.tsx';
 import { DEFAULT_PREFS, applyAppearance, createPrefsSaver, type Prefs } from './prefs.ts';
 
 function useHash(): string {
@@ -274,6 +276,17 @@ export function App() {
     };
   }, [user, hash === '#/leadership']);
 
+  // "Resource catalogue" shows for the Administrator and for people the Administrator named as catalogue maintainers.
+  const [maintainer, setMaintainer] = useState(false);
+  useEffect(() => {
+    if (!user) return setMaintainer(false);
+    let stale = false;
+    api.get<{ maintainer: boolean }>('/resources/catalogue/me').then((r) => !stale && setMaintainer(r.maintainer), () => !stale && setMaintainer(false));
+    return () => {
+      stale = true;
+    };
+  }, [user]);
+
   const signOut = useCallback(async () => {
     await api.post('/auth/logout').catch(() => undefined);
     setUser(null);
@@ -330,7 +343,7 @@ export function App() {
   const summary = /^#\/summaries\/([0-9a-f-]{36})$/i.exec(hash);
   const thread = parseThreadHash(hash);
   const searching = isSearchHash(hash);
-  const adminPage = /^#\/(people|ai|departments|domains|organisation|approvals|notifications-settings|deliveries|go-live|escalated-feedback|leadership-grants|access-settings|ai\/usage|admin\/analytics|admin\/analytics\/definitions)$/.exec(hash)?.[1];
+  const adminPage = /^#\/(people|ai|departments|domains|organisation|approvals|notifications-settings|deliveries|go-live|escalated-feedback|leadership-grants|access-settings|resources-admin|ai\/usage|admin\/analytics|admin\/analytics\/definitions)$/.exec(hash)?.[1];
 
   let page;
   if (invitation) page = <Invitation token={invitation[1]} user={user} onSignedIn={setUser} />;
@@ -347,6 +360,8 @@ export function App() {
   else if (isAdmin && adminPage === 'escalated-feedback') page = <EscalatedFeedback />;
   else if (isAdmin && adminPage === 'leadership-grants') page = <LeadershipGrants meId={user.id} />;
   else if (isAdmin && adminPage === 'access-settings') page = <AccessSettings />;
+  else if (isAdmin && adminPage === 'resources-admin') page = <ResourceAdmin />;
+  else if (hash === '#/resource-catalogue' && maintainer) page = <ResourceCatalogue />;
   else if (isAdmin && adminPage === 'admin/analytics') page = <Analytics />;
   else if (isAdmin && adminPage === 'admin/analytics/definitions') page = <Definitions />;
   else if (hash === '#/leadership' && hasGrant) page = <Leadership prefs={prefs} ready={prefsLoaded} failed={prefsFailed} onChange={savePrefs} />;
@@ -371,9 +386,10 @@ export function App() {
         {branding && <Letterhead branding={branding} place="header" />}
         <a className="wordmark" href="#/">Kainow</a>
         <nav aria-label="Main" className="mainnav">
-          <a href="#/" aria-current={!adminPage && !securityPage && hash !== '#/my-ai-usage' && !(hash === '#/leadership' && hasGrant) ? 'page' : undefined}>My Projects</a>
+          <a href="#/" aria-current={!adminPage && !securityPage && hash !== '#/my-ai-usage' && hash !== '#/resource-catalogue' && !(hash === '#/leadership' && hasGrant) ? 'page' : undefined}>My Projects</a>
           <a href="#/my-ai-usage" aria-current={hash === '#/my-ai-usage' ? 'page' : undefined}>My AI use</a>
           {hasGrant && <a href="#/leadership" aria-current={hash === '#/leadership' ? 'page' : undefined}>Leadership</a>}
+          {maintainer && <a href="#/resource-catalogue" aria-current={hash === '#/resource-catalogue' ? 'page' : undefined}>Resource catalogue</a>}
           {reviewer && <a href="#/security/cases" aria-current={securityPage ? 'page' : undefined}>Security review</a>}
           {isAdmin && (
             <>
@@ -389,6 +405,7 @@ export function App() {
               <a href="#/escalated-feedback" aria-current={adminPage === 'escalated-feedback' ? 'page' : undefined}>Escalated feedback</a>
               <a href="#/leadership-grants" aria-current={adminPage === 'leadership-grants' ? 'page' : undefined}>Leadership access</a>
               <a href="#/access-settings" aria-current={adminPage === 'access-settings' ? 'page' : undefined}>Access and records</a>
+              <a href="#/resources-admin" aria-current={adminPage === 'resources-admin' ? 'page' : undefined}>Resources and finance</a>
               <a href="#/admin/analytics" aria-current={adminPage === 'admin/analytics' || adminPage === 'admin/analytics/definitions' ? 'page' : undefined}>Analytics</a>
               <a href="#/ai" aria-current={adminPage === 'ai' || adminPage === 'ai/usage' ? 'page' : undefined}>AI</a>
             </>

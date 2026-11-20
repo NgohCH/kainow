@@ -345,13 +345,14 @@ export function drillValueText(measure: DrillMeasure, v: DrillValue): string {
 
 // ---- Saved views and layout (app/src/analytics/views.service.ts) ----------------------------------------------------
 
-export const VIEW_PANELS = ['progress', 'problems', 'system', 'trends', 'aiUsage'] as const;
+export const VIEW_PANELS = ['progress', 'problems', 'system', 'trends', 'resources', 'aiUsage'] as const;
 export type ViewPanel = (typeof VIEW_PANELS)[number];
 export const PANEL_LABELS: Record<ViewPanel, string> = {
   progress: 'Project progress',
   problems: 'Project problems',
   system: 'System problems',
   trends: 'Trends',
+  resources: 'Resources and finance',
   aiUsage: 'AI usage',
 };
 
