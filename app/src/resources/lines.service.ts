@@ -4,6 +4,7 @@ import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { readReason, refuseSecretsIn } from '../common/reason';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
+import { loadProjectContexts } from '../dashboards/project-contexts';
 import { liveRecordSql } from '../history/deleted-sql';
 import { ProjectAccess, type ProjectContext } from '../projects/access.service';
 import { type ProjectRole, membershipState, todayUtc8 } from '../projects/membership';
@@ -79,7 +80,8 @@ function readDate(v: unknown): string | null {
   if (typeof v !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(v.trim())) throw new BadRequestException(DATE);
   const s = v.trim();
   const d = new Date(`${s}T00:00:00Z`);
-  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s) throw new BadRequestException(DATE);
+  // Year 0000 parses in JavaScript but not in Postgres (no year 0): refused here, not a 500 from the insert.
+  if (Number.isNaN(d.getTime()) || d.toISOString().slice(0, 10) !== s || s.startsWith('0000')) throw new BadRequestException(DATE);
   return s;
 }
 
@@ -174,23 +176,17 @@ export async function overlapsFor(
       ORDER BY p.name, p.created_at, o.project_id, mine.id`,
     [eligible.map((l) => l.id)],
   );
-  // Which of the overlapping projects the viewer may open: one check per distinct project, run together (a line can overlap
-  // dozens of projects, and one after another they were the whole cost of this request).
+  // Which of the overlapping projects the viewer may open, by the rule `ProjectAccess.context` applies (an Active role, a
+  // grant giving access or the Administrator), from three batched queries however many projects overlap (a line can
+  // overlap dozens; one check per project fanned out across the pool).
   const unseen = [...new Set((rows as { projectId: string }[]).map((r) => r.projectId))].filter((id) => !visible.has(id));
-  await Promise.all(
-    unseen.map(async (id) => {
-      visible.set(
-        id,
-        await access.context(user, id, db).then(
-          () => true,
-          (err: unknown) => {
-            if (err instanceof NotFoundException) return false;
-            throw err;
-          },
-        ),
-      );
-    }),
-  );
+  if (unseen.length > 0) {
+    const contexts = await loadProjectContexts(db, user, unseen, access.today());
+    for (const id of unseen) {
+      const ctx = contexts.get(id)?.ctx;
+      visible.set(id, !!ctx && (ctx.roles.length > 0 || ctx.isAdmin || ctx.grantKinds.length > 0));
+    }
+  }
   for (const r of rows as { lineId: string; projectId: string; name: string }[]) {
     const canSee = visible.get(r.projectId);
     const overlap = out.get(r.lineId) as Overlap;

@@ -165,6 +165,69 @@ describe('overlapsFor (D91)', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(await overlapOf(openMine), { named: [], others: 1 }); // only Golf Open runs that far
   });
 
+  test('names exactly the projects ProjectAccess.context admits: held, revoked, expired, scheduled memberships and lapsed grants are counted', async () => {
+    const mine = await line(a);
+    const cases: Record<string, string> = {};
+    const member = async (name: string, extra: Partial<{ startsOn: string; expiresOn: string; revoked: boolean }>) => {
+      const id = await seedProject(pool, { status: 'active', name, members: [{ userId: pm, role: 'pm' }, { userId: viewerId, role: 'member', ...extra }] });
+      await line(id);
+      cases[name] = id;
+      return id;
+    };
+    await member('Active Member', {});
+    await member('Revoked Member', { revoked: true });
+    await member('Expired Member', { expiresOn: '2026-11-10' });
+    await member('Scheduled Member', { startsOn: '2026-12-01' });
+    const held = await member('Held Member', {});
+    await pool.query(`UPDATE memberships SET held_at = now(), hold_reason = 'Checking' WHERE project_id = $1 AND user_id = $2`, [held, viewerId]);
+    const restored = await member('Restored Member', {});
+    await pool.query(`UPDATE memberships SET held_at = now() - interval '2 days', restored_at = now() - interval '1 day' WHERE project_id = $1 AND user_id = $2`, [restored, viewerId]);
+    const grant = async (name: string, cols: { expiresOn?: string; suspended?: boolean; decision?: string }) => {
+      const id = await project(name);
+      await line(id);
+      await pool.query(
+        `INSERT INTO access_grants (id, project_id, user_id, kind, purpose, scope, starts_on, expires_on, requested_by, requested_at, decision, decided_by, decided_at, suspended_at)
+         VALUES ($1, $2, $3, 'audit', 'Annual audit', 'Everything', '2026-11-01', $4, $5, now(), $6, $5, now(), $7)`,
+        [uuidv7(), id, viewerId, cols.expiresOn ?? '2026-11-30', pm, cols.decision ?? 'approved', cols.suspended ? new Date() : null],
+      );
+      cases[name] = id;
+    };
+    await grant('Valid Grant', {});
+    await grant('Expired Grant', { expiresOn: '2026-11-10' });
+    await grant('Suspended Grant', { suspended: true });
+    await grant('Declined Grant', { decision: 'declined' });
+    const admitted: string[] = [];
+    for (const [name, id] of Object.entries(cases)) {
+      if (await access.context(viewer, id).then(() => true, () => false)) admitted.push(name);
+    }
+    const got = await overlapOf(mine);
+    assert.ok(got);
+    assert.deepEqual(got.named.map((n) => n.name).sort(), admitted.sort());
+    assert.deepEqual(admitted.sort(), ['Active Member', 'Restored Member', 'Valid Grant']);
+    assert.equal(got.others, Object.keys(cases).length - admitted.length);
+  });
+
+  test('a fixed number of queries however many projects overlap', async () => {
+    const mine = await line(a);
+    for (let i = 0; i < 12; i += 1) {
+      const id = await project(`Project ${String(i).padStart(2, '0')}`, { viewerIn: i % 2 === 0 });
+      await line(id);
+    }
+    const { rows } = await pool.query(`SELECT id, item_id AS "itemId", to_char(starts_on, 'YYYY-MM-DD') AS "startsOn" FROM resource_lines WHERE id = $1`, [mine]);
+    let queries = 0;
+    const counting = new Proxy(pool, {
+      get(target, prop, receiver) {
+        if (prop === 'query') return (...args: unknown[]) => { queries += 1; return (target.query as (...a: unknown[]) => unknown).apply(target, args); };
+        if (prop === 'connect') throw new Error('overlapsFor must not take extra connections');
+        return Reflect.get(target, prop, receiver);
+      },
+    });
+    const got = (await overlapsFor(counting, access, viewer, rows)).get(mine);
+    assert.equal(got?.named.length, 6);
+    assert.equal(got?.others, 6);
+    assert.ok(queries <= 4, `ran ${queries} queries`);
+  });
+
   test('one-off lines and lines with no start have no overlap', async () => {
     const b = await project('Bravo Works', { viewerIn: true });
     await line(b);
