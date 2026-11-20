@@ -50,9 +50,9 @@ export function audienceVisibleSql(audienceAlias: string, userParam: string, tod
     OR ${activeManagerSql(`${a}.project_id`, userParam, todayParam)})`;
 }
 
-/** SQL: the person holds an Active PM, Deputy, Owner or Sponsor role on the project `projectExpr` today. */
-export function activeManagerSql(projectExpr: string, userParam: string, todayParam: string): string {
-  const roles = RESTRICTED_ROLES.map((r) => `'${r}'`).join(', ');
+/** SQL: the person holds an Active role among `roleList` (default: PM, Deputy, Owner or Sponsor) on the project `projectExpr` today. */
+export function activeManagerSql(projectExpr: string, userParam: string, todayParam: string, roleList: readonly ProjectRole[] = RESTRICTED_ROLES): string {
+  const roles = roleList.map((r) => `'${r}'`).join(', ');
   return `EXISTS (
       SELECT 1 FROM memberships rm
        WHERE rm.project_id = ${projectExpr} AND rm.user_id = ${userParam}::uuid AND rm.role IN (${roles})

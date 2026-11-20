@@ -140,7 +140,7 @@ export class HistoryService {
       if (r.kind === 'output') {
         const seen = outputs.get(r.itemId);
         if (!seen) return [];
-        return [{ at: iso(r.at), kind: 'output', action: r.action, actor: r.actor ?? null, reason: r.reason, output: { id: r.itemId, title: seen.title } }];
+        return [{ at: iso(r.at), kind: 'output', action: r.action, actor: (r.action === 'held' || r.action === 'released') && !seesReporter ? null : (r.actor ?? null), reason: r.reason, output: { id: r.itemId, title: seen.title } }];
       }
       return [this.line(r, openable, restorable, offered)];
     });

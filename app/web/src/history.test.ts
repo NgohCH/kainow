@@ -12,6 +12,7 @@ import {
   mayDeleteSource,
   mayRestoreRecord,
   mayRestoreSource,
+  OUTPUT_EVENT_TEXT,
   reasonProblem,
   restoreDialogView,
 } from './history.ts';
@@ -106,4 +107,23 @@ test('who is offered Delete and Restore mirrors the matrix', () => {
 test('a review flag on a deleted decision reads sensibly', () => {
   assert.equal(flagSentence({ id: 'd1', statement: 'Use the north berth', status: 'superseded' }), '“Use the north berth” is now superseded');
   assert.equal(flagSentence({ id: null, statement: 'a deleted record', status: 'superseded' }), 'The decision this depends on is now a deleted record');
+});
+
+test('department transfer lines name both departments and the folder choice', () => {
+  const t = line({ kind: 'department_transfer', action: 'transferred', actor: 'Daniel Tan', reason: 'Re-organised', fromDepartment: 'Water Services', toDepartment: 'Roads', folderChoice: 'move' });
+  assert.equal(
+    historyLineText(t),
+    '3 Dec 2026 — The owning department changed from Water Services to Roads by Daniel Tan; its filed outputs were moved to the new department — "Re-organised"',
+  );
+  assert.ok(!historyLineText({ ...t, folderChoice: null }).includes('filed outputs'));
+  assert.ok(historyLineText({ ...t, folderChoice: 'keep' }).includes('stayed where they were'));
+});
+
+test('output lines say what happened, naming the output only when the server gave its title', () => {
+  const o = line({ kind: 'output', action: 'registered', actor: 'Aisyah Rahman', reason: null, output: { id: 'O', title: 'Weekly status' } });
+  assert.equal(historyLineText(o), '3 Dec 2026 — The output "Weekly status" was registered by Aisyah Rahman');
+  assert.equal(historyLineText({ ...o, action: 'deleted', actor: null, reason: 'Twice', output: { id: 'O', title: null } }), '3 Dec 2026 — An output was deleted — "Twice"');
+  assert.ok(!historyLineText({ ...o, action: 'filed' }).includes('undefined'));
+  assert.ok(!historyLineText({ ...o, action: 'something_new' }).includes('undefined'));
+  for (const k of Object.keys(OUTPUT_EVENT_TEXT)) assert.ok(historyLineText({ ...o, action: k }).includes('output'));
 });

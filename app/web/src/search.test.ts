@@ -79,3 +79,8 @@ test('a message result has its own label and can be filtered', () => {
   assert.equal(KIND_LABELS.message, 'Message');
   assert.ok(SEARCH_KINDS.includes('message'));
 });
+
+test('output results show their status in plain words', () => {
+  assert.equal(statusLabel('output', 'registered'), 'Registered');
+  assert.equal(statusLabel('output', 'withdrawn'), 'Withdrawn');
+});

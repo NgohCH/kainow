@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from 'pg';
 import { type MaterialRef, readableMaterial } from '../assist/material';
 import type { AuthUser } from '../auth/tokens';
+import { activeManagerSql } from '../discussion/audience';
 import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { grantGivesAccess } from '../projects/grants';
 import { type ProjectRole, effectiveRoles } from '../projects/membership';
@@ -182,17 +183,6 @@ export async function isWholeProject(db: Db, outputId: string, _at: Date): Promi
   return !!row && row.status === 'registered' && !restricted(row) && row.reviewState !== 'review_required' && !row.deletedAt && !row.heldCaseId;
 }
 
-/** SQL: the person holds an Active role among `roles` on the project `projectExpr` today (the same test as activeManagerSql). */
-function activeRoleSql(roles: readonly ProjectRole[], projectExpr: string, userParam: string, todayParam: string): string {
-  return `EXISTS (
-      SELECT 1 FROM memberships rm
-       WHERE rm.project_id = ${projectExpr} AND rm.user_id = ${userParam}::uuid AND rm.role IN (${roles.map((r) => `'${r}'`).join(', ')})
-         AND rm.revoked_at IS NULL
-         AND (rm.expires_on IS NULL OR rm.expires_on >= ${todayParam}::date)
-         AND (rm.held_at IS NULL OR (rm.restored_at IS NOT NULL AND rm.restored_at >= rm.held_at))
-         AND rm.starts_on <= ${todayParam}::date)`;
-}
-
 /**
  * SQL form of `readsOutput` for a viewer who already reads the project's content (the caller settled that), for lists
  * and search: not Deleted, held or Withdrawn; a Restricted output only for the people named; Submitted and Declined only
@@ -205,7 +195,7 @@ export function outputListedSql(alias: string, userParam: string, todayParam: st
   return `(${o}.deleted_at IS NULL AND ${o}.held_case_id IS NULL AND ${o}.status <> 'withdrawn'
     AND (NOT EXISTS (SELECT 1 FROM audiences oa WHERE oa.id = ${o}.audience_id AND oa.mode = 'restricted')
          OR EXISTS (SELECT 1 FROM audience_members om WHERE om.audience_id = ${o}.audience_id AND om.user_id = ${userParam}::uuid))
-    AND (${o}.status = 'registered' OR ${o}.author_id = ${userParam}::uuid OR ${activeRoleSql(REGISTRARS, `${o}.project_id`, userParam, todayParam)})
+    AND (${o}.status = 'registered' OR ${o}.author_id = ${userParam}::uuid OR ${activeManagerSql(`${o}.project_id`, userParam, todayParam, REGISTRARS)})
     AND (${o}.review_state <> 'review_required' OR ${o}.status NOT IN ('registered', 'submitted')
-         OR ${activeRoleSql(OUTPUT_MANAGER_ROLES, `${o}.project_id`, userParam, todayParam)}))`;
+         OR ${activeManagerSql(`${o}.project_id`, userParam, todayParam, OUTPUT_MANAGER_ROLES)}))`;
 }

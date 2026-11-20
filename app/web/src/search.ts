@@ -51,6 +51,7 @@ const STATUS_LABELS: Partial<Record<SearchKind, Record<string, string>>> = {
   decision: DECISION_STATUS_LABEL,
   question: QUESTION_STATUS_LABEL,
   risk: RISK_STATUS_LABEL,
+  output: { submitted: 'Submitted', registered: 'Registered', declined: 'Declined', withdrawn: 'Withdrawn' },
   ai_proposal: REVIEW_STATUS_LABEL,
   human_proposal: REVIEW_STATUS_LABEL,
 };

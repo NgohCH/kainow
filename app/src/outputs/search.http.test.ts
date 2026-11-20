@@ -157,6 +157,18 @@ describe('outputs in search, history and the system panel', { skip: SKIP_NO_DB }
     assert.deepEqual(await lines(c.ben), []);
   });
 
+  test('history names who reported a held output only to those who see credential reporters', async () => {
+    const out = await seedOutput('Reported valve report');
+    await event(out, 'held', ids.ada);
+    await event(out, 'released', null);
+    await event(out, 'registered', ids.ada);
+    const actors = async (who: Client) => (await who.request('GET', `/projects/${project}/history/deletions`)).body.lines.filter((l: any) => l.kind === 'output').map((l: any) => [l.action, l.actor !== null]);
+    assert.deepEqual(await actors(c.pm), [['registered', true], ['released', false], ['held', true]]);
+    assert.deepEqual(await actors(c.owner), [['registered', true], ['released', false], ['held', true]]);
+    assert.deepEqual(await actors(c.ben), [['registered', true], ['released', false], ['held', false]]);
+    assert.deepEqual(await actors(c.deputy), [['registered', true], ['released', false], ['held', false]]);
+  });
+
   test('system panel counts storage problems', async () => {
     const file = async (state: string, extra: Record<string, unknown> = {}) => {
       const cols = { id: uuidv7(), purpose: 'output', project_id: project, name: 'a.md', state, created_at: new Date().toISOString(), ...extra };

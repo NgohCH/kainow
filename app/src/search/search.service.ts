@@ -7,7 +7,7 @@ import { PG_POOL } from '../db/database.module';
 import { summaryShownSql } from '../assist/material';
 import { loadOutputAccessRow, outputListedSql, readsOutput } from '../outputs/readers';
 import { liveSourceSql, unheldRecordRefSql } from '../history/deleted-sql';
-import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
+import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { loadArchiveState } from '../projects/archive';
 import type { GrantKind } from '../projects/grants';
 import { type ProjectRole, membershipState } from '../projects/membership';
@@ -203,8 +203,8 @@ export class SearchService {
 
   /**
    * The outputs among the hits the person may not read after all (spec 4.6). The SQL settled audience, status, deletion
-   * and holds; what is left is a viewer who is no content reader of the project (a Leadership grant), and the remaining-
-   * material rule of an output in access review.
+   * and holds, and every searched project is one the viewer reads the content of; what is left is the remaining-material
+   * rule of an output in access review.
    */
   private async unreadableOutputs(rows: Row[], readable: Map<string, Readable>): Promise<Set<string>> {
     const out = new Set<string>();
@@ -215,8 +215,7 @@ export class SearchService {
     );
     for (const r of outputs) {
       const { ctx } = readable.get(r.projectId) as Readable;
-      if (!canReadContent(ctx)) out.add(r.itemId);
-      else if (inReview.has(r.itemId)) {
+      if (inReview.has(r.itemId)) {
         const access = await loadOutputAccessRow(this.pool, r.itemId);
         if (!access || !(await readsOutput(this.pool, ctx, access))) out.add(r.itemId);
       }
