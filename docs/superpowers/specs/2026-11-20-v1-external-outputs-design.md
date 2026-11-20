@@ -2,6 +2,7 @@
 
 **Date:** 20 November 2026
 **Status:** Approved by the Product Owner on 20 November 2026, including the design calls in §16 and the bench aims in §15. Scope and approach were agreed in conversation on 20 November 2026 (§2), including the builder-check answers on directory lookup and folder sharing.
+**Build rulings:** decisions taken while building (20–21 November 2026) are written into the sections they change and marked "(build ruling, 20–21 November 2026)"; where one conflicts with earlier text in the same section, the ruling wins.
 **Builds on:** `main` at 3df1dc1 (sub-projects 1–7 merged). Branch `TheLord/subproject-9-external-outputs-56227e`. Migration `0031_external_outputs.sql` (0030 is sub-project 8's). Decision Register D100 onward; Configuration Catalogue C85 onward.
 **Runs alongside:** sub-project 8 (shared resources and budget), built at the same time. Its migration 0030 rebuilds the `change_requests` kind and target CHECK lists; this sub-project's migration must rebuild them as the union of both lists (§13.3).
 **Authority:**
@@ -135,6 +136,7 @@ The PM or a Deputy registers a submitted output, setting:
 - issue date (default today; its UTC+8 year is the filing year);
 - contributors: people (project participants, current or former) and departments. The submitter is the author. People's departments are recorded as at registration (`department_id` copied, never rewritten, outputs rules §3). Contributing departments may be added from the project's participating departments or any active department. AI assistance is recorded automatically when a version's origin is `draft_report` whose draft version has `origin = 'ai'` or was edited from one;
 - audience (§4.5).
+- **Contributor departments** (build ruling, 20–21 November 2026): Kainow users carry no department, so the PM or Deputy picks each contributing person's department at registration (any active department); it is recorded and never rewritten.
 
 Registering does not file and does not approve. The PM or Deputy may also decline a submission with a reason (the output becomes Declined, visible to the submitter; nothing is deleted).
 
@@ -149,6 +151,7 @@ Registering does not file and does not approve. The PM or Deputy may also declin
 - A new version never changes an older one. A Draft version superseded by a later version before approval stays Draft (history keeps it).
 - Rejected approval requests leave the version Draft.
 - Output statuses: Submitted, Registered, Declined, Withdrawn (PM or Deputy, with a reason; a final state; its files move to its output folder, which has no Kainow grants, §5.5) and Deleted (sub-project 5 logical deletion, §4.7).
+- (build ruling, 20–21 November 2026) The PM or a Deputy may accept a participant's submission into an existing registered output (accept-into: its versions become new Draft versions of that output). A Draft version cannot be approved once a later version is approved; approving a version supersedes pending approval requests for earlier versions; withdrawing, declining, deleting or holding an output ends its pending approval requests.
 
 ### 4.4 Report types (R14)
 
@@ -164,6 +167,7 @@ Registering does not file and does not approve. The PM or Deputy may also declin
 - A version whose material is narrower than the output's current audience cannot be added until the audience is narrowed (the screen offers it).
 - The PM, Owner or Sponsor (O09) changes the audience with a reason; widening shows the names that gain access before confirming. Every change is recorded in `audience_events` and syncs SharePoint sharing (§5.5).
 - **Removed material (D101):** `onMaterialRemoved` (sub-project 5) gains an output handler: an output with any version built from removed material becomes `review_required`; its readers are limited to the PM, Deputies, Owner and Sponsors who can still read the remaining material; its files move to its own output folder shared only with them (§5.5); and it shows "Access review required" to them. They clear it (back to its audience) or withdraw the output. The same applies when a passage's source audience tightens.
+- (build ruling, 20–21 November 2026) An output's material is every AI version of its draft (conservative: it may over-flag, never under-flag), and one material-readers rule is used everywhere. Clearing a review is refused until the audience fits the remaining material. Changing the audience, clearing and withdrawing for review are open to the PM, Owner or Sponsor who can read the project and the remaining material; membership of the audience itself is not required.
 
 ### 4.6 Who sees what
 
@@ -177,6 +181,7 @@ Registering does not file and does not approve. The PM or Deputy may also declin
 - **Holds (D80–D82):** output versions are registered with the quarantine text registry. Any reader may report a suspected secret in an output (marking text in the register's title or categories, or for a file describing where it is). A held output version is hidden at once and its stored file **withheld** (§8.5): its bytes downloaded, encrypted into `quarantine_originals`, and the file permanently deleted from the provider. The file cannot be cleaned in place; the PM or a Deputy replaces it with a new version. A security reviewer's false-alarm release re-uploads the original to the same folder.
 - **Held links** (*design call*): a linked version's document was not created by Kainow and Kainow never deletes it. Holding it hides it in Kainow only; the Enterprise Administrators, the storage Administrators and the PM receive a notice: "A document registered in <project> may contain a credential. Kainow has hidden it, but the file is still in storage at its existing location and must be dealt with there." The case lists it under "Still in storage". This is the one stated exception to the anti-goal on secrets left readable in storage.
 - **Search:** register entries (title, report type, categories; never file content) join the cross-project search index under the existing search rules, filtered by output readers.
+- (build ruling, 20–21 November 2026) An output file cannot be cleaned in place, so when a possible copy of a held secret is found in an output its files are withheld pending the PM's or a Deputy's decision: dismissing the copy restores them, confirming keeps them withheld. Cleaning an output's title queues a rename of its folder and files in SharePoint to the cleaned title. Withholding is tracked per file and case (`stored_file_withholds`); a file comes back only when no open case still holds it. A held link is hidden in Kainow and reported, never deleted. Whether an original is withheld is derived from its stored file.
 
 ## 5. Storage: connector, filing and sharing
 
@@ -211,6 +216,7 @@ Kainow grants only on folders (§5.5), never on individual files.
 - Errors are one typed class `StorageError { code: 'unreachable' | 'timeout' | 'throttled' | 'unauthorised' | 'forbidden' | 'not_found' | 'conflict' | 'too_large' | 'quota' | 'server' | 'invalid'; retryAfterMs?; status? }`. No error carries a token, secret or file content.
 - The `local` connector writes under a directory given by `KAINOW_LOCAL_STORAGE_DIR`. It is selectable only when `NODE_ENV !== 'production'` and never appears in the interface; it lets developers run Kainow without a Microsoft tenant and lets tests run end to end. Its "grants" are recorded in a JSON sidecar so sharing tests can assert them.
 - A later Dropbox or Box connector implements the same contract. Where a provider's sharing does not map to organisation accounts, the connector reports `grant` as unsupported and the output shows "Sharing managed outside Kainow" (this is the only behaviour difference the rest of Kainow allows for).
+- (build ruling, 20–21 November 2026) `checkDestination` takes a test person (the checking Administrator) and proves it can create and remove a folder permission for them. `createFolder` (create-only: anything with the name already is a conflict) exists alongside `ensureFolder`; project, restricted-root and output folders are create-only, never adopted, taking ` (2)`, ` (3)` suffixes when the name is taken. The library permission check (§5.5) refuses any permission other than the site owners' group, Kainow's own application and Kainow's own grants (for a OneDrive destination also the account itself; for the source area also the storage Administrators). Site collection administrators who appear as site users count as others until a real tenant confirms how they appear (probe, §15).
 
 ### 5.2 Stored-file references (provider-neutral)
 
@@ -226,6 +232,7 @@ States: `pending` (waiting to store), `storing`, `stored` (confirmed), `failed` 
 - **Calls used:** `GET /sites/{hostname}:/{path}` and `GET /sites/{id}/drives` (resolve a library), `GET /users/{upn}/drive` (OneDrive of a named account), `POST /drives/{d}/items/{parent}/children` (folders, `@microsoft.graph.conflictBehavior: fail`), `PUT /drives/{d}/items/{parent}:/{name}:/content` for files up to 4 MiB and `createUploadSession` with 5 MiB chunks (a multiple of 320 KiB) above that, `GET /drives/{d}/items/{id}` (with `select` of size, file.hashes, eTag, cTag, parentReference, name, webUrl), `GET …/content`, `PATCH /drives/{d}/items/{id}` (move and rename), `POST …/copy` with monitor polling (relocation across drives), `POST …/permanentDelete`, `GET …/versions` and `POST …/versions/{id}/restoreVersion`, `POST …/invite` on folders (`roles: ['read']` or `['write']`, `requireSignIn: true, sendInvitation: false`, one recipient), `GET …/permissions`, `DELETE …/permissions/{id}`, `GET /shares/{u!base64url}/driveItem`, and (directory lookup on) `GET /users/{email}`. OneDrive destinations need directory lookup to resolve `GET /users/{email}/drive`; with it off the destination form offers SharePoint libraries only.
 - **Timeouts and retries:** 30 seconds per call, 120 seconds per upload chunk. `429` and `503` honour `Retry-After`. Calls inside a job are not retried in place; the job is (§5.6). Each `AbortSignal.timeout` test keeps an interval alive (the sub-project 7 Node 22 lesson).
 - **Uncertain outcomes (A11):** when an upload's result is unknown (timeout, lost connection), the next attempt first calls `findChild` for the same name: if a file is there whose QuickXorHash and size match the bytes, it is adopted as the result; if a different file is there, the attempt fails `conflict` and the output shows "A different file already has this name" for the PM to resolve (§5.4 naming). No second authoritative copy is created.
+- **Directory lookup as built** (build ruling, 20–21 November 2026): with `User.ReadBasic.All` the lookup selects only `id`, `userPrincipalName` and `mail` (`userType` and `accountEnabled` are not readable with that permission); a `userPrincipalName` containing `#EXT#` is a guest and is not shared with. A disabled Microsoft account cannot be detected this way; Kainow still withholds grants from disabled Kainow accounts.
 
 ### 5.4 Filing an output version
 
@@ -239,6 +246,7 @@ The PM or a Deputy files a registered output's version (or registers and files i
 - **Outcome:** filed only when the provider returns the item and its QuickXorHash and size match. The version then shows "Filed" with the path (to PM/Deputy/Owner/Sponsor) and an Open link. Failure after the retries (§5.6) shows "Filing failed — <reason>" with "Try again"; nothing is shown as filed.
 - **After filing**, the version's bytes are removed from the database (`output_version_bytes`), since the file now lives in the destination. *Design call:* a Draft version not yet filed keeps its bytes in the database until it is filed, withdrawn, or 90 days pass without filing, after which the bytes are dropped and the version shows "Not filed — file no longer kept; generate or upload it again". Kainow is not the document store (outputs rules §2).
 - Sharing for the new file is set at once (§5.5).
+- (build ruling, 20–21 November 2026) `safeName` strips (rather than replaces) leading and trailing spaces and dots. An output's placement folder is fixed when its first version is filed: later edits to its issue date or report type do not move files. Filing records its exact target (destination, folder, name) before uploading, and a retry adopts only a file found at its own recorded target.
 
 ### 5.5 Sharing (D103)
 
@@ -249,7 +257,7 @@ Kainow shares **folders**, never individual files, read-only, so the number of i
   - each **output folder** under `<department> / <project> (restricted)`: desired grants are one read grant per current reader of that output (§4.6, including the review rule of §4.5). A Withdrawn or Deleted output's folder has no Kainow grants. The `(restricted)` parent folder itself has no Kainow grants.
 - **Placement follows readers:** when an output's readers stop being "the whole project" (audience narrowed, review required, withdrawn, deleted) its files are moved (same drive: `move`, item ids kept) into its output folder; when they become the whole project again (audience widened to Project-wide, review cleared, restored), they are moved back into `Year / Report Type`. **Order matters:** when narrowing, the files are moved out of the project folder *before* anything else, and the output is hidden in Kainow from people losing access at once (Kainow's own check needs no SharePoint step); when widening, grants are never removed first. A move that fails leaves the output hidden in Kainow from the people who would have lost access, and listed under "Sharing to repair".
 - Approval status does not matter: readers can open Draft and Superseded versions too (*design call*: matches Kainow's own view).
-- **Sync** is one job per shared folder (`share-sync`), debounced 30 seconds by `singletonKey`. It compares desired grants with `storage_grants` rows (the grants Kainow created) and calls `grant` / `revoke` for the difference only. It never reads or alters any permission not in `storage_grants`.
+- **Sync** is one job per shared folder (`share-sync`). It compares desired grants with `storage_grants` rows (the grants Kainow created) and calls `grant` / `revoke` for the difference only. It never alters any permission not in `storage_grants`. (build ruling, 20–21 November 2026) The 30-second debounce is dropped (removal is urgent; the per-folder queue coalesces bursts). Kainow lists a folder's permissions before inviting: a person who already holds a permission Kainow did not create is recorded as `external` and is never invited over, changed or revoked. Revocation never re-invites. A grant refused with a 4xx is recorded as never created.
 - **Triggers:** filing (first output of a project creates and shares the project folder); audience change; membership becomes Active, On Hold, Expired or Revoked; an Audit/Oversight grant starts, ends or is revoked; account disabled or re-enabled; output deleted, restored, withdrawn, held or released; review state change (§4.5). A daily reconciliation (the `sweep` tick, 02:30 UTC+8) re-syncs every project folder whose project's readers changed by date (expiry has no event) and repairs drift.
 - **Not shared:** when directory lookup says the address is not an enabled member account, or (lookup off) its domain is not an approved organisation domain, or the provider refuses the invitation as an unknown user, the grant row records `not_found` and the person's name shows "Not shared in SharePoint — no Microsoft account found for <email>" to PM/Deputy/Owner/Sponsor; the person can still read the output in Kainow. Retried by the daily reconciliation.
 - **Removal is urgent:** revocations and narrowing moves are queued at higher priority than grants. A revocation that keeps failing raises an Administrator notice ("Kainow could not remove SharePoint access for a person who has left <project>") and stays listed in the Storage page's "Sharing to repair" list until it succeeds.
@@ -261,6 +269,7 @@ Kainow shares **folders**, never individual files, read-only, so the number of i
 - Job kinds: `file-output`, `store-source`, `share-sync`, `place-output` (move an output's files between the project tree and its output folder, §5.5), `check`, `register-changed`, `relocate`, `withhold`, `restore-withheld`, `register-link`. Job data carries only ids.
 - **Attempts:** initial plus four retries at 1 minute, 5 minutes, 30 minutes and 2 hours after the first failure (provider `Retry-After` wins when later). `unauthorised`, `forbidden`, `invalid` and `too_large` are not retried. Attempts survive restarts (pg-boss `retryLimit`), and every attempt rechecks project state, the output's or source's status, destination approval and the connection before acting (A11).
 - Producers on the API side enqueue inside the same transaction as the change through a `storage_outbox` row (*design call*: the email outbox pattern), and a one-minute tick enqueues any outbox rows not yet sent, so a lost nudge never loses work.
+- (build ruling, 20–21 November 2026) Job kinds as built: `file-output`, `store-source`, `share-sync`, `place-output`, `check`, `register-changed`, `relocate`, `transfer-folders`, `rename-output`, `withhold`, `restore-withheld`, `backfill-sources` (no `register-link`: links are resolved at submission). Retries at 1, 5, 30 and 120 minutes after the first failure. A change that collides with a queued job for the same subject refreshes that job (due now, the higher priority, a fresh attempt budget). The worker keeps a 60-second heartbeat.
 - A `storage_attempts` row records each attempt: job kind, subject, outcome code, provider status, duration. Never content, names of people, or tokens.
 
 ### 5.7 Opening a filed output
@@ -277,6 +286,7 @@ Kainow shares **folders**, never individual files, read-only, so the number of i
   - **Leave it flagged.**
 - **Moved:** if the new place is inside an approved destination, the PM or a Deputy relinks (the reference and path update, `stored_file_moves` records old and new). If it is in a place Kainow cannot reach or that is not approved, the file shows Missing or Access denied; an Enterprise Administrator must first approve that place as a destination (§8.2), after which the PM or a Deputy relinks. There is no separate approval flow. A relinked file in a different destination is labelled with its destination (D32), and its sharing stays as it is there (Kainow shares only its own folders).
 - **Missing:** shown as Missing with the last confirmed path; the PM or a Deputy may relink by giving a link to the file's new place (resolved and checked as above) or file the version again from a fresh upload as a new version.
+- (build ruling, 20–21 November 2026) Registering changed content is a job (the route answers 202); it applies only to files Kainow filed (never a registered link), uploads into the output's placement folder, and downloads at most 50 versions of the recorded size from the version history. A Moved file opens at its current location. Opens make at most one provider check a minute per file.
 
 ## 6. Generated files
 
@@ -339,6 +349,7 @@ From the project's Work and Records views, "Export CSV" for: Tasks (with subtask
 - Text columns are records' own fields (titles, descriptions, statements), which every content reader may see; no source or message text, quotes or AI questions. Cut at 2,000 characters per cell.
 - CSV conventions from sub-project 7 (`csv.ts`): `#` header lines (Export, Project, Filters, Computed at UTC+8, Coverage: "All authorised records in the project except deleted ones and any under credential review"), formula guard (`'` before `= + - @`), CRLF, UTF-8 with BOM (*design call*: so spreadsheet programs read Malay characters correctly).
 - Each export writes `writeAudit` action `project.exported` with project id, export kind, filters and row count — never data.
+- (build ruling, 20–21 November 2026) In the Tasks export, "assignee department" is blank (users carry no department), "next review" is blank (tasks have no review date) and "created on" equals "authorised on". A downloaded export is a personal view; an output-register export saved as an output includes only outputs every content reader may read.
 
 ### 7.3 Saving an export as an output
 
@@ -379,6 +390,7 @@ Changes need a reason and are versioned (`project_output_settings_changes`), as 
 - Kainow grants each designated person `write` on the source-area root folder (through the connector's `grant` with role `write`, recorded in `storage_grants`) and revokes it when the designation ends or the account is disabled. Being an Enterprise Administrator gives nothing here.
 - The daily check lists the source-area root's permissions and warns on the Storage page ("The source area is also open to: <names or 'a sharing link'>") when anyone beyond the designated people, the connection and site owners has access. Kainow never removes those itself.
 - Designations are recorded (`storage_admin_events`) and listed on the Storage page.
+- (build ruling, 20–21 November 2026) Storage Administrators get `write` on the recorded `projects` folder of the source area (the connector refuses grants on a library root); everything Kainow stores there lives under it. Grants follow approved and retiring source areas and are revoked when an area is withdrawn. Self-designation is refused.
 
 ### 8.5 Withholding stored files (holds)
 
@@ -390,6 +402,8 @@ When sub-project 5's cleaning withholds `source_versions.original_bytes` or hold
 4. for a source version, uploads the cleaned text as a new text file and records it (the old text file, which held the secret, was removed in step 3).
 
 If step 3 fails after retries, the item stays hidden in Kainow, an Administrator notice says "A held file could not be removed from storage" (never naming the secret), and the case shows "Still in storage" until it succeeds. Release (D82 false alarm, or a reviewer restoring) runs `restore-withheld`: the original is decrypted and uploaded to the same folder, the reference updated, and grants re-synced.
+
+(build ruling, 20–21 November 2026) Withholding is tracked per file and case; see §4.7 for possible copies found in output files.
 
 ### 8.6 Storage page summary
 
@@ -416,11 +430,14 @@ The Storage page shows: connection state; destinations with purpose, last check 
 
 An Enterprise Administrator may change the source-area destination (with a reason and a confirmation that states the file count and size). Kainow then relocates every stored source file with the relocation routine (§9.4): copy, verify size and hash at the new place, switch the reference, permanently remove the old copy. The Storage page shows progress; downloads use whichever copy is current. A file that fails stays at its old place (which stays approved for reading until the move completes).
 
+(build ruling, 20–21 November 2026) The move uses a transitional `retiring` status for the old destination: it stays readable until every file has moved, then is withdrawn. One move runs at a time, and the confirmation must equal the current file count and size.
+
 ### 9.4 Relocation routine and manifest (migrate-out)
 
 - **Relocate one stored file:** set `relocating`; `copyTo` (or `move` when source and destination are the same drive); verify size and provider hash at the new item, then download and verify SHA-256 if the provider hash is unavailable; in one transaction switch the reference and record the old one in `stored_file_moves`; then remove the old copy (permanently for source files; for output files, removal only after the new copy is confirmed, so there is never a moment with no confirmed copy and never two authoritative ones — the old reference is history, not authoritative). A failure at any step leaves the old reference current.
 - Used by: department transfer with "Move the folder" (§10, same drive: a single folder move, with every file's item id verified unchanged afterwards); moving the source area (§9.3). A later provider migration uses the same routine with a new connector.
 - **Manifest:** System Settings › Storage › "Download storage manifest" (Enterprise Administrator; `writeAudit` `storage.manifest_downloaded`): a CSV of every stored file — purpose (source original, source text, output), project id, project name, source or output id, version, destination label, connector, drive id, item id, path, size, SHA-256, provider hash, state, last check. No titles of restricted items (*design call*: a restricted source's or output's title appears as "Restricted item"), no content.
+- (build ruling, 20–21 November 2026) The manifest has no title column: a restricted item shows "Restricted item" in the Path column.
 
 ## 10. Owning department transfer (D108)
 
@@ -428,6 +445,7 @@ An Enterprise Administrator may change the source-area destination (with a reaso
 - In one transaction: update `projects.owning_department_id`; insert `project_department_transfers` (from, to, reason, choice, actor, at, state); write History and `writeAudit` `project.department_transferred`.
 - **Move:** a `relocate` job moves the project folder and the project's `(restricted)` folder (in each destination that holds them) into the new department's folder (created if needed). Their Kainow grants move with them (permissions belong to the folder items). Same drive, so one `move` call; afterwards every stored file's item id must still resolve and its path is refreshed. Until confirmed the transfer shows "Moving files"; on failure "Files not moved — still at <old path>" with "Try again", and nothing is described as moved.
 - **Keep:** stored files keep their place; the output register shows "Kept at its existing location (filed under <old department>)". New filings go to the new department's folder (*design call*: one project folder per department is not duplication of an output; each output version has one location).
+- (build ruling, 20–21 November 2026) A move is refused when the new department already holds this project's folder. With "Keep", later versions of an already-filed output stay in its placement folder (new outputs file under the new department). A failed move must be retried before another department change. The earlier `POST /projects/:id/department` route runs the same transfer.
 - Leadership department scopes follow at once (sub-project 7). Contributing departments and contributor attribution are unchanged (outputs rules §3).
 
 ## 11. Permissions (additions to the Permission Matrix)
@@ -464,6 +482,7 @@ An Enterprise Administrator may change the source-area destination (with a reaso
 - **Access and records:** "Project exports allowed".
 - **Project organisation panel (Administrator):** "Change owning department".
 - **Go-live checklist:** new step 12 (`storage`, mode `auto_or_skip`): "Connect storage and approve the source area", auto-ticked when a connection checks and a source area is approved; skippable with a note (sources then stay in the database until it is done). The closing keys are unchanged.
+- (build ruling, 20–21 November 2026) The go-live skip route is generalised to `POST /go-live/steps/:key/skip` for every `auto_or_skip` step; the storage step ticks itself from the recorded result of the last connection check together with an approved source area (no provider call is made to show it).
 - **Administrator dashboard / analytics system panel:** counts of storage failures, waiting files, withheld-removal failures and sharing to repair (added to the sub-project 7 system panel's problem list).
 
 All screens: summary first, plain words, keyboard and screen-reader support, WCAG 2.2 AA, both themes, usable at 375 px. States are shown in words, never colour alone.
@@ -576,6 +595,8 @@ ALTER TABLE access_settings ADD COLUMN project_exports_allowed boolean NOT NULL 
 INSERT INTO golive_steps … ('storage', 12, …);
 ```
 
+**As built in `0031_external_outputs.sql`** (build ruling, 20–21 November 2026), beyond the sketch above: `stored_file_withholds` (which cases hold a stored file, with release requested and released times); destination status `retiring` (one at a time, with a matching `storage_destination_events` kind); `stored_files.upload_destination_id`, `upload_folder_id` and `upload_name` (the recorded upload target), `folder_id` (the Kainow folder last confirmed), `withhold_case_id`, `removed_at`, `remove_notice_at`, `restore_notice_at` and `old_copy_move_id`; `outputs.placement_folder_id`, `place_failed_at` and `place_notice_at`; `storage_settings.last_check_state` and `last_checked_at`; `storage_outbox.urgent`; `storage_grants` state `external`, `revoke_notice_at` and `none_created`; `output_version_bytes.bytes` nullable (a withheld copy is emptied); `output_events` kinds `change_register_requested` and `change_register_failed`; the output search view and title trigram index; and the `storage` go-live step.
+
 ### 13.2 Registries and catalogues
 
 - **Quarantine text registry:** every new plain-text column (titles, reasons, labels, paths, names, folder names, check details) is registered with the quarantine text registry or listed with a reason as holding no user text, so the `information_schema` completeness test passes. `output_versions` is registered as an item kind whose content is a stored file (withheld, not cleaned, §8.5). Paths and names in `stored_files`, `storage_folders` and `stored_file_moves` are cleaned with their item.
@@ -631,6 +652,17 @@ Request bodies carrying the client secret are never logged or echoed (as sub-pro
 - **Completeness tests** (text registry, event catalogue) pass.
 - **Probe** `npm run probe-storage -- --destination <label>` against a real tenant (run by the Product Owner once a tenant exists): checks the token, the destination, folder create, small and chunked upload, hashes, move, invite and revoke a named test account, permanent delete, and prints the permissions actually needed (§5.3). Not run in CI.
 - **Bench** (`npm run bench-outputs`, own database): 100 projects, 30,000 tasks, 2,000 outputs with 5,000 versions, 20,000 stored source files. **Aims (proposed for Product Owner approval):** `GET /projects/:id/outputs` p95 < 200 ms; tasks CSV export of a 1,000-task project p95 < 2 s; share-sync of a project folder for a 50-reader project < 5 s, and moving a 10-version output into its restricted folder < 2 s, against the fake server with 50 ms simulated latency; daily source check of 2,000 files within 15 minutes at the same latency. Results recorded here, met or missed.
+- **Bench results (21 November 2026).** Machine: developer laptop, Docker Postgres 16, own database `kainow_bench_sp9`; the HTTP requests through the real app on loopback, the storage jobs run as the worker runs them against the fake Graph server with 50 ms added before every request. Data: the sub-project 7 set (200 people, 100 projects in 10 departments) with 30,700 tasks (700 added so project 3 has 1,000), 2,000 registered outputs (20 per project) with 5,000 filed versions and their stored files, and 20,000 stored source files; each run also adds one 50-reader project for the sharing and move measures. HTTP: 5 warm-up requests, then 50 counted. Share-sync and the move: 1 warm-up, then 5 counted, each round reset without the latency. The source check: one run of 2,000 files. p95 is nearest-rank. This is the second run on the same database; the first gave the same picture (share-sync p95 6.70 s, move p95 1.80 s, source check 126.4 s). No index, query or connector change was made for the bench.
+
+  | Measure | Aim | p50 | p95 | max | Result |
+  |---|---|---|---|---|---|
+  | `GET /projects/:id/outputs` (20 outputs, 50 versions) | p95 < 200 ms | 147.8 ms | 183.4 ms | 199.8 ms | met |
+  | `GET /projects/:id/export?kind=tasks` (1,000 tasks; 998 rows, 2 Deleted) | p95 < 2 s | 18.7 ms | 26.5 ms | 30.1 ms | met |
+  | share-sync of a 50-reader project folder, no grants to 50 (50 ms latency) | < 5 s | 6.46 s | 6.52 s | 6.52 s | **missed** |
+  | place-output: a 10-version output into its restricted folder, its 3 readers shared (50 ms latency) | < 2 s | 1.73 s | 1.75 s | 1.75 s | met |
+  | daily source check of 2,000 stored files (50 ms latency) | < 15 min | 126.5 s | 126.5 s | 126.5 s | met |
+
+  The register list sits at about 92% of its aim: it builds each output's summary and versions one query at a time. Share-sync misses because it sends the grants one at a time and each costs two Graph requests (the folder is looked up again before each invitation, then the invitation), so 50 readers need at least 100 requests, 5 s of latency alone, before the database work. Meeting the aim would need the grants sent with some concurrency, or the folder looked up once per sync; that is left to the Product Owner (§16), not tuned here. The move sits at about 87% of its aim.
 - Screens checked at desktop and 375 px, by keyboard, both themes; WCAG 2.2 AA.
 
 ## 16. Left to the builder, and open items
@@ -653,6 +685,11 @@ Request bodies carrying the client secret are never logged or echoed (as sub-pro
   - the output library must be limited to site owners, checked at approval and daily (§5.5);
   - directory lookup Off by default (§8.1).
 - A real Microsoft tenant is needed for the probe; no test here can replace it.
+- **Open questions for the Product Owner** (raised while building, 20–21 November 2026; not decided here):
+  - A department move that can never succeed (the destination withdrawn, or a permanent "forbidden") leaves the project's department fixed: there is no "abandon the move" or "keep it instead" path yet.
+  - The QuickXorHash test vectors are self-derived from the algorithm description; `npm run probe-storage` must confirm them against a real tenant (its "hashes" line).
+  - Real-tenant checks still needed (all on the probe): the error Microsoft returns when inviting an unknown address; how site collection administrators and a OneDrive owner appear in a library's permissions (until confirmed, a site user always counts as "others" and refuses approval); whether `write` on a site suffices for folder invitations (if so, the Storage page can ask for `write` only).
+  - Share-sync of a 50-reader project folder missed its 5-second aim on the bench (§15): accept the measured time, or ask for the grants to be sent with some concurrency or without the per-grant folder lookup.
 - **Follow-ups (not this sub-project):** budget and resource exports after sub-project 8 merges; backup and restore of the source area and outputs (sub-project 10, using the manifest); a provider-migration tool; Dropbox/Box connectors.
 
 ## 17. Documents updated in this branch

@@ -119,6 +119,7 @@ Self-approval is allowed by default for an eligible O/S, including a valid combi
 | Review, mark more and release a cleaned item | PM or O/S in the item's audience | Any project state (protective); sees the cleaned text only, never the original; reason on release; confirmed copies return with it; D81. |
 | Confirm/dismiss possible copies | PM or DPM | Any project state (protective); kind, reference and date only, never the marked text; a dismissed place gets its original back; D80. |
 | Export visible data | Person with current read access AND enabled export policy | Restricted read alone does not imply bulk export; recheck content/audience, deleted/quarantined exclusions; O14. |
+| Export project records as CSV (tasks, decisions, questions, risks, output register) | Person who may read the project's content, while "Project exports allowed" is On, holding one of the project's export roles (default PM, Deputy, Owner, Sponsor; may include Member, Audit, Oversight) | Sub-project 9, D106: any project state; never Deleted content, uncleaned held items, source or message text, quotes, restricted material or private AI questions; each export recorded (`project.exported`). A saved output-register export holds only outputs every content reader may read (build ruling, 20–21 November 2026). Action `output.export`. |
 
 ## 5. Resources, money, outputs and dashboards
 
@@ -133,6 +134,17 @@ Self-approval is allowed by default for an eligible O/S, including a valid combi
 | Read financial detail | PM, DPM or O/S | Other roles require explicit policy; leadership summaries only. |
 | Draft/submit output | Participant | Attribution, source permissions, supported format. |
 | Register/file/move/rename output | PM or DPM | Approved external destination; O/S approval for approved version; failures preserve last confirmed reference. |
+| Submit an output (draft, upload, link, saved export) | Active PM, DPM, O/S or Member | Sub-project 9, D100: project not Deferred or Closed; format allowed; credential check. Action `output.submit`. |
+| Register, decline, set type/categories/issue date/contributors, add versions, accept a submission into a registered output, file, withdraw, delete and restore register entries | PM or DPM | Sub-project 9, D100/D103: project not Deferred or Closed, except delete/restore (sub-project 5 rules); each contributor's department is chosen at registration and never rewritten. Action `output.manage`. |
+| Request approval of an output version | PM or DPM | Sub-project 9: filed (or checked link), last check not Changed/Missing/Access denied; a Draft version cannot be approved once a later version is approved. Action `output.approve_request`. |
+| Approve an output version | O/S under the project approval policy | Sub-project 9: `approve_output` change request; not while Deferred or Closed; approval approves the content, not the commitments in it. |
+| Set or change an output's audience; clear or withdraw "Access review required" | PM or O/S who can read the project and the remaining material | Sub-project 9, D101: widening previews the names who gain access; audience membership not required (build ruling, 20–21 November 2026). Action `output.audience`. |
+| Read outputs and open filed files | Output readers (content readers, limited to a Restricted audience and the review rule) | Sub-project 9: leadership grants never; opening goes through Kainow's check before redirecting. |
+| Relink a moved or renamed file within approved destinations; register a changed file as a new version | PM or DPM | Sub-project 9, D107: only files Kainow filed can be registered as a new version. |
+| Approve a new place as a destination so a file moved there can be relinked | EA | Sub-project 9, D107: through destination approval; no separate flow. |
+| Project output settings (destination, formats, export roles) | PM or O/S when delegated; otherwise EA | Sub-project 9: reason; versioned. Action `outputs.settings`. |
+| Change owning department (move or keep the filed folder) | EA | Sub-project 9, D108: reason and folder choice; refused while an earlier move has failed and not been retried. |
+| Report a suspected secret in an output | Any output reader | Sub-project 9, D80: a held output file is withheld from storage. |
 | Approve deliverable/report/spec version | O/S | Exact version; external edit cannot inherit approval. |
 | Transfer owning department | EA | Reason, explicit relocate or retain-approved-location decision; no duplicate project counts. |
 | Send manual action-item digest | PM or O/S | Enabled channels; recipient/content rechecked. |
@@ -189,6 +201,10 @@ For work actually completed during the pause, use the accepted reconciliation ex
 | Export analytics/report | Current permitted reader with enabled export policy | Recheck at job execution and retrieval; preserve period/filters/definitions/coverage. Sub-project 7: Enterprise Administrator while "Analytics export allowed" is On; each export recorded. |
 | Save own analytics views; read the event definitions | Enterprise Administrator (`analytics.view`) | Counts only below project level unless also a participant; saved views never expand rights. |
 | Change access settings (archive delay, Audit/Oversight grant lengths, invitation validity, analytics export) | Enterprise Administrator (`organisation.manage`) | Reason; bounds of D90; applies to invitations sent and grants requested or extended afterwards. |
+| Storage connection, destinations, directory lookup, scheduled checks, approved formats, delegation switches, source-area move, storage manifest | Enterprise Administrator (`storage.manage`) | Sub-project 9, D102/D104: reason; the client secret is entered through a protected form and never shown again. |
+| Report types (add, rename, retire) | Enterprise Administrator (`organisation.manage`) | Sub-project 9, R14: retiring keeps history and blocks new selection. |
+| Designate or end a storage Administrator | Enterprise Administrator, never for themselves | Sub-project 9, D104: reason; Kainow grants and revokes direct write on the source area's recorded `projects` folder. |
+| Project exports allowed | Enterprise Administrator (`organisation.manage`) | Sub-project 9, D106: reason; Access and records page; Off by default. |
 | Approve/install or schedule a release update | Enterprise Administrator | Explicit approval for each release; pre-update backup/compatibility and integrity checks require verified design. |
 | Configure installation-wide AI concurrency | Enterprise Administrator | Default two across all projects and workers; 1 to 10, held in the database so it holds across every worker process; changed with a reason, recorded with the previous and new values. |
 | Configure automatic backups/retention and initiate protected restore | Enterprise Administrator under approved operational procedure | Daily encrypted/30-day default; restore authority never grants ordinary access to credential values or restricted sources. |
