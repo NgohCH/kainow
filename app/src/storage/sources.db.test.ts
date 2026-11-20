@@ -238,7 +238,7 @@ describe('managed source area: storing source versions', { skip: SKIP_NO_DB }, (
       `INSERT INTO storage_attempts (id, job, subject_id, outcome, duration_ms, at) VALUES ($1, 'store-source', $2, 'server', 1, $3)`,
       [uuidv7(), v.id, new Date(t.clock.now().getTime() - 3600_000)],
     );
-    const queued = async () => (await rows(`SELECT job, subject_id FROM storage_outbox WHERE sent_at IS NULL ORDER BY created_at, id`));
+    const queued = async () => (await rows(`SELECT job, subject_id FROM storage_outbox WHERE sent_at IS NULL ORDER BY job, subject_id`));
     await t.pool.query(`UPDATE storage_outbox SET sent_at = now()`);
     await dailySourceTask(deps());
     assert.deepEqual(await queued(), [{ job: 'backfill-sources', subject_id: areaId }], 'an hour after its last attempt it rests');
