@@ -114,6 +114,7 @@ export function Resources({ projectId, roles, status }: { projectId: string; rol
                 editing={editing === l.id}
                 onEdit={() => setEditing(editing === l.id ? null : l.id)}
                 onChanged={changed}
+                showAll={showAll}
               />
             ))}
           </ul>
@@ -151,7 +152,7 @@ export function Resources({ projectId, roles, status }: { projectId: string; rol
   );
 }
 
-function LineRow({ projectId, line: l, canEdit, editing, onEdit, onChanged }: { projectId: string; line: LineView; canEdit: boolean; editing: boolean; onEdit: () => void; onChanged: (m: string) => void }) {
+function LineRow({ projectId, line: l, canEdit, editing, onEdit, onChanged, showAll }: { projectId: string; line: LineView; canEdit: boolean; editing: boolean; onEdit: () => void; onChanged: (m: string) => void; showAll: boolean }) {
   const [mode, setMode] = useState<null | 'cancel' | 'history'>(null);
   const [history, setHistory] = useState<LineEvent[] | null>(null);
   const [reason, setReason] = useState('');
@@ -182,6 +183,8 @@ function LineRow({ projectId, line: l, canEdit, editing, onEdit, onChanged }: { 
     setBusy(true);
     try {
       await api.post(`/projects/${projectId}/resources/lines/${l.id}/status`, { status: next });
+      // The row leaves the default list (Finished): its Set status button goes, so focus the section heading.
+      if (!showAll && !lineDefaultFilter(next as LineView['status'])) document.getElementById('resources-heading')?.focus();
       onChanged(`Status set to ${statusLabel(next)}.`);
     } catch (e) {
       setError(errText(e));
