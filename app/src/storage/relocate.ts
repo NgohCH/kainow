@@ -212,8 +212,11 @@ async function relocateLocked(deps: StorageDeps, fileId: string, target: Relocat
       fresh = ref;
     }
     if (!(await holdsRecorded(f, dst.connector, dst.dest, ref, sameKind))) throw new StorageError('server');
+    // A same-drive answer is read against the old destination; its path is read again from the new one's root, which
+    // may be another folder of the drive, so the record and the move hold the path within the new destination.
+    if (here) ref = await dst.connector.getItem(dst.dest, ref.itemId);
   } catch (err) {
-    await undo(deps, f, dst, fresh, movedFrom);
+    await undo(deps, f, src, dst, fresh, movedFrom);
     throw err;
   }
 
@@ -299,11 +302,13 @@ async function copyAcross(
 
 /** A failed attempt: its new copy is removed (or a moved item put back), and the file is `stored` at its old place. */
 async function undo(
-  deps: StorageDeps, f: FileRow, dst: { connector: StorageConnector; dest: DestinationRef }, fresh: StoredRef | null, movedFrom: StoredRef | null,
+  deps: StorageDeps, f: FileRow, src: { connector: StorageConnector; dest: DestinationRef }, dst: { connector: StorageConnector; dest: DestinationRef },
+  fresh: StoredRef | null, movedFrom: StoredRef | null,
 ): Promise<void> {
   if (fresh) await removeQuietly(deps, f.id, dst, fresh);
   if (movedFrom) {
-    await dst.connector.move(dst.dest, f.item_id as string, movedFrom.parentId, movedFrom.name).catch(() => {
+    // Put back through the old destination, whose root holds the place it came from.
+    await src.connector.move(src.dest, f.item_id as string, movedFrom.parentId, movedFrom.name).catch(() => {
       logFixed(deps, 'A stored file that failed verification after a move could not be put back; its record keeps the old path.');
     });
   }

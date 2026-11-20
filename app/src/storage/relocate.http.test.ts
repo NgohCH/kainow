@@ -259,14 +259,15 @@ describe('relocation, moving the source area and the manifest', { skip: SKIP_NO_
   test('same-drive relocation verifies, records a move whose answer was lost, and puts back or flags a mismatch', async () => {
     const up = await storedUpload('Same drive.txt', 'Moved within one drive.');
     const before = await file(up.original);
-    // A second destination on the same drive, and a second folder in the same destination.
+    // A second destination on the same drive whose root is a folder of that drive, and a second folder in it.
+    const a = await destRef(areaA);
+    const cRoot = (await local.ensureFolder(a, null, 'C root')).itemId;
     const areaC = uuidv7();
     await t.pool.query(
       `INSERT INTO storage_destinations (id, connector, kind, purpose, label, drive_id, root_item_id, status, created_by, created_at)
-       VALUES ($1, 'local', 'local', 'outputs', 'Same drive', 'driveA', 'root-driveA', 'approved', $2, now())`,
-      [areaC, ids.admin],
+       VALUES ($1, 'local', 'local', 'outputs', 'Same drive', 'driveA', $2, 'approved', $3, now())`,
+      [areaC, cRoot, ids.admin],
     );
-    const a = await destRef(areaA);
     const inC = (await local.ensureFolder(await destRef(areaC), null, 'other place')).itemId;
     const parentOf = async () => (await local.getItem(a, before.item_id)).parentId;
     const originalParent = await parentOf();
@@ -302,8 +303,23 @@ describe('relocation, moving the source area and the manifest', { skip: SKIP_NO_
     ]);
     assert.ok(await exists(areaC, before.item_id), 'the one item is kept');
 
-    // One destination, two folders, the answer lost: the record is switched and recorded, not left stale.
+    // One destination, two folders. Fails verification after the move: moved back, the record unchanged.
     const second = (await local.ensureFolder(await destRef(areaC), null, 'second place')).itemId;
+    const atC = async (what: string) => {
+      const r = await file(up.original);
+      assert.deepEqual([r.destination_id, r.path, r.state], [areaC, `/other place/${before.name}`, 'stored'], what);
+      assert.equal((await moves()).length, 1, what);
+      assert.equal(await parentOf(), inC, what);
+    };
+    local.moveFault = 'wrong_hash';
+    await assert.rejects(relocateStoredFile(deps(), up.original, { destinationId: areaC, folderId: second }, 'Same drive', ids.admin), (e: unknown) => e instanceof StorageError && e.code === 'server');
+    await atC('verification failed within one destination');
+    // Another item already has the name in the second folder: refused.
+    const blocker2 = await local.upload(a, second, before.name, Buffer.from('somebody else'), { conflict: 'fail' });
+    await assert.rejects(relocateStoredFile(deps(), up.original, { destinationId: areaC, folderId: second }, 'Same drive', ids.admin), (e: unknown) => e instanceof StorageError && e.code === 'conflict');
+    await atC('conflict within one destination');
+    await local.removePermanently(a, blocker2.itemId);
+    // The answer lost: the record is switched and recorded, not left stale.
     local.moveFault = 'lost';
     await assert.rejects(relocateStoredFile(deps(), up.original, { destinationId: areaC, folderId: second }, 'Same drive', ids.admin), (e: unknown) => e instanceof StorageError && e.code === 'timeout');
     assert.equal((await file(up.original)).path, `/other place/${before.name}`);
