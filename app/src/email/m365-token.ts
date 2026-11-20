@@ -16,7 +16,10 @@ export interface M365Credentials {
 
 const REFRESH_BEFORE_MS = 5 * 60_000;
 
-/** Application (client credentials) token for sending as the one sender mailbox. Cached until five minutes before it expires. */
+/**
+ * Application (client credentials) token for one Microsoft resource (by default Exchange Online, for sending as the
+ * one sender mailbox; storage passes the Microsoft Graph scope). Cached until five minutes before it expires.
+ */
 export class M365TokenSource {
   private cached: { token: string; refreshAt: number } | undefined;
   private pending: Promise<string> | undefined;
@@ -27,6 +30,8 @@ export class M365TokenSource {
     private readonly clock: Clock = () => new Date(),
     /** A token request that takes longer than this is abandoned and counts as a temporary failure. */
     private readonly timeoutMs: number = 15_000,
+    /** The resource the token is for. Email keeps the default; storage passes `https://graph.microsoft.com/.default`. */
+    private readonly scope: string = 'https://outlook.office365.com/.default',
   ) {}
 
   async token(): Promise<string> {
@@ -48,7 +53,7 @@ export class M365TokenSource {
           grant_type: 'client_credentials',
           client_id: this.cfg.clientId,
           client_secret: this.cfg.clientSecret,
-          scope: 'https://outlook.office365.com/.default',
+          scope: this.scope,
         }).toString(),
         signal: AbortSignal.timeout(this.timeoutMs),
       });
