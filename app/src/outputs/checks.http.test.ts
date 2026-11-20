@@ -13,9 +13,12 @@ import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedDepartment, seedProject, seedUser } from '../testing/projects';
 import { FILE_NOT_AS_FILED, NOT_CHECKED } from './approval-handler';
 import {
-  CHANGED_SINCE_APPROVAL, NOT_APPROVED_PLACE, NOT_RECOVERED, SHARED_FILE, checkOutputs, checkStoredFile,
+  CHANGED_SINCE_APPROVAL, NOT_APPROVED_PLACE, NOT_CHANGED, NOT_FILED_BY_KAINOW, NOT_RECOVERED, REGISTER_FAILED, SHARED_FILE, checkOutputs,
+  checkStoredFile, registerChangedContent,
 } from './checks';
 import { fileOutputVersion } from './filing';
+import { placeOutput } from './sharing';
+import { onFinalFailure } from '../storage/jobs';
 
 const GRAPH_SCOPE = 'https://graph.microsoft.com/.default';
 const APP_ID = '11111111-2222-4333-8444-555555555555';
@@ -101,6 +104,16 @@ describe('opening, checking and reconciling output files', { skip: SKIP_NO_DB },
   const itemReads = (itemId: string) => fake.calls.filter((x) => x.method === 'GET' && x.path.endsWith(`/drives/${drive.driveId}/items/${itemId}`)).length;
   const events = async (outputId: string, kind: string) =>
     (await rows(`SELECT count(*)::int AS n FROM output_events WHERE output_id = $1 AND kind = $2`, [outputId, kind]))[0].n as number;
+  /** The PM or a Deputy asks; the request is answered 202 with the job queued. */
+  async function askToRegister(who: Client, outputId: string, n = 1): Promise<Record<string, any>> {
+    const r = await who.request('POST', vUrl(outputId, n, 'register-changed'));
+    assert.equal(r.status, 202, JSON.stringify(r.body));
+    const vid = await versionId(outputId, n);
+    assert.equal((await rows(`SELECT count(*)::int AS n FROM storage_outbox WHERE job = 'register-changed' AND subject_id = $1`, [vid]))[0].n >= 1, true);
+    return r.body;
+  }
+  /** Runs the register-changed job once. */
+  const runRegister = async (outputId: string, n = 1) => registerChangedContent(deps(), await versionId(outputId, n));
   const notices = async (kind: string) => (await rows(`SELECT user_id, summary FROM notifications WHERE kind = $1 ORDER BY user_id`, [kind]));
 
   beforeEach(async () => {
@@ -177,6 +190,10 @@ describe('opening, checking and reconciling output files', { skip: SKIP_NO_DB },
     const seen = await c.ada.request('GET', vUrl(changed.out, 1, 'open'));
     assert.equal(seen.status, 409);
     assert.deepEqual(seen.body.actions, [], 'what the PM can do is offered to the PM and Deputies');
+    // Opened again within the minute: answered from the recorded result, without the provider.
+    const reads = itemReads(changed.file.item_id);
+    assert.equal((await c.pm.request('GET', vUrl(changed.out, 1, 'open'))).body.state, 'changed');
+    assert.equal(itemReads(changed.file.item_id), reads, 'no provider call within the minute');
     // Found once: one event and one notice each for the PM and the Deputy, however often it is opened.
     t.clock.advanceMinutes(2);
     assert.equal((await c.pm.request('GET', vUrl(changed.out, 1, 'open'))).status, 409);
@@ -274,8 +291,13 @@ describe('opening, checking and reconciling output files', { skip: SKIP_NO_DB },
     assert.equal(await checkStoredFile(deps(), file.id), 'changed');
     assert.equal((await c.ada.request('POST', vUrl(out, 1, 'register-changed'))).status, 403, 'the PM or a Deputy only');
 
-    const r = await c.deputy.request('POST', vUrl(out, 1, 'register-changed'));
-    assert.equal(r.status, 200, JSON.stringify(r.body));
+    const asked = await askToRegister(c.deputy, out);
+    assert.equal(asked.versions.length, 1, 'nothing is made until the job runs');
+    assert.equal(asked.versions[0].filing.registering, 'Registering the changed file as a new version');
+    assert.deepEqual(asked.versions[0].filing.actions, [], 'not offered again while under way');
+    assert.equal((await c.pm.request('POST', vUrl(out, 1, 'register-changed'))).status, 409, 'one request at a time');
+    await runRegister(out);
+    const r = await c.pm.request('GET', url(`/${out}`));
     const v2 = r.body.versions.find((v: { no: number }) => v.no === 2);
     assert.deepEqual([v2.origin, v2.status, v2.filing.state], ['changed_file', 'draft', 'stored']);
     const f2 = await fileRow(out, 2);
@@ -283,16 +305,59 @@ describe('opening, checking and reconciling output files', { skip: SKIP_NO_DB },
     assert.equal(f2.path, 'Water Services/Pump station renewal/2026/Status reports/Weekly status v2.md');
     assert.notEqual(f2.item_id, file.item_id);
     assert.ok((await connector.download(driveRoot(), f2.item_id)).equals(edited), 'the changed content is the new file');
-    assert.equal((await connector.getItem(driveRoot(), f2.item_id)).parentId, (await connector.getItem(driveRoot(), file.item_id)).parentId, 'in the same place');
+    assert.equal((await connector.getItem(driveRoot(), f2.item_id)).parentId, (await connector.getItem(driveRoot(), file.item_id)).parentId, 'in the output’s folder');
     assert.equal((await rows(`SELECT created_by FROM output_versions WHERE output_id = $1 AND version_no = 2`, [out]))[0].created_by, ids.deputy);
     // The original is restored from the provider's history and Checked again; still Approved.
     assert.ok((await connector.download(driveRoot(), file.item_id)).equals(original));
     const v1 = r.body.versions.find((v: { no: number }) => v.no === 1);
     assert.deepEqual([v1.status, v1.filing.checkStatus, v1.filing.checkLabel, v1.filing.recovery], ['approved', 'ok', 'Checked', undefined]);
     assert.equal(await events(out, 'changed_registered'), 1);
-    // Nothing is left to register.
+    // Nothing is left to register, and running the job again does nothing.
     const again = await c.pm.request('POST', vUrl(out, 1, 'register-changed'));
     assert.equal(again.status, 409);
+    await runRegister(out);
+    assert.equal((await rows(`SELECT count(*)::int AS n FROM output_versions WHERE output_id = $1`, [out]))[0].n, 2);
+  });
+
+  test('register-changed is retried by the job, and after its last attempt the PM may ask again', async () => {
+    const { out, file } = await filedOutput('Weekly status');
+    fake.changeContent(drive.driveId, file.item_id, Buffer.from('Rewritten outside Kainow.'));
+    await checkStoredFile(deps(), file.id);
+    await askToRegister(c.pm, out);
+    fake.fault({ method: 'GET', pathIncludes: `${file.item_id}/content` }, '503', 1);
+    await assert.rejects(runRegister(out), (e: unknown) => e instanceof StorageError);
+    assert.equal((await rows(`SELECT count(*)::int AS n FROM output_versions WHERE output_id = $1`, [out]))[0].n, 1);
+    await onFinalFailure(deps(), 'register-changed', await versionId(out), 'throttled');
+    const v1 = await version(c.pm, out);
+    assert.equal(v1.filing.registerFailed, REGISTER_FAILED);
+    assert.deepEqual(v1.filing.actions, ['register_changed']);
+    await askToRegister(c.pm, out);
+    await runRegister(out);
+    assert.equal((await version(c.pm, out, 2)).origin, 'changed_file');
+  });
+
+  test('a filed file edited and moved is Missing outside approved places; inside one its new version goes to the output’s own folder', async () => {
+    const outside = await filedOutput('Weekly status');
+    const elsewhere = (await connector.createFolder(driveRoot(), null, 'Elsewhere')).itemId;
+    fake.changeContent(drive.driveId, outside.file.item_id, Buffer.from('Edited and taken away.'));
+    fake.moveItem(drive.driveId, outside.file.item_id, elsewhere);
+    assert.equal(await checkStoredFile(deps(), outside.file.id), 'missing');
+    const refused = await c.pm.request('POST', vUrl(outside.out, 1, 'register-changed'));
+    assert.equal(refused.status, 409);
+    assert.equal(refused.body.message, NOT_CHANGED);
+    assert.equal(await connector.findChild(driveRoot(), elsewhere, 'Weekly status v2.md'), null, 'nothing put in an unapproved place');
+
+    const inside = await filedOutput('Monthly status');
+    const archive = (await connector.createFolder({ ...driveRoot(), rootItemId: outputsRoot }, null, 'Archive')).itemId;
+    fake.changeContent(drive.driveId, inside.file.item_id, Buffer.from('Edited and archived.'));
+    fake.moveItem(drive.driveId, inside.file.item_id, archive);
+    assert.equal(await checkStoredFile(deps(), inside.file.id), 'changed');
+    await askToRegister(c.pm, inside.out);
+    await runRegister(inside.out);
+    const f2 = await fileRow(inside.out, 2);
+    assert.equal(f2.path, 'Water Services/Pump station renewal/2026/Status reports/Monthly status v2.md');
+    assert.equal(f2.folder_id, inside.file.folder_id);
+    assert.equal(await connector.findChild({ ...driveRoot(), rootItemId: outputsRoot }, archive, 'Monthly status v2.md'), null, 'never next to the moved original');
   });
 
   test('when no matching version exists the original stays Changed with the exact text', async () => {
@@ -302,8 +367,8 @@ describe('opening, checking and reconciling output files', { skip: SKIP_NO_DB },
     const real = connector.listVersions.bind(connector);
     connector.listVersions = async () => []; // the history no longer holds the recorded content
     try {
-      const r = await c.pm.request('POST', vUrl(out, 1, 'register-changed'));
-      assert.equal(r.status, 200, JSON.stringify(r.body));
+      await askToRegister(c.pm, out);
+      await runRegister(out);
     } finally {
       connector.listVersions = real;
     }
@@ -321,7 +386,8 @@ describe('opening, checking and reconciling output files', { skip: SKIP_NO_DB },
     const { out, file } = await filedOutput('Weekly status');
     fake.changeContent(drive.driveId, file.item_id, Buffer.from('Rewritten outside Kainow.'));
     await checkStoredFile(deps(), file.id);
-    assert.equal((await c.pm.request('POST', vUrl(out, 1, 'register-changed'))).status, 200);
+    await askToRegister(c.pm, out);
+    await runRegister(out);
     const f1 = await fileRow(out, 1);
     const f2 = await fileRow(out, 2);
     assert.notEqual(f1.id, f2.id);
@@ -357,8 +423,28 @@ describe('opening, checking and reconciling output files', { skip: SKIP_NO_DB },
     assert.deepEqual([moves[0].old_path, moves[0].new_path, moves[0].actor_id], [file.path, 'Archive/Weekly status (old).md', ids.deputy]);
     assert.equal(await events(out, 'relinked'), 1);
     assert.equal((await c.pm.request('GET', url(`/${out}`))).body.versions[0].filing.path, 'Archive/Weekly status (old).md');
-    // A file where Kainow recorded it has nothing to relink.
+    // A file where Kainow recorded it has nothing to relink, nor has a changed one.
     assert.equal((await c.pm.request('POST', vUrl(out, 1, 'relink'), {})).status, 409);
+    fake.changeContent(drive.driveId, file.item_id, Buffer.from('Edited.'));
+    assert.equal(await checkStoredFile(deps(), file.id), 'changed');
+    assert.equal((await c.pm.request('POST', vUrl(out, 1, 'relink'), {})).status, 409);
+  });
+
+  test('a file relinked inside the project tree still moves out of it when its readers narrow', async () => {
+    const { out, file } = await filedOutput('Weekly status');
+    const projectFolder = (await rows(`SELECT item_id FROM storage_folders WHERE level = 'project'`))[0].item_id as string;
+    const loose = (await connector.createFolder({ ...driveRoot(), rootItemId: outputsRoot }, projectFolder, 'Loose papers')).itemId;
+    fake.moveItem(drive.driveId, file.item_id, loose);
+    assert.equal(await checkStoredFile(deps(), file.id), 'moved');
+    assert.equal((await c.pm.request('POST', vUrl(out, 1, 'relink'), {})).status, 200);
+    const relinked = await fileRow(out);
+    assert.deepEqual([relinked.path, relinked.folder_id], ['Water Services/Pump station renewal/Loose papers/Weekly status v1.md', null]);
+    const narrowed = await c.pm.request('PUT', url(`/${out}/audience`), { mode: 'restricted', userIds: [ids.pm, ids.deputy], reason: 'Board only' });
+    assert.equal(narrowed.status, 200, JSON.stringify(narrowed.body));
+    await placeOutput(deps(), out);
+    const f = await fileRow(out);
+    assert.equal(f.path, 'Water Services/Pump station renewal (restricted)/Weekly status/Weekly status v1.md');
+    assert.notEqual(f.folder_id, null);
   });
 
   test('moved outside approved destinations shows Missing or Access denied and is relinkable only after the place is approved as a destination', async () => {
@@ -404,6 +490,12 @@ describe('opening, checking and reconciling output files', { skip: SKIP_NO_DB },
     const f = await fileRow(out);
     fake.changeContent(drive.driveId, doc.itemId, Buffer.from('plan of works, revised'));
     assert.equal(await checkStoredFile(deps(), f.id), 'changed');
+    // Kainow never touches a linked document: no new file next to it, no restoring its history.
+    assert.deepEqual((await version(c.pm, out)).filing.actions, []);
+    const register = await c.pm.request('POST', vUrl(out, 1, 'register-changed'));
+    assert.equal(register.status, 409);
+    assert.equal(register.body.message, NOT_FILED_BY_KAINOW);
+    assert.equal((await rows(`SELECT count(*)::int AS n FROM storage_outbox WHERE job = 'register-changed'`))[0].n, 0);
     // Its destination withdrawn: Access denied, without asking the provider.
     await t.pool.query(`UPDATE storage_destinations SET status = 'withdrawn' WHERE id = $1`, [destId]);
     const before = itemReads(doc.itemId);

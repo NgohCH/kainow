@@ -45,6 +45,15 @@ export const SHARING_PLACE_FAILED = 'sharing_place_failed';
 export const placeFailedNotice = (projectName: string): string =>
   `Kainow could not move the files of an output in ${projectName} to where only its readers can open them`;
 
+/**
+ * The stored output files Kainow places (`f` the stored file, `o` its output): every one in a Kainow folder, and every
+ * one in the project's own output destination wherever it sits there (a relinked file still under the shared project
+ * folder must move when the readers narrow). Only a file relinked into another destination, outside Kainow's folders,
+ * is left where it is.
+ */
+const KAINOW_PLACED = `(f.folder_id IS NOT NULL OR f.destination_id IS NOT DISTINCT FROM
+  (SELECT s.destination_id FROM project_output_settings s WHERE s.project_id = o.project_id))`;
+
 /** What a stored file's move is recorded with in `stored_file_moves`. */
 const MOVE_REASON = 'Readers changed';
 /** Logged (fixed text) when revocations after a failed narrowing move fail too; the rows stay listed to repair. */
@@ -386,7 +395,8 @@ interface PlacedFile {
  * records the output's placement, and only then syncs its output folders. If a move fails the output is marked to
  * repair (`place_failed_at`), nothing is granted, but when its readers narrowed its output folders' revocations still
  * run; then the failure is thrown so the job is tried again. Registered links are never moved (Kainow did not create
- * them), nor is a filed file relinked outside Kainow's folders (no `folder_id`: its sharing stays as it is there, D107).
+ * them), nor is a filed file relinked into another destination outside Kainow's folders (D107: its sharing stays as
+ * it is there). A file relinked anywhere in the project's own output destination is placed like any other.
  */
 export async function placeOutput(deps: StorageDeps, outputId: string): Promise<void> {
   await exclusively(deps, 'place-output', outputId, () => placeLocked(deps, outputId));
@@ -410,9 +420,9 @@ async function placeLocked(deps: StorageDeps, outputId: string): Promise<void> {
   const files = (
     await deps.pool.query<PlacedFile>(
       `SELECT f.id, f.destination_id, f.item_id, f.drive_id, f.path, f.name, f.folder_id
-         FROM output_versions v JOIN stored_files f ON f.id = v.stored_file_id
+         FROM output_versions v JOIN outputs o ON o.id = v.output_id JOIN stored_files f ON f.id = v.stored_file_id
         WHERE v.output_id = $1 AND f.state = 'stored' AND f.destination_id IS NOT NULL AND f.item_id IS NOT NULL
-          AND f.folder_id IS NOT NULL
+          AND ${KAINOW_PLACED}
         ORDER BY v.version_no`,
       [outputId],
     )
@@ -607,7 +617,7 @@ export async function reconcileSharing(deps: StorageDeps, at: Date = deps.clock(
     await deps.pool.query<{ output_id: string; project_id: string; level: string | null; key: string | null }>(
       `SELECT v.output_id, o.project_id, sf.level, sf.key
          FROM output_versions v JOIN outputs o ON o.id = v.output_id
-         JOIN stored_files f ON f.id = v.stored_file_id AND f.state = 'stored' AND f.folder_id IS NOT NULL
+         JOIN stored_files f ON f.id = v.stored_file_id AND f.state = 'stored' AND ${KAINOW_PLACED}
          LEFT JOIN storage_folders sf ON sf.id = f.folder_id
         ORDER BY v.output_id, v.version_no`,
     )

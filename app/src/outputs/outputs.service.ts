@@ -22,7 +22,7 @@ import { type OutputFormat, loadStorageSettings } from '../storage/settings';
 import { type ItemState, StorageError } from '../storage/types';
 import { DOES_NOT_APPROVE_COMMITMENTS, approveOutputHandler, endOutputApprovalRequests } from './approval-handler';
 import { checkOutputAudience, createOutputAudience, writeOutputAudience } from './audience';
-import { type CheckStatus, NOT_RECOVERED, approvedPlaceOf, changeRegisteredSql, checkActions, checkLabel, pathInDestination } from './checks';
+import { type CheckStatus, NOT_RECOVERED, REGISTER_FAILED, REGISTER_PENDING, approvedPlaceOf, changeStateSql, checkActions, checkLabel, pathInDestination } from './checks';
 import { ALREADY_FILED, BEING_FILED, LINKED_NOT_FILED, NOT_KEPT, NO_DESTINATION, REGISTER_FIRST, filingFailedLabel, requestFiling } from './filing';
 import { effectiveFormats, outputRefusal } from './formats';
 import { outputFileName } from './naming';
@@ -108,6 +108,10 @@ export interface Filing {
   checkLabel?: string;
   /** "The approved content could not be recovered from storage", when a registered change left the original Changed. */
   recovery?: string;
+  /** "Registering the changed file as a new version", while that job is waiting or running. */
+  registering?: string;
+  /** For the PM and Deputies: the last request to register the change failed (they may ask again). */
+  registerFailed?: string;
   /** What the PM or a Deputy can do about the check result: `register_changed`, `relink`, `add_version`. */
   actions?: string[];
   /** A file relinked into another destination is labelled with it (D32); PM, Deputies, Owner and Sponsors only. */
@@ -836,7 +840,8 @@ export class OutputsService {
               f.state AS "fileState", f.failure_code AS "failureCode", f.check_status AS "checkStatus", f.last_checked_at AS "lastCheckedAt", f.path,
               b.output_version_id IS NOT NULL AND b.bytes IS NOT NULL AS kept,
               CASE WHEN f.destination_id IS DISTINCT FROM s.destination_id THEN d.label END AS "otherDestination",
-              ${changeRegisteredSql('v.id')} AS "changeRegistered"
+              ${changeStateSql('v.id').registered} AS "changeRegistered", ${changeStateSql('v.id').pending} AS "changePending",
+              ${changeStateSql('v.id').failed} AS "changeFailed"
          FROM output_versions v JOIN users u ON u.id = v.created_by
          JOIN outputs o ON o.id = v.output_id
          LEFT JOIN project_output_settings s ON s.project_id = o.project_id
@@ -865,8 +870,10 @@ export class OutputsService {
       if (r.fileState === 'stored' || r.fileState === 'linked') {
         const status = r.checkStatus as CheckStatus;
         filing.checkLabel = checkLabel(status, r.status);
-        filing.actions = checkActions(status, mayFile);
+        filing.actions = checkActions(status, mayFile, { filed: r.fileState === 'stored', pending: r.changePending });
         if (status === 'changed' && r.changeRegistered) filing.recovery = NOT_RECOVERED;
+        if (status === 'changed' && r.changePending) filing.registering = REGISTER_PENDING;
+        if (status === 'changed' && r.changeFailed && mayFile) filing.registerFailed = REGISTER_FAILED;
         if (seesPath && r.otherDestination) filing.destination = r.otherDestination;
       }
       if (seesPath && r.fileState) filing.path = r.path;

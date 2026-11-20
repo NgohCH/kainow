@@ -429,7 +429,8 @@ CREATE TABLE output_events (
   kind        text        NOT NULL CHECK (kind IN (
                 'submitted', 'registered', 'declined', 'updated', 'version_added', 'filed', 'filing_failed', 'approval_requested',
                 'approved', 'superseded', 'audience_changed', 'review_required', 'review_cleared', 'withdrawn', 'deleted', 'restored',
-                'held', 'released', 'checked', 'changed_found', 'moved_found', 'missing_found', 'relinked', 'changed_registered')),
+                'held', 'released', 'checked', 'changed_found', 'moved_found', 'missing_found', 'relinked', 'changed_registered',
+                'change_register_requested', 'change_register_failed')),
   actor_id    uuid        REFERENCES users (id),
   at          timestamptz NOT NULL,
   reason      text,

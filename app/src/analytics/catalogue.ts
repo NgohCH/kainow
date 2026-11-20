@@ -195,6 +195,7 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['output.withdrawn', 'An output was withdrawn, with a reason.'],
     ['output.relinked', 'The PM or a Deputy linked a moved or missing output file to where it is now.'],
     ['output.changed_registered', 'The PM or a Deputy registered an output file changed in storage as a new version.'],
+    ['output.change_register_requested', 'The PM or a Deputy asked for an output file changed in storage to be registered as a new version.'],
     ['analysis_settings.changed', 'The organisation analysis settings were changed.'],
     ['analysis_settings.project_changed', 'A project’s analysis settings were changed.'],
     ['extraction.requested', 'An extraction was requested.'],
@@ -339,6 +340,8 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['missing_found', 'A filed output was found missing in storage.'],
     ['relinked', 'A filed output was linked again to its place in storage.'],
     ['changed_registered', 'A change found in storage was registered as a new version.'],
+    ['change_register_requested', 'The PM or a Deputy asked for a change found in storage to be registered as a new version.'],
+    ['change_register_failed', 'Registering a change found in storage as a new version failed.'],
   ]),
   ...group('project_ai_limit_events', 'AI', PERSON, 'project AI limits', [['changed', 'A project’s AI limits changed, with a reason.']]),
   ...group('ai_connection_events', 'AI', PERSON, 'AI connection', [

@@ -4,11 +4,14 @@ import { writeAudit } from '../audit/audit';
 import { uuidv7 } from '../common/uuid7';
 import type { StorageConnector } from '../storage/connector';
 import { StorageWaitingForKey } from '../storage/connector-factory';
-import { type StorageDeps, registerStorageDailyTask, registerStorageHandler } from '../storage/jobs';
+import { type StorageDeps, registerStorageDailyTask, registerStorageFinalFailure, registerStorageHandler } from '../storage/jobs';
+import { queueStorageJob } from '../storage/outbox';
 import { quickXorHash } from '../storage/quickxor';
 import { loadStorageSettings } from '../storage/settings';
 import { type DestinationRef, type ItemState, StorageError, type StoredRef } from '../storage/types';
+import { afterFiled, ensureOutputFolder } from './filing';
 import { PathTooLong, fitPath, outputFileName } from './naming';
+import { isWholeProject } from './readers';
 
 /**
  * Checks and reconciliation of output files (spec 5.7, 5.8, D107). A filed (stored) or registered (linked) output file
@@ -39,6 +42,8 @@ export const BUSY = 'This change is already being registered.';
 export const SAME_TIME = 'Someone else changed this output at the same time. Try again.';
 export const PATH_TOO_LONG = 'The folder path is too long for a new file here.';
 export const NO_FILE = 'This version has no file in storage.';
+export const NOT_FILED_BY_KAINOW = 'Only a file Kainow filed can be registered as a new version; a linked document stays as it is.';
+export const NO_PLACEMENT = 'This output has no folder in an approved destination to file the new version in.';
 
 /** The notice kinds a newly found change raises (worded by makeStorageNotify); the subject is the stored file. */
 export const OUTPUT_FILE_CHANGED = 'output_file_changed';
@@ -50,9 +55,11 @@ const FOUND: Partial<Record<CheckStatus, { event: string; notice: string }>> = {
   missing: { event: 'missing_found', notice: OUTPUT_FILE_MISSING },
 };
 const BAD: readonly CheckStatus[] = ['changed', 'moved', 'missing', 'access_denied'];
-/** The states that stop a file being opened, downloaded or approved. */
-export const BLOCKING: readonly CheckStatus[] = ['changed', 'missing', 'access_denied'];
-/** A file checked this recently and found as recorded is opened without asking the provider again (spec 5.7). */
+/** The states that stop a file being opened, downloaded or approved (the approval handler uses this list too). */
+export const BLOCKING: readonly string[] = ['changed', 'missing', 'access_denied'];
+/** The states a file can be relinked from: it is elsewhere or out of reach, its content as recorded. */
+const RELINKABLE: readonly CheckStatus[] = ['moved', 'missing', 'access_denied'];
+/** A file checked this recently is opened on its recorded result without asking the provider again (spec 5.7). */
 export const OPEN_CHECK_MS = 60_000;
 const MAX_FOLDER_DEPTH = 64;
 const MAX_SUFFIX = 20;
@@ -93,10 +100,13 @@ export function checkLabel(status: CheckStatus, versionStatus: string): string {
   return LABELS[status] ?? LABELS.unverified;
 }
 
-/** What the PM or a Deputy can do about a check result (nothing for anyone else). */
-export function checkActions(status: CheckStatus, manages: boolean): string[] {
+/**
+ * What the PM or a Deputy can do about a check result (nothing for anyone else). Registering changed content is offered
+ * only for a file Kainow filed (never a linked document) and not while a request is under way.
+ */
+export function checkActions(status: CheckStatus, manages: boolean, file: { filed: boolean; pending?: boolean }): string[] {
   if (!manages) return [];
-  if (status === 'changed') return ['register_changed'];
+  if (status === 'changed') return file.filed && !file.pending ? ['register_changed'] : [];
   if (status === 'moved' || status === 'access_denied') return ['relink'];
   if (status === 'missing') return ['relink', 'add_version'];
   return [];
@@ -209,11 +219,13 @@ async function inspect(deps: CheckDeps, f: FileRow & { destination_id: string; i
     if (err instanceof StorageError && err.code === 'forbidden') return { status: 'access_denied' };
     throw err;
   }
-  if (contentDiffers(f, item)) return { status: 'changed', item };
-  if (plainPath(item.path) === plainPath(f.path) && item.name === f.name) return { status: 'ok', item };
-  // Somewhere else: Moved when that place is in an approved destination, otherwise as good as gone.
+  const changed = contentDiffers(f, item);
+  if (plainPath(item.path) === plainPath(f.path) && item.name === f.name) return { status: changed ? 'changed' : 'ok', item };
+  // Somewhere else: as good as gone unless that place is in an approved destination (even if it was edited too, so
+  // nothing is ever done next to it there); in one, Changed when edited, otherwise Moved.
   const place = await approvedPlaceOf(deps.pool, connector, dest, item, { prefer: f.destination_id });
-  return place ? { status: 'moved', item, place } : { status: 'missing', item };
+  if (!place) return { status: 'missing', item };
+  return changed ? { status: 'changed', item, place } : { status: 'moved', item, place };
 }
 
 /**
@@ -350,13 +362,14 @@ const RELINK_REASON = 'Relinked';
  * Points a moved, missing or unreachable file at where it is now: the same item (found by its id), or the item a link
  * names. The place must be inside an approved output destination, the content must be what was recorded, and no other
  * stored file may already stand for the item. The reference and path are updated, `stored_file_moves` records old and
- * new, and the version's `relinked` event is written. A filed file outside Kainow's own folders is no longer placed or
- * shared by Kainow (its sharing stays as it is there).
+ * new, and the version's `relinked` event is written. A filed file keeps being placed by Kainow while it is in the
+ * project's own output destination (moved back where its readers need it, spec 5.5); in another destination its
+ * sharing stays as it is there.
  */
 export async function relinkFile(deps: CheckDeps, fileId: string, actorId: string, url: string | null): Promise<void> {
   const f = await loadFile(deps.pool, fileId);
   if (!checkable(f)) throw new FileActionRefused(NO_FILE);
-  if (!BAD.includes(f.check_status)) throw new FileActionRefused(NOTHING_TO_RELINK);
+  if (!RELINKABLE.includes(f.check_status)) throw new FileActionRefused(NOTHING_TO_RELINK);
 
   let connector: StorageConnector;
   let ref: DestinationRef;
@@ -446,27 +459,107 @@ async function standsElsewhere(db: Db, fileId: string, driveId: string, itemId: 
 // Registering changed content as a new version (spec 5.8: Changed)
 // ---------------------------------------------------------------------------------------------------------------------
 
+/**
+ * SQL for where a version's latest change stands (`idExpr` is a column or a `$n` placeholder only, never a value).
+ * Events of one instant have no order, so a request is matched by counting: every request ends in exactly one
+ * `changed_registered` or `change_register_failed`, so one is `pending` while requests outnumber their outcomes.
+ * `registered` when a `changed_registered` is at or after the last `changed_found`; `failed` when, nothing pending and
+ * nothing registered, a request for this change ended in failure.
+ */
+export function changeStateSql(idExpr: string): { registered: string; pending: string; failed: string } {
+  const at = (kind: string) => `(SELECT max(at) FROM output_events WHERE version_id = ${idExpr} AND kind = '${kind}')`;
+  const count = (kinds: string) => `(SELECT count(*) FROM output_events WHERE version_id = ${idExpr} AND kind IN (${kinds}))`;
+  const registered = `COALESCE(${at('changed_registered')} >= ${at('changed_found')}, false)`;
+  const pending = `(${count("'change_register_requested'")} > ${count("'changed_registered', 'change_register_failed'")})`;
+  return {
+    registered,
+    pending,
+    failed: `(NOT ${pending} AND NOT ${registered} AND COALESCE(${at('change_register_failed')} >= ${at('changed_found')}, false))`,
+  };
+}
+const CHANGE_STATE = changeStateSql('$1');
+
+async function changeState(db: Db, versionId: string): Promise<{ registered: boolean; pending: boolean }> {
+  return (
+    await db.query<{ registered: boolean; pending: boolean }>(`SELECT ${CHANGE_STATE.registered} AS registered, ${CHANGE_STATE.pending} AS pending`, [versionId])
+  ).rows[0];
+}
+
+/** Shown on a version whose last request to register its change failed for good. */
+export const REGISTER_FAILED = 'Registering the changed file as a new version failed. Try again.';
+/** Shown while a request to register the change waits for its job. */
+export const REGISTER_PENDING = 'Registering the changed file as a new version';
+
 interface ChangedRow {
   version_id: string; output_id: string; version_no: number; format: string; title: string; project_id: string;
-  output_status: string; deleted: boolean; held: boolean; file_id: string;
+  output_status: string; deleted: boolean; held: boolean; file_id: string | null; placement_folder_id: string | null;
+}
+
+const loadChanged = async (db: Db, versionId: string): Promise<ChangedRow | undefined> =>
+  (
+    await db.query<ChangedRow>(
+      `SELECT v.id AS version_id, v.output_id, v.version_no, v.format, o.title, o.project_id, o.status AS output_status,
+              o.deleted_at IS NOT NULL AS deleted, (o.held_case_id IS NOT NULL OR v.held_case_id IS NOT NULL) AS held,
+              v.stored_file_id AS file_id, o.placement_folder_id
+         FROM output_versions v JOIN outputs o ON o.id = v.output_id
+        WHERE v.id = $1`,
+      [versionId],
+    )
+  ).rows[0];
+
+/** Why a change may not be registered now (null when it may). Only a file Kainow filed: a linked document is never touched. */
+function refusalFor(v: ChangedRow | undefined, f: FileRow | undefined): string | null {
+  if (!v?.file_id || !checkable(f)) return NO_FILE;
+  if (f.state !== 'stored') return NOT_FILED_BY_KAINOW;
+  if (v.output_status !== 'registered' || v.deleted || v.held) return ONLY_REGISTERED;
+  if (f.check_status !== 'changed') return NOT_CHANGED;
+  return null;
 }
 
 /**
- * Registers the changed content of a version's file as a new Draft version (origin `changed_file`): the current
- * content is downloaded and uploaded as a new file `<Title> v<n+1>.<ext>` in the same folder (never overwriting:
- * ` (2)`, ` (3)` …), confirmed by size and QuickXorHash, and recorded with its own stored file. Then the provider's
- * version history of the original is searched for a version whose size and hash match the record; if found it is
- * restored and the original is Checked again, otherwise it stays Changed and shows "The approved content could not be
- * recovered from storage". One run at a time per version; a change is registered once.
+ * The PM's or a Deputy's request (API side, in the caller's transaction, the output locked): checks the change may be
+ * registered, records `change_register_requested` with who asked, and queues the `register-changed` job.
  */
-export async function registerChangedContent(deps: CheckDeps, versionId: string, actorId: string): Promise<{ versionNo: number; restored: boolean }> {
+export async function requestChangeRegistration(c: PoolClient, versionId: string, actorId: string, at: Date): Promise<void> {
+  const v = await loadChanged(c, versionId);
+  const f = v?.file_id ? await loadFile(c, v.file_id) : undefined;
+  const refused = refusalFor(v, f);
+  if (refused) throw new FileActionRefused(refused);
+  const state = await changeState(c, versionId);
+  if (state.registered) throw new FileActionRefused(ALREADY_REGISTERED);
+  if (state.pending) throw new FileActionRefused(BUSY);
+  const row = v as ChangedRow;
+  await c.query(`INSERT INTO output_events (id, output_id, version_id, kind, actor_id, at, detail) VALUES ($1, $2, $3, 'change_register_requested', $4, $5, $6)`, [
+    uuidv7(at.getTime()), row.output_id, versionId, actorId, at, JSON.stringify({ versionNo: row.version_no }),
+  ]);
+  await writeAudit(c, {
+    at, action: 'output.change_register_requested', actorUserId: actorId, subjectType: 'output', subjectId: row.output_id, detail: { versionNo: row.version_no },
+  });
+  await queueStorageJob(c, 'register-changed', versionId);
+}
+
+/**
+ * The `register-changed` job (spec 5.8): registers the changed content of a filed version's file as a new Draft version
+ * (origin `changed_file`) for whoever asked. The current content is downloaded and uploaded as a new file
+ * `<Title> v<n+1>.<ext>` in the output's own folder (its placement, never next to wherever the original now is; never
+ * overwriting: ` (2)`, ` (3)` …), confirmed by size and QuickXorHash, and recorded with its own stored file. Then the
+ * provider's version history of the original is searched for the recorded content; if found it is restored and the
+ * original is Checked again, otherwise it stays Changed and shows "The approved content could not be recovered from
+ * storage". One run at a time per version; a request is carried out once. A refusal ends the request
+ * (`change_register_failed`); a provider fault is tried again by the job's attempts.
+ */
+export async function registerChangedContent(deps: StorageDeps, versionId: string): Promise<void> {
   const lock = await deps.pool.connect();
   let broken: Error | undefined;
   try {
     const got = (await lock.query<{ ok: boolean }>(`SELECT pg_try_advisory_lock(hashtext('register-changed'), hashtext($1)) AS ok`, [versionId])).rows[0].ok;
-    if (!got) throw new FileActionRefused(BUSY);
+    // Another worker is on it: this run is tried again later and then finds it done.
+    if (!got) throw new StorageError('throttled', { retryAfterMs: 60_000 });
     try {
-      return await registerLocked(deps, versionId, actorId);
+      await registerLocked(deps, versionId);
+    } catch (err) {
+      if (!(err instanceof FileActionRefused)) throw err;
+      await registrationFailed(deps, versionId, err.message);
     } finally {
       try {
         await lock.query(`SELECT pg_advisory_unlock(hashtext('register-changed'), hashtext($1))`, [versionId]);
@@ -479,99 +572,106 @@ export async function registerChangedContent(deps: CheckDeps, versionId: string,
   }
 }
 
-async function registerLocked(deps: CheckDeps, versionId: string, actorId: string): Promise<{ versionNo: number; restored: boolean }> {
-  const v = (
-    await deps.pool.query<ChangedRow>(
-      `SELECT v.id AS version_id, v.output_id, v.version_no, v.format, o.title, o.project_id, o.status AS output_status,
-              o.deleted_at IS NOT NULL AS deleted, (o.held_case_id IS NOT NULL OR v.held_case_id IS NOT NULL) AS held, v.stored_file_id AS file_id
-         FROM output_versions v JOIN outputs o ON o.id = v.output_id
-        WHERE v.id = $1`,
+/** Ends a pending request: `change_register_failed` (the reason is fixed text), so the PM can ask again. */
+export async function registrationFailed(deps: Pick<StorageDeps, 'pool' | 'clock'>, versionId: string, reason: string): Promise<void> {
+  const at = deps.clock();
+  await deps.pool.query(
+    `INSERT INTO output_events (id, output_id, version_id, kind, actor_id, at, detail)
+     SELECT $1, v.output_id, v.id, 'change_register_failed', NULL, $3, $4 FROM output_versions v WHERE v.id = $2 AND ${changeStateSql('v.id').pending}`,
+    [uuidv7(at.getTime()), versionId, at, JSON.stringify({ reason })],
+  );
+}
+
+async function registerLocked(deps: StorageDeps, versionId: string): Promise<void> {
+  const state = await changeState(deps.pool, versionId);
+  if (!state.pending) return; // carried out already, or ended
+  const actor = (
+    await deps.pool.query<{ actor_id: string }>(
+      `SELECT actor_id FROM output_events WHERE version_id = $1 AND kind = 'change_register_requested' ORDER BY at DESC, id DESC LIMIT 1`,
       [versionId],
     )
-  ).rows[0];
-  if (!v?.file_id) throw new FileActionRefused(NO_FILE);
-  if (v.output_status !== 'registered' || v.deleted || v.held) throw new FileActionRefused(ONLY_REGISTERED);
-  const f = await loadFile(deps.pool, v.file_id);
-  if (!checkable(f)) throw new FileActionRefused(NO_FILE);
-  if (f.check_status !== 'changed') throw new FileActionRefused(NOT_CHANGED);
-  if (await changeRegistered(deps.pool, versionId)) throw new FileActionRefused(ALREADY_REGISTERED);
-  if (f.dest_status !== 'approved') throw new FileActionRefused(NOT_APPROVED_PLACE);
+  ).rows[0].actor_id;
+  const v = await loadChanged(deps.pool, versionId);
+  const f = v?.file_id ? await loadFile(deps.pool, v.file_id) : undefined;
+  const refused = refusalFor(v, f);
+  if (refused) throw new FileActionRefused(refused);
+  const row = v as ChangedRow;
+  const file = f as FileRow & { destination_id: string; item_id: string };
 
-  const { connector, dest } = await deps.connectors.forDestination(f.destination_id);
-  const item = await connector.getItem(dest, f.item_id);
-  const bytes = await connector.download(dest, f.item_id);
+  // Looked at again: still changed, and still somewhere approved (otherwise it is Missing and nothing is uploaded).
+  const verdict = await inspect(deps, file);
+  if (verdict.status !== 'changed' || !verdict.item) {
+    await record(deps, file, verdict.status, deps.clock(), verdict.item);
+    throw new FileActionRefused(verdict.status === 'ok' ? CHANGE_GONE : NOT_CHANGED);
+  }
+  const item = verdict.item;
+  const source = await deps.connectors.forDestination(file.destination_id);
+  const bytes = await source.connector.download(source.dest, file.item_id);
   // The content read must be the content the provider describes (it may have changed again while downloading).
   if (bytes.length !== item.size || (item.providerHash !== null && quickXorHash(bytes) !== item.providerHash)) throw new StorageError('server');
-  if (!contentDiffers(f, item)) {
-    await record(deps, f, 'ok', deps.clock(), item);
-    throw new FileActionRefused(CHANGE_GONE);
-  }
 
-  const latest = (await deps.pool.query<{ n: number }>(`SELECT COALESCE(max(version_no), 0)::int AS n FROM output_versions WHERE output_id = $1`, [v.output_id])).rows[0].n;
+  // The output's own folder: where its versions are filed (spec 5.4), in that folder's destination.
+  const placement = row.placement_folder_id
+    ? (await deps.pool.query<{ destination_id: string; status: string }>(
+        `SELECT f.destination_id, d.status FROM storage_folders f JOIN storage_destinations d ON d.id = f.destination_id WHERE f.id = $1`,
+        [row.placement_folder_id],
+      )).rows[0]
+    : undefined;
+  if (!placement || placement.status !== 'approved') throw new FileActionRefused(NO_PLACEMENT);
+  const target = await deps.connectors.forDestination(placement.destination_id);
+  const wholeProject = await isWholeProject(deps.pool, row.output_id, deps.clock());
+  const folder = await ensureOutputFolder(deps, target.dest, row.project_id, row.output_id, wholeProject, target.connector);
+
+  const latest = (await deps.pool.query<{ n: number }>(`SELECT COALESCE(max(version_no), 0)::int AS n FROM output_versions WHERE output_id = $1`, [row.output_id])).rows[0].n;
   const versionNo = latest + 1;
-  const ext = extOf(f.name) || v.format;
-  const folderParts = plainPath(item.path).split('/').slice(0, -1);
-  const placed = await uploadNew(deps, connector, dest, item.parentId, folderParts, { title: v.title, versionNo, ext }, bytes);
+  const ext = extOf(file.name) || row.format;
+  const placed = await uploadNew(deps, target.connector, target.dest, folder.itemId, folder.path, { title: row.title, versionNo, ext }, bytes);
 
   const at = deps.clock();
   const c = await deps.pool.connect();
   try {
     await c.query('BEGIN');
-    await c.query(`SELECT 1 FROM outputs WHERE id = $1 FOR UPDATE`, [v.output_id]);
-    const now = (await c.query<{ n: number }>(`SELECT COALESCE(max(version_no), 0)::int AS n FROM output_versions WHERE output_id = $1`, [v.output_id])).rows[0].n;
-    if (now !== latest) throw new FileActionRefused(SAME_TIME);
-    if (await changeRegistered(c, versionId)) throw new FileActionRefused(ALREADY_REGISTERED);
-    const folder = (await c.query<{ id: string }>(`SELECT id FROM storage_folders WHERE destination_id = $1 AND item_id = $2`, [dest.id, item.parentId])).rows[0]?.id ?? null;
+    await c.query(`SELECT 1 FROM outputs WHERE id = $1 FOR UPDATE`, [row.output_id]);
+    const now = (await c.query<{ n: number }>(`SELECT COALESCE(max(version_no), 0)::int AS n FROM output_versions WHERE output_id = $1`, [row.output_id])).rows[0].n;
+    // Another version was added while this one uploaded: the upload is removed and the job tries again with the next number.
+    if (now !== latest) throw new StorageError('conflict');
+    if (!(await changeState(c, versionId)).pending) throw new FileActionRefused(ALREADY_REGISTERED);
     const fileId = uuidv7(at.getTime());
     const ref = placed.ref;
     await c.query(
       `INSERT INTO stored_files (id, purpose, project_id, destination_id, connector, drive_id, item_id, path, name, size_bytes, sha256, provider_hash,
                                  etag, ctag, web_url, state, check_status, last_checked_at, created_at, stored_at, folder_id)
        VALUES ($1, 'output', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'stored', 'ok', $15, $15, $15, $16)`,
-      [fileId, v.project_id, dest.id, dest.connector, dest.driveId, ref.itemId, placed.path, ref.name, ref.size, sha256(bytes), ref.providerHash, ref.etag, ref.ctag, ref.webUrl, at, folder],
+      [fileId, row.project_id, target.dest.id, target.dest.connector, target.dest.driveId, ref.itemId, placed.path, ref.name, ref.size, sha256(bytes), ref.providerHash, ref.etag, ref.ctag, ref.webUrl, at, folder.recordId],
     );
     const newVersionId = uuidv7(at.getTime());
     await c.query(
       `INSERT INTO output_versions (id, output_id, version_no, origin, format, stored_file_id, status, sha256, size_bytes, created_by, created_at)
        VALUES ($1, $2, $3, 'changed_file', $4, $5, 'draft', $6, $7, $8, $9)`,
-      [newVersionId, v.output_id, versionNo, v.format, fileId, sha256(bytes), bytes.length, actorId, at],
+      [newVersionId, row.output_id, versionNo, row.format, fileId, sha256(bytes), bytes.length, actor, at],
     );
     const event = (kind: string, id: string, detail: Record<string, unknown>) =>
       c.query(`INSERT INTO output_events (id, output_id, version_id, kind, actor_id, at, detail) VALUES ($1, $2, $3, $4, $5, $6, $7)`, [
-        uuidv7(at.getTime()), v.output_id, id, kind, actorId, at, JSON.stringify(detail),
+        uuidv7(at.getTime()), row.output_id, id, kind, actor, at, JSON.stringify(detail),
       ]);
-    await event('version_added', newVersionId, { versionNo, origin: 'changed_file', format: v.format, from: v.version_no });
-    await event('changed_registered', versionId, { versionNo: v.version_no, newVersionNo: versionNo });
+    await event('version_added', newVersionId, { versionNo, origin: 'changed_file', format: row.format, from: row.version_no });
+    await event('changed_registered', versionId, { versionNo: row.version_no, newVersionNo: versionNo });
     await writeAudit(c, {
-      at, action: 'output.changed_registered', actorUserId: actorId, subjectType: 'output', subjectId: v.output_id,
-      detail: { versionNo: v.version_no, newVersionNo: versionNo },
+      at, action: 'output.changed_registered', actorUserId: actor, subjectType: 'output', subjectId: row.output_id,
+      detail: { versionNo: row.version_no, newVersionNo: versionNo },
     });
+    await afterFiled(c, { projectId: row.project_id, outputId: row.output_id, versionId: newVersionId, storedFileId: fileId }, at);
     await c.query('COMMIT');
   } catch (err) {
     await c.query('ROLLBACK').catch(() => undefined);
     // Nothing was recorded: the upload is nobody's.
-    await removeUnrecorded(deps, connector, dest, placed.ref.itemId);
+    await removeUnrecorded(deps, target.connector, target.dest, placed.ref.itemId);
     throw err;
   } finally {
     c.release();
   }
 
-  return { versionNo, restored: await restoreOriginal(deps, connector, dest, f) };
-}
-
-/**
- * SQL for whether the version's latest change is already registered (`$1` or the given column is the version id): a
- * `changed_registered` event at or after its last `changed_found` (both can share an instant, so time alone decides).
- */
-export const changeRegisteredSql = (versionId: string): string =>
-  `COALESCE((SELECT max(at) FROM output_events WHERE version_id = ${versionId} AND kind = 'changed_registered')
-            >= (SELECT max(at) FROM output_events WHERE version_id = ${versionId} AND kind = 'changed_found'), false)`;
-const CHANGE_REGISTERED_SQL = changeRegisteredSql('$1');
-
-/** Whether the version's latest change has already been registered as a new version (after it was last found changed). */
-async function changeRegistered(db: Db, versionId: string): Promise<boolean> {
-  const r = await db.query<{ registered: boolean }>(`SELECT ${CHANGE_REGISTERED_SQL} AS registered`, [versionId]);
-  return r.rows[0].registered;
+  await restoreOriginal(deps, source.connector, source.dest, file);
 }
 
 /** Uploads under the first free name; never overwrites and never adopts a file it did not just upload. */
@@ -599,7 +699,7 @@ async function uploadNew(
       throw err;
     }
     if (ref.size !== bytes.length || ref.providerHash !== hash) {
-      await connector.removePermanently(dest, ref.itemId).catch(() => undefined);
+      await connector.removePermanently(dest, ref.itemId).catch(() => logFixed(deps, UNRECORDED_KEPT));
       throw new StorageError('server');
     }
     return { ref, path: parts.join('/') };
@@ -614,8 +714,8 @@ async function removeUnrecorded(deps: CheckDeps, connector: StorageConnector, de
 
 /**
  * Looks through the original item's version history for the recorded content (same size, same QuickXorHash) and
- * restores it; the original is Checked again only once the provider shows the recorded content. Any fault leaves it
- * Changed.
+ * restores it; the original is Checked again only once the provider shows the recorded content. The new version is
+ * already recorded, so any fault here only leaves the original Changed (logged with fixed text), never fails the job.
  */
 async function restoreOriginal(deps: CheckDeps, connector: StorageConnector, dest: DestinationRef, f: FileRow & { item_id: string }): Promise<boolean> {
   if (!f.provider_hash || f.size_bytes === null) return false;
@@ -629,8 +729,7 @@ async function restoreOriginal(deps: CheckDeps, connector: StorageConnector, des
     if (contentDiffers(f, item)) return false;
     await record(deps, f, 'ok', deps.clock(), item);
     return true;
-  } catch (err) {
-    if (!(err instanceof StorageError)) throw err;
+  } catch {
     logFixed(deps, RESTORE_FAILED);
     return false;
   }
@@ -643,6 +742,9 @@ async function restoreOriginal(deps: CheckDeps, connector: StorageConnector, des
 registerStorageHandler('check', async (deps, storedFileId) => {
   await checkFile(deps, storedFileId, { throwFaults: true });
 });
+registerStorageHandler('register-changed', (deps, versionId) => registerChangedContent(deps, versionId));
+// After the last attempt the request ends, so the PM sees it failed and can ask again.
+registerStorageFinalFailure('register-changed', (deps, versionId) => registrationFailed(deps, versionId, REGISTER_FAILED));
 registerStorageDailyTask('output-check', async (deps) => {
   await checkOutputs(deps, deps.clock());
 });

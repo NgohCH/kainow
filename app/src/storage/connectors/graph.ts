@@ -101,6 +101,9 @@ function checkName(name: string): void {
   if (!name || name === '.' || name === '..' || name.length > 255 || /[\\/\0]/.test(name)) throw new StorageError('invalid');
 }
 
+/** The most versions of one size `listVersions` downloads to hash when looking for recorded content. */
+const MAX_VERSION_DOWNLOADS = 50;
+
 export class GraphConnector implements StorageConnector {
   readonly kind = 'graph' as const;
   private readonly fetchFn: typeof fetch;
@@ -455,12 +458,17 @@ export class GraphConnector implements StorageConnector {
   async listVersions(dest: DestinationRef, itemId: string, opts: { size?: number } = {}): Promise<ItemVersion[]> {
     const versions = await this.listAll<{ id: string; size?: number; lastModifiedDateTime?: string }>(`${this.itemPath(dest, itemId)}/versions`);
     const out: ItemVersion[] = [];
+    let downloads = 0;
     for (const v of versions) {
-      // Graph gives no hash for a version: only a version of the wanted size is downloaded to hash it.
-      if (opts.size !== undefined && typeof v.size === 'number' && v.size !== opts.size) {
-        out.push({ id: v.id, size: v.size, providerHash: null, modifiedAt: v.lastModifiedDateTime ?? '' });
+      // Graph gives no hash for a version: only a version of the wanted size is downloaded to hash it, and at most
+      // MAX_VERSION_DOWNLOADS of them (newest first), so a long history never means hundreds of downloads. Beyond the
+      // cap, versions are listed without a hash (and so never match).
+      const wanted = opts.size === undefined || typeof v.size !== 'number' || v.size === opts.size;
+      if (opts.size !== undefined && (!wanted || downloads >= MAX_VERSION_DOWNLOADS)) {
+        out.push({ id: v.id, size: typeof v.size === 'number' ? v.size : 0, providerHash: null, modifiedAt: v.lastModifiedDateTime ?? '' });
         continue;
       }
+      downloads++;
       const c = await this.call('GET', `${this.itemPath(dest, itemId)}/versions/${enc(v.id)}/content`, { read: 'bytes', timeoutMs: this.chunkTimeoutMs });
       const bytes = c.bytes ?? Buffer.alloc(0);
       out.push({ id: v.id, size: typeof v.size === 'number' ? v.size : bytes.length, providerHash: quickXorHash(bytes), modifiedAt: v.lastModifiedDateTime ?? '' });

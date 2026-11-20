@@ -188,10 +188,13 @@ export class OutputsController {
     return this.files.relink(who(req), projectId, outputId, versionNo(n), typeof url === 'string' ? url.trim() : null);
   }
 
-  /** PM or Deputy: a changed file's content registered as a new Draft version, the original restored where possible (spec 5.8). */
+  /**
+   * PM or Deputy: asks for a filed version's changed content to be registered as a new Draft version, the original
+   * restored where possible (spec 5.8). 202: the `register-changed` job does the work; the register shows the outcome.
+   */
   @Post(':outputId/versions/:n/register-changed')
   @AnySignedInUser()
-  @HttpCode(200)
+  @HttpCode(202)
   registerChanged(@Param('projectId') projectId: string, @Param('outputId') outputId: string, @Param('n') n: string, @Req() req: HttpRequest) {
     ids(projectId, outputId);
     return this.files.registerChanged(who(req), projectId, outputId, versionNo(n));

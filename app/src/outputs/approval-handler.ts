@@ -4,6 +4,7 @@ import { uuidv7 } from '../common/uuid7';
 import { decide } from '../projects/matrix';
 import type { PoolClient } from 'pg';
 import type { ChangeHandler } from '../changes/handlers';
+import { BLOCKING } from './checks';
 
 /** Shown wherever an output approval is asked for or answered (spec 4.3; outputs rules 6, O13). */
 export const DOES_NOT_APPROVE_COMMITMENTS = 'Approving this document does not approve the commitments it mentions.';
@@ -17,8 +18,6 @@ export const NOT_CHECKED = 'Check this linked document before putting it for app
 export const FILE_NOT_AS_FILED = 'The file for this version has changed, is missing or cannot be reached. Put it right before putting it for approval.';
 export const LATER_APPROVED = 'A later version is already approved, so this earlier version cannot be approved.';
 
-/** The check results that stop a version being approved (spec 4.3). */
-const BAD_CHECKS = ['changed', 'missing', 'access_denied'];
 
 export const OUTPUT_ENDED = 'The output was withdrawn, declined, deleted or held, so this approval request ended.';
 export const LATER_VERSION_APPROVED = 'A later version of the output was approved.';
@@ -83,7 +82,8 @@ export const approveOutputHandler: ChangeHandler = {
       : undefined;
     // Filed, or a linked document that has been checked and found as registered. Nothing else is bytes anyone can see.
     if (!f || (f.state !== 'stored' && f.state !== 'linked')) throw new ConflictException(NOT_FILED);
-    if (BAD_CHECKS.includes(f.checkStatus)) throw new ConflictException(FILE_NOT_AS_FILED);
+    // The check results that stop a version being approved (spec 4.3) are the ones that stop it being opened.
+    if (BLOCKING.includes(f.checkStatus)) throw new ConflictException(FILE_NOT_AS_FILED);
     if (f.state === 'linked' && f.checkStatus !== 'ok') throw new ConflictException(NOT_CHECKED);
     return { outputId: target.outputId, versionNo: target.versionNo };
   },
