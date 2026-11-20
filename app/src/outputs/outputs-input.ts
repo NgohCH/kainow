@@ -3,6 +3,7 @@ import { readOptionalReason } from '../common/reason';
 import { UUID } from '../common/uuid7';
 import { type AudienceChange, parseAudienceChange } from '../discussion/audience';
 import { refuseSecrets } from '../discussion/messages';
+import type { ExportFilters, ExportKind } from './exports';
 
 export const MAX_OUTPUT_TITLE = 200;
 export const MAX_LINK = 2_000;
@@ -12,7 +13,9 @@ const MAX_LIST = 50;
 export type SubmitInput =
   | { kind: 'draft'; draftVersionId: string; format: 'md' | 'docx' | 'pdf'; title: string; reportTypeId?: string }
   | { kind: 'upload'; filename: string; bytes: Buffer; title: string; reportTypeId?: string }
-  | { kind: 'link'; url: string; title: string; reportTypeId?: string };
+  | { kind: 'link'; url: string; title: string; reportTypeId?: string }
+  /** A project export saved as a CSV version (spec 7.3); the title defaults to the export's name and day. */
+  | { kind: 'export'; exportKind: ExportKind; filters: ExportFilters; title?: string; reportTypeId?: string };
 
 /** People who contributed (with the department to record for each, if any) and contributing departments. */
 export interface ContributorInput {

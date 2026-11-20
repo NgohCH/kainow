@@ -33,7 +33,7 @@ export class AccessSettingsController {
     return { projects: await this.settings.preview(body(b) as never, todayUtc8(this.now())) };
   }
 
-  /** { archiveAfterMonths?, grantDefaultDays?, grantMaxDays?, invitationValidDays?, analyticsExportAllowed?, reason } */
+  /** { archiveAfterMonths?, grantDefaultDays?, grantMaxDays?, invitationValidDays?, analyticsExportAllowed?, projectExportsAllowed?, reason } */
   @Put()
   @RequireAction('organisation.manage')
   async update(@Body() b: unknown, @Req() req: HttpRequest) {

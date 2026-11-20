@@ -181,6 +181,7 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['report_type.renamed', 'A report type was renamed.'],
     ['report_type.retired', 'A report type was retired.'],
     ['project.output_settings_changed', 'A project’s output settings were changed.'],
+    ['project.exported', 'A project’s records were exported as a CSV file (the kind, filters and row count are recorded, never the data).'],
     ['output.submitted', 'An output was submitted for the register.'],
     ['output.registered', 'An output was registered by the PM or a Deputy.'],
     ['output.declined', 'A submitted output was declined, with a reason.'],

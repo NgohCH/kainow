@@ -32,6 +32,20 @@ export const BEING_FILED = 'This version is already being filed.';
 export const LINKED_NOT_FILED = 'A linked version stays where it is and is not filed.';
 export const REGISTER_FIRST = 'Register this output before filing it.';
 
+/** Shown for a linked version: the document stays where it was (D32). */
+export const KEPT_LABEL = 'Kept at its existing location';
+
+/** What a stored file's state is called in the register (a failed one is `filingFailedLabel`). */
+export const STORED_LABELS: Readonly<Record<string, string>> = {
+  pending: 'Waiting to file',
+  storing: 'Waiting to file',
+  stored: 'Filed',
+  failed: 'Filing failed',
+  withheld: 'Withheld',
+  relocating: 'Moving',
+  missing: 'Missing',
+};
+
 /** A failure code recorded on the stored file when even the shortest names do not fit (not a provider code). */
 const PATH_TOO_LONG = 'path_too_long';
 /** The version's bytes were gone when the job ran. */

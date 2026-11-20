@@ -12,6 +12,8 @@ import { TREND_KEYS, TRENDS_NOTE, type TrendKey, type TrendsPanel } from './tren
  */
 
 const FORMULA_START = /^[=+\-@]/;
+/** UTF-8 byte order mark, so spreadsheet programs read Malay characters correctly. */
+export const BOM = '\uFEFF';
 const NEEDS_QUOTES = /[",\r\n]/;
 
 export function csvCell(v: string | number | null): string {
@@ -22,14 +24,14 @@ export function csvCell(v: string | number | null): string {
 }
 
 /** `# Key: value` lines (a value's line breaks become spaces, so it cannot leave its line), the header row, then the rows. */
-export function toCsv(meta: Record<string, string>, columns: string[], rows: unknown[][]): string {
+export function toCsv(meta: Record<string, string>, columns: string[], rows: unknown[][], opts: { bom?: boolean } = {}): string {
   const cell = (v: unknown) => csvCell(v === null || v === undefined ? null : typeof v === 'number' ? v : String(v));
   const lines = [
     ...Object.entries(meta).map(([k, v]) => `# ${k}: ${v.replace(/[\r\n]+/g, ' ')}`),
     columns.map(cell).join(','),
     ...rows.map((r) => r.map(cell).join(',')),
   ];
-  return `${lines.join('\r\n')}\r\n`;
+  return `${opts.bom ? BOM : ''}${lines.join('\r\n')}\r\n`;
 }
 
 // ---- The analytics tables as CSV ------------------------------------------------------------------------------------

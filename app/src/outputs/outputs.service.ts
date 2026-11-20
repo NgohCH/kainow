@@ -23,7 +23,8 @@ import { type ItemState, StorageError } from '../storage/types';
 import { DOES_NOT_APPROVE_COMMITMENTS, approveOutputHandler, endOutputApprovalRequests } from './approval-handler';
 import { checkOutputAudience, createOutputAudience, withdrawOutput, writeOutputAudience } from './audience';
 import { type CheckStatus, NOT_RECOVERED, REGISTER_FAILED, REGISTER_PENDING, approvedPlaceOf, changeStateSql, checkActions, checkLabel, pathInDestination } from './checks';
-import { ALREADY_FILED, BEING_FILED, LINKED_NOT_FILED, NOT_KEPT, NO_DESTINATION, REGISTER_FIRST, filingFailedLabel, requestFiling } from './filing';
+import { ALREADY_FILED, BEING_FILED, KEPT_LABEL, STORED_LABELS, LINKED_NOT_FILED, NOT_KEPT, NO_DESTINATION, REGISTER_FIRST, filingFailedLabel, requestFiling } from './filing';
+import { type ExportFilters, type ExportKind, assertMayExport, buildExport, defaultExportTitle, recordExport } from './exports';
 import { effectiveFormats, outputRefusal } from './formats';
 import { outputFileName } from './naming';
 import { type ContributorInput, type OutputPatch, type RegisterInput, type SubmitInput, readTitle } from './outputs-input';
@@ -41,8 +42,8 @@ type Db = Pool | PoolClient;
 /** Generated or uploaded bytes stay in the database until filed, or this long (spec 5.4). */
 export const KEEP_UNFILED_DAYS = 90;
 
+export { KEPT_LABEL };
 export const LINK_REFUSED = 'Kainow can only register documents in approved storage locations.';
-export const KEPT_LABEL = 'Kept at its existing location';
 export const SHARING_OUTSIDE = 'Sharing for this document is managed outside Kainow';
 const UPLOAD_KINDS = 'Upload a Markdown, DOCX, PDF or CSV file. Other documents can be registered by link.';
 const NARROW_FIRST = 'This version uses material some of this output’s readers cannot read. Narrow its audience to people who can read it first.';
@@ -84,7 +85,9 @@ type VersionFormat = OutputFormat | 'txt' | 'other';
 
 /** One version, ready to store: its bytes (or link), checksum, where it came from and who may read its material. */
 interface PreparedVersion {
-  origin: 'draft_report' | 'upload' | 'link';
+  origin: 'draft_report' | 'export' | 'upload' | 'link';
+  /** For a saved export: what to record as `project.exported` once the version is stored (kind, filters, row count). */
+  exported?: { kind: ExportKind; filters: ExportFilters; rows: number };
   format: VersionFormat;
   bytes: Buffer | null;
   sha256: string;
@@ -177,15 +180,6 @@ export interface OutputDetail extends Omit<OutputSummary, 'audience'> {
   notShared?: Array<{ person: Person; message: string }>;
 }
 
-const STORED_LABELS: Readonly<Record<string, string>> = {
-  pending: 'Waiting to file',
-  storing: 'Waiting to file',
-  stored: 'Filed',
-  failed: 'Filing failed',
-  withheld: 'Withheld',
-  relocating: 'Moving',
-  missing: 'Missing',
-};
 
 const sha256 = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 const extOf = (name: string) => /\.([A-Za-z0-9]+)$/.exec(name.trim())?.[1].toLowerCase() ?? '';
@@ -213,7 +207,7 @@ export class OutputsService {
   async submit(user: AuthUser, projectId: string, input: SubmitInput): Promise<OutputDetail> {
     const ctx = await this.access.authorize(user, 'output.submit', projectId);
     const at = this.clock();
-    const title = readTitle(input.title);
+    const title = readTitle(input.kind === 'export' ? (input.title ?? defaultExportTitle(input.exportKind, at)) : input.title);
     const chosenType = input.reportTypeId ? await this.activeType(this.pool, input.reportTypeId) : null;
     const prepared = await this.prepare(ctx, projectId, input, { title, reportTypeId: chosenType, issueDate: todayUtc8(at), versionNo: 1 }, at);
     const audience = prepared.material ? await this.defaultAudience(this.pool, projectId, prepared.material, user.id, at) : null;
@@ -229,6 +223,7 @@ export class OutputsService {
       const versionId = await this.insertVersion(c, id, projectId, 1, prepared, user.id, at);
       await this.event(c, id, 'submitted', user.id, at, { versionId, detail: { origin: prepared.origin, format: prepared.format, restricted: !!audience } });
       await writeAudit(c, { at, action: 'output.submitted', actorUserId: user.id, subjectType: 'output', subjectId: id, detail: { origin: prepared.origin, format: prepared.format } });
+      if (prepared.exported) await recordExport(c, at, user.id, projectId, prepared.exported.kind, prepared.exported.filters, prepared.exported.rows, { outputId: id });
     });
     return this.get(user, projectId, id);
   }
@@ -245,7 +240,31 @@ export class OutputsService {
   private async prepare(ctx: ProjectContext, projectId: string, input: SubmitInput, facts: HeaderFacts, at: Date): Promise<PreparedVersion> {
     if (input.kind === 'draft') return this.fromDraft(ctx, projectId, input, facts, at);
     if (input.kind === 'upload') return this.fromUpload(projectId, input);
+    if (input.kind === 'export') return this.fromExport(ctx, projectId, input, at);
     return this.fromLink(input.url);
+  }
+
+  /**
+   * A project export saved as a CSV version (spec 7.3): built now for this person, who must be allowed to export (D106)
+   * and the project must allow CSV outputs. Its audience is the project's; the export is recorded once it is stored.
+   */
+  private async fromExport(ctx: ProjectContext, projectId: string, input: Extract<SubmitInput, { kind: 'export' }>, at: Date): Promise<PreparedVersion> {
+    await assertMayExport(this.pool, ctx);
+    await this.assertOutputFormat(projectId, 'csv');
+    const built = await buildExport(this.pool, projectId, input.exportKind, input.filters, ctx, at);
+    return {
+      origin: 'export',
+      format: 'csv',
+      bytes: built.csv,
+      sha256: sha256(built.csv),
+      size: built.csv.length,
+      draftVersionId: null,
+      aiAssisted: false,
+      material: null,
+      link: null,
+      defaultTypeId: await this.typeByName('Exports'),
+      exported: { kind: input.exportKind, filters: input.filters, rows: built.rows },
+    };
   }
 
   /** Renders a D77 draft version the person can read, in a format the project allows (spec 6). */
@@ -538,6 +557,7 @@ export class OutputsService {
       if (prepared.aiAssisted) await c.query(`UPDATE outputs SET ai_assisted = true WHERE id = $1`, [outputId]);
       await this.event(c, outputId, 'version_added', user.id, at, { versionId, detail: { versionNo, origin: prepared.origin, format: prepared.format } });
       await writeAudit(c, { at, action: 'output.version_added', actorUserId: user.id, subjectType: 'output', subjectId: outputId, detail: { versionNo, origin: prepared.origin, format: prepared.format } });
+      if (prepared.exported) await recordExport(c, at, user.id, projectId, prepared.exported.kind, prepared.exported.filters, prepared.exported.rows, { outputId });
     });
     return this.get(user, projectId, outputId);
   }
