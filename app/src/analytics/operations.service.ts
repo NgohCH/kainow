@@ -11,6 +11,7 @@ export interface OperationsPanel {
     backups: Omit<OperationsView['backups'], 'runs'>;
     lastDrill: OperationsView['drills']['last'];
     storage: OperationsView['storage'];
+    /** storage_daily over the chosen period. */
     growth: OperationsView['growth'];
     protective: OperationsView['protective'];
     health: OperationsView['health'];
@@ -37,6 +38,7 @@ export class OperationsPanelService {
     const start = new Date(`${f.from}T00:00:00+08:00`);
     const end = new Date(Math.min(Date.parse(`${addDays(f.to, 1)}T00:00:00+08:00`), now.getTime() + 1));
     const view = await this.operations.view();
+    const growth = await this.operations.growth(now, { from: f.from, to: f.to });
     const { runs: _runs, ...backups } = view.backups;
     // A run still running after 6 hours counts as failed here too, as on the page.
     const b = (
@@ -58,7 +60,7 @@ export class OperationsPanelService {
       )
     ).rows[0];
     return {
-      status: { backups, lastDrill: view.drills.last, storage: view.storage, growth: view.growth, protective: view.protective, health: view.health },
+      status: { backups, lastDrill: view.drills.last, storage: view.storage, growth, protective: view.protective, health: view.health },
       period: { backups: { total: b.total, succeeded: b.succeeded, failed: b.failed }, drills: { total: d.total, passed: d.passed, failed: d.failed } },
       computedAt: now.toISOString(),
     };

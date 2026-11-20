@@ -6,9 +6,9 @@ import { can } from '../auth/permissions';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { PG_POOL } from '../db/database.module';
 import { OperationsService } from './operations.service';
-import { OPS_BOUNDS } from './settings';
+import { OPS_BOUNDS, loadOpsSettings } from './settings';
 import { OpsSettingsService } from './settings.service';
-import { resume } from './resume';
+import { resume, resumeChecks } from './resume';
 import { OperationsState } from './state';
 
 const body = (b: unknown): Record<string, unknown> => (b && typeof b === 'object' ? (b as Record<string, unknown>) : {});
@@ -60,6 +60,15 @@ export class OperationsController {
   async updateSettings(@Body() b: unknown, @Req() req: HttpRequest) {
     await this.settings.update(who(req).id, body(b));
     return this.settingsView();
+  }
+
+  /** The Resume checks, each passed or failed, and whether protective mode is on (read-only; nothing is changed). */
+  @Get('admin/operations/resume-checks')
+  @RequireAction('operations.manage')
+  async resumeChecks() {
+    const now = this.now();
+    const checks = await resumeChecks(this.pool, now, await loadOpsSettings(this.pool));
+    return { protective: await this.state.isProtective(), checks: checks.map((c) => ({ name: c.name, passed: c.ok })), at: now };
   }
 
   /** { reason }. 409 `{ code: 'resume_checks_failed', failing: [check names] }` while a check fails. */

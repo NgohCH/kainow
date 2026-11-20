@@ -87,7 +87,7 @@ describe('operations API', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(b.storage.locations.map((l: any) => [l.location, l.level]), [['database_disk', 'normal'], ['backup_disk', 'warning']]);
     assert.equal(b.storage.safeFloorGb, 5);
     assert.deepEqual(b.growth.map((g: any) => g.day), ['2026-11-08'], 'only the last 30 days');
-    assert.deepEqual(b.protective, { on: false, reason: null, since: null, text: PROTECTIVE_BANNER });
+    assert.deepEqual(b.protective, { on: false, reason: null, since: null, setTime: null, setName: null, text: PROTECTIVE_BANNER });
     assert.equal(b.health.database, 'up');
     assert.equal(b.health.migrationsCurrent, true);
     assert.deepEqual(b.health.queues, []);
@@ -243,6 +243,70 @@ describe('operations API', { skip: SKIP_NO_DB }, () => {
     assert.match(csv.text, /Panel,Operations|"Panel","Operations"|# Panel: Operations/);
     assert.match(csv.text, /Backups.*Status.*Healthy/);
     assert.match(csv.text, /Backups in the period.*Failed.*1/);
+  });
+
+  test('protective after a restore shows the set time and name from the state detail', async () => {
+    await t.pool.query(
+      `UPDATE operations_state SET protective = true, reason = 'restored_from_backup', since = $1, detail = $2`,
+      [t.clock.now(), JSON.stringify({ setTime: '2026-11-08T01:00:00.000Z', setName: 'set-2026-11-08' })],
+    );
+    t.app.get(OperationsState).invalidate();
+    const r = await admin.request('GET', '/admin/operations');
+    assert.equal(r.body.protective.on, true);
+    assert.equal(r.body.protective.reason, 'restored_from_backup');
+    assert.equal(r.body.protective.setTime, '2026-11-08T01:00:00.000Z');
+    assert.equal(r.body.protective.setName, 'set-2026-11-08');
+    await protective(false);
+    const off = await admin.request('GET', '/admin/operations');
+    assert.equal(off.body.protective.setTime, null);
+  });
+
+  test('a running drill database is not listed as stray', async () => {
+    const id = uuidv7();
+    const name = `kainow_drill_${id.replace(/-/g, '').slice(-12)}`;
+    await t.pool.query(`INSERT INTO restore_drills (id, started_at, outcome) VALUES ($1, $2, 'running')`, [id, t.clock.now()]);
+    await t.pool.query(`CREATE DATABASE ${name}`);
+    try {
+      const r = await admin.request('GET', '/admin/operations');
+      assert.ok(!r.body.drills.stray.includes(name), JSON.stringify(r.body.drills));
+    } finally {
+      await t.pool.query(`DROP DATABASE ${name}`);
+    }
+  });
+
+  test('resume-checks: a member gets 403; an administrator gets each check and whether the mode is on; nothing changes', async () => {
+    assert.equal((await member.request('GET', '/admin/operations/resume-checks')).status, 403);
+    await protective(true);
+    const r = await admin.request('GET', '/admin/operations/resume-checks');
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.protective, true);
+    assert.deepEqual(
+      r.body.checks,
+      [
+        { name: 'reading_fresh', passed: false },
+        { name: 'space_above_floor', passed: false },
+        { name: 'database', passed: true },
+        { name: 'migrations_current', passed: true },
+        { name: 'no_backup_running', passed: true },
+      ],
+    );
+    await reading('database_disk', 50);
+    const ok = await admin.request('GET', '/admin/operations/resume-checks');
+    assert.ok(ok.body.checks.every((c: any) => c.passed), JSON.stringify(ok.body));
+    assert.equal((await t.pool.query(`SELECT protective FROM operations_state`)).rows[0].protective, true);
+  });
+
+  test('analytics growth follows the chosen period, not a fixed 30 days', async () => {
+    // Clock: 2026-11-09 UTC+8. last_4w covers 28 days; last_12w covers about 84.
+    await t.pool.query(
+      `INSERT INTO storage_daily (day, location, max_used_bytes, min_free_bytes, total_bytes) VALUES
+         ('2026-11-08', 'database_disk', 1, 2, 3), ('2026-10-01', 'database_disk', 1, 2, 3), ('2026-09-07', 'database_disk', 1, 2, 3)`,
+    );
+    const days = async (q: string) => (await admin.request('GET', `/admin/analytics?panel=operations${q}`)).body.data.status.growth.map((g: any) => g.day);
+    assert.deepEqual(await days('&period=last_4w'), ['2026-11-08']);
+    assert.deepEqual(await days('&period=last_12w'), ['2026-09-07', '2026-10-01', '2026-11-08']);
+    const page = (await admin.request('GET', '/admin/operations')).body.growth.map((g: any) => g.day);
+    assert.deepEqual(page, ['2026-11-08'], 'the Operations page keeps 30 days');
   });
 
   test('no container path, host path or key material in any response', async () => {

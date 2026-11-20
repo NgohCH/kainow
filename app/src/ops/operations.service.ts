@@ -104,14 +104,31 @@ export interface OperationsView {
   };
   storage: { locations: StorageRow[]; safeFloorGb: number };
   /** storage_daily for the last 30 days, day ASC, location ASC. */
-  growth: { day: string; location: StorageLocation; maxUsedBytes: number | null; minFreeBytes: number | null; totalBytes: number | null }[];
-  protective: { on: boolean; reason: 'low_space' | 'restored_from_backup' | null; since: Date | null; text: string };
+  growth: GrowthRow[];
+  protective: {
+    on: boolean;
+    reason: 'low_space' | 'restored_from_backup' | null;
+    /** When the mode started (after a restore: the restore time). */
+    since: Date | null;
+    /** After a restore only: the time of the backup set that was restored, and its name. Otherwise null. */
+    setTime: string | null;
+    setName: string | null;
+    text: string;
+  };
   health: {
     database: 'up';
     migrationsCurrent: boolean;
     lastSweepAt: Date | null;
     queues: { name: string; queued: number; active: number; failed24h: number }[];
   };
+}
+
+export interface GrowthRow {
+  day: string;
+  location: StorageLocation;
+  maxUsedBytes: number | null;
+  minFreeBytes: number | null;
+  totalBytes: number | null;
 }
 
 export type BannerView = { protective: boolean; admin?: { backups: BackupStatus; storage: StorageLevel; text: string; link: string } };
@@ -250,6 +267,9 @@ export class OperationsService {
     // Read-only look at the server's database list; names only. A killed drill leaves one of these behind.
     const onServer = (await this.pool.query(`SELECT datname FROM pg_database WHERE datname LIKE 'kainow\\_drill\\_%' ORDER BY datname`)).rows.map((r) => r.datname as string);
     const keptNames = new Set(kept.map((k) => k.name));
+    // A drill still running owns its database (kainow_drill_ plus the last 12 characters of its id): not stray.
+    const running = (await this.pool.query(`SELECT id FROM restore_drills WHERE outcome = 'running'`)).rows;
+    for (const r of running) keptNames.add(`kainow_drill_${(r.id as string).replace(/-/g, '').slice(-12)}`);
     return { last: all[0] ?? null, earlier: all.slice(1, 11), kept, stray: onServer.filter((n) => !keptNames.has(n)) };
   }
 
@@ -285,13 +305,15 @@ export class OperationsService {
     return { locations, safeFloorGb: settings.safeFloorGb };
   }
 
-  private async growth(now: Date): Promise<OperationsView['growth']> {
+  /** storage_daily from `from` to `to` (days, UTC+8); with neither, the last 30 days. */
+  async growth(now: Date, range?: { from: string; to: string }): Promise<GrowthRow[]> {
     const today = new Date(now.getTime() + UTC8_MS).toISOString().slice(0, 10);
-    const from = new Date(Date.parse(`${today}T00:00:00Z`) - 29 * 86_400_000).toISOString().slice(0, 10);
+    const from = range?.from ?? new Date(Date.parse(`${today}T00:00:00Z`) - 29 * 86_400_000).toISOString().slice(0, 10);
+    const to = range?.to ?? today;
     const { rows } = await this.pool.query(
       `SELECT day::text AS day, location, max_used_bytes, min_free_bytes, total_bytes FROM storage_daily
-        WHERE day >= $1::date ORDER BY day, location`,
-      [from],
+        WHERE day >= $1::date AND day <= $2::date ORDER BY day, location`,
+      [from, to],
     );
     return rows.map((r) => ({
       day: r.day as string,
@@ -303,8 +325,17 @@ export class OperationsService {
   }
 
   private async protective(): Promise<OperationsView['protective']> {
-    const r = (await this.pool.query(`SELECT protective, reason, since FROM operations_state WHERE id`)).rows[0];
-    return { on: r?.protective === true, reason: r?.reason ?? null, since: r?.since ?? null, text: PROTECTIVE_BANNER };
+    const r = (await this.pool.query(`SELECT protective, reason, since, detail FROM operations_state WHERE id`)).rows[0];
+    const restored = r?.protective === true && r?.reason === 'restored_from_backup' && r.detail && typeof r.detail === 'object';
+    const str = (v: unknown): string | null => (typeof v === 'string' ? v : null);
+    return {
+      on: r?.protective === true,
+      reason: r?.reason ?? null,
+      since: r?.since ?? null,
+      setTime: restored ? str(r.detail.setTime) : null,
+      setName: restored ? str(r.detail.setName) : null,
+      text: PROTECTIVE_BANNER,
+    };
   }
 
   private async health(now: Date): Promise<OperationsView['health']> {
