@@ -85,7 +85,7 @@ Design: [`docs/superpowers/specs/2026-11-20-v1-resources-budget-design.md`](../d
 | Resources report | `#/projects/<id>/resources/report` | Same as the tab; the finance section only for finance readers |
 | Project Settings > Finance | `#/projects/<id>/settings` | PM, Owner and Sponsor edit where delegated (read-only to Deputies); the Administrator always |
 | System Settings > Resources and finance | `#/resources-admin` | Enterprise Administrator (delegation switch, default and enabled currencies, default warning thresholds, catalogue maintainers) |
-| Resource catalogue (items and categories) | `#/resources-admin` | Enterprise Administrator and named catalogue maintainers |
+| Resource catalogue (items and categories) | `#/resources-admin` (Administrator); `#/resource-catalogue` (named catalogue maintainers, menu item "Resource catalogue") | Enterprise Administrator and named catalogue maintainers |
 
 Spending, budgets and adjustments need Financial Tracking Enabled on the project. Budgets, corrections and refunds go through the project's existing approval process; totals change only once approved, and spending in another currency stays out of totals until a conversion is approved. Warning thresholds are whole percentages 1 to 200, the first below the second (defaults 80 and 100); they are advisory.
 
