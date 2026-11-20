@@ -87,6 +87,9 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['ops.restore_drill_failed', 'A restore drill failed: a failing check or a fixed failure code; no secrets.'],
     ['ops.restore_drill_interrupted', 'A restore drill still unfinished after 6 hours was marked failed (interrupted) by the sweep.'],
   ]),
+  ...audit('Operations', SYSTEM, 'restore', [
+    ['ops.restored_from_backup', 'Kainow was restored from a backup set into a new installation (operator command): the set, its time and the reason; queued emails, jobs and AI work were ended, not repeated.'],
+  ]),
   ...audit('Projects', PERSON, 'project', [
     ['project.created', 'A project was created as a draft.'],
     ['project.edited', 'A project’s details were edited.'],

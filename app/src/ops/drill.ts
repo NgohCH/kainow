@@ -135,7 +135,7 @@ function drillUrl(databaseUrl: string, name: string): string {
   return u.toString();
 }
 
-const quoteIdent = (s: string) => `"${s.replace(/"/g, '""')}"`;
+export const quoteIdent = (s: string) => `"${s.replace(/"/g, '""')}"`;
 
 async function dropDatabase(pool: Pool, name: string): Promise<void> {
   if (!DRILL_DB.test(name)) throw new Error('refused');
@@ -182,10 +182,17 @@ export const checkSourceFilesDefault: SourceFileCheck = async (manifest, filesDi
   return { name: 'source_files', result: 'passed', detail: scope };
 };
 
-type ChosenSet = { name: string; dir: string; summary: BackupSummary; runId: string | null; folderLabel: string | null };
+export type ChosenSet = { name: string; dir: string; summary: BackupSummary; runId: string | null; folderLabel: string | null };
 
-/** R7: a set with backup.json and no run row is a complete, succeeded set. -incomplete sets never count. */
-async function chooseSet(pool: Pool, setsDir: string, wanted: string): Promise<ChosenSet | null> {
+/** The live database's run row for a set, when there is one. */
+export type RunLookup = (runId: string) => Promise<{ id: string; outcome: string; folder_label: string | null } | undefined>;
+
+/**
+ * The set to use: `latest` or a name. R7: a set with backup.json and no run row is a complete, succeeded set; -incomplete
+ * sets never count. With a lookup (the drill), a set whose run row did not succeed is skipped; without one (restore, whose
+ * target database is empty) the folder alone decides.
+ */
+export async function chooseSet(setsDir: string, wanted: string, lookup: RunLookup | null): Promise<ChosenSet | null> {
   let names: string[];
   if (wanted === 'latest') {
     try {
@@ -211,15 +218,45 @@ async function chooseSet(pool: Pool, setsDir: string, wanted: string): Promise<C
       continue;
     }
     if (summary?.formatVersion !== 1 || typeof summary.runId !== 'string' || typeof summary.keyId !== 'string') continue;
-    const row = UUID.test(summary.runId)
-      ? ((await pool.query(`SELECT id, outcome, folder_label FROM backup_runs WHERE id = $1`, [summary.runId])).rows[0] as
-          | { id: string; outcome: string; folder_label: string | null }
-          | undefined)
-      : undefined;
+    const row = lookup && UUID.test(summary.runId) ? await lookup(summary.runId) : undefined;
     if (row && row.outcome !== 'succeeded') continue;
     return { name, dir, summary, runId: row ? row.id : null, folderLabel: row ? row.folder_label : null };
   }
   return null;
+}
+
+/** The live database's run row, for chooseSet. */
+const liveRun =
+  (pool: Pool): RunLookup =>
+  async (runId) =>
+    (await pool.query(`SELECT id, outcome, folder_label FROM backup_runs WHERE id = $1`, [runId])).rows[0] as
+      | { id: string; outcome: string; folder_label: string | null }
+      | undefined;
+
+/**
+ * Step 2, shared with restore: every .enc file's SHA-256 against backup.json, then the manifest decrypted, then the set's
+ * migration level not newer than the code's. Nothing here is restored.
+ */
+export async function checkSet(
+  chosen: ChosenSet,
+  key: BackupKey,
+): Promise<{ ok: true; manifest: Manifest } | { ok: false; check: 'set_checksums' | 'decrypt' | 'migration_level'; detail: string }> {
+  const files = chosen.summary.files ?? ({} as BackupSummary['files']);
+  const dumpSha = await fileSha256(join(chosen.dir, SET_FILES.dump));
+  const manSha = await fileSha256(join(chosen.dir, SET_FILES.manifest));
+  if (!dumpSha || !manSha || dumpSha !== files[SET_FILES.dump]?.sha256 || manSha !== files[SET_FILES.manifest]?.sha256) {
+    return { ok: false, check: 'set_checksums', detail: DETAIL.checksumsBad };
+  }
+  let manifest: Manifest;
+  try {
+    manifest = (await readSet(chosen.dir, key)).manifest;
+  } catch {
+    return { ok: false, check: 'decrypt', detail: DETAIL.decryptBad };
+  }
+  if ((chosen.summary.migrationLevel ?? '') > codeMigrationLevel()) {
+    return { ok: false, check: 'migration_level', detail: DETAIL.migrationNewer };
+  }
+  return { ok: true, manifest };
 }
 
 class DrillState {
@@ -290,7 +327,7 @@ async function drillLocked(args: Extract<Args, { kind: 'drill' }>, deps: DrillDe
   }
   const key = loaded;
   const setsDir = join(config.backupDir, 'kainow', 'sets');
-  const chosen = await chooseSet(pool, setsDir, args.set);
+  const chosen = await chooseSet(setsDir, args.set, liveRun(pool));
   if (!chosen) {
     deps.err(args.set === 'latest' ? DRILL_TEXT.noSet : DRILL_TEXT.setNotFound);
     return 1;
@@ -349,27 +386,14 @@ async function steps(
   const { pool, config } = deps;
   // 2. Check the set: checksums, then the manifest, then the migration level.
   const dumpFile = join(chosen.dir, SET_FILES.dump);
-  const files = chosen.summary.files ?? ({} as BackupSummary['files']);
-  const dumpSha = await fileSha256(dumpFile);
-  const manSha = await fileSha256(join(chosen.dir, SET_FILES.manifest));
-  if (!dumpSha || !manSha || dumpSha !== files[SET_FILES.dump]?.sha256 || manSha !== files[SET_FILES.manifest]?.sha256) {
-    st.failed('set_checksums', DETAIL.checksumsBad);
+  const checked = await checkSet(chosen, key);
+  if (!checked.ok) {
+    if (checked.check !== 'set_checksums') st.set({ name: 'set_checksums', result: 'passed' });
+    st.failed(checked.check, checked.detail);
     return;
   }
+  const manifest = checked.manifest;
   st.set({ name: 'set_checksums', result: 'passed' });
-
-  let manifest: Manifest;
-  try {
-    manifest = (await readSet(chosen.dir, key)).manifest;
-  } catch {
-    st.failed('decrypt', DETAIL.decryptBad);
-    return;
-  }
-
-  if ((chosen.summary.migrationLevel ?? '') > codeMigrationLevel()) {
-    st.failed('migration_level', DETAIL.migrationNewer);
-    return;
-  }
   st.set({ name: 'migration_level', result: 'passed' });
 
   // 2a. Space before restoring: the live database's size x 1.2, plus the safe floor, plus 2 GB.
@@ -393,7 +417,7 @@ async function steps(
 
   // 4. Restore; the clock starts here.
   const clockStart = deps.now();
-  const restored = await restore(deps, dbName, dumpFile, key, floor);
+  const restored = await restoreDump(deps, dbName, dumpFile, key, floor);
   if (restored === 'crypto') {
     st.failed('decrypt', DETAIL.decryptBad);
     return;
@@ -457,7 +481,7 @@ async function steps(
   );
 }
 
-function safeStat(statfs: StatFs, path: string): { total: number; free: number } | null {
+export function safeStat(statfs: StatFs, path: string): { total: number; free: number } | null {
   try {
     const s = statfs(path);
     return s && Number.isFinite(s.free) ? s : null;
@@ -468,9 +492,15 @@ function safeStat(statfs: StatFs, path: string): { total: number; free: number }
 
 /**
  * Streams the decrypted dump into pg_restore, checking free space every pollMs. Any BackupCryptoError is 'crypto': what
- * pg_restore read before it is never treated as a restore.
+ * pg_restore read before it is never treated as a restore. Shared with restore (spec 8.2 step 4).
  */
-async function restore(deps: DrillDeps, dbName: string, dumpFile: string, key: BackupKey, floor: number): Promise<'ok' | 'crypto' | 'space_low' | 'failed'> {
+export async function restoreDump(
+  deps: Pick<DrillDeps, 'tools' | 'statfs' | 'pollMs'> & { config: Pick<OpsConfig, 'dbDataDir'> },
+  dbName: string,
+  dumpFile: string,
+  key: BackupKey,
+  floor: number,
+): Promise<'ok' | 'crypto' | 'space_low' | 'failed'> {
   const child = deps.tools.restore(['--no-owner', '--exit-on-error', '-d', dbName]);
   const exited = exitOf(child);
   child.stdout?.resume();
