@@ -108,7 +108,7 @@ export async function enterProtective(
 /** Incremental: the recorded sizes of the succeeded sets, never a walk of the tree. */
 async function backupFolderBytes(db: Db): Promise<number> {
   const { rows } = await db.query(
-    `SELECT coalesce(sum(coalesce(database_bytes, 0) + coalesce(files_new_bytes, 0)), 0)::text AS n FROM backup_runs WHERE outcome = 'succeeded'`,
+    `SELECT coalesce(sum(coalesce(database_bytes, 0) + coalesce(files_new_bytes, 0)), 0)::text AS n FROM backup_runs WHERE outcome = 'succeeded' AND expired_at IS NULL`,
   );
   return Number(rows[0].n);
 }
@@ -191,7 +191,7 @@ async function checkLocation(pool: Pool, loc: (typeof LOCATIONS)[number], stat: 
     await closeEpisode(c, 'storage_check_missing', loc.key, now);
     await recordLevels(c, loc.key, loc.label, levelFor(usedPct, settings), usedPct, now);
     const floor = settings.safeFloorGb * GB;
-    if (loc.key === 'database_disk' && free !== null && free < floor) {
+    if (loc.key === 'database_disk' && free !== null && Number.isFinite(free) && free >= 0 && free < floor) {
       await enterProtective(c, 'low_space', { location: loc.key, freeBytes: free, totalBytes: total, floorBytes: floor }, now);
     }
   });

@@ -158,6 +158,32 @@ describe('storage-check', { skip: SKIP_NO_DB }, () => {
     assert.equal((await state()).protective, true);
   });
 
+  test('backup folder size counts only sets that have not expired', async () => {
+    await pool.query('DELETE FROM backup_runs');
+    for (const [bytes, expired] of [[1000, true], [500, false]] as const) {
+      await pool.query(
+        `INSERT INTO backup_runs (id, kind, started_at, finished_at, outcome, database_bytes, files_new_bytes, expired_at)
+         VALUES ($1, 'daily', $2, $2, 'succeeded', $3, 0, $4)`,
+        [uuidv7(), NOW, bytes, expired ? NOW : null],
+      );
+    }
+    await run(OK, OK);
+    const r = (await pool.query(`SELECT extra FROM storage_readings WHERE location = 'backup_disk'`)).rows[0];
+    assert.equal(r.extra.kainowBytes, 500);
+    await pool.query('DELETE FROM backup_runs');
+  });
+
+  test('critical falling to warning closes critical silently and keeps warning', async () => {
+    await run(disk(95), OK);
+    const base = await notices('storage_warning');
+    const critBase = await notices('storage_critical');
+    await run(disk(85), OK, new Date(NOW.getTime() + MIN));
+    assert.equal(await open('storage_critical'), 0);
+    assert.equal(await open('storage_warning'), 1);
+    assert.equal(await notices('storage_warning'), base);
+    assert.equal(await notices('storage_critical'), critBase);
+  });
+
   test('free space exactly at the floor does not enter', async () => {
     await run({ total: 100 * GB, free: 5 * GB }, OK);
     assert.equal((await state()).protective, false);
