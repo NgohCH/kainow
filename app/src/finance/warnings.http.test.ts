@@ -96,6 +96,14 @@ describe('budget warning notices over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.equal(all.filter((r) => r.summary === pct(100)).length, 4);
   });
 
+  test('a Member who is a finance reader through membersRead still gets no notice', async () => {
+    await t.pool.query(`UPDATE project_finance_settings SET members_read = true WHERE project_id = $1`, [projectId]);
+    await spend('900.00');
+    const rows = await notices();
+    assert.equal(rows.length, 4);
+    assert.ok(!users(rows).includes(ids.ann));
+  });
+
   test('jumping from 0 to 100% sends only the second notice', async () => {
     await spend('1000.00');
     const rows = await notices();

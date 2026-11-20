@@ -12,11 +12,13 @@ import { loadProjectFinanceSettings, mayReadFinance } from './readers';
  * the current level, so it also falls (and a later rise notifies again). One notice per evaluation, for the highest level.
  */
 export async function evaluateFinanceWarnings(c: PoolClient, projectId: string, at: Date): Promise<void> {
-  const figures = await loadFigures(c, projectId);
-  if (figures === null) return;
+  // Lock first, then compute, so a concurrent change committed while we waited is seen by the level we compare.
+  // notified_level is not reset when tracking is turned off and on: the stale value is compared on re-enable, by design.
   await c.query(`INSERT INTO project_finance_state (project_id, notified_level) VALUES ($1, 0) ON CONFLICT (project_id) DO NOTHING`, [projectId]);
   const { rows } = await c.query<{ notified: number }>(`SELECT notified_level AS notified FROM project_finance_state WHERE project_id = $1 FOR UPDATE`, [projectId]);
   const notified = rows[0].notified;
+  const figures = await loadFigures(c, projectId);
+  if (figures === null) return;
   const level = figures.level;
   if (level === notified) return;
   await c.query(`UPDATE project_finance_state SET notified_level = $2 WHERE project_id = $1`, [projectId, level]);
