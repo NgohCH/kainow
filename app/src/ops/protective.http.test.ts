@@ -149,8 +149,9 @@ describe('protective read-only mode in the API', { skip: SKIP_NO_DB }, () => {
     assert.ok(routes.length > 150, `found ${routes.length} routes`);
     const unsafe = routes.filter((r) => !['GET', 'HEAD', 'OPTIONS'].includes(r.method));
     assert.ok(!unsafe.some((r) => r.method === 'ALL'), 'no @All route');
-    // The allow-list is exactly sign-in and sign-out (Resume joins it with its route, Task 11).
+    // The allow-list is exactly sign-in, sign-out and Resume.
     assert.deepEqual(unsafe.filter((r) => r.allowed).map((r) => `${r.method} ${r.path}`).sort(), [
+      'POST /admin/operations/resume',
       'POST /auth/logout',
       'POST /auth/logout-all',
       'POST /auth/request-code',

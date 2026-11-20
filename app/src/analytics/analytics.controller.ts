@@ -12,6 +12,7 @@ import { CATALOGUE } from './catalogue';
 import { type ExportPanel, type PanelData, exportMeta, panelTable, toCsv } from './csv';
 import { DrillService } from './drill.service';
 import { type AnalyticsFilters, parseAnalyticsFilters } from './filters';
+import { OperationsPanelService } from './operations.service';
 import { PanelsService } from './panels.service';
 import { RESOURCES_TABLES, ResourcesPanelService, type ResourcesTable } from './resources-panel';
 import { SystemService } from './system.service';
@@ -23,7 +24,7 @@ interface HttpResponse {
 }
 
 /** The panels served. */
-const PANELS = ['progress', 'problems', 'system', 'trends', 'resources'] as const;
+const PANELS = ['progress', 'problems', 'system', 'trends', 'resources', 'operations'] as const;
 type Panel = (typeof PANELS)[number];
 
 export const EXPORT_OFF = 'Analytics export is turned off.';
@@ -45,6 +46,7 @@ export class AnalyticsController {
     private readonly trends: TrendsService,
     private readonly drills: DrillService,
     private readonly views: ViewsService,
+    private readonly operations: OperationsPanelService,
     @Inject(PG_POOL) private readonly pool: Pool,
     @Inject(CLOCK) private readonly clock: Clock,
   ) {}
@@ -73,6 +75,7 @@ export class AnalyticsController {
     if (panel === 'progress') return { panel, data: await this.panels.progress(filters) };
     if (panel === 'problems') return { panel, data: await this.panels.problems(filters) };
     if (panel === 'system') return { panel, data: await this.system.problems(filters) };
+    if (panel === 'operations') return { panel, data: await this.operations.forPeriod(filters) };
     return { panel, data: await this.trends.weekly(filters) };
   }
 
