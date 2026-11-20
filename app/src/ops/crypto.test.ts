@@ -59,6 +59,13 @@ test('a different key gives wrong_key', async () => {
   assert.equal(await codeOf(dec(keyOf(), sealed)), 'wrong_key');
 });
 
+test('a flipped bit in the header key id gives wrong_key', async () => {
+  const key = keyOf();
+  const sealed = Buffer.from(await enc(key, randomBytes(10)));
+  sealed[10] ^= 1;
+  assert.equal(await codeOf(dec(key, sealed)), 'wrong_key');
+});
+
 test('wrong magic gives bad_magic', async () => {
   const key = keyOf();
   const sealed = Buffer.from(await enc(key, randomBytes(10)));

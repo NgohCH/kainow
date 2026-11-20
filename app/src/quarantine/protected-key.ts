@@ -1,5 +1,6 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { keyIdOf } from '../common/key-id';
 
 /** Nest provider token for the loaded key: `ProtectedKey | null` (null when the file is unset, missing or invalid). */
 export const PROTECTED_KEY = Symbol('PROTECTED_KEY');
@@ -24,7 +25,7 @@ const NONCE_BYTES = 12;
 const TAG_BYTES = 16;
 
 function fromBytes(key: Buffer): ProtectedKey {
-  const id = createHash('sha256').update(key).digest('hex').slice(0, 16);
+  const id = keyIdOf(key);
   return {
     id,
     encrypt(plain, aad) {
