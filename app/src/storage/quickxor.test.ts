@@ -16,7 +16,8 @@ test('quickXorHash of empty buffer is AAAAAAAAAAAAAAAAAAAAAAAAAAA=', () => {
   assert.equal(quickXorHash(Buffer.alloc(0)), EMPTY);
 });
 
-test('quickXorHash matches published vectors', () => {
+// TODO(sub-project 9 Task 26): confirm against a hash returned by a real Microsoft tenant (probe-storage).
+test('quickXorHash matches reference vectors derived from the algorithm description', () => {
   assert.equal(quickXorHash(Buffer.from('abc')), ABC);
   const b = Buffer.alloc(1000);
   for (let i = 0; i < 1000; i++) b[i] = (i * 7 + 3) & 0xff;

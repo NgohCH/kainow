@@ -35,7 +35,8 @@ test('local connector keeps item ids and grants across a restart', async () => {
     assert.equal((await b.getItem(dest, ref.itemId)).itemId, ref.itemId);
     assert.ok('permissionId' in g);
     assert.equal((await b.listPermissions(dest, f.itemId)).length, 1);
-    assert.equal(JSON.parse(await readFile(join(dir, 'permissions.json'), 'utf8')) !== null, true);
+    const side = JSON.parse(await readFile(join(dir, 'permissions.json'), 'utf8')) as Record<string, Array<{ id: string }>>;
+    assert.ok('permissionId' in g && side[f.itemId].some((p) => p.id === g.permissionId));
   } finally { await rm(dir, { recursive: true, force: true }); }
 });
 

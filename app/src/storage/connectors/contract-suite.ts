@@ -9,10 +9,10 @@ export interface ContractHarness {
   dest: DestinationRef;
   seedPermission(itemId: string, p: Omit<PermissionInfo, 'id'>): Promise<string>;
   close(): Promise<void>;
-  /** A second destination for the copyTo case; when absent the copy stays inside `dest`. */
-  otherDest?: DestinationRef;
-  /** Replaces the content of an existing file, creating a provider version. Without it the version case is skipped. */
-  seedVersion?(itemId: string, bytes: Buffer): Promise<void>;
+  /** A second destination for the copyTo case. */
+  otherDest: DestinationRef;
+  /** Replaces the content of an existing file, creating a provider version. */
+  seedVersion(itemId: string, bytes: Buffer): Promise<void>;
   /** An address lookupPerson resolves to an account, and one it reports not_found. */
   people?: { known: string; unknown: string };
 }
@@ -21,6 +21,8 @@ async function rejectsWith(p: Promise<unknown>, code: string): Promise<void> {
   await assert.rejects(p, (e: unknown) => e instanceof StorageError && e.code === code);
 }
 
+// Connectors must normalise `path` ("/"-separated from the destination root, e.g. "/To/new.txt") and
+// `principal` (the person's email address for user permissions) to the shapes asserted here.
 /** Registers node:test cases; every connector (local, graph) runs the same suite. */
 export function runContractSuite(name: string, make: () => Promise<ContractHarness>): void {
   const run = (title: string, fn: (h: ContractHarness) => Promise<void>) =>
@@ -75,7 +77,7 @@ export function runContractSuite(name: string, make: () => Promise<ContractHarne
       assert.equal(st.parentId, f2.itemId);
       assert.ok(st.path.endsWith('/To/new.txt'), st.path);
       assert.equal(await h.connector.findChild(h.dest, f1.itemId, 'old.txt'), null);
-      await rejectsWith(h.connector.getItem(h.dest, 'no-such-item'), 'not_found');
+      await rejectsWith(h.connector.getItem(h.dest, '00000000-0000-4000-8000-000000000000'), 'not_found');
     });
 
     run('download returns the exact bytes', async (h) => {
@@ -90,7 +92,7 @@ export function runContractSuite(name: string, make: () => Promise<ContractHarne
       const f = await h.connector.ensureFolder(h.dest, null, 'CopySrc');
       const bytes = Buffer.from('copy me, exactly');
       const ref = await h.connector.upload(h.dest, f.itemId, 'c.txt', bytes, { conflict: 'fail' });
-      const dst = h.otherDest ?? h.dest;
+      const dst = h.otherDest;
       const target = await h.connector.ensureFolder(dst, null, 'CopyDst');
       const copy = await h.connector.copyTo(h.dest, ref.itemId, dst, target.itemId, 'c-copy.txt');
       assert.notEqual(copy.itemId, ref.itemId);
@@ -103,7 +105,7 @@ export function runContractSuite(name: string, make: () => Promise<ContractHarne
     run('removePermanently leaves no version to restore', async (h) => {
       const f = await h.connector.ensureFolder(h.dest, null, 'Rm');
       const ref = await h.connector.upload(h.dest, f.itemId, 'r.txt', Buffer.from('v1'), { conflict: 'fail' });
-      if (h.seedVersion) await h.seedVersion(ref.itemId, Buffer.from('v2'));
+      await h.seedVersion(ref.itemId, Buffer.from('v2'));
       const versions = await h.connector.listVersions(h.dest, ref.itemId);
       await h.connector.removePermanently(h.dest, ref.itemId);
       await rejectsWith(h.connector.getItem(h.dest, ref.itemId), 'not_found');
@@ -114,7 +116,6 @@ export function runContractSuite(name: string, make: () => Promise<ContractHarne
     });
 
     run('listVersions and restoreVersion bring back earlier content', async (h) => {
-      if (!h.seedVersion) return; // contract case needs a way to create a second version
       const f = await h.connector.ensureFolder(h.dest, null, 'Ver');
       const v1 = Buffer.from('first content');
       const v2 = Buffer.from('second, longer content');
