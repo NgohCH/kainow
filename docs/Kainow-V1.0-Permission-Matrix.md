@@ -124,13 +124,18 @@ Self-approval is allowed by default for an eligible O/S, including a valid combi
 
 | Action | Default authority | Conditions / reference |
 | --- | --- | --- |
-| Maintain organisation resource catalogue | EA or explicit delegate | Retire rather than rewrite historical reference. |
-| Maintain project usage indication | PM, DPM or O/S | Usage only; no booking/allocation guarantee. |
-| Establish/change budget | O/S approval | Financial Tracking enabled, supported reporting currency, missing not zero. |
-| Record expenditure | PM or DPM | History; not proof of payment approval elsewhere. |
-| Propose financial correction/manual currency conversion | PM or DPM | Linked original, reason, rate/date where conversion. |
-| Approve financial correction/manual conversion | O/S | Approval before changed totals; no automatic FX. |
-| Read financial detail | PM, DPM or O/S | Other roles require explicit policy; leadership summaries only. |
+| Maintain organisation resource catalogue (items and categories) | EA or a named catalogue maintainer | Retire rather than rewrite historical reference; reason on each change; designed in sub-project 8 (`docs/superpowers/specs/2026-11-20-v1-resources-budget-design.md`, section 8). |
+| Name or remove catalogue maintainers | EA | Reason; a maintainer manages the catalogue only and gains no other authority; C76. |
+| View project resources (lines, people, overlap warning) | Participant and Audit/Oversight grant holders | Never shows another project's quantity, notes or status; leadership holders see summary fields only; D91. |
+| Maintain project resource lines (replaces the earlier usage indication) | PM, DPM or O/S | Open projects; create, edit, change status, cancel; usage only, no booking or allocation guarantee; D91. |
+| Propose budget | PM, DPM or O/S | Financial Tracking Enabled, Open project; goes through the project approval policy; D92. |
+| Approve budget | O/S | Financial Tracking Enabled; approval policy count and distinct people apply; D03 block; until approved the budget reads Not provided; D92. |
+| Record expenditure | PM or DPM | Financial Tracking Enabled, Open project; history; not proof of payment approval elsewhere; D92. |
+| Propose financial correction, refund or manual currency conversion | PM or DPM | Linked original, reason, rate/date where conversion; refund must reference a recorded entry; D92. |
+| Approve financial correction, refund or manual conversion | O/S | Approval before changed totals; no automatic FX; approval policy and D03 apply; D92. |
+| Read financial detail | PM, DPM or O/S | Project policy may add Members and/or Audit/Oversight holders (C80); Administrator standing alone is not finance access; leadership summaries only; D94. |
+| Change project finance settings (tracking, reporting currency, warning thresholds, financial-detail readers) | PM, O/S when delegated; EA always | Reason; recorded with previous and new values; currency fixed once any budget or spending exists; D93, D94. |
+| Change organisation finance settings (delegation switch, default and enabled currencies, default thresholds) | EA | Reason; history kept; D94, C78, C79. |
 | Draft/submit output | Participant | Attribution, source permissions, supported format. |
 | Register/file/move/rename output | PM or DPM | Approved external destination; O/S approval for approved version; failures preserve last confirmed reference. |
 | Approve deliverable/report/spec version | O/S | Exact version; external edit cannot inherit approval. |

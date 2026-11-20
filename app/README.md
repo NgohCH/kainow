@@ -75,6 +75,29 @@ DATABASE_URL=postgres://.../kainow_bench npm run bench-dashboards
 
 `node dist/dashboards/bench-cli.js --seed-only` seeds a `_bench` or `_smoke` database and stops, for a browser smoke test. All seeded names are dummy and the e-mail addresses are at `@example.org`.
 
+## Shared resources and optional budget (V1.0 sub-project 8)
+
+Design: [`docs/superpowers/specs/2026-11-20-v1-resources-budget-design.md`](../docs/superpowers/specs/2026-11-20-v1-resources-budget-design.md); decisions D91 (resource lines and the overlap warning), D92 (recorded spending and approved adjustments), D93 (budget warnings) and D94 (finance settings and delegation).
+
+| Screen | Route | Who |
+| --- | --- | --- |
+| Resources tab (lines, people, overlap warning, finance section) | `#/projects/<id>/resources` | Participants and Audit/Oversight holders read lines; the finance section needs finance read access; PM, Deputy, Owner and Sponsor maintain lines |
+| Resources report | `#/projects/<id>/resources/report` | Same as the tab; the finance section only for finance readers |
+| Project Settings > Finance | `#/projects/<id>/settings` | PM, Owner and Sponsor edit where delegated (read-only to Deputies); the Administrator always |
+| System Settings > Resources and finance | `#/resources-admin` | Enterprise Administrator (delegation switch, default and enabled currencies, default warning thresholds, catalogue maintainers) |
+| Resource catalogue (items and categories) | `#/resources-admin` | Enterprise Administrator and named catalogue maintainers |
+
+Spending, budgets and adjustments need Financial Tracking Enabled on the project. Budgets, corrections and refunds go through the project's existing approval process; totals change only once approved, and spending in another currency stays out of totals until a conversion is approved. Warning thresholds are whole percentages 1 to 200, the first below the second (defaults 80 and 100); they are advisory.
+
+**Bench.** `npm run bench-resources` times the Resources tab, finance, the Resources and finance analytics panel and the leadership summary against the aims in spec section 13. It uses its own database whose name ends in `_bench` or `_bench_sp8`, migrated first:
+
+```
+DATABASE_URL=postgres://.../kainow_bench_sp8 npm run migrate
+DATABASE_URL=postgres://.../kainow_bench_sp8 npm run bench-resources
+```
+
+Result of the run on 20 November 2026 (p95, all four aims met): Resources tab with 100 lines 96.0 ms (aim 200); finance with 1,000 entries 27.9 ms (aim 200); Resources and finance panel 79.5 ms (aim 500); leadership summary at organisation scope 489.4 ms (aim 500, little room; most of its time is sub-project 7's task measures). The full table and the two fixes made after the first run are in the spec. All seeded names are dummy and the e-mail addresses are at `@example.org`.
+
 ## Milestones
 
 | # | Milestone | Status |
