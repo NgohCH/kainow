@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useId, useState } from 'react';
+import { type FormEvent, type RefObject, useCallback, useEffect, useId, useRef, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import { formatWhen } from '../format.ts';
 import { EXPORT_ROLES, EXPORT_ROLE_LABEL, type ExportRole, type OutputSettingsView, type ReportType, effectiveSourceLabel, formatLabel } from '../outputs.ts';
@@ -24,6 +24,25 @@ export function useReportTypes(): ReportType[] {
   return types;
 }
 
+/**
+ * Returns focus to whatever opened a form once it closes (or to `fallback` when that control is gone). Call the
+ * returned function just before opening, while the opener still has focus.
+ */
+export function useReturnFocus(open: boolean, fallback?: RefObject<HTMLElement | null>): () => void {
+  const opener = useRef<HTMLElement | null>(null);
+  const was = useRef(open);
+  useEffect(() => {
+    if (was.current && !open) {
+      const el = opener.current;
+      requestAnimationFrame(() => (el && el.isConnected ? el : fallback?.current)?.focus());
+    }
+    was.current = open;
+  }, [open, fallback]);
+  return useCallback(() => {
+    opener.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  }, []);
+}
+
 const NOT_YOURS = 'The Project Manager, the Owner or a Sponsor can change this when the Administrator allows projects to; otherwise an Enterprise Administrator. Not while the project is Deferred or Closed.';
 const who = (editable: boolean) => (editable ? 'You may change this.' : NOT_YOURS);
 
@@ -44,6 +63,8 @@ export function ProjectOutputSettings({ projectId }: { projectId: string }) {
   const [editing, setEditing] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const changeButton = useRef<HTMLButtonElement>(null);
+  useReturnFocus(editing, changeButton);
 
   const reset = useCallback((v: OutputSettingsView) => {
     setDestinationId(v.destination?.id ?? '');
@@ -112,7 +133,7 @@ export function ProjectOutputSettings({ projectId }: { projectId: string }) {
       </dl>
       {view.updatedAt && <p className="meta">Last changed {formatWhen(view.updatedAt)}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
-      {anyEditable && !editing && <button type="button" onClick={() => { reset(view); setEditing(true); setNotice(null); }}>Change output settings</button>}
+      {anyEditable && !editing && <button type="button" ref={changeButton} onClick={() => { reset(view); setEditing(true); setNotice(null); }}>Change output settings</button>}
       {editing && (
         <form className="panel stack" aria-label="Change output settings" onSubmit={save} onKeyDown={(e) => e.key === 'Escape' && setEditing(false)}>
           {view.editable.destination && (

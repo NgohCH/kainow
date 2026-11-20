@@ -45,6 +45,8 @@ export interface OutputVersion {
   createdAt: string;
   createdBy: Person;
   filing: Filing;
+  /** The change request that approved this version (the approval reference); null until one did. */
+  approvalRequestId: string | null;
 }
 
 export interface OutputSummary {
@@ -107,6 +109,8 @@ export interface OutputSettingsView {
   updatedAt: string | null;
   maySubmit: boolean;
   mayExport: boolean;
+  /** `output.manage`: may add versions, so a saved export may go into an existing output. */
+  mayManage: boolean;
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -119,7 +123,6 @@ export const KEPT_AT_EXISTING = 'Kept at its existing location';
 export const APPROVAL_NOTICE = 'Approving this document does not approve the commitments it mentions.';
 export const MOVING_FILES = 'Moving files';
 export const NOT_KEPT = 'Not filed — file no longer kept; generate or upload it again';
-export const SHARING_OUTSIDE = 'Sharing for this document is managed outside Kainow';
 
 export const notMovedLabel = (oldPath: string): string => `Files not moved — still at ${oldPath}`;
 export const notSharedLabel = (email: string): string => `Not shared in SharePoint — no Microsoft account found for ${email}`;
@@ -252,6 +255,20 @@ export function exportPath(projectId: string, kind: ExportKind, filters: Record<
   const q = new URLSearchParams({ kind });
   for (const [k, v] of Object.entries(filters)) if (v) q.set(k, v);
   return `/projects/${projectId}/export?${q.toString()}`;
+}
+
+/** The file name a download's Content-Disposition gives (`filename="…"`), or the fallback. */
+export function filenameFromDisposition(header: string | null | undefined, fallback: string): string {
+  const star = /filename\*=UTF-8''([^;]+)/i.exec(header ?? '');
+  if (star) {
+    try {
+      return decodeURIComponent(star[1].trim());
+    } catch {
+      // fall through to the plain name
+    }
+  }
+  const plain = /filename="([^"]+)"/i.exec(header ?? '');
+  return plain ? plain[1] : fallback;
 }
 
 /** The notice an approval request shows: the server's own for an output approval, else the spec's exact words. */

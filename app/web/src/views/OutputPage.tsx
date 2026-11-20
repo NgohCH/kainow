@@ -9,7 +9,7 @@ import {
 import type { ProjectRole, ProjectStatus } from '../projects.ts';
 import { sizeLabel } from '../storage.ts';
 import { ChangeRequestPanel, useRequests } from './ChangeRequest.tsx';
-import { useReportTypes } from './ProjectOutputSettings.tsx';
+import { useReportTypes, useReturnFocus } from './ProjectOutputSettings.tsx';
 import { ReportSecret } from './ReportSecret.tsx';
 
 /** The project's current people and departments, for contributors and audiences. */
@@ -20,6 +20,8 @@ export interface ProjectPeople {
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 const OPEN: readonly ProjectStatus[] = ['draft', 'planned', 'active'];
+/** A short, readable approval reference: the end of the change request's id (the full id is its tooltip). */
+const shortRef = (id: string) => id.replace(/-/g, '').slice(-8).toUpperCase();
 const dayText = (day: string | null) => (day ? formatDay(`${day}T00:00:00+08:00`) : 'Not issued yet');
 
 /** One output: summary first, then actions by role, versions, contributors, audience and history (spec 12). */
@@ -32,6 +34,11 @@ export function OutputPage({ projectId, outputId, roles, status, people }: {
   const [notice, setNotice] = useState<string | null>(null);
   const [mode, setMode] = useState<null | 'register' | 'edit' | 'decline' | 'withdraw' | 'delete' | 'version' | 'accept' | 'review-clear' | 'review-withdraw'>(null);
   const heading = useRef<HTMLHeadingElement>(null);
+  const remember = useReturnFocus(mode !== null, heading);
+  const openMode = (m: NonNullable<typeof mode>) => {
+    remember();
+    setMode(m);
+  };
   const { requests, reload: reloadRequests } = useRequests(projectId);
   const pmOrDeputy = roles.some((r) => r === 'pm' || r === 'deputy_pm');
   const manages = pmOrDeputy && OPEN.includes(status);
@@ -107,15 +114,15 @@ export function OutputPage({ projectId, outputId, roles, status, people }: {
       {error && <p role="alert" className="error">{error}</p>}
 
       <div className="actions">
-        {output.may.register && <button type="button" className="primary" onClick={() => setMode('register')}>Register</button>}
-        {output.may.decline && <button type="button" onClick={() => setMode('decline')}>Decline</button>}
-        {output.may.register && <button type="button" onClick={() => setMode('accept')}>Add to an existing output</button>}
-        {output.may.update && output.status === 'registered' && <button type="button" onClick={() => setMode('edit')}>Edit details</button>}
-        {output.may.addVersion && <button type="button" onClick={() => setMode('version')}>Add a new version</button>}
-        {output.may.review && <button type="button" onClick={() => setMode('review-clear')}>Clear the access review</button>}
-        {output.may.review && <button type="button" onClick={() => setMode('review-withdraw')}>Withdraw for the access review</button>}
-        {manages && live && !output.may.review && <button type="button" onClick={() => setMode('withdraw')}>Withdraw</button>}
-        {manages && <button type="button" onClick={() => setMode('delete')}>Delete</button>}
+        {output.may.register && <button type="button" className="primary" onClick={() => openMode('register')}>Register</button>}
+        {output.may.decline && <button type="button" onClick={() => openMode('decline')}>Decline</button>}
+        {output.may.register && <button type="button" onClick={() => openMode('accept')}>Add to an existing output</button>}
+        {output.may.update && output.status === 'registered' && <button type="button" onClick={() => openMode('edit')}>Edit details</button>}
+        {output.may.addVersion && <button type="button" onClick={() => openMode('version')}>Add a new version</button>}
+        {output.may.review && <button type="button" onClick={() => openMode('review-clear')}>Clear the access review</button>}
+        {output.may.review && <button type="button" onClick={() => openMode('review-withdraw')}>Withdraw for the access review</button>}
+        {manages && live && !output.may.review && <button type="button" onClick={() => openMode('withdraw')}>Withdraw</button>}
+        {manages && <button type="button" onClick={() => openMode('delete')}>Delete</button>}
         <ReportSecret projectId={projectId} kind="output" id={outputId} label={`output “${output.title}”`} onReported={() => void load()} />
       </div>
 
@@ -165,7 +172,7 @@ export function OutputPage({ projectId, outputId, roles, status, people }: {
 
       {approvals.length > 0 && (
         <section aria-labelledby="output-approvals">
-          <h3 id="output-approvals">Waiting for approval</h3>
+          <h3 id="output-approvals" tabIndex={-1}>Waiting for approval</h3>
           {approvals.map((r) => (
             <ChangeRequestPanel key={`${r.id}:${r.version}`} request={r} projectId={projectId} onChanged={(m) => { setNotice(m); void load(); }} />
           ))}
@@ -208,6 +215,7 @@ function VersionRow({ v, base, manages, mayRequestApproval, approvalPending, act
   const [opening, setOpening] = useState(false);
   const [mode, setMode] = useState<null | 'approval' | 'relink'>(null);
   const [url, setUrl] = useState('');
+  const remember = useReturnFocus(mode !== null);
   const f = v.filing;
   const path = `${base}/versions/${v.no}`;
   const hasFile = f.state === 'stored' || f.state === 'linked';
@@ -258,16 +266,24 @@ function VersionRow({ v, base, manages, mayRequestApproval, approvalPending, act
         {f.registerFailed && <span className="warn inline">{f.registerFailed}</span>}
       </td>
       <td data-label="Approval">
-        {approvalPending ? 'Approval requested — waiting' : v.status === 'approved' ? 'Approved' : '—'}
+        {approvalPending ? (
+          <button type="button" className="link-button" onClick={() => { const h = document.getElementById('output-approvals'); h?.scrollIntoView(); h?.focus(); }}>Approval requested — waiting</button>
+        ) : v.approvalRequestId ? (
+          <>
+            {v.status === 'approved' ? 'Approved' : 'Was approved'} — request <span title={v.approvalRequestId}>{shortRef(v.approvalRequestId)}</span>
+          </>
+        ) : (
+          '—'
+        )}
         {mayRequestApproval && mayAskApproval(v) && mode !== 'approval' && (
-          <button type="button" className="link-button" onClick={() => setMode('approval')}>Ask for approval<span className="visually-hidden"> of version {v.no}</span></button>
+          <button type="button" className="link-button" onClick={() => { remember(); setMode('approval'); }}>Ask for approval<span className="visually-hidden"> of version {v.no}</span></button>
         )}
         {mode === 'approval' && (
           <div className="panel stack" role="group" aria-label={`Ask for approval of version ${v.no}`}>
             <p>An Owner or Sponsor approves this exact version under the project's approval policy.</p>
             <p className="warn" role="note">{APPROVAL_NOTICE}</p>
             <div className="actions">
-              <button type="button" className="primary" autoFocus onClick={() => void act(() => api.post(`${path}/approval`), 'Approval was requested.').then(() => setMode(null))}>Ask for approval</button>
+              <button type="button" className="primary" autoFocus onClick={() => void act(() => api.post(`${path}/approval`), 'Approval was requested.').then((ok) => ok && setMode(null))}>Ask for approval</button>
               <button type="button" onClick={() => setMode(null)}>Cancel</button>
             </div>
           </div>
@@ -285,7 +301,7 @@ function VersionRow({ v, base, manages, mayRequestApproval, approvalPending, act
           </button>
         )}
         {actions.includes('relink') && mode !== 'relink' && (
-          <button type="button" className="link-button" onClick={() => setMode('relink')}>{FILE_ACTION_LABEL.relink}</button>
+          <button type="button" className="link-button" onClick={() => { remember(); setMode('relink'); }}>{FILE_ACTION_LABEL.relink}</button>
         )}
         {actions.includes('add_version') && <span className="hint">Or add a new version from a fresh upload.</span>}
         {mode === 'relink' && (
@@ -339,45 +355,67 @@ function ReasonForm({ title, button, hint, onSubmit, onCancel }: { title: string
   );
 }
 
-/** Registering (or later editing): title, report type, categories, issue date, contributors (spec 4.2). */
+/** Registering (or later editing): title, report type, categories, issue date, contributors and, when registering, the audience (spec 4.2). */
 function RegisterForm({ output, people, edit, onSubmit, onCancel }: {
   output: OutputDetail; people: ProjectPeople; edit: boolean; onSubmit: (body: Record<string, unknown>) => Promise<boolean>; onCancel: () => void;
 }) {
   const types = useReportTypes();
+  const uid = useId();
+  const [allDepartments, setAllDepartments] = useState<Array<{ id: string; name: string }>>([]);
+  useEffect(() => {
+    api.get<{ departments: Array<{ id: string; name: string; status: string }> }>('/departments').then(
+      (r) => setAllDepartments(r.departments.filter((d) => d.status === 'active')),
+      () => setAllDepartments([]),
+    );
+  }, []);
   const [title, setTitle] = useState(output.title);
   const [typeId, setTypeId] = useState(output.reportType?.id ?? '');
   const [categories, setCategories] = useState<string[]>(output.categories.map((c) => c.id));
   const [issueDate, setIssueDate] = useState(output.issueDate ?? '');
-  const [personIds, setPersonIds] = useState<string[]>(output.contributors.people.map((p) => p.id));
+  // Each contributing person with the department recorded for them (a saved contributor keeps theirs as the default).
+  const [personDepts, setPersonDepts] = useState<Record<string, string>>(
+    Object.fromEntries(output.contributors.people.map((p) => [p.id, p.departmentId ?? ''])),
+  );
   const [departmentIds, setDepartmentIds] = useState<string[]>(output.contributors.departments.map((d) => d.id));
+  const [audienceMode, setAudienceMode] = useState<'project' | 'restricted'>(output.audience.mode);
+  const [audiencePeople, setAudiencePeople] = useState<string[]>(output.audience.people.map((p) => p.id));
   const [reason, setReason] = useState('');
   const toggle = (list: string[], id: string) => (list.includes(id) ? list.filter((x) => x !== id) : [...list, id]);
   const knownPeople = [
     ...people.people,
     ...output.contributors.people.filter((p) => !people.people.some((x) => x.userId === p.id)).map((p) => ({ userId: p.id, displayName: p.displayName })),
   ].filter((p) => p.userId !== output.author.id);
-  const departments = [...people.departments, ...output.contributors.departments.filter((d) => !people.departments.some((x) => x.id === d.id))];
+  // Every active department, the project's own first (then any already recorded that is no longer active).
+  const own = new Set(people.departments.map((d) => d.id));
+  const departments = [
+    ...people.departments,
+    ...allDepartments.filter((d) => !own.has(d.id)).sort((a, b) => a.name.localeCompare(b.name)),
+    ...[...output.contributors.departments, ...output.contributors.people.filter((p) => p.departmentId).map((p) => ({ id: p.departmentId as string, name: p.departmentName ?? 'A department' }))]
+      .filter((d, i, all) => !own.has(d.id) && !allDepartments.some((x) => x.id === d.id) && all.findIndex((x) => x.id === d.id) === i),
+  ];
+  const chosenPeople = Object.keys(personDepts);
   return (
     <form
       className="panel stack"
-      aria-label={edit ? 'Edit the details' : 'Register this output'}
+      aria-labelledby={`${uid}-h`}
+      onKeyDown={(e) => e.key === 'Escape' && onCancel()}
       onSubmit={(e) => {
         e.preventDefault();
-        const kept = new Map(output.contributors.people.map((p) => [p.id, p.departmentId]));
         void onSubmit({
           title,
           reportTypeId: typeId,
           categoryIds: categories.filter((c) => c !== typeId),
           ...(issueDate ? { issueDate } : {}),
-          contributors: { people: personIds.map((userId) => ({ userId, departmentId: kept.get(userId) ?? null })), departmentIds },
+          contributors: { people: chosenPeople.map((userId) => ({ userId, departmentId: personDepts[userId] })), departmentIds },
+          ...(!edit ? { audience: { mode: audienceMode, namedUserIds: audienceMode === 'restricted' ? audiencePeople : [] } } : {}),
           ...(edit && reason.trim() ? { reason } : {}),
         });
       }}
     >
-      <h3>{edit ? 'Edit the details' : 'Register this output'}</h3>
+      <h3 id={`${uid}-h`}>{edit ? 'Edit the details' : 'Register this output'}</h3>
       {!edit && <p className="hint">Registering does not file or approve it. File each version afterwards, then ask for approval.</p>}
       <label>
-        Title <input required maxLength={200} value={title} onChange={(e) => setTitle(e.target.value)} />
+        Title <input required autoFocus maxLength={200} value={title} onChange={(e) => setTitle(e.target.value)} />
       </label>
       <label>
         Report type
@@ -397,18 +435,57 @@ function RegisterForm({ output, people, edit, onSubmit, onCancel }: {
         <input type="date" value={issueDate} onChange={(e) => setIssueDate(e.target.value)} />
       </label>
       <fieldset>
-        <legend>Contributing people <span className="hint">{output.author.displayName} is the author.</span></legend>
+        <legend>Contributing people <span className="hint">{output.author.displayName} is the author. Give each contributor the department they contributed for.</span></legend>
         {knownPeople.length === 0 && <p className="meta">Nobody else in the project.</p>}
-        {knownPeople.map((p) => (
-          <label key={p.userId} className="check"><input type="checkbox" checked={personIds.includes(p.userId)} onChange={() => setPersonIds((c) => toggle(c, p.userId))} /> {p.displayName}</label>
-        ))}
+        {knownPeople.map((p) => {
+          const on = p.userId in personDepts;
+          return (
+            <div key={p.userId} className="inline-form">
+              <label className="check">
+                <input
+                  type="checkbox"
+                  checked={on}
+                  onChange={() =>
+                    setPersonDepts((m) => {
+                      const next = { ...m };
+                      if (on) delete next[p.userId];
+                      else next[p.userId] = '';
+                      return next;
+                    })
+                  }
+                />{' '}
+                {p.displayName}
+              </label>
+              {on && (
+                <label>
+                  <span className="visually-hidden">Department of {p.displayName}</span>
+                  <select required value={personDepts[p.userId]} onChange={(e) => setPersonDepts((m) => ({ ...m, [p.userId]: e.target.value }))}>
+                    <option value="">Choose their department</option>
+                    {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
+                  </select>
+                </label>
+              )}
+            </div>
+          );
+        })}
       </fieldset>
       <fieldset>
-        <legend>Contributing departments</legend>
+        <legend>Contributing departments <span className="hint">The project's own departments are listed first.</span></legend>
         {departments.map((d) => (
           <label key={d.id} className="check"><input type="checkbox" checked={departmentIds.includes(d.id)} onChange={() => setDepartmentIds((c) => toggle(c, d.id))} /> {d.name}</label>
         ))}
       </fieldset>
+      {!edit && (
+        <fieldset>
+          <legend>Who may read it</legend>
+          <label className="check"><input type="radio" name={`${uid}-aud`} checked={audienceMode === 'project'} onChange={() => setAudienceMode('project')} /> Project-wide: everyone who may read the project</label>
+          <label className="check"><input type="radio" name={`${uid}-aud`} checked={audienceMode === 'restricted'} onChange={() => setAudienceMode('restricted')} /> Restricted: only the people chosen below</label>
+          {audienceMode === 'restricted' && people.people.map((p) => (
+            <label key={p.userId} className="check"><input type="checkbox" checked={audiencePeople.includes(p.userId)} onChange={() => setAudiencePeople((c) => toggle(c, p.userId))} /> {p.displayName}</label>
+          ))}
+          <span className="hint">When a version was built from material some people cannot read, only people who can read all of it may be chosen; Kainow refuses anyone else.</span>
+        </fieldset>
+      )}
       {edit && (
         <label>
           Reason for the change <span className="hint">Optional.</span>
@@ -509,6 +586,8 @@ function AudienceSection({ output, base, people, act }: { output: OutputDetail; 
   const [preview, setPreview] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const uid = useId();
+  const opener = useRef<HTMLButtonElement>(null);
+  useReturnFocus(editing, opener);
   const body = () => ({ mode, ...(mode === 'restricted' ? { userIds: chosen } : {}), reason });
   async function previewChange(e: FormEvent) {
     e.preventDefault();
@@ -522,7 +601,7 @@ function AudienceSection({ output, base, people, act }: { output: OutputDetail; 
   let content: ReactNode = null;
   if (editing) {
     content = (
-      <form className="panel stack" aria-labelledby={`${uid}-h`} onSubmit={previewChange}>
+      <form className="panel stack" aria-labelledby={`${uid}-h`} onSubmit={previewChange} onKeyDown={(e) => e.key === 'Escape' && setEditing(false)}>
         <h4 id={`${uid}-h`}>Change who may read it</h4>
         <fieldset>
           <legend>Readers</legend>
@@ -568,7 +647,7 @@ function AudienceSection({ output, base, people, act }: { output: OutputDetail; 
           {output.notShared.map((n) => <li key={n.person.id}><span className="warn inline">{n.message}</span> <span className="meta">({n.person.displayName}, who can still read it in Kainow)</span></li>)}
         </ul>
       )}
-      {output.may.changeAudience && !editing && <button type="button" onClick={() => { setEditing(true); setPreview(null); setError(null); }}>Change who may read it</button>}
+      {output.may.changeAudience && !editing && <button type="button" ref={opener} onClick={() => { setEditing(true); setPreview(null); setError(null); }}>Change who may read it</button>}
       {content}
     </section>
   );

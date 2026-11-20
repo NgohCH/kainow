@@ -1,13 +1,13 @@
-import { type FormEvent, useCallback, useEffect, useId, useMemo, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useId, useMemo, useRef, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import { formatDay, formatWhen, plural } from '../format.ts';
 import {
   type DeletedOutput, EXPORT_NAME, type ExportKind, type OutputSettingsView, type OutputSummary, checkLabel, exportControls,
-  exportPath, filingLabel, outputStatusLabel, versionStatusLabel,
+  exportPath, filenameFromDisposition, filingLabel, formatLabel, outputStatusLabel, versionStatusLabel,
 } from '../outputs.ts';
 import type { ProjectRole, ProjectStatus } from '../projects.ts';
 import { OutputPage, type ProjectPeople } from './OutputPage.tsx';
-import { useOutputPolicy, useReportTypes } from './ProjectOutputSettings.tsx';
+import { useOutputPolicy, useReportTypes, useReturnFocus } from './ProjectOutputSettings.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 
@@ -24,23 +24,57 @@ export function ExportControls({ projectId, kind, filters = {}, policy, onSaved 
 }) {
   const controls = exportControls(policy);
   const [saving, setSaving] = useState(false);
+  const [downloading, setDownloading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const remember = useReturnFocus(saving);
   if (controls.length === 0) return null;
   const name = EXPORT_NAME[kind];
+
+  /** Fetches the CSV first: a refusal is shown here in words, never saved as a file. */
+  async function download() {
+    setDownloading(true);
+    setError(null);
+    try {
+      const res = await fetch(api.url(exportPath(projectId, kind, filters)), { credentials: 'same-origin' });
+      if (!res.ok) {
+        const body = (await res.json().catch(() => null)) as { message?: string | string[] } | null;
+        const m = body?.message;
+        setError((Array.isArray(m) ? m.join(' ') : m) || 'The export could not be made. Try again.');
+        return;
+      }
+      const blob = await res.blob();
+      const href = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = href;
+      a.download = filenameFromDisposition(res.headers.get('Content-Disposition'), `${kind}.csv`);
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(href), 0);
+    } catch {
+      setError('Cannot reach the Kainow server. Check that it is running, then try again.');
+    } finally {
+      setDownloading(false);
+    }
+  }
+
   return (
     <div className="actions">
-      <a className="button" href={api.url(exportPath(projectId, kind, filters))} download>
+      <button type="button" onClick={() => void download()} disabled={downloading}>
         Export CSV<span className="visually-hidden"> of the {name}</span>
-      </a>
+      </button>
       {controls.includes('save') && (
-        <button type="button" aria-expanded={saving} onClick={() => setSaving((v) => !v)}>
+        <button type="button" aria-expanded={saving} onClick={() => { if (!saving) remember(); setSaving((v) => !v); }}>
           Save as output<span className="visually-hidden">: the {name} export</span>
         </button>
       )}
+      {error && <p role="alert" className="error">{error}</p>}
       {saving && (
         <SaveExportForm
           projectId={projectId}
           kind={kind}
           filters={filters}
+          mayChooseExisting={policy?.mayManage === true}
           onDone={(m) => {
             setSaving(false);
             onSaved?.(m);
@@ -53,8 +87,8 @@ export function ExportControls({ projectId, kind, filters = {}, policy, onSaved 
 }
 
 /** Saves an export as a submitted output, or as a new version of a registered one (spec 7.3). */
-function SaveExportForm({ projectId, kind, filters, onDone, onCancel }: {
-  projectId: string; kind: ExportKind; filters: Record<string, string | undefined>; onDone: (message: string) => void; onCancel: () => void;
+function SaveExportForm({ projectId, kind, filters, mayChooseExisting, onDone, onCancel }: {
+  projectId: string; kind: ExportKind; filters: Record<string, string | undefined>; mayChooseExisting: boolean; onDone: (message: string) => void; onCancel: () => void;
 }) {
   const types = useReportTypes();
   const [registered, setRegistered] = useState<OutputSummary[]>([]);
@@ -63,9 +97,11 @@ function SaveExportForm({ projectId, kind, filters, onDone, onCancel }: {
   const [typeId, setTypeId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Only the Project Manager or a Deputy may add a version to an existing output (output.manage).
   useEffect(() => {
+    if (!mayChooseExisting) return;
     api.get<{ outputs: OutputSummary[] }>(`/projects/${projectId}/outputs?status=registered`).then((r) => setRegistered(r.outputs), () => setRegistered([]));
-  }, [projectId]);
+  }, [projectId, mayChooseExisting]);
   async function submit(e: FormEvent) {
     e.preventDefault();
     setBusy(true);
@@ -85,15 +121,17 @@ function SaveExportForm({ projectId, kind, filters, onDone, onCancel }: {
   }
   return (
     <form className="panel stack" onSubmit={submit} aria-label={`Save the ${EXPORT_NAME[kind]} export as an output`}>
-      <label>
-        Save as
-        <select value={target} onChange={(e) => setTarget(e.target.value)}>
-          <option value="">A new output</option>
-          {registered.map((o) => (
-            <option key={o.id} value={o.id}>A new version of "{o.title}"</option>
-          ))}
-        </select>
-      </label>
+      {mayChooseExisting && (
+        <label>
+          Save as
+          <select value={target} onChange={(e) => setTarget(e.target.value)}>
+            <option value="">A new output</option>
+            {registered.map((o) => (
+              <option key={o.id} value={o.id}>A new version of "{o.title}"</option>
+            ))}
+          </select>
+        </label>
+      )}
       {!target && (
         <>
           <label>
@@ -183,7 +221,7 @@ function SubmitForm({ projectId, policy, onDone, onCancel }: { projectId: string
         <label>
           File
           <input type="file" required accept={accept} onChange={(e) => setFile(e.target.files?.[0] ?? null)} />
-          <span className="hint">This project accepts: {formats.map((f) => f.toUpperCase()).join(', ') || 'none'}. Do not upload files holding passwords or keys.</span>
+          <span className="hint">This project accepts: {formats.map(formatLabel).join(', ') || 'none'}. Do not upload files holding passwords or keys.</span>
         </label>
       ) : (
         <label>
@@ -222,6 +260,8 @@ function OutputRegister({ projectId, roles }: { projectId: string; roles: Projec
   const [year, setYear] = useState('');
   const [search, setSearch] = useState('');
   const [submitting, setSubmitting] = useState(false);
+  const submitButton = useRef<HTMLButtonElement>(null);
+  useReturnFocus(submitting, submitButton);
   const manages = roles.some((r) => r === 'pm' || r === 'deputy_pm');
 
   const load = useCallback(() => {
@@ -257,7 +297,7 @@ function OutputRegister({ projectId, roles }: { projectId: string; roles: Projec
       {notice && <p role="status" className="meta">{notice}</p>}
       {error && <p role="alert" className="error">{error}</p>}
       <div className="actions">
-        {policy?.maySubmit && !submitting && <button type="button" className="primary" onClick={() => setSubmitting(true)}>Submit an output</button>}
+        {policy?.maySubmit && !submitting && <button type="button" ref={submitButton} className="primary" onClick={() => setSubmitting(true)}>Submit an output</button>}
       </div>
       {submitting && policy && (
         <SubmitForm
@@ -370,6 +410,8 @@ function DeletedOutputs({ projectId, onRestored }: { projectId: string; onRestor
   const [open, setOpen] = useState<string | null>(null);
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const heading = useRef<HTMLHeadingElement>(null);
+  const remember = useReturnFocus(open !== null, heading);
   const load = useCallback(() => {
     api.get<{ outputs: DeletedOutput[] }>(`/projects/${projectId}/outputs/deleted`).then((r) => setRows(r.outputs), () => setRows([]));
   }, [projectId]);
@@ -377,17 +419,18 @@ function DeletedOutputs({ projectId, onRestored }: { projectId: string; onRestor
   if (rows.length === 0) return null;
   return (
     <section aria-labelledby="deleted-outputs-heading">
-      <h3 id="deleted-outputs-heading">Deleted outputs</h3>
+      <h3 id="deleted-outputs-heading" tabIndex={-1} ref={heading}>Deleted outputs</h3>
       <p className="hint">Deleting never removed a file from storage. Restoring puts the entry back in the register.</p>
       <ul className="plain">
         {rows.map((d) => (
           <li key={d.id}>
             <strong>{d.title}</strong> <span className="meta">deleted by {d.deletedBy.displayName}, {formatWhen(d.deletedAt)} — "{d.reason}"</span>{' '}
-            {open !== d.id && <button type="button" className="link-button" onClick={() => { setOpen(d.id); setReason(''); setError(null); }}>Restore<span className="visually-hidden"> {d.title}</span></button>}
+            {open !== d.id && <button type="button" className="link-button" onClick={() => { remember(); setOpen(d.id); setReason(''); setError(null); }}>Restore<span className="visually-hidden"> {d.title}</span></button>}
             {open === d.id && (
               <form
                 className="inline-form"
                 aria-label={`Restore ${d.title}`}
+                onKeyDown={(e) => e.key === 'Escape' && setOpen(null)}
                 onSubmit={async (e) => {
                   e.preventDefault();
                   try {
@@ -427,6 +470,8 @@ export function SubmitDraftAsOutput({ projectId, draftVersionId, versionNo, titl
   const [error, setError] = useState<string | null>(null);
   const [done, setDone] = useState<{ id: string; title: string } | null>(null);
   const [busy, setBusy] = useState(false);
+  const opener = useRef<HTMLButtonElement>(null);
+  useReturnFocus(open, opener);
   if (!policy?.maySubmit) return null;
   const formats = policy.formats.output.map((f) => f.format).filter((f) => f === 'md' || f === 'docx' || f === 'pdf');
   const chosen = format || formats[0] || '';
@@ -453,7 +498,7 @@ export function SubmitDraftAsOutput({ projectId, draftVersionId, versionNo, titl
           Submitted as the output <a href={`#/projects/${projectId}/outputs/${done.id}`}>{done.title}</a>. It waits for the Project Manager or a Deputy to register it.
         </p>
       )}
-      {!open && <button type="button" onClick={() => { setOpen(true); setDone(null); }}>Submit as output<span className="visually-hidden"> (version {versionNo})</span></button>}
+      {!open && <button type="button" ref={opener} onClick={() => { setOpen(true); setDone(null); }}>Submit as output<span className="visually-hidden"> (version {versionNo})</span></button>}
       {open && (
         <form className="panel stack" aria-labelledby={`${uid}-h`} onSubmit={submit} onKeyDown={(e) => e.key === 'Escape' && setOpen(false)}>
           <h3 id={`${uid}-h`}>Submit version {versionNo} as an output</h3>
@@ -463,7 +508,7 @@ export function SubmitDraftAsOutput({ projectId, draftVersionId, versionNo, titl
             <fieldset>
               <legend>Format</legend>
               {formats.map((f) => (
-                <label key={f} className="check"><input type="radio" name={`${uid}-f`} checked={chosen === f} onChange={() => setFormat(f)} /> {f === 'md' ? 'Markdown' : f.toUpperCase()}</label>
+                <label key={f} className="check"><input type="radio" name={`${uid}-f`} checked={chosen === f} onChange={() => setFormat(f)} /> {formatLabel(f)}</label>
               ))}
             </fieldset>
           )}

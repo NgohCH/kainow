@@ -1,7 +1,8 @@
-import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, api, type Department, type Finding, type Grant, type Membership, type Project } from '../api.ts';
 import { formatWhen } from '../format.ts';
 import { type FolderChoice, MOVING_FILES, type TransferView, transferConfirmText } from '../outputs.ts';
+import { useReturnFocus } from './ProjectOutputSettings.tsx';
 import { type GrantKind, accessLabel, canArchive, canManageGrants, grantStateLabel, roleLabel } from '../projects.ts';
 
 export type Act = (work: () => Promise<unknown>, done: string | ((result: unknown) => string)) => Promise<boolean>;
@@ -73,6 +74,8 @@ export function DepartmentMove({ project, act }: { project: Project; act: Act })
   const [to, setTo] = useState('');
   const [reason, setReason] = useState('');
   const [choice, setChoice] = useState<FolderChoice | ''>('');
+  const opener = useRef<HTMLButtonElement>(null);
+  useReturnFocus(open, opener);
   const owning = project.owningDepartment.id;
   const loadView = useCallback(() => {
     api.get<NonNullable<typeof view>>(`/projects/${project.id}/owning-department`).then(setView, () => setView(null));
@@ -169,7 +172,7 @@ export function DepartmentMove({ project, act }: { project: Project; act: Act })
           </div>
         </form>
       ) : (
-        <button onClick={() => setOpen(true)} disabled={busy} aria-describedby={busy ? 'department-busy' : undefined}>Change owning department</button>
+        <button ref={opener} onClick={() => setOpen(true)} disabled={busy} aria-describedby={busy ? 'department-busy' : undefined}>Change owning department</button>
       )}
       {busy && !open && <p id="department-busy" className="hint">The department can be changed again once the files are moved.</p>}
     </section>

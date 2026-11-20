@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { formatWhen } from './format.ts';
 import {
   APPROVAL_NOTICE, ACCESS_REVIEW, KEPT_AT_EXISTING, approvalNoticeFor, audiencePreviewText, checkLabel, effectiveSourceLabel, exportControls,
-  exportPath, filingLabel, mayAskApproval, mayFile, notMovedLabel, notSharedLabel, openRefusal, sourceStorageLabel, transferConfirmText,
+  exportPath, filenameFromDisposition, filingLabel, mayAskApproval, mayFile, notMovedLabel, notSharedLabel, openRefusal, sourceStorageLabel, transferConfirmText,
   versionStatusLabel, type OutputVersion,
 } from './outputs.ts';
 
@@ -80,7 +80,7 @@ test('an output approval shows that approving does not approve the commitments i
 
 const version = (status: OutputVersion['status'], state: string, checkStatus: string | null, extra: Partial<OutputVersion['filing']> = {}): OutputVersion => ({
   no: 1, origin: state === 'linked' ? 'link' : 'upload', format: 'pdf', status, sizeBytes: 10, createdAt: '2026-11-20T00:00:00Z',
-  createdBy: { id: 'u', displayName: 'Ann' },
+  createdBy: { id: 'u', displayName: 'Ann' }, approvalRequestId: null,
   filing: { state, label: '', checkStatus: checkStatus as OutputVersion['filing']['checkStatus'], lastCheckedAt: null, ...extra },
 });
 
@@ -126,4 +126,10 @@ test('the department change confirmation states the affected files and that shar
   assert.match(keep, /Kept at its existing location \(filed under Finance\)/);
   assert.match(keep, /does not change/);
   assert.match(transferConfirmText(0, null, 'Finance', 'Works'), /no files are affected/);
+});
+
+test('a download is named from its Content-Disposition, else the fallback', () => {
+  assert.equal(filenameFromDisposition('attachment; filename="Bridge tasks 2026-11-20.csv"', 'tasks.csv'), 'Bridge tasks 2026-11-20.csv');
+  assert.equal(filenameFromDisposition("attachment; filename=\"x.csv\"; filename*=UTF-8''Jambatan%20t%C3%A1sk.csv", 'tasks.csv'), 'Jambatan tásk.csv');
+  assert.equal(filenameFromDisposition(null, 'tasks.csv'), 'tasks.csv');
 });
