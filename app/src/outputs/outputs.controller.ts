@@ -157,7 +157,13 @@ export class OutputsController {
   async clearReview(@Param('projectId') projectId: string, @Param('outputId') outputId: string, @Body() body: unknown, @Req() req: HttpRequest) {
     ids(projectId, outputId);
     await this.audiences.clearReview(who(req), projectId, outputId, field(body, 'reason'));
-    return this.outputs.get(who(req), projectId, outputId);
+    try {
+      return await this.outputs.get(who(req), projectId, outputId);
+    } catch (err) {
+      // Someone outside a Restricted audience may clear it (spec 11) but does not read it afterwards.
+      if (err instanceof NotFoundException) return { id: outputId, reviewState: 'cleared', readable: false };
+      throw err;
+    }
   }
 
   /** `{ reason }`: "Access review required" ended by withdrawing the output (final). */
@@ -170,7 +176,7 @@ export class OutputsController {
     try {
       return await this.outputs.get(who(req), projectId, outputId);
     } catch (err) {
-      // An Owner or Sponsor does not read a withdrawn output (spec 4.6): they are told only that it was withdrawn.
+      // An Owner or Sponsor, or anyone outside its audience, does not read a withdrawn output (spec 4.6): they are told only that it was withdrawn.
       if (err instanceof NotFoundException) return { id: outputId, status: 'withdrawn', readable: false };
       throw err;
     }

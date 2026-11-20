@@ -7,10 +7,10 @@ import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import type { AudienceChange } from '../discussion/audience';
 import { NAMED_OUTSIDE } from '../discussion/audience.service';
-import { type ProjectContext, ProjectAccess } from '../projects/access.service';
+import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { decide } from '../projects/matrix';
 import { endOutputApprovalRequests } from './approval-handler';
-import { type OutputAccessRow, contentReaderContexts, inReview, loadOutputAccessRow, readersOfRow, readsOutput, readsRemainingMaterial, remainingMaterialReaders } from './readers';
+import { type OutputAccessRow, contentReaderContexts, inReview, loadOutputAccessRow, readersOfRow, readsRemainingMaterial, remainingMaterialReaders } from './readers';
 import { queueOutputPlacement } from './sharing-queue';
 
 type Db = Pool | PoolClient;
@@ -22,6 +22,7 @@ const NOTHING_TO_CHANGE = 'Nothing to change.';
 const CLOSED_OUTPUT = 'A declined or withdrawn output cannot be changed.';
 const NOT_IN_REVIEW = 'This output is not waiting for an access review.';
 const NOT_MATERIAL_READER = 'Only people who can read all the material this output was built from can change who may read it.';
+export const NARROW_BEFORE_CLEARING = 'Some people in this output’s audience can no longer read the material it was built from. Narrow its audience to people who can read it before clearing the review.';
 
 /** What changing the audience would do (or did): who gains and who loses access, by name then id. */
 export interface AudienceEffect {
@@ -185,6 +186,8 @@ export class OutputAudienceService {
     await this.tx(async (c) => {
       const { row } = await this.mayChange(c, user, projectId, outputId, true);
       if (!inReview(row)) throw new ConflictException(NOT_IN_REVIEW);
+      // Clearing returns the output to its audience: only once everyone in it can read the remaining material.
+      if (!(await this.audienceFitsMaterial(c, row, at))) throw new ConflictException(NARROW_BEFORE_CLEARING);
       await c.query(`UPDATE outputs SET review_state = 'cleared' WHERE id = $1`, [outputId]);
       await c.query(`INSERT INTO output_events (id, output_id, kind, actor_id, at, reason) VALUES ($1, $2, 'review_cleared', $3, $4, $5)`, [uuidv7(at.getTime()), outputId, user.id, at, reason]);
       if (row.status === 'registered') await queueOutputPlacement(c, outputId, 'widen');
@@ -205,21 +208,33 @@ export class OutputAudienceService {
   }
 
   /**
-   * The output for someone who may change its audience: 404 unless they read it now; then 403 unless they are the PM,
-   * the Owner or a Sponsor (`output.audience`) who can read all its remaining material (spec 11); then 409 when it is
-   * Declined or Withdrawn. With `lock`, the project and output rows are locked.
+   * The output for someone who may change its audience or decide its review (spec 11: "PM, Owner or Sponsor in the
+   * material's readers"): 404 unless they may read the project's content and the output exists there (not deleted or
+   * held); 403 unless they hold `output.audience`; 403 unless they can read all its remaining material; 409 when it is
+   * Declined or Withdrawn. Being in the output's own audience is not required: a Restricted audience may name no
+   * manager at all. With `lock`, the project and output rows are locked.
    */
   private async mayChange(db: Db, user: AuthUser, projectId: string, outputId: string, lock = false): Promise<{ ctx: ProjectContext; row: OutputAccessRow }> {
     if (!UUID.test(outputId)) throw new NotFoundException();
     const ctx = await this.access.context(user, projectId, db, lock);
+    if (!canReadContent(ctx)) throw new NotFoundException();
     if (lock) await db.query(`SELECT 1 FROM outputs WHERE id = $1 FOR UPDATE`, [outputId]);
     const row = await loadOutputAccessRow(db, outputId);
-    if (!row || row.projectId !== projectId || !(await readsOutput(db, ctx, row))) throw new NotFoundException();
+    if (!row || row.projectId !== projectId || row.deletedAt || row.heldCaseId) throw new NotFoundException();
     const verdict = decide({ action: 'output.audience', roles: ctx.roles, status: ctx.project.status });
     if (!verdict.allowed) throw new ForbiddenException(verdict.reason);
     if (!(await readsRemainingMaterial(db, ctx, row))) throw new ForbiddenException(NOT_MATERIAL_READER);
     if (row.status !== 'submitted' && row.status !== 'registered') throw new ConflictException(CLOSED_OUTPUT);
     return { ctx, row };
+  }
+
+  /** Whether everyone the output's audience lets in (today's content readers within it) can read its remaining material. */
+  private async audienceFitsMaterial(db: Db, row: OutputAccessRow, at: Date): Promise<boolean> {
+    const material = await remainingMaterialReaders(db, row, at);
+    if (!material) return true;
+    const readers = (await contentReaderContexts(db, row.projectId, at)).map((r) => r.viewerId);
+    const inAudience = row.audienceMode === 'restricted' ? readers.filter((id) => row.audienceUserIds.includes(id)) : readers;
+    return inAudience.every((id) => material.has(id));
   }
 
   private async check(db: Db, row: OutputAccessRow, change: AudienceChange, at: Date): Promise<void> {

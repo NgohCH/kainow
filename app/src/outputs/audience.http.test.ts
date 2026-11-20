@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import type { AuthUser } from '../auth/tokens';
+import { uuidv7 } from '../common/uuid7';
 import { ProjectAccess } from '../projects/access.service';
 import { SKIP_NO_DB } from '../testing/db';
 import { materialFor, seedDraft } from '../testing/drafts';
@@ -13,6 +14,7 @@ const MUST_RESTRICT = 'This output uses material some of the project’s readers
 const NAMED_OUTSIDE = 'Only people in this project can be named.';
 const AUDIENCE_REFUSAL = 'Only the Project Manager, the Owner or a Sponsor can change who may read an output.';
 const SECRET = 'Kp9vault-Rotor42';
+const NARROW_BEFORE_CLEARING = 'Some people in this output’s audience can no longer read the material it was built from. Narrow its audience to people who can read it before clearing the review.';
 
 describe('output audiences and review after removed material over HTTP', { skip: SKIP_NO_DB }, () => {
   let t: TestApp;
@@ -216,6 +218,11 @@ describe('output audiences and review after removed material over HTTP', { skip:
     assert.equal(r.status, 400);
     assert.equal(r.body.message, OUTSIDE_MATERIAL);
     assert.equal((await audience(c.pm, tight, { mode: 'project', reason: 'Everyone' })).status, 400);
+    // Clearing would give a Project-wide output back to people who cannot read the note: refused until narrowed.
+    const refused = await c.pm.request('POST', url(`/${tight}/review/clear`), { reason: 'Checked' });
+    assert.equal(refused.status, 409);
+    assert.equal(refused.body.message, NARROW_BEFORE_CLEARING);
+    assert.equal((await state(tight)).review_state, 'review_required');
     await ok(audience(c.pm, tight, { mode: 'restricted', userIds: [ids.pm, ids.ada], reason: 'Ada is named on the note' }));
     assert.deepEqual(await sees(tight), ['pm'], 'still in review: only reviewers in the audience');
     await ok(c.pm.request('POST', url(`/${tight}/review/clear`), { reason: 'Checked' }));
@@ -229,7 +236,7 @@ describe('output audiences and review after removed material over HTTP', { skip:
     assert.deepEqual(await sees(id), ['pm', 'deputy', 'owner', 'sponsor']);
     const deputy = await c.deputy.request('POST', url(`/${id}/review/clear`), { reason: 'Checked' });
     assert.equal(deputy.status, 403, 'a Deputy reads it but cannot clear it');
-    assert.equal((await c.ada.request('POST', url(`/${id}/review/clear`), { reason: 'Checked' })).status, 404);
+    assert.equal((await c.ada.request('POST', url(`/${id}/review/clear`), { reason: 'Checked' })).status, 403, 'a Member: the matrix refuses');
     assert.equal((await c.owner.request('POST', url(`/${id}/review/clear`), {})).status, 400, 'a reason is required');
     await clearOutbox();
     t.clock.advanceSeconds(1);
@@ -246,16 +253,72 @@ describe('output audiences and review after removed material over HTTP', { skip:
     assert.equal((await state(id)).review_state, 'review_required');
     assert.equal((await c.deputy.request('POST', url(`/${id}/review/withdraw`), { reason: 'Gone' })).status, 403);
     assert.equal((await c.sponsor.request('POST', url(`/${id}/review/withdraw`), {})).status, 400);
+    // A pending approval request ends with the output (CF8).
+    const request = uuidv7();
+    await t.pool.query(
+      `INSERT INTO change_requests (id, project_id, kind, target_kind, target_id, version, required_approvals, status, submitted_by, submitted_at)
+       SELECT $1, $2, 'approve_output', 'output_version', v.id, 1, 1, 'pending', $3, now() FROM output_versions v WHERE v.output_id = $4 AND v.version_no = 1`,
+      [request, project, ids.pm, id],
+    );
     await clearOutbox();
     t.clock.advanceSeconds(1);
     const w = await ok(c.sponsor.request('POST', url(`/${id}/review/withdraw`), { reason: 'Built on removed messages' }));
     assert.equal(w.status, 'withdrawn');
     assert.equal((await state(id)).status, 'withdrawn');
-    assert.deepEqual(await outbox(id), [['place-output', true]], 'its files leave the project folder');
+    assert.deepEqual(await outbox(id), [['place-output', true]], 'its files leave the project folder (the place-output job then syncs its folder)');
+    const ended = (await t.pool.query(`SELECT status, decided_by FROM change_requests WHERE id = $1`, [request])).rows[0];
+    assert.deepEqual([ended.status, ended.decided_by], ['withdrawn', ids.sponsor]);
     const ev = (await events(id)).filter((e) => ['review_cleared', 'withdrawn'].includes(e.kind));
     assert.deepEqual(ev.map((e) => [e.kind, e.actor_id, e.reason]), [['review_cleared', ids.owner, 'Nothing sensitive left'], ['withdrawn', ids.sponsor, 'Built on removed messages']]);
     assert.deepEqual(await sees(id), ['pm', 'deputy'], 'a withdrawn output: the PM and Deputies (its submitter is the PM)');
     assert.equal((await c.pm.request('POST', url(`/${id}/review/withdraw`), { reason: 'Again' })).status, 409);
     assert.equal((await audience(c.pm, id, { mode: 'restricted', userIds: [ids.pm], reason: 'x' })).status, 409, 'a withdrawn output is final');
+  });
+
+  test('one material rule: after removal and clear, a Submitted output registers Project-wide', async () => {
+    const src = await note('Pump note', 'The kestrel pump service is booked for Thursday morning.');
+    await meeting('Plant meeting', ['The kestrel valve audit is planned for Friday.']);
+    const items = await materialFor(t.pool, t.app.get(ProjectAccess), project, person('pm'), 'kestrel');
+    const d = await seedDraft(t.pool, { projectId: project, requesterId: ids.pm, items });
+    const out = await ok(c.pm.request('POST', url(), { kind: 'draft', draftVersionId: d.aiVersionId, format: 'md', title: 'Kestrel status' }), 201);
+    await ok(c.pm.request('POST', `/sources/${src}/delete`, { reason: 'Wrong project' }));
+    assert.deepEqual(await state(out.id), { status: 'submitted', review_state: 'review_required' });
+    // The shared draft itself is in review too (PM and Deputy only; set here, as the seeded draft's request link has
+    // its own time): that does not narrow the output's material.
+    await t.pool.query(`UPDATE report_drafts SET review_state = 'review_required' WHERE id = $1`, [d.draftId]);
+    await ok(c.pm.request('POST', url(`/${out.id}/review/clear`), { reason: 'The rest is fine' }));
+    const reg = await ok(c.pm.request('POST', url(`/${out.id}/register`), { reportTypeId: await typeId('Status reports'), audience: { mode: 'project', namedUserIds: [] } }));
+    assert.equal(reg.status, 'registered');
+    assert.deepEqual(await sees(out.id), ['pm', 'deputy', 'owner', 'sponsor', 'ada', 'bob']);
+  });
+
+  test('the PM who reads the material manages a Restricted audience naming no manager', async () => {
+    const src = await note('Pump note', 'The kestrel pump service is booked for Thursday morning.');
+    const [msg] = await meeting('Plant meeting', ['The kestrel valve audit is planned for Friday.']);
+    const id = await registered('kestrel', { title: 'Crew notes', audience: [ids.ada, ids.bob] });
+    assert.deepEqual(await sees(id), ['ada', 'bob']);
+    const preview = await ok(audience(c.pm, id, { mode: 'restricted', userIds: [ids.ada, ids.bob, ids.pm], reason: 'Me too', preview: true }));
+    assert.deepEqual(preview, { gaining: [{ id: ids.pm, name: 'pm' }], losing: [] });
+    assert.equal((await audience(c.ada, id, { mode: 'restricted', userIds: [ids.ada], reason: 'Mine' })).status, 403, 'a Member in the audience');
+    assert.equal((await audience(c.outsider, id, { mode: 'restricted', userIds: [ids.ada], reason: 'x' })).status, 404, 'not in the project');
+    await ok(audience(c.owner, id, { mode: 'restricted', userIds: [ids.ada, ids.bob, ids.deputy], reason: 'Deputy follows it' }));
+    assert.deepEqual(await sees(id), ['deputy', 'ada', 'bob']);
+    t.clock.advanceSeconds(1);
+    await ok(audience(c.pm, id, { mode: 'restricted', userIds: [ids.ada, ids.bob], reason: 'Crew only' }));
+
+    await ok(c.pm.request('POST', `/messages/${msg}/hide`, { reason: 'Off topic' }));
+    assert.deepEqual(await sees(id), [], 'in review: no manager is in its audience');
+    assert.equal((await c.ada.request('POST', url(`/${id}/review/clear`), { reason: 'x' })).status, 403);
+    assert.equal((await c.outsider.request('POST', url(`/${id}/review/clear`), { reason: 'x' })).status, 404);
+    const cleared = await ok(c.pm.request('POST', url(`/${id}/review/clear`), { reason: 'Checked' }));
+    assert.deepEqual(cleared, { id, reviewState: 'cleared', readable: false });
+    assert.deepEqual(await sees(id), ['ada', 'bob']);
+
+    await ok(c.pm.request('POST', `/sources/${src}/delete`, { reason: 'Wrong project' }));
+    assert.deepEqual(await sees(id), []);
+    assert.equal((await c.bob.request('POST', url(`/${id}/review/withdraw`), { reason: 'x' })).status, 403);
+    const w = await ok(c.pm.request('POST', url(`/${id}/review/withdraw`), { reason: 'Built on removed material' }));
+    assert.deepEqual(w, { id, status: 'withdrawn', readable: false });
+    assert.equal((await state(id)).status, 'withdrawn');
   });
 });

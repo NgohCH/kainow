@@ -1,6 +1,5 @@
 import type { Pool, PoolClient } from 'pg';
 import { type MaterialRef, readableMaterial } from '../assist/material';
-import { type DraftRow, draftAccess, loadDraftRow } from '../assist/reports.service';
 import type { AuthUser } from '../auth/tokens';
 import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { grantGivesAccess } from '../projects/grants';
@@ -41,31 +40,21 @@ export async function contentReaderContexts(db: Db, projectId: string, at: Date)
   return ids.map((id) => asPerson(base, id)).filter(canReadContent);
 }
 
-/** The draft behind a draft version, or undefined. */
-async function draftOfVersion(db: Db, draftVersionId: string): Promise<DraftRow | undefined> {
-  const v = (await db.query<{ draftId: string }>(`SELECT draft_id AS "draftId" FROM report_draft_versions WHERE id = $1`, [draftVersionId])).rows[0];
-  return v ? loadDraftRow(db, v.draftId) : undefined;
-}
-
 /**
- * Whether the person may read every passage and record the draft was built from: `draftAccess` on the draft as if it
- * were shared (submitting it is sharing it with the output's readers), so only the material decides, together with the
- * draft's review and hold state.
- */
-async function readsDraftMaterial(db: Db, ctx: ProjectContext, draft: DraftRow): Promise<boolean> {
-  return (await draftAccess(db, ctx, { ...draft, shared: true })) === 'readable';
-}
-
-/**
- * The people among the project's content readers who may read all the material of a D77 draft version (D101): those
- * `draftAccess` allows (spec 4.5). Empty when the draft version is not in this project.
+ * The people among the project's content readers who may read all the remaining material of a D77 draft version (D101,
+ * spec 4.5): the one material rule, `readsRemainingMaterial`, used for submitting, registering, adding versions,
+ * changing the audience and review alike. Empty when the draft version is not in this project.
  */
 export async function materialReaders(db: Db, draftVersionId: string, projectId: string, at: Date = new Date()): Promise<Set<string>> {
-  const draft = await draftOfVersion(db, draftVersionId);
+  const inProject = await db.query(`SELECT 1 FROM report_draft_versions v JOIN report_drafts d ON d.id = v.draft_id WHERE v.id = $1 AND d.project_id = $2`, [draftVersionId, projectId]);
+  if (!inProject.rowCount) return new Set();
+  return remainingReadersOf(db, projectId, [draftVersionId], at);
+}
+
+async function remainingReadersOf(db: Db, projectId: string, draftVersionIds: string[], at: Date): Promise<Set<string>> {
   const out = new Set<string>();
-  if (!draft || draft.projectId !== projectId) return out;
   for (const ctx of await contentReaderContexts(db, projectId, at)) {
-    if (await readsDraftMaterial(db, ctx, draft)) out.add(ctx.viewerId);
+    if (await readsRemainingMaterial(db, ctx, { draftVersionIds })) out.add(ctx.viewerId);
   }
   return out;
 }
@@ -140,13 +129,8 @@ export async function readsRemainingMaterial(db: Db, ctx: ProjectContext, row: P
 }
 
 /** The project's content readers who may read all of the output's remaining material; null when it has no Kainow material. */
-export async function remainingMaterialReaders(db: Db, row: OutputAccessRow, at: Date): Promise<Set<string> | null> {
-  if (row.draftVersionIds.length === 0) return null;
-  const out = new Set<string>();
-  for (const ctx of await contentReaderContexts(db, row.projectId, at)) {
-    if (await readsRemainingMaterial(db, ctx, row)) out.add(ctx.viewerId);
-  }
-  return out;
+export async function remainingMaterialReaders(db: Db, row: Pick<OutputAccessRow, 'projectId' | 'draftVersionIds'>, at: Date): Promise<Set<string> | null> {
+  return row.draftVersionIds.length === 0 ? null : remainingReadersOf(db, row.projectId, row.draftVersionIds, at);
 }
 
 /** Whether the review rule applies: "Access review required" on an output that is still live (Submitted or Registered). */

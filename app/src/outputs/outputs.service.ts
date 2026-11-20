@@ -27,7 +27,7 @@ import { ALREADY_FILED, BEING_FILED, LINKED_NOT_FILED, NOT_KEPT, NO_DESTINATION,
 import { effectiveFormats, outputRefusal } from './formats';
 import { outputFileName } from './naming';
 import { type ContributorInput, type OutputPatch, type RegisterInput, type SubmitInput, readTitle } from './outputs-input';
-import { ACCESS_REVIEW_LABEL, OUTPUT_MANAGER_ROLES, type OutputAccessRow, contentReaderContexts, loadOutputAccessRow, materialReaders, readsOutput } from './readers';
+import { ACCESS_REVIEW_LABEL, OUTPUT_MANAGER_ROLES, type OutputAccessRow, contentReaderContexts, loadOutputAccessRow, materialReaders, readsOutput, readsRemainingMaterial, remainingMaterialReaders } from './readers';
 import { RenderTooLarge, parseBlocks } from './render/blocks';
 import { renderDocx } from './render/docx';
 import { loadDocumentHeader } from './render/header';
@@ -170,7 +170,6 @@ const sha256 = (b: Buffer) => createHash('sha256').update(b).digest('hex');
 const extOf = (name: string) => /\.([A-Za-z0-9]+)$/.exec(name.trim())?.[1].toLowerCase() ?? '';
 const UPLOAD_FORMATS: Readonly<Record<string, OutputFormat>> = { md: 'md', markdown: 'md', docx: 'docx', pdf: 'pdf', csv: 'csv' };
 const LINK_FORMATS: Readonly<Record<string, VersionFormat>> = { md: 'md', markdown: 'md', docx: 'docx', pdf: 'pdf', csv: 'csv', txt: 'txt' };
-const intersect = (a: Set<string>, b: Set<string>) => new Set([...a].filter((x) => b.has(x)));
 
 @Injectable()
 export class OutputsService {
@@ -635,14 +634,9 @@ export class OutputsService {
     }
   }
 
-  /** The people who may read every piece of Kainow material the output was built from; null when it has none. */
+  /** The people who may read all the remaining Kainow material the output was built from; null when it has none. */
   private async outputMaterial(db: Db, row: OutputAccessRow, at: Date): Promise<Set<string> | null> {
-    let out: Set<string> | null = null;
-    for (const id of row.draftVersionIds) {
-      const readers = await materialReaders(db, id, row.projectId, at);
-      out = out ? intersect(out, readers) : readers;
-    }
-    return out;
+    return remainingMaterialReaders(db, row, at);
   }
 
   /**
@@ -752,7 +746,7 @@ export class OutputsService {
   }
 
   async get(user: AuthUser, projectId: string, outputId: string): Promise<OutputDetail> {
-    const { ctx } = await this.visible(user, projectId, outputId);
+    const { ctx, row } = await this.visible(user, projectId, outputId);
     const s = await this.summary(ctx, outputId);
     const o = (
       await this.pool.query(
@@ -785,7 +779,11 @@ export class OutputsService {
       )
     ).rows;
     const manage = decide({ action: 'output.manage', roles: ctx.roles, status: ctx.project.status }).allowed;
-    const audience = decide({ action: 'output.audience', roles: ctx.roles, status: ctx.project.status }).allowed;
+    // The same rule as the audience routes (spec 11): `output.audience`, reading all the remaining material, still open.
+    const audience =
+      decide({ action: 'output.audience', roles: ctx.roles, status: ctx.project.status }).allowed &&
+      (s.status === 'submitted' || s.status === 'registered') &&
+      (await readsRemainingMaterial(this.pool, ctx, row));
     // People Kainow could not share the files with, for the PM, Deputies, Owner and Sponsors (spec 5.5).
     const notShared = ctx.roles.some((r) => OUTPUT_MANAGER_ROLES.includes(r)) ? await notSharedFor(this.pool, outputId) : undefined;
     return {
@@ -805,8 +803,8 @@ export class OutputsService {
         decline: manage && s.status === 'submitted',
         update: manage && (s.status === 'submitted' || s.status === 'registered'),
         addVersion: manage && s.status === 'registered',
-        changeAudience: audience && (s.status === 'submitted' || s.status === 'registered'),
-        review: audience && s.reviewRequired && (s.status === 'submitted' || s.status === 'registered'),
+        changeAudience: audience,
+        review: audience && s.reviewRequired,
       },
     };
   }
