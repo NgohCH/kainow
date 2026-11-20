@@ -123,6 +123,17 @@ describe('recover-admin', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(await snapshot(), before);
   });
 
+  // The real run lists the disabled Administrators in the same order as the dry run (by email), whatever their ids.
+  // Ids are uuidv7: two accounts made in the same millisecond sort at random, which made this listing flaky in CI.
+  test('the disabled Administrators are listed by email in the real run, as in the dry run, even when id order differs', async () => {
+    for (const [ms, mail] of [[1_000, 'ben.admin@example.org'], [2_000, 'ana.admin@example.org']] as const) {
+      await t.pool.query(`INSERT INTO users (id, email, display_name, role) VALUES ($1, $2, $3, 'enterprise_administrator')`, [uuidv7(ms), mail, mail.split('@')[0]]);
+    }
+    const listed = 'ana.admin ana.admin@example.org, ben.admin ben.admin@example.org';
+    assert.equal((await run({ dryRun: true, disableActive: true }))[0], `Dry run: these Administrators would be disabled first: ${listed}`);
+    assert.equal((await run({ disableActive: true }))[0], `These Administrators were disabled first: ${listed}`);
+  });
+
   test('real recovery end to end: refused, dry run, both Administrators disabled through the shared path, link accepted at sign-in, one re-enabled', async () => {
     // Two Active Administrators who can no longer be reached; Ana is the Project Manager of a project with a Sponsor.
     const anaId = await seedUser(t.pool, 'ana.admin@example.org', 'enterprise_administrator');
