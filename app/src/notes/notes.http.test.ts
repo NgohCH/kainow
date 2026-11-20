@@ -12,6 +12,7 @@ import { CaptureSender, FakeClock, testEnv } from '../testing/fakes';
 import { makeDocx, makePdf, makeZip } from '../testing/files';
 import { UsersService } from '../users/users.service';
 import { MAX_TEXT_CHARS, MAX_UPLOAD_BYTES } from './text';
+import { NotesService } from './notes.service';
 
 const EMAIL = 'admin@example.org';
 
@@ -251,5 +252,76 @@ describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
     refused(await upload(`/notes/${body.source.id}/versions/upload`, 'v2.txt', Buffer.from(`Now with ${key}`)));
     assert.equal(Number((await pool.query('SELECT count(*) AS n FROM source_versions')).rows[0].n), 1);
     assert.ok(!JSON.stringify((await pool.query('SELECT detail FROM audit_events')).rows).includes(key));
+  });
+  // F01 (second review): a permission removed while a note is being read or parsed stops the write. The request is held
+  // inside the service after the controller's check and before its transaction, access changes, then it continues.
+  describe('access removed while a note is being processed', () => {
+    function holdNextPrepare(): { reached: Promise<void>; release: () => void } {
+      const svc = app.get(NotesService) as any;
+      const original = svc.prepare.bind(svc);
+      let release!: () => void;
+      let reached!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const reachedP = new Promise<void>((r) => (reached = r));
+      svc.prepare = async (content: unknown) => {
+        svc.prepare = original;
+        const prepared = await original(content);
+        reached();
+        await gate;
+        return prepared;
+      };
+      return { reached: reachedP, release };
+    }
+    const me = async () => (await pool.query('SELECT id FROM users WHERE email = $1', [EMAIL])).rows[0].id as string;
+    const revoke = async () => {
+      await pool.query(`UPDATE memberships SET revoked_at = now(), revoked_by = $2 WHERE project_id = $1 AND user_id = $2`, [projectId, await me()]);
+    };
+    const closeProject = async () => {
+      await pool.query(`UPDATE projects SET status = 'closed', closure_outcome = 'delivered' WHERE id = $1`, [projectId]);
+    };
+    const counts = async () => {
+      const { rows } = await pool.query(
+        `SELECT (SELECT count(*)::int FROM sources WHERE project_id = $1) AS sources,
+                (SELECT count(*)::int FROM source_versions v JOIN sources s ON s.id = v.source_id WHERE s.project_id = $1) AS versions`,
+        [projectId],
+      );
+      return rows[0] as { sources: number; versions: number };
+    };
+
+    for (const [label, change] of [['membership revoked', revoke], ['project closed', closeProject]] as const) {
+      test(`a new note (upload) is refused when the ${label} during processing`, async () => {
+        const before = await counts();
+        const hold = holdNextPrepare();
+        const pending = upload(`/projects/${projectId}/notes/upload`, 'notes.txt', Buffer.from('Agreed: Ali drafts the plan.'));
+        await hold.reached;
+        await change();
+        hold.release();
+        const res = await pending;
+        assert.ok(res.status === 403 || res.status === 404, `refused, got ${res.status}`);
+        assert.deepEqual(await counts(), before, 'no source and no version written');
+      });
+
+      test(`a new version (paste) is refused when the ${label} during processing`, async () => {
+        const created = await json('POST', `/projects/${projectId}/notes`, { title: 'Weekly', text: 'Version one.' });
+        assert.equal(created.status, 201);
+        const before = await counts();
+        const hold = holdNextPrepare();
+        const pending = json('POST', `/notes/${created.body.source.id}/versions`, { text: 'Version two.' });
+        await hold.reached;
+        await change();
+        hold.release();
+        const res = await pending;
+        assert.ok(res.status === 403 || res.status === 404, `refused, got ${res.status}`);
+        assert.deepEqual(await counts(), before, 'no version written');
+      });
+    }
+
+    test('with access unchanged, a held request still writes', async () => {
+      const hold = holdNextPrepare();
+      const pending = json('POST', `/projects/${projectId}/notes`, { title: 'Weekly', text: 'Still allowed.' });
+      await hold.reached;
+      hold.release();
+      assert.equal((await pending).status, 201);
+    });
   });
 });

@@ -17,6 +17,13 @@ import { indexVersion } from '../assist/passage-index';
 import { UploadRejected, readUpload } from './readers';
 import { NoteTextError, normaliseText, sha256Hex } from './text';
 
+/**
+ * Reading and parsing a file can take a while after the controller's permission check, and access can change meanwhile
+ * (a membership revoked, the project closed, an audience narrowed). The controller passes this to repeat its checks inside
+ * the write transaction with the project row locked, so a write never rests on a check made before the change (review F01).
+ */
+export type Reauthorise = (client: PoolClient) => Promise<void>;
+
 export interface NewContent {
   /** Pasted text. Exactly one of text or file is given. */
   text?: unknown;
@@ -147,6 +154,8 @@ export class NotesService {
     content: NewContent;
     actorUserId: string;
     submission?: SubmissionInput;
+    /** Re-checks the caller's right to write, first thing inside the write transaction (see Reauthorise). */
+    reauthorise?: Reauthorise;
   }): Promise<{ source: SourceSummary; version: VersionSummary }> {
     const prepared = await this.prepare(input.content);
     // Every import is checked for credentials (D79), an upload on its text after extraction; only the kind is named.
@@ -158,6 +167,7 @@ export class NotesService {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      await input.reauthorise?.(client);
       // The database gives a plain note its own Project-wide audience; a submission gets its real one when published.
       await client.query(
         `INSERT INTO sources (id, title, created_by, created_at, project_id, publication, submitted_by, intended_mode)
@@ -184,12 +194,14 @@ export class NotesService {
     }
   }
 
-  async addVersion(sourceId: string, content: NewContent, actorUserId: string): Promise<VersionSummary> {
+  async addVersion(sourceId: string, content: NewContent, actorUserId: string, reauthorise?: Reauthorise): Promise<VersionSummary> {
     const prepared = await this.prepare(content);
     const at = this.now();
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
+      // Before the source row: the project lock comes first (the order every project write takes).
+      await reauthorise?.(client);
       // The source row is the lock that keeps version numbers gap-free when two people add at once.
       const src = await client.query<{ kind: string; publication: string; submittedBy: string | null; projectId: string; title: string }>(
         `SELECT kind, publication, submitted_by AS "submittedBy", project_id AS "projectId", title FROM sources s WHERE id = $1 AND ${liveSourceSql('s')} FOR UPDATE`,
