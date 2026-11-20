@@ -254,6 +254,8 @@ describe('storage destinations over HTTP', { skip: SKIP_NO_DB }, () => {
     const a = await addLibrary({ purpose: 'source_area', label: 'One', libraryName: 'Source One' });
     const b = await addLibrary({ purpose: 'source_area', label: 'Two', libraryName: 'Source Two' });
     assert.equal((await approve(a.body.id)).status, 200);
+    // approving a source area queues the backfill of waiting source versions in the same transaction
+    assert.deepEqual(await rows(`SELECT job, subject_id FROM storage_outbox ORDER BY created_at, id`), [{ job: 'backfill-sources', subject_id: a.body.id }]);
     const second = await approve(b.body.id);
     assert.equal(second.status, 409);
     assert.match(second.body.message, /source area is already approved/);
@@ -264,6 +266,7 @@ describe('storage destinations over HTTP', { skip: SKIP_NO_DB }, () => {
     const o2 = await addLibrary({ label: 'O2', libraryName: 'Out Two' });
     assert.equal((await approve(o1.body.id)).status, 200);
     assert.equal((await approve(o2.body.id)).status, 200);
+    assert.equal((await rows(`SELECT count(*)::int AS n FROM storage_outbox`))[0].n, 1, 'outputs destinations queue no backfill');
     // withdrawing the first source area frees the place
     assert.equal((await admin.request('POST', `/admin/storage/destinations/${a.body.id}/withdraw`, { reason: 'Moving' })).status, 200);
     assert.equal((await approve(b.body.id)).status, 200);
@@ -300,7 +303,8 @@ describe('storage destinations over HTTP', { skip: SKIP_NO_DB }, () => {
     await admin.request('POST', `/admin/storage/destinations/${added.body.id}/withdraw`, { reason: 'Retired' });
     const ev = await rows(`SELECT kind, actor_id, reason, detail FROM storage_destination_events WHERE destination_id = $1 ORDER BY at, id`, [added.body.id]);
     const kinds = ev.map((e) => e.kind);
-    assert.equal(kinds[0], 'proposed');
+    // Adding runs the check at the same (frozen) instant, so the first two events tie on `at` and their order is the ids'.
+    assert.deepEqual(kinds.slice(0, 2).sort(), ['checked', 'proposed']);
     assert.deepEqual([...new Set(kinds)].sort(), ['approved', 'checked', 'proposed', 'withdrawn']);
     assert.equal(kinds.at(-1), 'withdrawn');
     assert.ok(ev.every((e) => e.actor_id === adminId));

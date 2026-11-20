@@ -28,6 +28,8 @@ import { DbStorageConnectorFactory } from '../storage/connector-factory';
 import { type StorageDeps, runStorageDaily } from '../storage/jobs';
 import { sendStorageOutbox } from '../storage/outbox';
 import { registerStorageWorker } from '../storage/storage-worker';
+// Register the source-area handlers (store-source, backfill-sources) and their daily tick.
+import '../storage/sources';
 
 async function main(): Promise<void> {
   const config = loadWorkerConfig();

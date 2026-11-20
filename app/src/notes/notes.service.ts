@@ -14,6 +14,7 @@ import { ProjectAccess } from '../projects/access.service';
 import { summaryShownSql } from '../assist/material';
 import { liveSourceSql } from '../history/deleted-sql';
 import { indexVersion } from '../assist/passage-index';
+import { type VersionStorage, addSourceVersionFiles, versionStorage } from '../storage/sources';
 import { UploadRejected, readUpload } from './readers';
 import { NoteTextError, normaliseText, sha256Hex } from './text';
 
@@ -85,6 +86,11 @@ export interface VersionSummary {
   createdAt: Date;
   /** WITHHELD_TEXT when the uploaded original is withheld because a credential was removed from the text (history spec 7.4). */
   originalWithheld: string | null;
+  /**
+   * Stored, Waiting to store or Storage failed in the managed source area (external outputs spec 9.1). Only on reads
+   * for the PM, Deputies, Owner and Sponsors; null for anyone else and for notes outside projects.
+   */
+  storage?: VersionStorage | null;
 }
 
 const VERSION_COLUMNS = `id, source_id AS "sourceId", version_no AS "versionNo", origin, filename, media_type AS "mediaType",
@@ -293,7 +299,7 @@ export class NotesService {
   }
 
   private async insertVersion(
-    client: { query: Pool['query'] },
+    client: PoolClient,
     sourceId: string,
     versionNo: number,
     p: Prepared,
@@ -317,6 +323,8 @@ export class NotesService {
     // The passage index is written in the same transaction as the version (spec 4.1); notes from before projects have none.
     const projectId = (await client.query(`SELECT project_id AS "projectId" FROM sources WHERE id = $1`, [sourceId])).rows[0]?.projectId;
     if (projectId) await indexVersion(client, 'source_version', id, projectId, p.text);
+    // The original (uploads only) and the text are preserved in the managed source area (external outputs spec 9.1).
+    if (projectId) await addSourceVersionFiles(client, id, projectId, p.original !== null);
     return rows[0];
   }
 
@@ -339,8 +347,11 @@ export class NotesService {
     return rows;
   }
 
-  /** The note and its versions. The caller has already checked the viewer may see this source (AudienceService.assertSourceReadable). */
-  async get(sourceId: string): Promise<{
+  /**
+   * The note and its versions. The caller has already checked the viewer may see this source (AudienceService.assertSourceReadable).
+   * `showStorage` (the PM, Deputies, Owner and Sponsors) adds each version's storage state; otherwise it is null.
+   */
+  async get(sourceId: string, showStorage = false): Promise<{
     source: Pick<SourceSummary, 'id' | 'title' | 'createdAt'> & {
       projectId: string;
       kind: string;
@@ -387,8 +398,14 @@ export class NotesService {
         summary: s.kind === 'summary' ? await this.summaryLabels(sourceId) : null,
         mayExtract: s.kind !== 'summary',
       },
-      versions: rows.map(shownVersion),
+      versions: await this.withStorage(rows.map(shownVersion), showStorage),
     };
+  }
+
+  /** Adds `storage` to each version: its state when shown, else null. */
+  private async withStorage<T extends VersionSummary>(versions: T[], show: boolean): Promise<T[]> {
+    const states = show ? await versionStorage(this.pool, versions.map((v) => v.id)) : new Map<string, VersionStorage>();
+    return versions.map((v) => ({ ...v, storage: states.get(v.id) ?? null }));
   }
 
   /** "Summary approved for sharing", "Approved by <name> on <date>" (the latest approval) and "From a restricted source". */
@@ -446,7 +463,7 @@ export class NotesService {
     return parts.join('; ');
   }
 
-  async getVersion(sourceId: string, versionNo: number): Promise<VersionSummary & { text: string; provenance: string | null }> {
+  async getVersion(sourceId: string, versionNo: number, showStorage = false): Promise<VersionSummary & { text: string; provenance: string | null }> {
     const { rows } = await this.pool.query<VersionSummary & { text: string }>(
       `SELECT ${VERSION_COLUMNS.split(',').map((c) => 'v.' + c.trim()).join(', ')}, v.text_content AS text
          FROM source_versions v JOIN sources s ON s.id = v.source_id
@@ -455,7 +472,8 @@ export class NotesService {
     );
     if (!rows[0]) throw new NotFoundException();
     // A discussion transcript keeps its stored text, but messages hidden or deleted since are masked when shown.
-    return { ...shownVersion(rows[0]), text: await maskedVersionText(this.pool, rows[0].id, rows[0].text), provenance: await this.provenance(rows[0].id) };
+    const [shown] = await this.withStorage([shownVersion(rows[0])], showStorage);
+    return { ...shown, text: await maskedVersionText(this.pool, rows[0].id, rows[0].text), provenance: await this.provenance(rows[0].id) };
   }
 
   async getOriginal(sourceId: string, versionNo: number): Promise<{ filename: string; mediaType: string; bytes: Buffer }> {

@@ -6,6 +6,7 @@ import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { StorageWaitingForKey, STORAGE_CONNECTORS, localStorageDir, type StorageConnectorFactory } from './connector-factory';
 import { GraphConnector } from './connectors/graph';
+import { queueStorageJob } from './outbox';
 import { loadStorageSettings } from './settings';
 import { StorageError, type DestinationCheck, type PermissionInfo } from './types';
 
@@ -186,6 +187,8 @@ export class DestinationsService {
         if (row.kind === 'onedrive' && !(await loadStorageSettings(c)).directoryLookup) throw new ConflictException(ONEDRIVE_NEEDS_LOOKUP);
         await c.query(`UPDATE storage_destinations SET status = 'approved' WHERE id = $1`, [id]);
         await this.event(c, id, 'approved', user.id, at, why, {});
+        // A new source area stores every version still waiting, oldest first (spec 9.1).
+        if (row.purpose === 'source_area') await queueStorageJob(c, 'backfill-sources', id);
       });
     } catch (e) {
       if ((e as { code?: string }).code === '23505') throw new ConflictException(SECOND_SOURCE_AREA);
