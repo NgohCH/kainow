@@ -144,6 +144,55 @@ It can be run again on the same database (each run adds fresh destinations and o
 
 **Go-live checklist step 12, "Connect storage and approve the source area".** It ticks itself once the last "Check connection" succeeded and a source area is approved, or the Administrator skips it with a note; until it is done, source files stay in the database and are stored when a source area is approved.
 
+## Operations: backups, restore drill and storage protection (V1.0 sub-project 10a)
+
+Design: [`docs/superpowers/specs/2026-11-20-v1-operations-10a-design.md`](../docs/superpowers/specs/2026-11-20-v1-operations-10a-design.md); decisions D109 (backups), D110 (retention), D111 (status and failures), D112 (restore drill and restore), D113 (storage monitoring), D114 (protective read-only mode), D115 (routine diagnostics) and D116 (operations settings and authority). Operator steps are in [`INSTALL.md`](../INSTALL.md), "Backups" and "Restore from a backup". Code is in `src/ops/`, migration `0032_operations.sql`.
+
+**The commands** run by the server's cron (not by the API or worker) in one-shot containers of the Compose service `ops`. The service has the profile `ops`, so `docker compose up` never starts it; run a command with `docker compose --profile ops run --rm ops node dist/ops/<name>-cli.js`. Exit codes: 0 succeeded, 1 refused or failed, 2 usage. Output is fixed text and never holds a key, secret, file content, connection string or host path.
+
+| `npm run` (inside `app/`) | File | Options | What it does |
+| --- | --- | --- | --- |
+| `backup` | `dist/ops/backup-cli.js` | `--kind daily\|manual\|pre_update` (`manual` when omitted), `--new-key` | Dumps the database from one snapshot, encrypts it, writes a set under the backup folder, reads it back, records the run, then expires old sets. |
+| `storage-check` | `dist/ops/storage-check-cli.js` | none | Records the database disk and backup disk readings, raises alerts, enters protective mode below the safe floor. |
+| `restore-drill` | `dist/ops/restore-drill-cli.js` | `--set <name>\|latest`, `--keep`, `--sample <n>`, `--drop <kainow_drill_name>` | Restores a set into a temporary database and checks it; never touches the live database. |
+| `restore` | `dist/ops/restore-cli.js` | `--set <name>\|latest`, `--reason "<why>"` | Restores into a new, empty installation only, then turns on protective mode and ends queued work. Run with only `db` started. |
+| `backup-key` | `dist/ops/backup-key-cli.js` | `--create <path>` | Writes a new 32-byte backup key file (never over an existing one) and prints only the path and key id. |
+
+`backup` and `restore-drill` share one advisory lock on the backup folder: a second run refuses at once with "Another backup or drill is running" and records nothing.
+
+**Environment of the `ops` service** (`src/ops/config.ts`; error messages name a variable, never its value):
+
+| Variable | Meaning |
+| --- | --- |
+| `DATABASE_URL` | Required. The database to back up, drill against or restore into. |
+| `KAINOW_BACKUP_DIR` | Required in the container; Compose sets it to `/backups`. On the host, the same name in `.env` is the folder bound to `/backups`. |
+| `KAINOW_BACKUP_DIR_LABEL` | Optional. What the Operations page shows for the folder: Compose sets it to the host path from `.env`. Falls back to `/backups`. |
+| `KAINOW_BACKUP_KEY_FILE` | The backup key file (default `/run/secrets/kainow-backup.key`). Mounted read-only into `ops` only. |
+| `KAINOW_DB_DATA_DIR` | Where the database volume is mounted read-only, to measure its disk (default `/pgdata`). |
+| `KAINOW_PROTECTED_KEY_FILE` | Optional. The protected key, for opening sealed values in the drill and for backing up the source area once it is in use. |
+| `KAINOW_TEST_PG_DOCKER` | Tests only: the name of a running PostgreSQL 16 container (for example `kainow-testdb`) whose `pg_dump` and `pg_restore` the tests use when those tools are not installed on the machine. |
+
+**Build notes.**
+
+- The `ops` image is the `runtime` stage plus the PostgreSQL 16 client tools (Debian bookworm's own client is version 15 and cannot dump a version 16 server). `x-kainow` in `compose.yaml` keeps `target: runtime` for the services that use it, and `ops` names `target: ops`. The `ops` stage follows `runtime` and is the last stage in the Dockerfile, so a build without `--target` would produce the `ops` image: always build through Compose.
+- The backup folder is a long-syntax bind mount with `create_host_path: false` and no `:?` check on `KAINOW_BACKUP_DIR`, so a missing folder fails only the `ops` runs and no existing `docker compose` command.
+- `pg_dump` and `pg_restore` have no timeout yet. A hung tool keeps the lock; the sweep marks a backup run interrupted after 6 hours but cannot stop the tool.
+- Settings (Operations page and `PUT /admin/operations/settings`, Enterprise Administrator with `operations.manage`, with a reason and a history of previous and new values): backup retention 30 days (7 to 365), storage warning 80% (50 to 95), critical 90% (above the warning level, up to 99), safe floor 5 GB (1 to 1,000), diagnostic retention 30 days (7 to 365). pg-boss keeps its own archive for a fixed 7 days (pg-boss 12.38.1), whatever the diagnostic setting says.
+
+| Screen or route | Who |
+| --- | --- |
+| Operations page `#/admin/operations`: status strip, backups ("Backup size (encrypted)" is the encrypted dump's size), drills, storage, protective mode with **Resume normal use**, settings | Enterprise Administrator (`operations.view` to read, `operations.manage` to change or resume) |
+| `GET admin/operations`, `GET`/`PUT admin/operations/settings`, `GET admin/operations/resume-checks`, `POST admin/operations/resume` | As above; `resume` is the only unsafe route allowed while protective mode is on, besides sign-in and sign-out |
+| `GET operations/banner` | Any signed-in person (protective mode text for everyone; backup and storage warnings for Enterprise Administrators only) |
+| `GET operations/public-state` | Public, for the sign-in page banner |
+| Administrator analytics panel `operations` (`#/admin/analytics`) | Enterprise Administrator (`analytics.view`); growth follows the chosen period |
+
+While protective mode is on, the API refuses every request that is not `GET`, `HEAD` or `OPTIONS` (except the allowed list above) with status 503 and `{ code: 'protective_read_only' }`, and the worker's queue handlers and ticks do nothing except sending email.
+
+**Tests.** `npm run build`, then `node --test --test-concurrency=1 dist/ops/<file>.test.js` with `KAINOW_TEST_DATABASE_URL` set to a throwaway database (for example `postgres://postgres:test@127.0.0.1:15432/kainow_test_sp10`). Tool tests need `pg_dump` and `pg_restore` 16, either installed or through `KAINOW_TEST_PG_DOCKER`; without them they skip with a stated reason. Web tests: `npm --prefix web test`.
+
+**Not covered yet.** The low-space check on a real Linux disk (`docs/operations/verify-low-space.md`: written, **not yet run**); a cron-driven week on a Linux VM; backing up protected source files, the `source_area` reading and `restore-source-files`, which arrive when sub-project 9 is joined (until then the drill reports `sealed_storage_secret` as Not tested); the updater and the pre-update hook's caller (sub-project 10b, which uses `backup --kind pre_update` and `freshBackup`).
+
 ## Milestones
 
 | # | Milestone | Status |
