@@ -183,7 +183,7 @@ export class StorageSettingsService {
       const after: StorageSettings = { ...before, ...patch };
       if (after.approvedInputFormats.length === 0) throw new BadRequestException(NO_INPUT_FORMAT);
       if (patch.directoryLookup === false && before.directoryLookup) {
-        const od = await c.query(`SELECT 1 FROM storage_destinations WHERE kind = 'onedrive' AND status = 'approved' LIMIT 1`);
+        const od = await c.query(`SELECT 1 FROM storage_destinations WHERE kind = 'onedrive' AND status IN ('approved', 'retiring') LIMIT 1`);
         if (od.rowCount) throw new ConflictException(LOOKUP_OFF_REFUSED);
       }
       const fields = (Object.keys(patch) as Array<keyof SettingsPatch>).filter((k) => JSON.stringify(before[k]) !== JSON.stringify(after[k]));

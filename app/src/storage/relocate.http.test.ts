@@ -31,6 +31,7 @@ class FaultyConnector extends LocalConnector {
   removeFault = false;
   /** Downloads from this drive answer with other bytes. */
   tamperDrive: string | null = null;
+  moveFault: null | 'lost' | 'wrong_hash' = null;
   /** Runs once, after the provider has made the copy and before Kainow sees its answer. */
   duringCopy: (() => Promise<void>) | null = null;
 
@@ -46,6 +47,14 @@ class FaultyConnector extends LocalConnector {
     }
     if (this.copyFault === 'wrong_hash') return { ...ref, providerHash: 'WRONG' };
     if (this.copyFault === 'no_hash') return { ...ref, providerHash: null };
+    return ref;
+  }
+  override async move(dest: DestinationRef, itemId: string, newParentId: string, newName?: string): Promise<StoredRef> {
+    const fault = this.moveFault;
+    this.moveFault = null;
+    const ref = await super.move(dest, itemId, newParentId, newName);
+    if (fault === 'lost') throw new StorageError('timeout');
+    if (fault === 'wrong_hash') return { ...ref, providerHash: 'WRONG' };
     return ref;
   }
   override async removePermanently(dest: DestinationRef, itemId: string): Promise<void> {
@@ -245,6 +254,74 @@ describe('relocation, moving the source area and the manifest', { skip: SKIP_NO_
     assert.equal(await exists(areaA, before.item_id), false, 'the old copy is removed on the next attempt');
     assert.equal((await file(up.original)).old_copy_move_id, null);
     assert.equal((await rows(`SELECT 1 FROM stored_file_moves WHERE stored_file_id = $1`, [up.original])).length, 1, 'nothing more to record');
+  });
+
+  test('same-drive relocation verifies, records a move whose answer was lost, and puts back or flags a mismatch', async () => {
+    const up = await storedUpload('Same drive.txt', 'Moved within one drive.');
+    const before = await file(up.original);
+    // A second destination on the same drive, and a second folder in the same destination.
+    const areaC = uuidv7();
+    await t.pool.query(
+      `INSERT INTO storage_destinations (id, connector, kind, purpose, label, drive_id, root_item_id, status, created_by, created_at)
+       VALUES ($1, 'local', 'local', 'outputs', 'Same drive', 'driveA', 'root-driveA', 'approved', $2, now())`,
+      [areaC, ids.admin],
+    );
+    const a = await destRef(areaA);
+    const inC = (await local.ensureFolder(await destRef(areaC), null, 'other place')).itemId;
+    const parentOf = async () => (await local.getItem(a, before.item_id)).parentId;
+    const originalParent = await parentOf();
+    const moves = async () => (await rows(`SELECT old_destination_id, new_destination_id, old_item_id, new_item_id, old_path, new_path FROM stored_file_moves WHERE stored_file_id = $1 ORDER BY at, id`, [up.original]));
+    const recordUnchanged = async (what: string) => {
+      const now = await file(up.original);
+      assert.deepEqual([now.destination_id, now.item_id, now.path, now.state], [areaA, before.item_id, before.path, 'stored'], what);
+      assert.equal((await moves()).length, 0, what);
+      assert.equal(await parentOf(), originalParent, `${what}: the item is where the record says`);
+    };
+
+    // Fails verification after the move: moved back, the record unchanged.
+    local.moveFault = 'wrong_hash';
+    await assert.rejects(relocateStoredFile(deps(), up.original, { destinationId: areaC, folderId: inC }, 'Same drive', ids.admin), (e: unknown) => e instanceof StorageError && e.code === 'server');
+    await recordUnchanged('verification failed');
+
+    // Another item already has the name at the target: refused, nothing taken over.
+    const blocker = await local.upload(a, inC, before.name, Buffer.from('somebody else'), { conflict: 'fail' });
+    await assert.rejects(relocateStoredFile(deps(), up.original, { destinationId: areaC, folderId: inC }, 'Same drive', ids.admin), (e: unknown) => e instanceof StorageError && e.code === 'conflict');
+    await recordUnchanged('conflict');
+    await local.removePermanently(a, blocker.itemId);
+
+    // Two destinations on one drive, the answer lost: the next attempt records the move (same item, nothing removed).
+    local.moveFault = 'lost';
+    await assert.rejects(relocateStoredFile(deps(), up.original, { destinationId: areaC, folderId: inC }, 'Same drive', ids.admin), (e: unknown) => e instanceof StorageError && e.code === 'timeout');
+    assert.equal((await file(up.original)).destination_id, areaA, 'a lost answer keeps the old reference');
+    assert.equal(await parentOf(), inC, 'the provider did move it');
+    await relocateStoredFile(deps(), up.original, { destinationId: areaC, folderId: inC }, 'Same drive', ids.admin);
+    let now = await file(up.original);
+    assert.deepEqual([now.destination_id, now.item_id, now.path, now.old_copy_move_id], [areaC, before.item_id, `/other place/${before.name}`, null]);
+    assert.deepEqual(await moves(), [
+      { old_destination_id: areaA, new_destination_id: areaC, old_item_id: before.item_id, new_item_id: before.item_id, old_path: before.path, new_path: `/other place/${before.name}` },
+    ]);
+    assert.ok(await exists(areaC, before.item_id), 'the one item is kept');
+
+    // One destination, two folders, the answer lost: the record is switched and recorded, not left stale.
+    const second = (await local.ensureFolder(await destRef(areaC), null, 'second place')).itemId;
+    local.moveFault = 'lost';
+    await assert.rejects(relocateStoredFile(deps(), up.original, { destinationId: areaC, folderId: second }, 'Same drive', ids.admin), (e: unknown) => e instanceof StorageError && e.code === 'timeout');
+    assert.equal((await file(up.original)).path, `/other place/${before.name}`);
+    await relocateStoredFile(deps(), up.original, { destinationId: areaC, folderId: second }, 'Same drive', ids.admin);
+    now = await file(up.original);
+    assert.deepEqual([now.destination_id, now.path, now.state], [areaC, `/second place/${before.name}`, 'stored']);
+    assert.equal((await moves()).length, 2);
+    // Run again: the record already matches, so nothing more is recorded.
+    await relocateStoredFile(deps(), up.original, { destinationId: areaC, folderId: second }, 'Same drive', ids.admin);
+    assert.equal((await moves()).length, 2);
+
+    // Changed in storage before the move: flagged Changed (not retried), not moved.
+    const text = await file(up.textFile);
+    await local.overwrite(a, text.item_id, Buffer.from('Edited in the library.'));
+    await assert.rejects(relocateStoredFile(deps(), up.textFile, { destinationId: areaC, folderId: inC }, 'Same drive', ids.admin), (e: unknown) => e instanceof StorageError && e.code === 'invalid');
+    const flagged = await file(up.textFile);
+    assert.deepEqual([flagged.check_status, flagged.state, flagged.destination_id, flagged.path], ['changed', 'stored', areaA, text.path]);
+    assert.notEqual((await local.getItem(a, text.item_id)).parentId, inC);
   });
 
   test('moving the source area relocates every file, shows progress and downloads use the current copy throughout', async () => {

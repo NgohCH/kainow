@@ -31,6 +31,11 @@ interface Row {
 
 /** The manifest as CSV bytes (BOM, `#` lines, formula-guarded cells), ordered by project name, purpose, item and version. */
 export async function buildManifest(db: Db, at: Date = new Date()): Promise<Buffer> {
+  return (await manifestWithCount(db, at)).csv;
+}
+
+/** The manifest and the number of file rows written in it. */
+async function manifestWithCount(db: Db, at: Date): Promise<{ csv: Buffer; files: number }> {
   const { rows } = await db.query<Row>(
     `SELECT f.purpose, f.project_id, p.name AS project_name,
             COALESCE(so.source_id, st.source_id, ov.output_id) AS owner_id, ov.output_id,
@@ -67,7 +72,7 @@ export async function buildManifest(db: Db, at: Date = new Date()): Promise<Buff
     Files: String(rows.length),
     Note: `References only, no file content. Paths of items not readable by the whole project show "${RESTRICTED_ITEM}".`,
   };
-  return Buffer.from(toCsv(meta, [...MANIFEST_COLUMNS], table, { bom: true }), 'utf8');
+  return { csv: Buffer.from(toCsv(meta, [...MANIFEST_COLUMNS], table, { bom: true }), 'utf8'), files: table.length };
 }
 
 @Injectable()
@@ -80,8 +85,7 @@ export class ManifestService {
   /** Builds the manifest for an Enterprise Administrator and records the download (never the data). */
   async download(user: AuthUser): Promise<{ filename: string; csv: Buffer }> {
     const at = this.clock();
-    const csv = await buildManifest(this.pool, at);
-    const files = (await this.pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM stored_files`)).rows[0].n;
+    const { csv, files } = await manifestWithCount(this.pool, at);
     await writeAudit(this.pool, { at, action: 'storage.manifest_downloaded', actorUserId: user.id, subjectType: 'storage_manifest', detail: { files } });
     return { filename: `kainow-storage-manifest-${todayUtc8(at)}.csv`, csv };
   }

@@ -12,7 +12,7 @@ import { STORAGE_CONNECTORS, StorageWaitingForKey, type StorageConnectorFactory 
 import { DestinationsService } from './destinations.service';
 import { type StorageDeps, registerStorageDailyTask, registerStorageFinalFailure, registerStorageHandler } from './jobs';
 import { queueStorageJob } from './outbox';
-import { loadStorageSettings } from './settings';
+import { flagStoredFile } from './source-files';
 import { ensureSourceProjectsFolder, versionFolder } from './sources';
 import { type DestinationRef, StorageError, type StoredRef } from './types';
 
@@ -44,7 +44,6 @@ const MOVE_IN_PROGRESS = 'A source-area move is already in progress. Wait until 
 const NO_SOURCE_AREA = 'There is no source area to move from. Approve this destination as the source area instead.';
 const NOT_A_SOURCE_AREA = 'Choose a destination added for the source area.';
 const ALREADY_CURRENT = 'This destination is already the source area.';
-const ONEDRIVE_NEEDS_LOOKUP = 'OneDrive destinations need directory lookup. Turn directory lookup on in the storage connection first.';
 const COMPLETED_REASON = 'Every file has moved to the new source area.';
 
 const sha256 = (b: Buffer): string => createHash('sha256').update(b).digest('hex');
@@ -179,11 +178,12 @@ async function relocateLocked(deps: StorageDeps, fileId: string, target: Relocat
   const sameDrive = sameKind && src.dest.driveId === dst.dest.driveId;
 
   const here = sameDrive ? await src.connector.getItem(src.dest, f.item_id) : null;
-  if (here) {
-    if (f.destination_id === target.destinationId && here.parentId === target.folderId && here.name === name) {
-      if (f.state === 'relocating') await deps.pool.query(`UPDATE stored_files SET state = 'stored' WHERE id = $1 AND state = 'relocating'`, [f.id]);
-      return;
-    }
+  /** The item is already where it should go: an earlier move whose answer was lost, or nothing to do. */
+  const atTarget = !!here && here.parentId === target.folderId && here.name === name;
+  if (atTarget && f.destination_id === target.destinationId && f.path === here!.path) {
+    // The record already says so: nothing to switch.
+    if (f.state === 'relocating') await deps.pool.query(`UPDATE stored_files SET state = 'stored' WHERE id = $1 AND state = 'relocating'`, [f.id]);
+    return;
   }
 
   await deps.pool.query(`UPDATE stored_files SET state = 'relocating' WHERE id = $1 AND state IN ('stored', 'relocating')`, [f.id]);
@@ -194,10 +194,19 @@ async function relocateLocked(deps: StorageDeps, fileId: string, target: Relocat
   let movedFrom: StoredRef | null = null;
   try {
     if (here) {
-      // Verified before the move too: a file changed in storage is never moved as if it were the recorded one.
-      if (!(await holdsRecorded(f, src.connector, src.dest, here, true))) throw new StorageError('server');
-      ref = await moveWithin(src.connector, src.dest, f.item_id, target.folderId, name);
-      movedFrom = here;
+      // Verified before the move too: a file changed in storage is never moved as if it were the recorded one; it is
+      // flagged Changed (one notice) and not tried again.
+      if (!(await holdsRecorded(f, src.connector, src.dest, here, true))) {
+        await flagStoredFile(deps, f.id, 'changed', deps.clock());
+        throw new StorageError('invalid');
+      }
+      if (atTarget) {
+        // Moved by an earlier attempt whose answer was lost: only the switch is left (nothing to move back).
+        ref = here;
+      } else {
+        ref = await moveWithin(src.connector, src.dest, f.item_id, target.folderId, name);
+        movedFrom = here;
+      }
     } else {
       ref = await copyAcross(deps, f, src, dst, target.folderId, name);
       fresh = ref;
@@ -217,7 +226,7 @@ async function relocateLocked(deps: StorageDeps, fileId: string, target: Relocat
         [f.id],
       )
     ).rows[0];
-    // Withheld (or otherwise changed) while it was copied: the old reference stays and this copy is abandoned.
+    // Withheld, flagged (or otherwise changed) while it was copied: the old reference stays and this copy is abandoned.
     if (!now || now.state !== 'relocating' || now.destination_id !== f.destination_id || now.item_id !== f.item_id) return false;
     const folder = (
       await c.query<{ id: string }>(
@@ -232,6 +241,7 @@ async function relocateLocked(deps: StorageDeps, fileId: string, target: Relocat
       [moveId, f.id, reason, f.destination_id, f.drive_id, f.item_id, f.path, dst.dest.id, dst.dest.driveId, ref.itemId, ref.path, actorId, at],
     );
     await c.query(
+      // check_status 'ok': the new item was verified against the record just now (size and hash, or SHA-256).
       `UPDATE stored_files SET state = 'stored', destination_id = $2, connector = $3, drive_id = $4, item_id = $5, path = $6, name = $7,
               provider_hash = $8, etag = $9, ctag = $10, web_url = $11, check_status = 'ok', last_checked_at = $12, failure_code = NULL,
               folder_id = $13, upload_destination_id = $2, upload_folder_id = $14, upload_name = $7, old_copy_move_id = $15
@@ -549,31 +559,19 @@ export class SourceAreaMoveService {
     if (!c || typeof c !== 'object' || c.files !== counts.files || c.bytes !== counts.bytes) {
       throw new ConflictException({ statusCode: 409, message: confirmMessage(counts, target.label), files: counts.files, bytes: counts.bytes });
     }
-    const check = await this.destinations.check(user, newDestinationId);
-    if (!check.ok) {
-      const bad = check.lines.find((l) => !l.ok && l.key === 'library_permissions') ?? check.lines.find((l) => !l.ok);
-      throw new ConflictException(bad ? bad.detail : 'The check did not pass.');
-    }
+    await this.destinations.checkOrConflict(user, newDestinationId);
     const at = this.clock();
     try {
       await withTx(this.pool, async (tx) => {
-        // Turning directory lookup off locks this row too (as approving does).
+        // The settings row first, as approving takes it; then the old area, which must still be the approved one.
         await tx.query(`SELECT 1 FROM storage_settings FOR UPDATE`);
-        const rows = (
-          await tx.query<{ id: string; status: string; kind: string; purpose: string }>(
-            `SELECT id, status, kind, purpose FROM storage_destinations WHERE id = ANY($1::uuid[]) ORDER BY id FOR UPDATE`,
-            [[current, newDestinationId]],
-          )
-        ).rows;
-        const old = rows.find((r) => r.id === current);
-        const next = rows.find((r) => r.id === newDestinationId);
+        const old = (await tx.query<{ status: string }>(`SELECT status FROM storage_destinations WHERE id = $1 FOR UPDATE`, [current])).rows[0];
         if (!old || old.status !== 'approved') throw new ConflictException(MOVE_IN_PROGRESS);
-        if (!next || next.status === 'approved' || next.status === 'retiring') throw new ConflictException(ALREADY_CURRENT);
-        if (next.kind === 'onedrive' && !(await loadStorageSettings(tx)).directoryLookup) throw new ConflictException(ONEDRIVE_NEEDS_LOOKUP);
+        // Retiring first: only one source area may be approved at a time.
         await tx.query(`UPDATE storage_destinations SET status = 'retiring' WHERE id = $1`, [current]);
-        await tx.query(`UPDATE storage_destinations SET status = 'approved' WHERE id = $1`, [newDestinationId]);
-        await this.event(tx, current, 'retiring', user.id, at, reason, { movedTo: newDestinationId, files: counts.files, bytes: counts.bytes });
-        await this.event(tx, newDestinationId, 'approved', user.id, at, reason, { replaces: current });
+        await this.destinations.recordEvent(tx, current, 'retiring', user.id, at, reason, { movedTo: newDestinationId, files: counts.files, bytes: counts.bytes });
+        // Approved as approving does: OneDrive rule, versions still waiting stored straight into it, admin folder sharing.
+        await this.destinations.approveIn(tx, newDestinationId, user, at, reason, { replaces: current });
         await writeAudit(tx, {
           at, action: 'storage.source_area_move_started', actorUserId: user.id, subjectType: 'storage_destination', subjectId: newDestinationId,
           detail: { from: current, to: newDestinationId, files: counts.files, bytes: counts.bytes },
@@ -585,10 +583,6 @@ export class SourceAreaMoveService {
           )
         ).rows;
         for (const f of files) await queueStorageJob(tx, 'relocate', f.id);
-        // Versions still waiting are stored straight into the new area.
-        await queueStorageJob(tx, 'backfill-sources', newDestinationId);
-        const folders = (await tx.query<{ id: string }>(`SELECT id FROM storage_folders WHERE destination_id = $1 AND level = 'source_root' ORDER BY id`, [newDestinationId])).rows;
-        for (const f of folders) await queueFolderSharing(tx, f.id, 'normal');
       });
     } catch (e) {
       if ((e as { code?: string }).code === '23505') throw new ConflictException(MOVE_IN_PROGRESS);
@@ -613,12 +607,5 @@ export class SourceAreaMoveService {
     } catch (e) {
       if (!(e instanceof StorageError) && !(e instanceof StorageWaitingForKey)) throw e;
     }
-  }
-
-  private async event(c: PoolClient, destinationId: string, kind: string, actorId: string, at: Date, reason: string, detail: unknown): Promise<void> {
-    await c.query(
-      `INSERT INTO storage_destination_events (id, destination_id, kind, actor_id, at, reason, detail) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-      [uuidv7(at.getTime()), destinationId, kind, actorId, at, reason, JSON.stringify(detail)],
-    );
   }
 }

@@ -57,7 +57,7 @@ const LOCAL_REFUSED = 'The local storage folder is for development only and is n
  * The one order of a destination's events wherever they are listed: by time, then by the step they record (adding runs
  * the check in the same instant, so `proposed` and `checked` share a time), then by id. Never by id alone within a time.
  */
-export const DESTINATION_EVENTS_ORDER = `at, CASE kind WHEN 'proposed' THEN 1 WHEN 'checked' THEN 2 WHEN 'approved' THEN 3 WHEN 'withdrawn' THEN 4 END, id`;
+export const DESTINATION_EVENTS_ORDER = `at, CASE kind WHEN 'proposed' THEN 1 WHEN 'checked' THEN 2 WHEN 'approved' THEN 3 WHEN 'retiring' THEN 4 WHEN 'withdrawn' THEN 5 END, id`;
 
 const SECOND_SOURCE_AREA = 'Another source area is already approved. Withdraw it first.';
 const MOVING = 'The source area is being moved. Wait until every file has moved.';
@@ -189,7 +189,7 @@ export class DestinationsService {
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, 'proposed', $12, $13)`,
         [id, connector, input.kind, input.purpose, input.label, siteUrl, accountEmail, folderPath, ids.siteId, ids.driveId, ids.rootItemId, user.id, at],
       );
-      await this.event(c, id, 'proposed', user.id, at, input.reason, { kind: input.kind, purpose: input.purpose });
+      await this.recordEvent(c, id, 'proposed', user.id, at, input.reason, { kind: input.kind, purpose: input.purpose });
     });
     await this.runCheck(user, id);
     return this.get(id);
@@ -207,37 +207,47 @@ export class DestinationsService {
     if (before.status === 'approved') throw new ConflictException('This destination is already approved.');
     if (before.status === 'retiring') throw new ConflictException(MOVING);
     if (before.purpose === 'source_area' && (await this.approvedSourceArea())) throw new ConflictException(SECOND_SOURCE_AREA);
-    const result = await this.runCheck(user, id);
-    if (!result.ok) {
-      const bad = result.lines.find((l) => !l.ok && l.key === 'library_permissions') ?? result.lines.find((l) => !l.ok);
-      throw new ConflictException(bad ? bad.detail : 'The check did not pass.');
-    }
+    await this.checkOrConflict(user, id);
     const at = this.clock();
     try {
-      await this.inTransaction(async (c) => {
-        // Turning directory lookup off locks this row too, so the two cannot pass each other.
-        await c.query(`SELECT 1 FROM storage_settings FOR UPDATE`);
-        const row = await this.load(c, id, true);
-        if (row.status === 'approved') throw new ConflictException('This destination is already approved.');
-        if (row.status === 'retiring') throw new ConflictException(MOVING);
-        if (row.kind === 'onedrive' && !(await loadStorageSettings(c)).directoryLookup) throw new ConflictException(ONEDRIVE_NEEDS_LOOKUP);
-        await c.query(`UPDATE storage_destinations SET status = 'approved' WHERE id = $1`, [id]);
-        await this.event(c, id, 'approved', user.id, at, why, {});
-        // A new source area stores every version still waiting, oldest first (spec 9.1).
-        if (row.purpose === 'source_area') {
-          await queueStorageJob(c, 'backfill-sources', id);
-          // Designations made before this source area was approved get their grants now.
-          const folders = (await c.query<{ id: string }>(
-            `SELECT id FROM storage_folders WHERE destination_id = $1 AND level = 'source_root' ORDER BY id`, [id],
-          )).rows;
-          for (const f of folders) await queueFolderSharing(c, f.id, 'normal');
-        }
-      });
+      await this.inTransaction((c) => this.approveIn(c, id, user, at, why, {}));
     } catch (e) {
       if ((e as { code?: string }).code === '23505') throw new ConflictException(SECOND_SOURCE_AREA);
       throw e;
     }
     return this.get(id);
+  }
+
+  /** Runs the destination's check (recorded) and refuses with the failing line's text unless it passes. */
+  async checkOrConflict(user: AuthUser, id: string): Promise<void> {
+    const result = await this.runCheck(user, id);
+    if (!result.ok) {
+      const bad = result.lines.find((l) => !l.ok && l.key === 'library_permissions') ?? result.lines.find((l) => !l.ok);
+      throw new ConflictException(bad ? bad.detail : 'The check did not pass.');
+    }
+  }
+
+  /**
+   * Approves a destination in the caller's transaction (approving, and moving the source area): the storage settings
+   * row is locked first (turning directory lookup off locks it too, so the two cannot pass each other), then the
+   * destination; OneDrive needs directory lookup. A source area then stores every version still waiting, oldest first
+   * (spec 9.1), and storage Administrators get their grants on its folder if it is recorded.
+   */
+  async approveIn(c: PoolClient, id: string, user: AuthUser, at: Date, reason: string, detail: Record<string, unknown>): Promise<void> {
+    await c.query(`SELECT 1 FROM storage_settings FOR UPDATE`);
+    const row = await this.load(c, id, true);
+    if (row.status === 'approved') throw new ConflictException('This destination is already approved.');
+    if (row.status === 'retiring') throw new ConflictException(MOVING);
+    if (row.kind === 'onedrive' && !(await loadStorageSettings(c)).directoryLookup) throw new ConflictException(ONEDRIVE_NEEDS_LOOKUP);
+    await c.query(`UPDATE storage_destinations SET status = 'approved' WHERE id = $1`, [id]);
+    await this.recordEvent(c, id, 'approved', user.id, at, reason, detail);
+    if (row.purpose === 'source_area') {
+      await queueStorageJob(c, 'backfill-sources', id);
+      const folders = (await c.query<{ id: string }>(
+        `SELECT id FROM storage_folders WHERE destination_id = $1 AND level = 'source_root' ORDER BY id`, [id],
+      )).rows;
+      for (const f of folders) await queueFolderSharing(c, f.id, 'normal');
+    }
   }
 
   /** Stored files keep their references and checks: only the destination's status changes. */
@@ -254,7 +264,7 @@ export class DestinationsService {
         if (moving.rowCount) throw new ConflictException(MOVING);
       }
       await c.query(`UPDATE storage_destinations SET status = 'withdrawn' WHERE id = $1`, [id]);
-      await this.event(c, id, 'withdrawn', user.id, at, why, {});
+      await this.recordEvent(c, id, 'withdrawn', user.id, at, why, {});
     });
     return this.get(id);
   }
@@ -277,7 +287,7 @@ export class DestinationsService {
     const at = this.clock();
     await this.inTransaction(async (c) => {
       await c.query(`UPDATE storage_destinations SET last_check = $2, last_checked_at = $3 WHERE id = $1`, [id, JSON.stringify(result), at]);
-      await this.event(c, id, 'checked', user.id, at, null, { ok: result.ok, failed: result.lines.filter((l) => !l.ok).map((l) => l.key) });
+      await this.recordEvent(c, id, 'checked', user.id, at, null, { ok: result.ok, failed: result.lines.filter((l) => !l.ok).map((l) => l.key) });
     });
     return result;
   }
@@ -327,7 +337,7 @@ export class DestinationsService {
     return r;
   }
 
-  private async event(c: PoolClient, destinationId: string, kind: string, actorId: string | null, at: Date, reason: string | null, detail: unknown): Promise<void> {
+  async recordEvent(c: PoolClient, destinationId: string, kind: string, actorId: string | null, at: Date, reason: string | null, detail: unknown): Promise<void> {
     await c.query(
       `INSERT INTO storage_destination_events (id, destination_id, kind, actor_id, at, reason, detail) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
       [uuidv7(at.getTime()), destinationId, kind, actorId, at, reason, JSON.stringify(detail)],
