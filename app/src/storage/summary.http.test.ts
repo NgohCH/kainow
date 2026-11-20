@@ -88,6 +88,52 @@ describe('go-live storage step and storage summary', { skip: SKIP_NO_DB }, () =>
     assert.deepEqual([...CLOSING_KEYS], ['department', 'users', 'project']);
   });
 
+  test('skip route refuses steps that cannot be skipped and an automatic tick', async () => {
+    assert.equal((await admin.request('POST', '/go-live/steps/department/skip', {})).status, 404);
+    assert.equal((await admin.request('POST', '/go-live/steps/mailbox/skip', {})).status, 404);
+    await connect();
+    await sourceArea();
+    await admin.request('POST', '/admin/storage/check');
+    assert.equal(step(await goLive(), 'storage').done, true);
+    assert.equal((await admin.request('POST', '/go-live/steps/storage/skip', {})).status, 409);
+  });
+
+  test('the recorded check is cleared by a new secret and by a tenant change', async () => {
+    await connect();
+    const state = async () => (await admin.request('GET', '/admin/storage/summary')).body.connection;
+    await admin.request('POST', '/admin/storage/check');
+    assert.equal(await state(), 'connected');
+    await admin.request('POST', '/admin/storage/secret', { reason, clientSecret: 'client-secret-test-value-BBBB-0123456789' });
+    assert.equal(await state(), 'not_checked');
+    await admin.request('POST', '/admin/storage/check');
+    assert.equal(await state(), 'connected');
+    await admin.request('PUT', '/admin/storage', { reason, tenantId: 'tenant-2' });
+    assert.equal(await state(), 'not_checked');
+  });
+
+  test('a credentials change during a check is not overwritten by the stale result', async () => {
+    await connect();
+    const svc = t.app.get(StorageSettingsService);
+    const real = fake!.fetch;
+    let release: () => void = () => undefined;
+    const gate = new Promise<void>((r) => { release = r; });
+    let reached: () => void = () => undefined;
+    const atToken = new Promise<void>((r) => { reached = r; });
+    svc.fetchFn = (async (input: any, init?: any) => {
+      if (String(input).includes('oauth2')) {
+        reached();
+        await gate;
+      }
+      return real(input, init);
+    }) as typeof fetch;
+    const checking = svc.check();
+    await atToken;
+    await admin.request('POST', '/admin/storage/secret', { reason, clientSecret: 'client-secret-test-value-BBBB-0123456789' });
+    release();
+    await checking;
+    assert.equal((await q(`SELECT last_check_state FROM storage_settings`))[0].last_check_state, null);
+  });
+
   test('summary is for Enterprise Administrators only', async () => {
     const member = await t.signIn('member@example.org');
     assert.equal((await member.request('GET', '/admin/storage/summary')).status, 403);

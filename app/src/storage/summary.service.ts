@@ -99,7 +99,7 @@ export class StorageSummaryService {
       ...repair.grants.map((g): SharingRepairRow => ({
         project: g.area === 'source' ? 'Source area' : (g.projectName ?? ''),
         projectId: g.projectId,
-        folder: g.area === 'source' ? 'Source area' : 'Project folder',
+        folder: g.area === 'source' ? 'Source area' : g.level === 'output' ? 'Output folder' : 'Project folder',
         person: g.displayName,
         kind: 'access',
         state: g.state,

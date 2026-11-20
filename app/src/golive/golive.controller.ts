@@ -27,7 +27,7 @@ export class GoLiveController {
     return this.service.summary(who(req));
   }
 
-  /** Declared before the :key routes so "logos/skip" is not read as a step. */
+  /** The original logos skip route, kept; `steps/:key/skip` below serves every skippable step. */
   @Post('steps/logos/skip')
   @HttpCode(200)
   @AnySignedInUser()

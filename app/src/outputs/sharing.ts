@@ -674,7 +674,7 @@ export async function notSharedFor(db: Db, outputId: string): Promise<Array<{ pe
 
 export interface SharingRepair {
   /** Grants that failed, and revocations not yet done (including any refused because the permission is not plainly Kainow's). */
-  grants: Array<{ grantId: string; folderId: string; projectId: string | null; projectName: string | null; area: 'source' | null; userId: string; displayName: string; state: 'failed' | 'revoking'; since: Date }>;
+  grants: Array<{ grantId: string; folderId: string; projectId: string | null; projectName: string | null; area: 'source' | null; level: string; userId: string; displayName: string; state: 'failed' | 'revoking'; since: Date }>;
   /** Outputs whose files could not be moved to where their readers need them (titles are left out: they may be restricted). */
   outputs: Array<{ outputId: string; projectId: string; projectName: string; since: Date }>;
 }
@@ -685,7 +685,7 @@ export async function sharingToRepair(db: Db): Promise<SharingRepair> {
     await db.query(
       `SELECT g.id AS "grantId", g.folder_id AS "folderId", p.id AS "projectId", p.name AS "projectName", u.id AS "userId",
               u.display_name AS "displayName", g.state, g.updated_at AS since,
-              CASE WHEN f.level = 'source_root' THEN 'source' END AS area
+              CASE WHEN f.level = 'source_root' THEN 'source' END AS area, f.level AS level
          FROM storage_grants g
          JOIN storage_folders f ON f.id = g.folder_id
          LEFT JOIN projects p ON p.id::text = split_part(f.key, '/', 2) AND f.level IN ('project', 'output')

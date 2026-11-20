@@ -219,8 +219,19 @@ export class StorageSettingsService {
 
   /** Runs the check and records its result, so go-live and the Storage page can use it without calling the provider. */
   async check(): Promise<{ state: CheckState }> {
+    const snapshot = async () =>
+      (await this.pool.query<{ tenant_id: string | null; client_id: string | null; secret_id: string | null }>(
+        `SELECT tenant_id, client_id, (SELECT id FROM storage_connection_secrets WHERE superseded_at IS NULL) AS secret_id FROM storage_settings`,
+      )).rows[0];
+    const before = await snapshot();
     const state = await this.runCheck();
-    await this.pool.query(`UPDATE storage_settings SET last_check_state = $1, last_checked_at = $2`, [state, this.clock()]);
+    // Recorded only when the credentials are still the ones that were checked.
+    await this.pool.query(
+      `UPDATE storage_settings SET last_check_state = $1, last_checked_at = $2
+        WHERE tenant_id IS NOT DISTINCT FROM $3 AND client_id IS NOT DISTINCT FROM $4
+          AND (SELECT id FROM storage_connection_secrets WHERE superseded_at IS NULL) IS NOT DISTINCT FROM $5::uuid`,
+      [state, this.clock(), before.tenant_id, before.client_id, before.secret_id],
+    );
     return { state };
   }
 
