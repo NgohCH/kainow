@@ -219,7 +219,9 @@ CREATE TABLE storage_grants (
   role           text        NOT NULL CHECK (role IN ('read', 'write')),
   state          text        NOT NULL CHECK (state IN ('pending', 'granted', 'not_found', 'revoking', 'revoked', 'failed')),
   permission_id  text,
-  updated_at     timestamptz NOT NULL
+  updated_at     timestamptz NOT NULL,
+  -- When the Administrators were told this revocation keeps failing (once per failing revocation, spec 5.5).
+  revoke_notice_at  timestamptz
 );
 CREATE UNIQUE INDEX storage_grants_live ON storage_grants (folder_id, user_id) WHERE state <> 'revoked';
 CREATE INDEX storage_grants_user_idx ON storage_grants (user_id);
@@ -337,7 +339,10 @@ CREATE TABLE outputs (
   delete_reason   text,
   held_case_id    uuid        REFERENCES quarantine_cases (id),
   -- The folder the output's versions are filed in, fixed when its first version is filed (spec 5.4).
-  placement_folder_id  uuid   REFERENCES storage_folders (id)
+  placement_folder_id  uuid   REFERENCES storage_folders (id),
+  -- When moving the output's files to where its readers need them last failed; cleared once a move completes. Such an
+  -- output is listed under "Sharing to repair" (spec 5.5).
+  place_failed_at      timestamptz
 );
 CREATE INDEX outputs_project_idx ON outputs (project_id, status, created_at);
 CREATE INDEX outputs_report_type_idx ON outputs (report_type_id) WHERE report_type_id IS NOT NULL;

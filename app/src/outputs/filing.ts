@@ -10,6 +10,7 @@ import { quickXorHash } from '../storage/quickxor';
 import { type DestinationRef, type FolderRef, StorageError, type StoredRef } from '../storage/types';
 import { MAX_NAME, PathTooLong, RESTRICTED_SUFFIX, fitPath, outputFileName, safeName } from './naming';
 import { isWholeProject } from './readers';
+import { sharingAfterFiled } from './sharing';
 
 /**
  * Filing an output version (spec 5.4, D103): the version's bytes are uploaded to the project's output destination under
@@ -408,7 +409,7 @@ async function fileLocked(deps: StorageDeps, versionId: string): Promise<void> {
       await c.query(`INSERT INTO output_events (id, output_id, version_id, kind, actor_id, at, detail) VALUES ($1, $2, $3, 'filed', NULL, $4, $5)`, [
         uuidv7(at.getTime()), v.output_id, versionId, at, JSON.stringify({ versionNo: v.version_no }),
       ]);
-      await afterFiled(c, { projectId: v.project_id, outputId: v.output_id, versionId, storedFileId: fileId });
+      await afterFiled(c, { projectId: v.project_id, outputId: v.output_id, versionId, storedFileId: fileId }, at);
       recorded = true;
     }
     await c.query('COMMIT');
@@ -504,13 +505,13 @@ async function removeStray(
 }
 
 /**
- * Runs in the transaction that records a version filed. Sharing (Task 13) hooks in here to queue `share-sync` for the
- * project folder or the output's folder; until then it does nothing.
+ * Runs in the transaction that records a version filed: sharing is set at once (spec 5.4) by queuing `share-sync` for
+ * the project folder or the output's own folder (and placing the output again if its readers changed while it uploaded).
  */
 export async function afterFiled(
-  _c: PoolClient, _filed: { projectId: string; outputId: string; versionId: string; storedFileId: string },
+  c: PoolClient, filed: { projectId: string; outputId: string; versionId: string; storedFileId: string }, at: Date,
 ): Promise<void> {
-  // Filled in by sharing.
+  await sharingAfterFiled(c, filed.outputId, at);
 }
 
 /**

@@ -6,6 +6,7 @@ import { loadAdmins } from '../notifications/recipients';
 import { ProjectAccess } from '../projects/access.service';
 import type { StorageNotice } from './jobs';
 import { SOURCE_FILE_CHANGED, SOURCE_FILE_MISSING } from './source-files';
+import { SHARING_REVOKE_FAILED, revokeFailedNotice } from '../outputs/sharing';
 
 /**
  * The in-app notices storage work raises. Each kind is worded here; Task 13 and 17 add theirs. Storage notices go to the
@@ -65,8 +66,32 @@ export function makeStorageNotify(pool: Pool, clock: Clock): StorageNotify {
     }
   }
 
+  /** A revocation that keeps failing (spec 5.5): once per revocation, to the Administrators, naming only the project. */
+  async function revokeFailed(c: PoolClient, n: StorageNotice): Promise<void> {
+    const g = (
+      await c.query<{ project_id: string; project_name: string }>(
+        `SELECT p.id AS project_id, p.name AS project_name
+           FROM storage_grants g JOIN storage_folders f ON f.id = g.folder_id JOIN projects p ON p.id::text = split_part(f.key, '/', 2)
+          WHERE g.id = $1`,
+        [n.subjectId],
+      )
+    ).rows[0];
+    if (!g) return;
+    const recipients = [...new Set([...(await loadAdmins(c)), ...(await loadStorageAdmins(c))])].sort();
+    const at = clock();
+    for (const userId of recipients) {
+      await c.query(
+        `INSERT INTO notifications (id, user_id, project_id, kind, urgent, summary, link, created_at, email_off)
+         VALUES ($1, $2, $3, $4, false, $5, '#/storage', $6, true)`,
+        [uuidv7(at.getTime()), userId, g.project_id, n.kind, revokeFailedNotice(g.project_name), at],
+      );
+    }
+  }
+
   return async (c, n) => {
-    if (n.kind === SOURCE_FILE_CHANGED) {
+    if (n.kind === SHARING_REVOKE_FAILED) {
+      await revokeFailed(c, n);
+    } else if (n.kind === SOURCE_FILE_CHANGED) {
       await sourceFileChanged(c, n, 'has changed in storage since Kainow recorded it. It has been flagged for the storage Administrators.');
     } else if (n.kind === SOURCE_FILE_MISSING) {
       await sourceFileChanged(c, n, 'is no longer in storage. It has been flagged for the storage Administrators.');

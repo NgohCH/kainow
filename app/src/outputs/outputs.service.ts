@@ -31,6 +31,7 @@ import { renderDocx } from './render/docx';
 import { loadDocumentHeader } from './render/header';
 import { renderMarkdown } from './render/markdown';
 import { renderPdf } from './render/pdf';
+import { notSharedFor, queueOutputPlacement } from './sharing';
 
 type Db = Pool | PoolClient;
 
@@ -150,6 +151,8 @@ export interface OutputDetail extends Omit<OutputSummary, 'audience'> {
   versions: OutputVersionView[];
   history: Array<{ kind: string; at: Date; actor: Person | null; reason: string | null; versionNo: number | null }>;
   may: { register: boolean; decline: boolean; update: boolean; addVersion: boolean };
+  /** PM, Deputies, Owner and Sponsors only: "Not shared in SharePoint — no Microsoft account found for <email>". */
+  notShared?: Array<{ person: Person; message: string }>;
 }
 
 const STORED_LABELS: Readonly<Record<string, string>> = {
@@ -679,6 +682,7 @@ export class OutputsService {
         await this.audienceEvent(c, row.audienceId, actorId, { mode: 'restricted', named: row.audienceUserIds }, { mode: 'project', named: [] }, reason, at);
       }
       if (row.audienceId) await c.query(`UPDATE outputs SET audience_id = NULL WHERE id = $1`, [row.id]);
+      if (row.audienceMode === 'restricted') await this.placeAfterAudience(c, row, 'widen');
       return 'project';
     }
     if (change.namedUserIds.length === 0) throw new BadRequestException(NAME_SOMEONE);
@@ -695,11 +699,21 @@ export class OutputsService {
         await c.query(`INSERT INTO audience_members (audience_id, user_id, added_by, added_at) VALUES ($1, $2, $3, $4)`, [row.audienceId, id, actorId, at]);
       }
       await this.audienceEvent(c, row.audienceId, actorId, { mode: 'restricted', named: before }, { mode: 'restricted', named }, reason, at);
+      await this.placeAfterAudience(c, row, before.some((id) => !named.includes(id)) ? 'narrow' : 'widen');
       return 'restricted';
     }
     const audienceId = await this.createAudience(c, row.projectId, named, actorId, at, reason);
     await c.query(`UPDATE outputs SET audience_id = $2 WHERE id = $1`, [row.id, audienceId]);
+    await this.placeAfterAudience(c, row, 'narrow');
     return 'restricted';
+  }
+
+  /**
+   * A registered output whose audience changed has its files placed where its readers need them and its folder synced
+   * (spec 5.5): narrowing moves the files out of the project folder first, urgently. A submitted output has no files.
+   */
+  private async placeAfterAudience(c: PoolClient, row: OutputAccessRow, direction: 'narrow' | 'widen'): Promise<void> {
+    if (row.status === 'registered') await queueOutputPlacement(c, row.id, direction);
   }
 
   // -------------------------------------------------------------------------------------------------------------------
@@ -810,8 +824,11 @@ export class OutputsService {
       )
     ).rows;
     const manage = decide({ action: 'output.manage', roles: ctx.roles, status: ctx.project.status }).allowed;
+    // People Kainow could not share the files with, for the PM, Deputies, Owner and Sponsors (spec 5.5).
+    const notShared = ctx.roles.some((r) => OUTPUT_MANAGER_ROLES.includes(r)) ? await notSharedFor(this.pool, outputId) : undefined;
     return {
       ...s,
+      ...(notShared ? { notShared } : {}),
       projectId,
       registeredBy: o.registeredById ? { id: o.registeredById, displayName: o.registeredByName } : null,
       audience: { mode: o.audienceMode === 'restricted' ? 'restricted' : 'project', people: o.audienceMode === 'restricted' ? audiencePeople : [] },
