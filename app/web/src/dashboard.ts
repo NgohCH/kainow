@@ -3,8 +3,10 @@
  * (app/src/dashboards/measures.ts, personal.service.ts, project-dashboard.service.ts, timeline.ts): the web cannot import
  * server code. The web never works out a figure; it only words and orders what the server gave.
  */
+import type { FinanceSummary } from './finance.ts';
 import { plural } from './format.ts';
 import { HOME_SECTIONS, type HomeSection } from './prefs.ts';
+import type { LineStatus } from './resources.ts';
 
 export type Completion =
   | { state: 'measurable'; done: number; total: number; cancelled: number; percent: number }
@@ -41,6 +43,9 @@ export interface ProjectDashboard {
   decisions: { active: number; recent: { id: string; title: string; at: string }[] };
   questions: { oldestOpen: { id: string; text: string; at: string }[] };
   risks: { significant: { id: string; description: string; severity: string; reviewOn: string | null }[] };
+  resources: { byStatus: Record<LineStatus, number>; neededByPassed: number; overlapping: number };
+  /** Figures only for financial-detail readers; the tracking value alone for anyone else. */
+  finance: FinanceSummary;
   computedAt: string;
   coverage: string;
 }

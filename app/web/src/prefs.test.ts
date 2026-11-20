@@ -70,7 +70,7 @@ test('DEFAULT_PREFS has the server shape and values', () => {
   assert.equal(DEFAULT_PREFS.accent, 'teal');
   assert.deepEqual(DEFAULT_PREFS.home, { order: ['needsYou', 'myTasks', 'myProjects'], hidden: [], showCompleted: false, includeArchived: false });
   assert.equal(DEFAULT_PREFS.leadership.fields.order[0], 'name');
-  assert.equal(DEFAULT_PREFS.leadership.fields.order.length, 15);
+  assert.equal(DEFAULT_PREFS.leadership.fields.order.length, 17);
   assert.deepEqual(DEFAULT_PREFS.leadership.fields.hidden, []);
   assert.deepEqual(DEFAULT_PREFS.expanded, {});
   assert.deepEqual(DEFAULT_PREFS.timeline, { hiddenKinds: [] });
