@@ -36,6 +36,8 @@ import { Leadership } from './views/Leadership.tsx';
 import { LeadershipGrants } from './views/LeadershipGrants.tsx';
 import { AccessSettings } from './views/AccessSettings.tsx';
 import { Analytics } from './views/Analytics.tsx';
+import { StorageSettings } from './views/StorageSettings.tsx';
+import { ReportTypes } from './views/ReportTypes.tsx';
 import { Definitions } from './views/Definitions.tsx';
 import { DEFAULT_PREFS, applyAppearance, createPrefsSaver, type Prefs } from './prefs.ts';
 
@@ -347,6 +349,8 @@ export function App() {
   else if (isAdmin && adminPage === 'escalated-feedback') page = <EscalatedFeedback />;
   else if (isAdmin && adminPage === 'leadership-grants') page = <LeadershipGrants meId={user.id} />;
   else if (isAdmin && adminPage === 'access-settings') page = <AccessSettings />;
+  else if (isAdmin && adminPage === 'storage') page = <StorageSettings />;
+  else if (isAdmin && adminPage === 'report-types') page = <ReportTypes />;
   else if (isAdmin && adminPage === 'admin/analytics') page = <Analytics />;
   else if (isAdmin && adminPage === 'admin/analytics/definitions') page = <Definitions />;
   else if (hash === '#/leadership' && hasGrant) page = <Leadership prefs={prefs} ready={prefsLoaded} failed={prefsFailed} onChange={savePrefs} />;
@@ -389,6 +393,8 @@ export function App() {
               <a href="#/escalated-feedback" aria-current={adminPage === 'escalated-feedback' ? 'page' : undefined}>Escalated feedback</a>
               <a href="#/leadership-grants" aria-current={adminPage === 'leadership-grants' ? 'page' : undefined}>Leadership access</a>
               <a href="#/access-settings" aria-current={adminPage === 'access-settings' ? 'page' : undefined}>Access and records</a>
+              <a href="#/storage" aria-current={adminPage === 'storage' ? 'page' : undefined}>Storage</a>
+              <a href="#/report-types" aria-current={adminPage === 'report-types' ? 'page' : undefined}>Report types</a>
               <a href="#/admin/analytics" aria-current={adminPage === 'admin/analytics' || adminPage === 'admin/analytics/definitions' ? 'page' : undefined}>Analytics</a>
               <a href="#/ai" aria-current={adminPage === 'ai' || adminPage === 'ai/usage' ? 'page' : undefined}>AI</a>
             </>

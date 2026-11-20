@@ -68,7 +68,7 @@ test('reason must be 1 to 1,000 characters after trim', () => {
 
 test('settings problem: bounds and default above maximum', () => {
   const bounds = { archiveAfterMonths: { min: 1, max: 60 }, grantDefaultDays: { min: 1, max: 90 }, grantMaxDays: { min: 1, max: 365 }, invitationValidDays: { min: 1, max: 30 } };
-  const ok = { archiveAfterMonths: 12, grantDefaultDays: 30, grantMaxDays: 90, invitationValidDays: 7, analyticsExportAllowed: true };
+  const ok = { archiveAfterMonths: 12, grantDefaultDays: 30, grantMaxDays: 90, invitationValidDays: 7, analyticsExportAllowed: true, projectExportsAllowed: false };
   assert.equal(settingsProblem(ok, bounds), null);
   assert.match(settingsProblem({ ...ok, archiveAfterMonths: 61 }, bounds) ?? '', /1.60/);
   assert.match(settingsProblem({ ...ok, invitationValidDays: 1.5 }, bounds) ?? '', /whole number/);

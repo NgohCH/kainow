@@ -100,6 +100,7 @@ export interface AccessValues {
   grantMaxDays: number;
   invitationValidDays: number;
   analyticsExportAllowed: boolean;
+  projectExportsAllowed: boolean;
 }
 export type AccessBounds = Record<'archiveAfterMonths' | 'grantDefaultDays' | 'grantMaxDays' | 'invitationValidDays', { min: number; max: number }>;
 
