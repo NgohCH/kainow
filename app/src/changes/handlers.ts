@@ -8,7 +8,7 @@ import { decide } from '../projects/matrix';
 import type { Created, RecordsService } from '../records/records.service';
 import type { ChangeKind } from './rules';
 
-export type TargetKind = 'extraction_item' | 'human_proposal' | 'task' | 'decision' | 'risk';
+export type TargetKind = 'extraction_item' | 'human_proposal' | 'task' | 'decision' | 'risk' | 'output_version';
 
 /** The target of a request as loaded (and locked) by ChangesService: its columns, camel-cased where named, plus projectId. */
 export type Row = Record<string, any>;

@@ -31,11 +31,11 @@
 
 export type ItemKind =
   | 'message' | 'source' | 'task' | 'decision' | 'question' | 'risk' | 'proposal' | 'human_proposal'
-  | 'answer' | 'report_draft' | 'summary' | 'minutes_draft' | 'feedback' | 'thread';
+  | 'answer' | 'report_draft' | 'summary' | 'minutes_draft' | 'feedback' | 'thread' | 'output';
 
 export const ITEM_KINDS: readonly ItemKind[] = [
   'message', 'source', 'task', 'decision', 'question', 'risk', 'proposal', 'human_proposal',
-  'answer', 'report_draft', 'summary', 'minutes_draft', 'feedback', 'thread',
+  'answer', 'report_draft', 'summary', 'minutes_draft', 'feedback', 'thread', 'output',
 ];
 
 export interface TextColumn {
@@ -81,6 +81,7 @@ export const ITEM_PROJECT: Record<ItemKind, string> = {
   minutes_draft: `SELECT th.project_id FROM discussion_threads th WHERE th.id = ${ID} OR th.id IN (SELECT thread_id FROM minutes_drafts WHERE id = ${ID})`,
   feedback: `SELECT project_id FROM ai_feedback WHERE id = ${ID}`,
   thread: `SELECT project_id FROM discussion_threads WHERE id = ${ID}`,
+  output: `SELECT project_id FROM outputs WHERE id = ${ID}`,
 };
 
 /** Every minutes draft of the thread of minutes draft (or thread) $1. */
@@ -152,6 +153,31 @@ const messageOfVersion = (v: string) => `(SELECT message_id FROM message_version
 const NOT_TRANSCRIPT = (sourceKind: string) => `CASE WHEN ${sourceKind} = 'discussion' THEN NULL ELSE 'source' END`;
 const sourceKindOfVersion = (v: string) =>
   `(SELECT s.kind FROM source_versions sv JOIN sources s ON s.id = sv.source_id WHERE sv.id = ${v})`;
+
+/**
+ * Stored files (sub-project 9) belong to the source of a source version that points at them, or to the output of an
+ * output version that does. `file` is the stored_files id expression. Over-inclusion is safe.
+ */
+const SOURCE_OF_FILE = (file: string) =>
+  `(SELECT v.source_id FROM source_versions v WHERE v.original_stored_file_id = ${file} OR v.text_stored_file_id = ${file} LIMIT 1)`;
+const OUTPUT_OF_FILE = (file: string) => `(SELECT ov.output_id FROM output_versions ov WHERE ov.stored_file_id = ${file} LIMIT 1)`;
+const FILE_OWNER = (file: string) => ({
+  kind: `CASE WHEN ${OUTPUT_OF_FILE(file)} IS NOT NULL THEN 'output'
+              WHEN (SELECT s.kind FROM sources s WHERE s.id = ${SOURCE_OF_FILE(file)}) = 'discussion' THEN NULL
+              WHEN ${SOURCE_OF_FILE(file)} IS NOT NULL THEN 'source' END`,
+  id: `COALESCE(${OUTPUT_OF_FILE(file)}, ${SOURCE_OF_FILE(file)})`,
+});
+/** The stored files of item $1, for every kind that owns files. */
+const FILE_ITEMS = (file: string): Partial<Record<ItemKind, string>> => ({
+  output: `${file} IN (SELECT ov.stored_file_id FROM output_versions ov WHERE ov.output_id = ${ID})`,
+  ...each(VERSION_KINDS, (k) => `${file} IN (SELECT sv.original_stored_file_id FROM source_versions sv WHERE sv.id IN (${VERSIONS[k]})
+                                           UNION SELECT sv.text_stored_file_id FROM source_versions sv WHERE sv.id IN (${VERSIONS[k]}))`),
+});
+/** A change request about an output version belongs to the output (target_id is the version). */
+const OUTPUT_OF_REQUEST = (r: string) =>
+  `CASE WHEN ${r}.target_kind = 'output_version' THEN (SELECT output_id FROM output_versions WHERE id = ${r}.target_id) ELSE ${r}.target_id END`;
+const REQUEST_KIND = (r: string) => `CASE ${r}.target_kind WHEN 'extraction_item' THEN 'proposal' WHEN 'output_version' THEN 'output' ELSE ${r}.target_kind END`;
+const REQUEST_OUTPUT_ITEM = (r: string) => `${r}.target_kind = 'output_version' AND ${r}.target_id IN (SELECT id FROM output_versions WHERE output_id = ${ID})`;
 
 // ---------------------------------------------------------------------------------------------------------------
 // Tables. `from` names the table `t`; `project` and every `items` entry are WHERE conditions.
@@ -364,19 +390,25 @@ const TABLES: TableDef[] = [
   {
     table: 'change_requests',
     project: `t.project_id ${P}`,
-    owner: { kind: `CASE t.target_kind WHEN 'extraction_item' THEN 'proposal' ELSE t.target_kind END`, id: 't.target_id' },
+    owner: { kind: REQUEST_KIND('t'), id: OUTPUT_OF_REQUEST('t') },
     text: ['reason'],
-    items: each(ITEM_KINDS, (k) => (CHANGE_TARGET[k] ? `t.target_kind = '${CHANGE_TARGET[k]}' AND t.target_id ${P}` : null)),
+    items: {
+      ...each(ITEM_KINDS, (k) => (CHANGE_TARGET[k] ? `t.target_kind = '${CHANGE_TARGET[k]}' AND t.target_id ${P}` : null)),
+      output: REQUEST_OUTPUT_ITEM('t'),
+    },
   },
   {
     table: 'change_request_versions',
     from: 'change_request_versions t JOIN change_requests cr ON cr.id = t.request_id',
     rowKey: ['request_id', 'version'],
     project: `cr.project_id ${P}`,
-    owner: { kind: `CASE cr.target_kind WHEN 'extraction_item' THEN 'proposal' ELSE cr.target_kind END`, id: 'cr.target_id' },
+    owner: { kind: REQUEST_KIND('cr'), id: OUTPUT_OF_REQUEST('cr') },
     text: ['reason'],
     json: ['terms'],
-    items: each(ITEM_KINDS, (k) => (CHANGE_TARGET[k] ? `cr.target_kind = '${CHANGE_TARGET[k]}' AND cr.target_id ${P}` : null)),
+    items: {
+      ...each(ITEM_KINDS, (k) => (CHANGE_TARGET[k] ? `cr.target_kind = '${CHANGE_TARGET[k]}' AND cr.target_id ${P}` : null)),
+      output: REQUEST_OUTPUT_ITEM('cr'),
+    },
   },
   {
     table: 'review_flags',
@@ -513,6 +545,59 @@ const TABLES: TableDef[] = [
                  UNION ALL SELECT th.project_id FROM analysis_runs ar JOIN discussion_threads th ON th.id = ar.thread_id
                             WHERE ar.id = t.request_id)`,
     text: ['note'],
+  },
+
+  // ---- External outputs and storage (sub-project 9) ----------------------------------------------------------
+  {
+    table: 'outputs',
+    project: `t.project_id ${P}`,
+    owner: { kind: `'output'`, id: 't.id' },
+    text: ['title', 'delete_reason'],
+    items: { output: `t.id ${P}` },
+  },
+  {
+    table: 'output_events',
+    from: 'output_events t JOIN outputs o ON o.id = t.output_id',
+    project: `o.project_id ${P}`,
+    owner: { kind: `'output'`, id: 't.output_id' },
+    text: ['reason'],
+    json: ['detail'],
+    items: { output: `t.output_id ${P}` },
+  },
+  {
+    // Bytes of a generated or uploaded output kept until the file is stored. Withheld, not cleaned, when a hold applies (spec 8.5).
+    table: 'output_version_bytes',
+    from: 'output_version_bytes t JOIN output_versions ov ON ov.id = t.output_version_id JOIN outputs o ON o.id = ov.output_id',
+    rowKey: ['output_version_id'],
+    project: `o.project_id ${P}`,
+    owner: { kind: `'output'`, id: 'ov.output_id' },
+    binary: ['bytes'],
+    items: { output: `ov.output_id ${P}` },
+  },
+  { table: 'project_output_settings_changes', project: `t.project_id ${P}`, text: ['reason'] },
+  { table: 'project_department_transfers', project: `t.project_id ${P}`, text: ['reason'] },
+  {
+    // Folder names repeat department, project and output names. Keys start "<department id>/<project id>"; a department folder has no project.
+    table: 'storage_folders',
+    project: `split_part(t.key, '/', 2) = ${ID_TEXT}`,
+    owner: { kind: `CASE WHEN t.level = 'output' THEN 'output' END`, id: `CASE WHEN t.level = 'output' THEN split_part(t.key, '/', 4)::uuid END` },
+    text: ['name'],
+    items: { output: `t.level = 'output' AND split_part(t.key, '/', 4) = ${ID_TEXT}` },
+  },
+  {
+    table: 'stored_files',
+    project: `t.project_id ${P}`,
+    owner: FILE_OWNER('t.id'),
+    text: ['name', 'path'],
+    items: FILE_ITEMS('t.id'),
+  },
+  {
+    table: 'stored_file_moves',
+    from: 'stored_file_moves t JOIN stored_files f ON f.id = t.stored_file_id',
+    project: `f.project_id ${P}`,
+    owner: FILE_OWNER('f.id'),
+    text: ['reason', 'old_path', 'new_path'],
+    items: FILE_ITEMS('f.id'),
   },
 
   // ---- Notices: not items; see the header for why their item scope is the item's whole project ---------------
@@ -721,6 +806,77 @@ export const NO_USER_TEXT: Readonly<Record<string, string>> = {
   'ai_models.provider': ENUM,
   'ai_models.purposes': 'kinds of work from a fixed list (CHECK), never typed by a person',
   'ai_models.state': ENUM,
+  'output_events.kind': ENUM,
+  'output_versions.format': ENUM,
+  'output_versions.origin': ENUM,
+  'output_versions.sha256': HASH,
+  'output_versions.status': ENUM,
+  'outputs.review_state': ENUM,
+  'outputs.status': ENUM,
+  'project_department_transfers.folder_choice': ENUM,
+  'project_department_transfers.state': ENUM,
+  'project_output_settings.export_roles': 'roles from a fixed list (CHECK in code), never typed by a person',
+  'project_output_settings.input_formats': 'file formats from the approved format list, never typed by a person',
+  'project_output_settings.output_formats': 'file formats from the approved format list, never typed by a person',
+  'project_output_settings_changes.next': SETTING,
+  'project_output_settings_changes.previous': SETTING,
+  'report_types.name': 'a report type name typed by an Administrator: organisation-level, no project scope (spec 7.4); credential-checked when typed',
+  'report_types.status': ENUM,
+  'storage_admin_events.kind': ENUM,
+  'storage_admin_events.reason': 'an Administrator designating a person: organisation-level, no project scope (spec 7.4); credential-checked when typed',
+  'storage_admins.end_reason': 'an Administrator ending a designation: organisation-level, no project scope (spec 7.4); credential-checked when typed',
+  'storage_admins.reason': 'an Administrator designating a person: organisation-level, no project scope (spec 7.4); credential-checked when typed',
+  'storage_attempts.job': ENUM,
+  'storage_attempts.outcome': ENUM,
+  'storage_connection_secrets.ciphertext': 'the sealed client secret (AES-256-GCM): ciphertext, not text a person typed',
+  'storage_connection_secrets.key_id': 'the id of the protected key that sealed the row, a code identifier',
+  'storage_connection_secrets.nonce': 'encryption nonce, random bytes',
+  'storage_connection_secrets.tag': 'encryption authentication tag, random bytes',
+  'storage_destination_events.detail': 'check results and ids for a destination: organisation-level, no project scope (spec 7.4); never free text',
+  'storage_destination_events.kind': ENUM,
+  'storage_destination_events.reason': 'an Administrator reason for a destination change: organisation-level, no project scope (spec 7.4); credential-checked when typed',
+  'storage_destinations.account_email': IDENTITY,
+  'storage_destinations.connector': ENUM,
+  'storage_destinations.drive_id': 'a provider drive identifier, not typed text',
+  'storage_destinations.folder_path': 'a library folder path typed by an Administrator: organisation-level, no project scope (spec 7.4); credential-checked when typed',
+  'storage_destinations.kind': ENUM,
+  'storage_destinations.label': 'a destination name typed by an Administrator: organisation-level, no project scope (spec 7.4); credential-checked when typed',
+  'storage_destinations.last_check': 'the result of the last destination check: fixed wording and provider identifiers, never typed text',
+  'storage_destinations.purpose': ENUM,
+  'storage_destinations.root_item_id': 'a provider item identifier, not typed text',
+  'storage_destinations.site_id': 'a provider site identifier, not typed text',
+  'storage_destinations.site_url': 'a site address typed by an Administrator: organisation-level, no project scope (spec 7.4); credential-checked when typed',
+  'storage_destinations.status': ENUM,
+  'storage_folders.item_id': 'a provider item identifier, not typed text',
+  'storage_folders.key': ID_REF,
+  'storage_folders.level': ENUM,
+  'storage_grants.permission_id': 'a provider permission identifier, not typed text',
+  'storage_grants.role': ENUM,
+  'storage_grants.state': ENUM,
+  'storage_outbox.job': ENUM,
+  'storage_settings.approved_input_formats': 'file formats from a fixed list, never typed by a person',
+  'storage_settings.approved_output_formats': 'file formats from a fixed list, never typed by a person',
+  'storage_settings.client_id': 'the application (client) id of the connection, entered by an Administrator: organisation-level, no project scope (spec 7.4)',
+  'storage_settings.tenant_id': 'the tenant id of the connection, entered by an Administrator: organisation-level, no project scope (spec 7.4)',
+  'storage_settings_changes.next': SETTING,
+  'storage_settings_changes.previous': SETTING,
+  'storage_settings_changes.reason': 'an Administrator reason for a storage settings change: organisation-level, no project scope (spec 7.4); credential-checked when typed',
+  'stored_file_moves.new_drive_id': 'a provider drive identifier, not typed text',
+  'stored_file_moves.new_item_id': 'a provider item identifier, not typed text',
+  'stored_file_moves.old_drive_id': 'a provider drive identifier, not typed text',
+  'stored_file_moves.old_item_id': 'a provider item identifier, not typed text',
+  'stored_files.check_status': ENUM,
+  'stored_files.connector': ENUM,
+  'stored_files.ctag': 'a provider change tag, not typed text',
+  'stored_files.drive_id': 'a provider drive identifier, not typed text',
+  'stored_files.etag': 'a provider change tag, not typed text',
+  'stored_files.failure_code': ENUM,
+  'stored_files.item_id': 'a provider item identifier, not typed text',
+  'stored_files.provider_hash': HASH,
+  'stored_files.purpose': ENUM,
+  'stored_files.sha256': HASH,
+  'stored_files.state': ENUM,
+  'stored_files.web_url': 'a link the provider returned for the file, built from identifiers and the stored name; the name is registered and cleaned',
   'access_settings_changes.next': SETTING,
   'access_settings_changes.previous': SETTING,
   'access_settings_changes.reason': 'an Administrator reason for an access settings change: organisation-level, no project scope (spec 7.4); credential-checked when typed',

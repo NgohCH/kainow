@@ -24,11 +24,11 @@ export const HANDOVER_WITHDRAW = 'Only the person who offered this risk can with
 export const notEnough = (need: number, have: number) => `Not enough approvers: needs ${need}, the project has ${have}.`;
 
 const KINDS: readonly ChangeKind[] = [
-  'authorise_proposal', 'amend_task', 'cancel_task', 'supersede_decision', 'withdraw_decision', 'deadline_review', 'reconcile_completion', 'risk_handover',
+  'authorise_proposal', 'amend_task', 'cancel_task', 'supersede_decision', 'withdraw_decision', 'deadline_review', 'reconcile_completion', 'risk_handover', 'approve_output',
 ];
 const STATUSES: readonly RequestRow['status'][] = ['pending', 'authorised', 'rejected', 'withdrawn', 'superseded'];
-const TARGET_KINDS: readonly TargetKind[] = ['extraction_item', 'human_proposal', 'task', 'decision', 'risk'];
-const NOUN: Record<TargetKind, string> = { extraction_item: 'proposal', human_proposal: 'proposal', task: 'task', decision: 'decision', risk: 'risk' };
+const TARGET_KINDS: readonly TargetKind[] = ['extraction_item', 'human_proposal', 'task', 'decision', 'risk', 'output_version'];
+const NOUN: Record<TargetKind, string> = { extraction_item: 'proposal', human_proposal: 'proposal', task: 'task', decision: 'decision', risk: 'risk', output_version: 'output' };
 const STATUS_LABEL: Record<ProjectStatus, string> = { draft: 'Draft', planned: 'Planned', active: 'Active', deferred: 'Deferred', closed: 'Closed' };
 
 /** How each kind of target is loaded and locked (its project in "projectId"). */
@@ -43,6 +43,10 @@ export const TARGET_SQL: Record<TargetKind, string> = {
   task: `SELECT x.*, x.project_id AS "projectId", to_char(x.due_on, 'YYYY-MM-DD') AS "dueOn" FROM tasks x WHERE x.id = $1 AND ${liveRecordSql('x')} FOR UPDATE`,
   decision: `SELECT x.*, x.project_id AS "projectId" FROM decisions x WHERE x.id = $1 AND ${liveRecordSql('x')} FOR UPDATE`,
   risk: `SELECT x.*, x.project_id AS "projectId", to_char(x.review_on, 'YYYY-MM-DD') AS "reviewOn" FROM risks x WHERE x.id = $1 AND ${liveRecordSql('x')} FOR UPDATE`,
+  // An output version: its project is the output's. A held version (history spec 7.2) is not a target.
+  output_version: `SELECT v.id, v.output_id AS "outputId", v.version_no AS "versionNo", v.status, v.stored_file_id AS "storedFileId", o.project_id AS "projectId"
+                     FROM output_versions v JOIN outputs o ON o.id = v.output_id
+                    WHERE v.id = $1 AND ${notHeldSql('v')} AND o.deleted_at IS NULL FOR UPDATE OF v`,
 };
 
 const REQUEST_COLUMNS = `id, project_id AS "projectId", kind, target_kind AS "targetKind", target_id AS "targetId", batch_id AS "batchId", version,

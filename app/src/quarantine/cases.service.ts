@@ -159,6 +159,10 @@ const HOLD: Record<ItemKind, string[]> = {
   ],
   feedback: [`UPDATE ai_feedback SET held_case_id = $2 WHERE id = $1 AND held_case_id IS NULL`],
   thread: [`UPDATE discussion_threads SET held_case_id = $2 WHERE id = $1 AND held_case_id IS NULL`],
+  output: [
+    `UPDATE outputs SET held_case_id = $2 WHERE id = $1 AND held_case_id IS NULL`,
+    `UPDATE output_versions SET held_case_id = $2 WHERE output_id = $1 AND held_case_id IS NULL`,
+  ],
 };
 
 /** The same rows, released from case $2. */
@@ -184,6 +188,7 @@ const CURRENT_TEXT: Record<ItemKind, string> = {
   minutes_draft: `SELECT d.body AS text FROM minutes_drafts d WHERE d.id = $1 OR d.thread_id = $1 ORDER BY (d.id = $1) DESC, d.version_no DESC LIMIT 1`,
   feedback: `SELECT concat_ws(E'\\n', note, escalation_note) AS text FROM ai_feedback WHERE id = $1`,
   thread: `SELECT title AS text FROM discussion_threads WHERE id = $1`,
+  output: `SELECT concat_ws(E'\\n', title, delete_reason) AS text FROM outputs WHERE id = $1`,
 };
 
 /** The item's author when a person (spec 7.7: message author, source creator, record's proposer or AI requester). */
@@ -202,6 +207,7 @@ const AUTHOR: Record<ItemKind, string> = {
   minutes_draft: `SELECT created_by AS id FROM minutes_drafts WHERE id = $1 OR thread_id = $1 ORDER BY (id = $1) DESC, version_no DESC LIMIT 1`,
   feedback: `SELECT reporter_id AS id FROM ai_feedback WHERE id = $1`,
   thread: `SELECT created_by AS id FROM discussion_threads WHERE id = $1`,
+  output: `SELECT author_id AS id FROM outputs WHERE id = $1`,
 };
 
 /** A short reference for the Possible copies list (spec 7.4: "title or reference"), read only once the place is masked. */
@@ -220,6 +226,7 @@ const REFERENCE: Record<ItemKind, string> = {
   minutes_draft: `SELECT 'Minutes of ' || th.title AS ref FROM discussion_threads th WHERE th.id = ${MINUTES_THREAD}`,
   feedback: `SELECT 'Feedback note' AS ref`,
   thread: `SELECT title AS ref FROM discussion_threads WHERE id = $1`,
+  output: `SELECT title AS ref FROM outputs WHERE id = $1`,
 };
 
 /** "in a note" (spec 7.4 alert). Sources by their own kind. */
@@ -227,6 +234,7 @@ const KIND_WORDS: Record<ItemKind, string> = {
   message: 'a message', source: 'a note', task: 'a task', decision: 'a decision', question: 'a question', risk: 'a risk',
   proposal: 'a proposal', human_proposal: 'a proposal', answer: 'an AI answer', report_draft: 'a report draft',
   summary: 'a shareable summary', minutes_draft: 'a minutes draft', feedback: 'a feedback note', thread: 'a thread title',
+  output: 'an output',
 };
 const SOURCE_WORDS: Record<string, string> = { notes: 'a note', minutes: 'meeting minutes', summary: 'a shareable summary', discussion: 'a discussion transcript' };
 
@@ -778,6 +786,16 @@ export class CasesService {
       case 'feedback': {
         const f = await one(`SELECT reporter_id, held_case_id FROM ai_feedback WHERE id = $1`);
         return !!f && !held(f.held_case_id) && (f.reporter_id === user.id || ctx.roles.some((r) => RESTRICTED_ROLES.includes(r)));
+      }
+      case 'output': {
+        // A registered output is read by the project, or by the people named when its audience is restricted.
+        const o = (await db.query(
+          `SELECT o.deleted_at, o.status, o.held_case_id, a.mode, EXISTS (SELECT 1 FROM audience_members m WHERE m.audience_id = o.audience_id AND m.user_id = $2) AS named
+             FROM outputs o LEFT JOIN audiences a ON a.id = o.audience_id WHERE o.id = $1`,
+          [id, user.id],
+        )).rows[0];
+        if (!o || o.deleted_at || held(o.held_case_id) || o.status === 'declined') return false;
+        return o.mode !== 'restricted' || o.named === true;
       }
     }
   }

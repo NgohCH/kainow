@@ -8,7 +8,8 @@ export type ChangeKind =
   | 'withdraw_decision'
   | 'deadline_review'
   | 'reconcile_completion'
-  | 'risk_handover';
+  | 'risk_handover'
+  | 'approve_output';
 
 export function effectiveCount(
   org: { required: number; projectsMayOverride: boolean },
@@ -52,6 +53,8 @@ export function kindAllowedIn(
     case 'deadline_review':
     case 'reconcile_completion':
       return projectStatus === 'deferred' || projectStatus === 'closed' || projectStatus === 'active';
+    case 'approve_output':
+      return projectStatus === 'planned' || projectStatus === 'active';
     case 'risk_handover':
       return phase === 'submit'
         ? projectStatus === 'active' || projectStatus === 'deferred'
