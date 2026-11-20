@@ -164,9 +164,6 @@ export async function releaseWithheld(c: PoolClient, caseId: string, fileIds: st
     }
     if (f.state === 'withheld' && f.present) {
       await c.query(`UPDATE stored_files SET state = 'stored', withhold_case_id = NULL, remove_notice_at = NULL WHERE id = $1`, [f.id]);
-      if (f.purpose === 'source_original') {
-        await c.query(`UPDATE source_versions SET quarantined_at = NULL WHERE original_stored_file_id = $1 AND original_bytes IS NULL`, [f.id]);
-      }
       if (f.purpose === 'output') {
         const o = (await c.query<{ output_id: string }>(`SELECT output_id FROM output_versions WHERE stored_file_id = $1`, [f.id])).rows[0];
         if (o) await queueOutputPlacement(c, o.output_id, 'widen');
@@ -665,8 +662,9 @@ async function notRestored(deps: StorageDeps, fileId: string): Promise<void> {
 }
 
 /**
- * Records a restored file `stored` (with its new item, or where it still was), its originals restored, the cases'
- * holds ended, and (in the same transaction) a source original no longer shown withheld.
+ * Records a restored file `stored` (with its new item, or where it still was), its originals restored and the cases'
+ * holds ended. A source version shows its original withheld exactly while this file is withheld (notes.service), so it
+ * is shown back in this same transaction; no version row is written.
  */
 async function record(
   deps: StorageDeps, f: FileRow, placed: { ref: StoredRef & { given: string }; dest: DestinationRef; bytes: Buffer } | null, originals: string[],
@@ -692,9 +690,6 @@ async function record(
     }
     await c.query(`UPDATE quarantine_originals SET restored_at = $2 WHERE id = ANY($1::uuid[])`, [originals, at]);
     await c.query(`UPDATE stored_file_withholds SET released_at = $2 WHERE stored_file_id = $1 AND released_at IS NULL`, [f.id, at]);
-    if (f.purpose === 'source_original') {
-      await c.query(`UPDATE source_versions SET quarantined_at = NULL WHERE original_stored_file_id = $1 AND original_bytes IS NULL`, [f.id]);
-    }
     if (f.purpose === 'output') {
       const o = (await c.query<{ output_id: string }>(`SELECT output_id FROM output_versions WHERE stored_file_id = $1`, [f.id])).rows[0];
       if (o) await queueOutputPlacement(c, o.output_id, 'widen');

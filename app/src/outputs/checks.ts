@@ -9,7 +9,8 @@ import { queueStorageJob } from '../storage/outbox';
 import { quickXorHash } from '../storage/quickxor';
 import { loadStorageSettings } from '../storage/settings';
 import { type DestinationRef, type ItemState, StorageError, type StoredRef } from '../storage/types';
-import { afterFiled, ensureOutputFolder, moveNamed } from './filing';
+import { afterFiled, ensureOutputFolder, heldCaseAtConfirm, moveNamed, recordedFolderPath, versionFileName } from './filing';
+import { queueWithhold } from '../storage/withhold';
 import { PathTooLong, fitPath, outputFileName } from './naming';
 import { isWholeProject } from './readers';
 
@@ -650,6 +651,7 @@ async function registerLocked(deps: StorageDeps, versionId: string): Promise<voi
   const placed = await uploadNew(deps, target.connector, target.dest, folder.itemId, folder.path, { title: row.title, versionNo, ext }, bytes);
 
   const at = deps.clock();
+  let held = false;
   const c = await deps.pool.connect();
   try {
     await c.query('BEGIN');
@@ -660,17 +662,25 @@ async function registerLocked(deps: StorageDeps, versionId: string): Promise<voi
     if (!(await changeState(c, versionId)).pending) throw new FileActionRefused(ALREADY_REGISTERED);
     const fileId = uuidv7(at.getTime());
     const ref = placed.ref;
+    // As filing's confirm: what is recorded comes from the database as it is now (the title, cleaned if a case cleaned
+    // it while the file uploaded, and the recorded folder names), and a held output's new file is withheld, not shared.
+    const title = (await c.query<{ title: string }>(`SELECT title FROM outputs WHERE id = $1`, [row.output_id])).rows[0].title;
+    const heldBy = await heldCaseAtConfirm(c, row.output_id, null);
+    const folderPath = (await recordedFolderPath(c, folder.recordId)) ?? folder.path;
+    const name = versionFileName(folderPath, title, versionNo, ext, placed.suffix);
+    const path = [...folderPath, name].join('/');
     await c.query(
       `INSERT INTO stored_files (id, purpose, project_id, destination_id, connector, drive_id, item_id, path, name, size_bytes, sha256, provider_hash,
                                  etag, ctag, web_url, state, check_status, last_checked_at, created_at, stored_at, folder_id)
        VALUES ($1, 'output', $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, 'stored', 'ok', $15, $15, $15, $16)`,
-      [fileId, row.project_id, target.dest.id, target.dest.connector, target.dest.driveId, ref.itemId, placed.path, ref.name, ref.size, sha256(bytes), ref.providerHash, ref.etag, ref.ctag, ref.webUrl, at, folder.recordId],
+      [fileId, row.project_id, target.dest.id, target.dest.connector, target.dest.driveId, ref.itemId, path, name, ref.size, sha256(bytes), ref.providerHash, ref.etag, ref.ctag, heldBy ? null : ref.webUrl, at, folder.recordId],
     );
     const newVersionId = uuidv7(at.getTime());
+    const outputHeld = (await c.query<{ held: string | null }>(`SELECT held_case_id AS held FROM outputs WHERE id = $1`, [row.output_id])).rows[0].held;
     await c.query(
-      `INSERT INTO output_versions (id, output_id, version_no, origin, format, stored_file_id, status, sha256, size_bytes, created_by, created_at)
-       VALUES ($1, $2, $3, 'changed_file', $4, $5, 'draft', $6, $7, $8, $9)`,
-      [newVersionId, row.output_id, versionNo, row.format, fileId, sha256(bytes), bytes.length, actor, at],
+      `INSERT INTO output_versions (id, output_id, version_no, origin, format, stored_file_id, status, sha256, size_bytes, created_by, created_at, held_case_id)
+       VALUES ($1, $2, $3, 'changed_file', $4, $5, 'draft', $6, $7, $8, $9, $10)`,
+      [newVersionId, row.output_id, versionNo, row.format, fileId, sha256(bytes), bytes.length, actor, at, outputHeld],
     );
     const event = (kind: string, id: string, detail: Record<string, unknown>) =>
       c.query(`INSERT INTO output_events (id, output_id, version_id, kind, actor_id, at, detail) VALUES ($1, $2, $3, $4, $5, $6, $7)`, [
@@ -682,7 +692,14 @@ async function registerLocked(deps: StorageDeps, versionId: string): Promise<voi
       at, action: 'output.changed_registered', actorUserId: actor, subjectType: 'output', subjectId: row.output_id,
       detail: { versionNo: row.version_no, newVersionNo: versionNo },
     });
-    await afterFiled(c, { projectId: row.project_id, outputId: row.output_id, versionId: newVersionId, storedFileId: fileId }, at);
+    if (heldBy) {
+      // Never shared: the withhold job moves it out of any shared folder under its cleaned name, then removes it.
+      await queueWithhold(c, [fileId], heldBy);
+    } else {
+      if (name !== ref.name) await queueStorageJob(c, 'rename-output', row.output_id, { priority: 'urgent' });
+      await afterFiled(c, { projectId: row.project_id, outputId: row.output_id, versionId: newVersionId, storedFileId: fileId }, at);
+    }
+    held = heldBy !== null;
     await c.query('COMMIT');
   } catch (err) {
     await c.query('ROLLBACK').catch(() => undefined);
@@ -693,14 +710,15 @@ async function registerLocked(deps: StorageDeps, versionId: string): Promise<voi
     c.release();
   }
 
-  await restoreOriginal(deps, source.connector, source.dest, file);
+  // A held output's original is withheld with it: nothing is restored next to it.
+  if (!held) await restoreOriginal(deps, source.connector, source.dest, file);
 }
 
 /** Uploads under the first free name; never overwrites and never adopts a file it did not just upload. */
 async function uploadNew(
   deps: CheckDeps, connector: StorageConnector, dest: DestinationRef, folderId: string, folderParts: string[],
   n: { title: string; versionNo: number; ext: string }, bytes: Buffer,
-): Promise<{ ref: StoredRef; path: string }> {
+): Promise<{ ref: StoredRef; path: string; suffix: number }> {
   const hash = quickXorHash(bytes);
   for (let suffix = 1; suffix <= MAX_SUFFIX; suffix++) {
     let parts: string[];
@@ -724,7 +742,7 @@ async function uploadNew(
       await connector.removePermanently(dest, ref.itemId).catch(() => logFixed(deps, UNRECORDED_KEPT));
       throw new StorageError('server');
     }
-    return { ref, path: parts.join('/') };
+    return { ref, path: parts.join('/'), suffix };
   }
   throw new StorageError('conflict');
 }

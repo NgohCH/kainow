@@ -97,8 +97,15 @@ export interface VersionSummary {
   storage?: VersionStorage | null;
 }
 
-const VERSION_COLUMNS = `id, source_id AS "sourceId", version_no AS "versionNo", origin, filename, media_type AS "mediaType",
-  char_count AS "charCount", text_sha256 AS "textSha256", original_sha256 AS "originalSha256", created_at AS "createdAt", quarantined_at AS "originalWithheld"`;
+const VERSION_BASE = `id, source_id AS "sourceId", version_no AS "versionNo", origin, filename, media_type AS "mediaType",
+  char_count AS "charCount", text_sha256 AS "textSha256", original_sha256 AS "originalSha256", created_at AS "createdAt"`;
+/**
+ * Whether the uploaded original is withheld: its bytes were withheld by a quarantine case (quarantined_at), or the file
+ * in the managed source area that holds it is withheld (external outputs spec 8.5) until it is put back.
+ */
+export const withheldSql = (a: string) =>
+  `(${a}quarantined_at IS NOT NULL OR EXISTS (SELECT 1 FROM stored_files wf WHERE wf.id = ${a}original_stored_file_id AND wf.state = 'withheld')) AS "originalWithheld"`;
+const VERSION_COLUMNS = `${VERSION_BASE}, ${withheldSql('')}`;
 
 /** A version as shown: the withheld label in place of the time it was withheld. */
 const shownVersion = <T extends VersionSummary>(v: T): T => ({ ...v, originalWithheld: v.originalWithheld ? WITHHELD_TEXT : null });
@@ -477,7 +484,7 @@ export class NotesService {
 
   async getVersion(sourceId: string, versionNo: number, showStorage = false): Promise<VersionSummary & { text: string; provenance: string | null }> {
     const { rows } = await this.pool.query<VersionSummary & { text: string }>(
-      `SELECT ${VERSION_COLUMNS.split(',').map((c) => 'v.' + c.trim()).join(', ')}, v.text_content AS text
+      `SELECT ${VERSION_BASE.split(',').map((c) => 'v.' + c.trim()).join(', ')}, ${withheldSql('v.')}, v.text_content AS text
          FROM source_versions v JOIN sources s ON s.id = v.source_id
         WHERE v.source_id = $1 AND v.version_no = $2 AND ${liveSourceSql('s')}`,
       [sourceId, versionNo],

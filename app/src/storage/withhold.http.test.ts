@@ -6,7 +6,8 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import { uuidv7 } from '../common/uuid7';
 import { M365TokenSource } from '../email/m365-token';
-import { NotesService } from '../notes/notes.service';
+import { NotesService, withheldSql } from '../notes/notes.service';
+import { checkStoredFile } from '../outputs/checks';
 import { type ProtectedKey, loadProtectedKey } from '../quarantine/protected-key';
 import { SKIP_NO_DB } from '../testing/db';
 import { type FakeGraph, startFakeGraph } from '../testing/fake-graph';
@@ -106,6 +107,9 @@ describe('withholding held files in storage', { skip: SKIP_NO_DB }, () => {
   async function noPlainCopy(tables = ['outputs', 'stored_files', 'stored_file_moves', 'storage_folders']): Promise<void> {
     for (const table of tables) assert.equal((await rows(`SELECT count(*)::int AS n FROM ${table} x WHERE strpos(x::text, $1) > 0`, [SECRET]))[0].n, 0, table);
   }
+  /** Whether the version shows its original withheld (as the notes read it). */
+  const shownWithheld = async (versionId: string): Promise<boolean> =>
+    (await rows(`SELECT ${withheldSql('v.')} FROM source_versions v WHERE v.id = $1`, [versionId]))[0].originalWithheld as boolean;
   const contentOriginals = async (fileId: string) =>
     rows(`SELECT * FROM quarantine_originals WHERE table_name = 'stored_files' AND column_name = 'content' AND row_key->>'id' = $1 ORDER BY sweep`, [fileId]);
 
@@ -239,7 +243,7 @@ describe('withholding held files in storage', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual((await rows(`SELECT state, withhold_case_id FROM stored_files WHERE id = ANY($1::uuid[]) ORDER BY purpose`, [[s.original.id, s.text.id]])).map((f) => [f.state, f.withhold_case_id]), [
       ['withheld', caseId], ['withheld', caseId],
     ]);
-    assert.ok((await rows(`SELECT quarantined_at FROM source_versions WHERE id = $1`, [s.versionId]))[0].quarantined_at);
+    assert.equal(await shownWithheld(s.versionId), true);
 
     const ran = await drain();
     assert.deepEqual(ran.filter((r) => r.job === 'withhold').map((r) => r.failed), [undefined, undefined]);
@@ -473,7 +477,7 @@ The vault code is ${SECRET}.
     assert.ok(o1.removed_at);
     const t1 = (await rows(`SELECT * FROM stored_files WHERE id = $1`, [text.id]))[0];
     assert.ok(!(await download(t1.item_id)).toString('utf8').includes(OTHER), 'the text in storage is still cleaned of B');
-    assert.ok((await rows(`SELECT quarantined_at FROM source_versions WHERE id = $1`, [version.id]))[0].quarantined_at, 'still shown withheld');
+    assert.equal(await shownWithheld(version.id), true, 'still shown withheld');
     // B is a false alarm too: now no case holds them, and they come back.
     const g = await c.rev.request('POST', '/security/grants', { caseIds: [b], purpose: 'Decide whether this is a live credential' });
     assert.equal(g.status, 201, JSON.stringify(g.body));
@@ -486,7 +490,7 @@ The vault code is ${SECRET}.
     const t2 = (await rows(`SELECT * FROM stored_files WHERE id = $1`, [text.id]))[0];
     assert.equal((await download(t2.item_id)).toString('utf8'), (await rows(`SELECT text_content FROM source_versions WHERE id = $1`, [version.id]))[0].text_content);
     assert.ok((await download(t2.item_id)).toString('utf8').includes(OTHER), 'B\u2019s text is back');
-    assert.equal((await rows(`SELECT quarantined_at FROM source_versions WHERE id = $1`, [version.id]))[0].quarantined_at, null);
+    assert.equal(await shownWithheld(version.id), false);
     assert.equal(await holders(original.id).then((h) => h.length), 0);
   });
 
@@ -496,7 +500,7 @@ The vault code is ${SECRET}.
     await drain();
     await releaseUnchanged(caseId);
     // Released in the database, but the original's file is not back yet: still shown withheld. Then storage refuses it.
-    assert.ok((await rows(`SELECT quarantined_at FROM source_versions WHERE id = $1`, [s.versionId]))[0].quarantined_at);
+    assert.equal(await shownWithheld(s.versionId), true);
     fake.fault({ method: 'PUT', pathIncludes: 'original.txt' }, '403', 100);
     fake.fault({ method: 'POST', pathIncludes: 'original.txt' }, '403', 100);
     const ran = await drain();
@@ -505,10 +509,69 @@ The vault code is ${SECRET}.
     const f = (await rows(`SELECT state FROM stored_files WHERE id = $1`, [s.original.id]))[0];
     assert.equal(f.state, 'withheld');
     assert.deepEqual((await rows(`SELECT case_id FROM stored_file_withholds WHERE stored_file_id = $1`, [s.original.id])).map((x) => x.case_id), [caseId]);
-    assert.ok((await rows(`SELECT quarantined_at FROM source_versions WHERE id = $1`, [s.versionId]))[0].quarantined_at);
+    assert.equal(await shownWithheld(s.versionId), true);
     const notices = await rows(`SELECT user_id, summary FROM notifications WHERE kind = 'held_file_not_restored' ORDER BY user_id`);
     assert.deepEqual(notices.map((x) => x.user_id).sort(), [ids.admin, ids.admin2, ids.store].sort());
     for (const x of notices) assert.equal(x.summary, 'A withheld file could not be put back in storage');
+  });
+
+  test('a hold while register-changed uploads leaves no plain title anywhere and shares nothing', async () => {
+    const title = `Valve audit ${SECRET}`;
+    const { out, file } = await filedOutput(title);
+    fake.changeContent(drive.driveId, file.item_id, Buffer.from('# Valve audit\n\nEdited in the library.\n'));
+    assert.equal(await checkStoredFile(deps(), file.id), 'changed');
+    const r = await c.pm.request('POST', url(`/${out}/versions/1/register-changed`));
+    assert.equal(r.status, 202, JSON.stringify(r.body));
+    let caseId = '';
+    afterUpload = async () => {
+      caseId = await report('output', out);
+    };
+    const grantsBefore = (await rows(`SELECT count(*)::int AS n FROM storage_grants`))[0].n;
+    await drain();
+    assert.ok(caseId, 'held while the new version uploaded');
+    const v2 = (await rows(`SELECT v.held_case_id, f.* FROM output_versions v JOIN stored_files f ON f.id = v.stored_file_id WHERE v.output_id = $1 AND v.version_no = 2`, [out]))[0];
+    assert.equal(v2.held_case_id, caseId);
+    assert.equal(v2.state, 'withheld');
+    assert.ok(v2.removed_at, 'withheld and removed');
+    assert.equal(await exists(v2.item_id), false);
+    assert.equal(recycled(v2.item_id), false);
+    // Nothing new was shared, and nothing anywhere carries the title as it was.
+    assert.equal((await rows(`SELECT count(*)::int AS n FROM storage_grants`))[0].n, grantsBefore);
+    assert.deepEqual((await driveNames()).filter((n) => n.includes(SECRET)), []);
+    await noPlainCopy();
+  });
+
+  test('an output masked as a place while its version uploads is withheld, not shared; dismissed, it comes back and is shared', async () => {
+    const reported = await filedOutput(`Valve audit ${SECRET}`);
+    const m = multipart({ title: `Pump log ${SECRET}` }, { name: 'report.md', bytes: Buffer.from('# Pump log\n\nReadings.\n') });
+    const y = (await c.pm.upload('POST', url(), m.body, m.type)).body.id as string;
+    assert.equal((await c.pm.request('POST', url(`/${y}/register`), { reportTypeId: await typeId('Status reports'), issueDate: '2026-11-09' })).status, 200);
+    assert.equal((await c.pm.request('POST', url(`/${y}/versions/1/file`))).status, 200);
+    let caseId = '';
+    afterUpload = async () => {
+      caseId = await report('output', reported.out);
+    };
+    await drain();
+    assert.ok(caseId);
+    // The upload was confirmed as withheld: never reported filed, removed, nothing named after the secret.
+    const f = await fileRow(y);
+    assert.equal(f.state, 'withheld');
+    assert.ok(f.removed_at);
+    assert.equal(await exists(f.item_id), false);
+    assert.equal((await rows(`SELECT count(*)::int AS n FROM output_events WHERE output_id = $1 AND kind = 'filed'`, [y]))[0].n, 0);
+    assert.deepEqual((await driveNames()).filter((n) => n.includes(SECRET)), []);
+    await noPlainCopy();
+    // Dismissed: its bytes, title and file come back, placed in the project tree and shared there.
+    const d = await c.pm.request('POST', `/quarantine/cases/${caseId}/copies`, { decisions: [{ kind: 'output', id: y, decision: 'dismissed' }] });
+    assert.equal(d.status, 200, JSON.stringify(d.body));
+    await drain();
+    const back = await fileRow(y);
+    assert.equal(back.state, 'stored');
+    const parent = (await connector.getItem(driveRoot(), back.item_id)).parentId;
+    assert.equal((await rows(`SELECT level FROM storage_folders WHERE item_id = $1`, [parent]))[0].level, 'report_type');
+    const pf = (await rows(`SELECT id FROM storage_folders WHERE level = 'project' AND key = $1`, [`${dept}/${project}`]))[0];
+    assert.ok((await rows(`SELECT 1 FROM storage_grants g JOIN users u ON u.id = g.user_id WHERE g.folder_id = $1 AND u.email = 'ada@example.org' AND g.state = 'granted'`, [pf.id])).length);
+    assert.equal((await c.ada.request('GET', url(`/${y}`))).status, 200);
   });
 
   test('false-alarm release re-uploads the original to the same folder and re-syncs sharing', async () => {
@@ -559,7 +622,7 @@ The vault code is ${SECRET}.
     assert.equal(await folderOf(original.item_id), versionFolder);
     assert.equal((await download(textFile.item_id)).toString('utf8'), text);
     assert.equal(await folderOf(textFile.item_id), versionFolder);
-    assert.equal((await rows(`SELECT quarantined_at FROM source_versions WHERE id = $1`, [s.versionId]))[0].quarantined_at, null);
+    assert.equal(await shownWithheld(s.versionId), false);
     const res = await c.pm.raw('GET', `/notes/${s.sourceId}/versions/1/original`);
     assert.equal(res.status, 200);
     assert.equal(res.text, s.bytes.toString('utf8'));

@@ -26,7 +26,7 @@
  *  - JSON keys are never rewritten (they are fixed by code); only string leaves are cleaned.
  *  - Stored files (external outputs spec 8.5): a cleaned version's original and text file already in the managed source
  *    area are withheld (the `withhold` job keeps their content encrypted here as table `stored_files`, column
- *    `content`, then removes them permanently), and the version shows its original withheld. An output held by the
+ *    `content`, then removes them permanently); the version shows its original withheld while that file is. An output held by the
  *    case has its unfiled bytes withheld like an upload. Restoring hands encrypted files back to `restore-withheld`;
  *    those rows are never written back by restoreOriginals itself nor shown by readOriginals.
  */
@@ -239,8 +239,6 @@ class Plan {
   readonly rows = new Map<string, { table: string; key: Row; newKey: Row; cols: Map<string, Change> }>();
   /** Stored files (sub-project 9) holding a cleaned version's original or text: withheld (spec 8.5). */
   readonly files = new Set<string>();
-  /** Versions whose uploaded original is in a stored file being withheld: shown withheld (quarantined_at). */
-  readonly storedOriginals = new Set<string>();
 
   has(table: string, key: Row, column: string): boolean {
     return this.rows.get(rowId(table, key))?.cols.has(column) ?? false;
@@ -355,7 +353,6 @@ async function planDerived(
   for (const r of stored.rows) {
     if (r.original_id && inStorage(r.original_state)) {
       plan.files.add(r.original_id);
-      if (r.original_state === 'stored') plan.storedOriginals.add(r.id);
     }
     if (r.text_id && inStorage(r.text_state)) plan.files.add(r.text_id);
   }
@@ -529,11 +526,6 @@ async function writePlan(c: PoolClient, key: ProtectedKey, caseId: string, kind:
     throw quiet(err, 'quarantine_originals');
   }
   await writeRows(c, writes);
-  if (plan.storedOriginals.size > 0) {
-    await c.query(`UPDATE source_versions SET quarantined_at = now() WHERE id = ANY($1::uuid[]) AND original_bytes IS NULL AND quarantined_at IS NULL`, [
-      [...plan.storedOriginals],
-    ]);
-  }
   await queueWithhold(c, [...plan.files], caseId);
   await queueRenames(c, writes);
   return { rows: writes.length };

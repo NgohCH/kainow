@@ -298,9 +298,7 @@ ALTER TABLE source_versions ADD CONSTRAINT source_versions_upload_has_original C
 );
 
 -- Versions stay immutable (0004, 0027) except for the move of storage: the store-source job may clear original_bytes
--- and set original_stored_file_id and text_stored_file_id once each, and a version whose original is in a stored file
--- may be marked withheld or no longer withheld (quarantined_at: the stored file is withheld for a case, then put back by
--- the restore-withheld job, spec 8.5). Nothing else about a version can change.
+-- and set original_stored_file_id and text_stored_file_id once each. Nothing else about a version can change.
 CREATE OR REPLACE FUNCTION source_versions_immutable() RETURNS trigger AS $$
 DECLARE
   n source_versions%ROWTYPE;
@@ -313,9 +311,6 @@ BEGIN
     n.original_bytes := OLD.original_bytes;
     n.original_stored_file_id := OLD.original_stored_file_id;
     n.text_stored_file_id := OLD.text_stored_file_id;
-    IF NEW.original_bytes IS NULL AND NEW.original_stored_file_id IS NOT NULL THEN
-      n.quarantined_at := OLD.quarantined_at;
-    END IF;
     IF n IS NOT DISTINCT FROM OLD
        AND (NEW.original_bytes IS NULL OR NEW.original_bytes IS NOT DISTINCT FROM OLD.original_bytes)
        AND (OLD.original_stored_file_id IS NULL OR NEW.original_stored_file_id IS NOT DISTINCT FROM OLD.original_stored_file_id)

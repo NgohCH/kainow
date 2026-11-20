@@ -326,6 +326,31 @@ export async function recordedFolderPath(db: Pick<PoolClient, 'query'>, folderId
   return [...path, rec.name];
 }
 
+/**
+ * The case an upload being confirmed must be withheld for, if any (CF6, spec 4.7, 8.5), read under the output lock: the
+ * output or the version is held; or a case cleaned the version's bytes while it uploaded (the output was found as a
+ * place and masked); or an open case still withholds another of the output's files. Such an upload is recorded where it
+ * is and withheld, never reported filed or shared.
+ */
+export async function heldCaseAtConfirm(c: Pick<PoolClient, 'query'>, outputId: string, versionId: string | null): Promise<string | null> {
+  const r = (
+    await c.query<{ held: string | null }>(
+      `SELECT COALESCE(
+                (SELECT o.held_case_id FROM outputs o WHERE o.id = $1),
+                (SELECT v.held_case_id FROM output_versions v WHERE v.id = $2::uuid),
+                (SELECT q.case_id FROM quarantine_originals q
+                  WHERE q.table_name = 'output_version_bytes' AND q.row_key->>'output_version_id' = $2::text AND q.restored_at IS NULL
+                  ORDER BY q.sweep DESC LIMIT 1),
+                (SELECT w.case_id FROM stored_file_withholds w JOIN output_versions ov ON ov.stored_file_id = w.stored_file_id
+                   JOIN quarantine_cases qc ON qc.id = w.case_id
+                  WHERE ov.output_id = $1 AND w.release_requested_at IS NULL AND qc.state IN ('held', 'cleaned')
+                  ORDER BY w.at DESC LIMIT 1)) AS held`,
+      [outputId, versionId],
+    )
+  ).rows[0];
+  return r?.held ?? null;
+}
+
 /** A version's file name under the output's title as it is now, shortened to fit under `path` (spec 5.4). */
 export function versionFileName(path: string[], title: string, versionNo: number, format: string, suffix = 1): string {
   const parts = fitPath(path, outputFileName(title, versionNo, format, suffix));
@@ -464,13 +489,8 @@ async function fileLocked(deps: StorageDeps, versionId: string): Promise<void> {
     const state = (await c.query<{ state: string }>(`SELECT state FROM stored_files WHERE id = $1 FOR UPDATE`, [fileId])).rows[0]?.state;
     // Held while it uploaded (CF6): the upload is recorded where it is, withheld for the case, and the withhold job moves
     // it out of any shared folder, keeps it encrypted and removes it. It is never reported filed.
-    const cur = (
-      await c.query<{ held: string | null; title: string }>(
-        `SELECT COALESCE(v.held_case_id, o.held_case_id) AS held, o.title FROM output_versions v JOIN outputs o ON o.id = v.output_id WHERE v.id = $1`,
-        [versionId],
-      )
-    ).rows[0];
-    const heldBy = cur?.held;
+    const cur = (await c.query<{ title: string }>(`SELECT title FROM outputs WHERE id = $1`, [v.output_id])).rows[0];
+    const heldBy = await heldCaseAtConfirm(c, v.output_id, versionId);
     // What is recorded comes from the database as it is now, under the lock: the title (cleaned if a case cleaned it
     // while the file uploaded) and the recorded folder names, never names captured before the upload or the provider's.
     const folderPath = (await recordedFolderPath(c, folder.recordId)) ?? folder.path;
