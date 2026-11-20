@@ -9,6 +9,7 @@ import { holdAlertEmail } from '../email/messages';
 import { writeOutbox } from '../email/outbox';
 import { alertRecipients, holdMembershipsOf } from '../projects/holds';
 import { todayUtc8 } from '../projects/membership';
+import { queueUserSharing } from '../outputs/sharing-queue';
 
 /**
  * Every project change locks its project row first; disabling locks the same rows, in id order and before the
@@ -61,6 +62,8 @@ export async function disableAccount(
       alerted += 1;
     }
   }
+  // A disabled account keeps no SharePoint access Kainow gave it (spec 5.5).
+  await queueUserSharing(c, id, 'urgent');
   await writeAudit(c, { at: now, action: 'user.disabled', actorUserId, subjectType: 'user', subjectId: id, detail: { heldProjects: held.length, ...detail } });
   return alerted;
 }
