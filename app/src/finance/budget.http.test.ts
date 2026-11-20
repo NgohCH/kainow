@@ -156,7 +156,8 @@ describe('the budget through change requests over HTTP', { skip: SKIP_NO_DB }, (
     assert.equal(rejected.body.request.outcomeReason, 'Too high for this phase');
 
     const w = await propose(deputy, '900');
-    assert.equal((await ann.request('POST', `/changes/${w.body.request.id}/withdraw`, { reason: 'x' })).status, 403);
+    // A Member who may not read finance does not find the request at all (spec 3.6).
+    assert.equal((await ann.request('POST', `/changes/${w.body.request.id}/withdraw`, { reason: 'x' })).status, 404);
     const withdrawn = await pm.request('POST', `/changes/${w.body.request.id}/withdraw`, { reason: 'Waiting for quotes' });
     assert.equal(withdrawn.status, 200, 'the PM may withdraw a Deputy’s proposal');
     assert.equal(withdrawn.body.request.status, 'withdrawn');

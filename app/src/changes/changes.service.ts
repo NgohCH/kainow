@@ -7,6 +7,7 @@ import { readOptionalReason, readReason, refuseSecretsIn } from '../common/reaso
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { activeManagerSql, audienceVisibleSql } from '../discussion/audience';
+import { FINANCE_KINDS, financeRequestVisibleSql, loadProjectFinanceSettings, mayReadFinance } from '../finance/readers';
 import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { GRANT_READ_ONLY, type ProjectStatus } from '../projects/matrix';
 import { membershipState } from '../projects/membership';
@@ -137,8 +138,9 @@ export function changeMayApprove(ctx: ProjectContext, request: RequestRow, given
 /**
  * The rows of `change_requests` (unaliased) a viewer may see listed: not about a Deleted record or a held human
  * proposal, and a proposal from a note only when the viewer can read that note. `readable` is canReadContent for the
- * project; `userParam` and `todayParam` are placeholders for the viewer's id and today (UTC+8). Used by the list view
- * and by the personal dashboard.
+ * project; `userParam` and `todayParam` are placeholders for the viewer's id and today (UTC+8). Finance requests
+ * (`set_budget`, `finance_adjustment`) only for those who may read the project's finance (spec 3.6). Used by the list
+ * view and by the personal dashboard.
  */
 export function listedRequestSql(readable: boolean, userParam: string, todayParam: string): string {
   return `${liveRecordRefSql('change_requests.target_kind', 'change_requests.target_id')}
@@ -152,7 +154,9 @@ export function listedRequestSql(readable: boolean, userParam: string, todayPara
                    LEFT JOIN audiences xa ON xa.id = xs.audience_id
                   WHERE xi.id = change_requests.target_id AND ${notHeldSql('xi')}
                     AND CASE WHEN xs.publication = 'published' THEN COALESCE(${audienceVisibleSql('xa', userParam, todayParam)}, false)
-                             ELSE xs.submitted_by = ${userParam}::uuid OR ${activeManagerSql('xs.project_id', userParam, todayParam)} END)))`;
+                             ELSE xs.submitted_by = ${userParam}::uuid OR ${activeManagerSql('xs.project_id', userParam, todayParam)} END)))
+          -- A finance request is financial detail: only its project's finance readers see it, or a count of it (spec 3.6).
+          AND ${financeRequestVisibleSql('change_requests', userParam, todayParam)}`;
 }
 
 /**
@@ -349,14 +353,29 @@ export class ChangesService {
     return this.complete(c, ctx, request, target, handler, user, at, later);
   }
 
-  /** The request's project, locked, then the request itself, locked. */
+  /**
+   * The request's project, locked, then the request itself, locked. A finance request is not found (404) by anyone who
+   * may not read the project's finance, as if it did not exist (spec 3.6).
+   */
   private async load(c: PoolClient, user: AuthUser, requestId: string, needRole: boolean) {
     if (!UUID.test(requestId)) throw new NotFoundException();
-    const peek = (await c.query(`SELECT project_id FROM change_requests WHERE id = $1`, [requestId])).rows[0];
+    const peek = (await c.query(`SELECT project_id, kind FROM change_requests WHERE id = $1`, [requestId])).rows[0];
     if (!peek) throw new NotFoundException();
+    if ((FINANCE_KINDS as readonly string[]).includes(peek.kind)) {
+      const ctx = await this.access.load(peek.project_id, user, c);
+      if (!ctx || !mayReadFinance(ctx, await loadProjectFinanceSettings(c, peek.project_id))) throw new NotFoundException();
+    }
     const ctx = needRole ? await this.actor(c, user, peek.project_id) : await this.access.context(user, peek.project_id, c, true);
     const request = await this.lockRequest(c, requestId);
     return { ctx, request };
+  }
+
+  /**
+   * What the kind's handler says about approving in this project now (`approvalBlockedBy`), or null. For callers that
+   * decide "may approve" outside this service (the personal dashboard), so they use the same check as the list.
+   */
+  async handlerBlock(db: Pool | PoolClient, ctx: ProjectContext, kind: ChangeKind): Promise<string | null> {
+    return (await this.handler(kind)?.approvalBlockedBy?.(db, ctx)) ?? null;
   }
 
   /** { version, terms? } by an Owner or Sponsor. Approving an already authorised request changes nothing. */
@@ -559,7 +578,7 @@ export class ChangesService {
     // What each pending kind's handler says about the project, asked once per kind.
     const handlerBlocks = new Map<ChangeKind, string | null>();
     for (const kind of new Set(rows.filter((r) => r.status === 'pending').map((r) => r.kind))) {
-      handlerBlocks.set(kind, (await this.handler(kind)?.approvalBlockedBy?.(db, ctx)) ?? null);
+      handlerBlocks.set(kind, await this.handlerBlock(db, ctx, kind));
     }
     return rows.map((r) => {
       const version = versions.get(r.id) as { terms: Record<string, unknown>; reason: string | null };

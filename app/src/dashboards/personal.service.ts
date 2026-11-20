@@ -1,7 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type { Pool } from 'pg';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
-import { changeMayApprove, eligibleApprovers, listedRequestSql } from '../changes/changes.service';
+import { ChangesService, changeMayApprove, eligibleApprovers, listedRequestSql } from '../changes/changes.service';
 import { isManager as preparesDeadlineReview } from '../changes/deadline-handlers';
 import type { RequestRow } from '../changes/handlers';
 import type { ChangeKind } from '../changes/rules';
@@ -119,6 +119,7 @@ export class PersonalDashboardService {
     @Inject(PG_POOL) private readonly pool: Pool,
     @Inject(CLOCK) private readonly clock: Clock,
     private readonly access: ProjectAccess,
+    private readonly changes: ChangesService,
   ) {}
 
   async get(user: AuthUser, opts: { includeArchived: boolean; showCompleted: boolean }): Promise<PersonalDashboard> {
@@ -234,7 +235,11 @@ export class PersonalDashboardService {
     return { needsYou, myTasks, projects, computedAt: now.toISOString() };
   }
 
-  /** Pending requests the viewer may approve now and has not approved (the list view's check, `changeMayApprove`). */
+  /**
+   * Pending requests the viewer may approve now and has not approved: the list view's filter (`listedRequestSql`, which
+   * keeps finance requests to finance readers) and its check (`changeMayApprove` with the kind's handler block, so a
+   * finance request while tracking is off is not offered).
+   */
   private async approvals(user: AuthUser, ctxs: ProjectContext[], today: string, nameOf: (id: string) => string): Promise<NeedsYouItem[]> {
     const mine = ctxs.filter((c) => eligibleApprovers(c).includes(user.id));
     if (mine.length === 0) return [];
@@ -264,8 +269,16 @@ export class PersonalDashboardService {
       ).rows as Array<{ requestId: string; approverId: string }>,
       (a) => a.requestId,
     );
+    // What each kind's handler says about each project, asked once per project and kind.
+    const blocks = new Map<string, string | null>();
+    for (const r of rows) {
+      const key = `${r.projectId}:${r.kind}`;
+      if (!blocks.has(key)) blocks.set(key, await this.changes.handlerBlock(this.pool, byId.get(r.projectId) as ProjectContext, r.kind));
+    }
     return rows
-      .filter((r) => changeMayApprove(byId.get(r.projectId) as ProjectContext, r, (given.get(r.id) ?? []).map((a) => a.approverId), user.id))
+      .filter((r) =>
+        changeMayApprove(byId.get(r.projectId) as ProjectContext, r, (given.get(r.id) ?? []).map((a) => a.approverId), user.id, blocks.get(`${r.projectId}:${r.kind}`) ?? null),
+      )
       .map((r) => ({
         kind: 'approval' as const,
         projectId: r.projectId,

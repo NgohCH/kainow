@@ -1,4 +1,5 @@
 import type { Pool, PoolClient } from 'pg';
+import { grantGivesAccessSql, holdsActiveRoleSql } from '../projects/access-sql';
 import type { ProjectContext } from '../projects/access.service';
 import type { Currency } from './money';
 
@@ -23,6 +24,9 @@ export const DEFAULT_FINANCE_SETTINGS: Readonly<ProjectFinanceSettings> = Object
 });
 
 const ALWAYS = ['pm', 'deputy_pm', 'owner', 'sponsor'] as const;
+
+/** The change kinds that are financial detail (spec 3.6). */
+export const FINANCE_KINDS = ['set_budget', 'finance_adjustment'] as const;
 
 /**
  * `finance.view` (spec 9): may this person read the project's financial detail? The PM, Deputies, the Owner and Sponsors
@@ -50,4 +54,20 @@ export async function loadProjectFinanceSettings(db: Pool | PoolClient, projectI
 /** The warning thresholds in force: the project's own, or the organisation's when inherited (both null). */
 export function effectiveThresholds(s: ProjectFinanceSettings, org: { warnFirstPct: number; warnSecondPct: number }): [number, number] {
   return s.warnFirstPct === null || s.warnSecondPct === null ? [org.warnFirstPct, org.warnSecondPct] : [s.warnFirstPct, s.warnSecondPct];
+}
+
+/**
+ * SQL: the change request row `requestAlias` may be shown to the person `userParam` today (`todayParam`, UTC+8): true when
+ * it is not a finance kind, or when they may read that project's financial detail. The SQL twin of `mayReadFinance`
+ * over the context `ProjectAccess.load` builds (Active memberships, grants that give access, settings defaulting to
+ * readers not widened). Used by every surface that lists or counts change requests (spec 3.6).
+ */
+export function financeRequestVisibleSql(requestAlias: string, userParam: string, todayParam: string): string {
+  const r = requestAlias;
+  const project = `${r}.project_id`;
+  const setting = (column: string) => `COALESCE((SELECT fs.${column} FROM project_finance_settings fs WHERE fs.project_id = ${project}), false)`;
+  return `(${r}.kind NOT IN (${FINANCE_KINDS.map((k) => `'${k}'`).join(', ')})
+      OR ${holdsActiveRoleSql(project, userParam, todayParam, ALWAYS, 'frm')}
+      OR (${setting('members_read')} AND ${holdsActiveRoleSql(project, userParam, todayParam, ['member'], 'fmm')})
+      OR (${setting('grants_read')} AND ${grantGivesAccessSql(project, userParam, todayParam)}))`;
 }

@@ -55,13 +55,17 @@ export function mergeFinanceSettings(previous: ProjectFinanceSettings, input: un
   };
 }
 
-/** Any budget version, spending entry or pending budget request fixes the reporting currency (spec 8.2). */
-async function currencyFixed(db: Db, projectId: string): Promise<boolean> {
+/**
+ * Any budget version, spending entry or pending budget request fixes the reporting currency (spec 8.2). The pending
+ * request counts only when `seesRequests` (a finance reader or the Administrator, who may change the currency): to
+ * anyone else it would announce a finance request they may not see (spec 3.6).
+ */
+async function currencyFixed(db: Db, projectId: string, seesRequests = true): Promise<boolean> {
   const { rows } = await db.query(
     `SELECT EXISTS (SELECT 1 FROM budget_versions WHERE project_id = $1)
          OR EXISTS (SELECT 1 FROM expenditures WHERE project_id = $1)
-         OR EXISTS (SELECT 1 FROM change_requests WHERE project_id = $1 AND kind = 'set_budget' AND status = 'pending') AS fixed`,
-    [projectId],
+         OR ($2::boolean AND EXISTS (SELECT 1 FROM change_requests WHERE project_id = $1 AND kind = 'set_budget' AND status = 'pending')) AS fixed`,
+    [projectId, seesRequests],
   );
   return rows[0].fixed as boolean;
 }
@@ -98,7 +102,7 @@ export class FinanceSettingsService {
       organisation: { defaultCurrency: org.defaultCurrency, enabledCurrencies: org.enabledCurrencies, warnFirstPct: org.warnFirstPct, warnSecondPct: org.warnSecondPct },
       editable: stateOk && (ctx.isAdmin || (allowed && delegated)),
       delegated,
-      currencyFixed: await currencyFixed(this.pool, projectId),
+      currencyFixed: await currencyFixed(this.pool, projectId, ctx.isAdmin || mayReadFinance(ctx, settings)),
       changes,
     };
   }
