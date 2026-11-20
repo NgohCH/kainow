@@ -1,4 +1,4 @@
-// The go-live checklist (spec §4): the 11 steps, the automatic checks and the closing rule.
+// The go-live checklist (spec §4): the 11 steps, the automatic checks and the closing rule (tightened by review G01).
 import type { Pool, PoolClient } from 'pg';
 import { uuidv7 } from '../common/uuid7';
 
@@ -24,7 +24,7 @@ export const STEPS: readonly StepDef[] = [
   { key: 'backups', mode: 'confirm', link: 'INSTALL.md, the section on Back up', text: 'Configure daily encrypted backups and complete a test restore', explanation: 'A backup is only real once a restore from it has worked.' },
   { key: 'department', mode: 'auto', link: '#/departments', text: 'Create a real department', explanation: 'Projects and people belong to a department.' },
   { key: 'users', mode: 'auto', link: '#/', text: 'Admit real users', explanation: 'At least one person who is not an Enterprise Administrator has accepted their invitation and is Active.' },
-  { key: 'project', mode: 'auto', link: '#/', text: 'Launch the first real project', explanation: 'A real project has reached Active. When this and the two steps before it are done, the checklist closes.' },
+  { key: 'project', mode: 'auto', link: '#/', text: 'Launch the first real project', explanation: 'A real project has reached Active. The checklist closes once every step except the optional logos is done.' },
 ];
 
 export const TOTAL = STEPS.length;
@@ -41,7 +41,12 @@ export const INFORMATION: ReadonlyArray<{ key: string; text: string; explanation
     link: '#/ai',
   },
 ];
-export const CLOSING_KEYS = ['department', 'users', 'project'] as const;
+/**
+ * The checklist closes only when every step except the optional logos is done (review G01). A launched project alone
+ * does not close it: the safeguards (second Administrator, recovery, mailbox, test email, calendar, backups) must be
+ * done first, because once closed no step can be ticked and the record would show go-live without them.
+ */
+export const CLOSING_KEYS: readonly string[] = STEPS.filter((s) => s.key !== 'logos').map((s) => s.key);
 export const MSG = {
   autoStep: 'Kainow ticks this step itself.',
   testEmailFirst: 'Send a test email first, then check it arrived.',
@@ -77,7 +82,7 @@ export async function conditions(db: Db): Promise<Record<string, boolean>> {
 }
 
 /**
- * Ticks every automatic step whose condition holds, then closes the checklist when department, users and project are done.
+ * Ticks every automatic step whose condition holds, then closes the checklist when every step in CLOSING_KEYS is done.
  * Safe to run at any time and from several places at once; does nothing once the checklist is closed.
  */
 export async function refreshChecklist(db: Pool, now: Date): Promise<void> {

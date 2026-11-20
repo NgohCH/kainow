@@ -16,7 +16,7 @@ Kainow goes live on a new, empty database holding no real or test records. The E
 | History at go-live | Nothing dated before go-live produces a notice. Go-live starts from a new, empty database, so no earlier records exist. |
 | Form of the go-live steps | An Administrator-only checklist page, not a Kainow project. A project would need roles and authorised due dates that one Administrator cannot legitimately hold. |
 | Starting data | Empty, apart from the schema, the checklist and the one-time setup invitation for the first real Enterprise Administrator. No dummy organisation, users or projects. |
-| Steps and closing rule | The 11 steps in §4. The checklist closes when steps 9, 10 and 11 are done. |
+| Steps and closing rule | The 11 steps in §4. The checklist closes when every step except step 2 (logos, optional) is done. Amended 2026-11-20 after review finding G01; it used to close on steps 9, 10 and 11 alone. |
 
 ## 3. The go-live database
 
@@ -61,7 +61,7 @@ Rules:
 - **Undo:** a Confirm step can be marked not done again, and both actions are recorded. Automatic steps are never unticked.
 - **Note:** an optional note of up to 200 characters is allowed on a Confirm tick, for example "Restore tested on 3 Dec".
 - **History:** every tick, untick and close is recorded in an append-only history (who, when, step, action, note).
-- **Closing:** the checklist **closes** as soon as steps 9, 10 and 11 are done. The close time is recorded. Steps not done at that moment are listed under "Not done at close", and they cannot be ticked afterwards. The page becomes a read-only record.
+- **Closing:** the checklist **closes** as soon as every step except step 2 (logos, optional) is done (amended 2026-11-20, review G01: a launched project must not close the record while the safeguards in steps 3 to 8 are open, because nothing can be ticked after closing). The close time is recorded. Steps not done at that moment are listed under "Not done at close", and they cannot be ticked afterwards. The page becomes a read-only record.
 - **When the automatic checks run:** each time the checklist page is opened, and each time the worker's sweep runs. Both use the same function, so the result is always the same.
 
 ## 5. Screens
@@ -87,7 +87,7 @@ Migration `0021_golive.sql`, additions only:
   - it deletes nothing.
 - **Sweep:** a trigger due before `notices_from` is neither recorded nor fired; one due after it fires normally.
 - **Automatic ticks:** each automatic step ticks when its condition becomes true. The "users" step does not count Administrators. The "project" step needs a project in the Active state.
-- **Closing:** the checklist closes when 9, 10 and 11 are done, with the open steps listed. Ticking is refused after closing.
+- **Closing:** the checklist closes when every step except logos is done, with the open steps listed. Ticking is refused after closing.
 - **Confirm steps:**
   - tick, untick, notes and skip are recorded in the history;
   - the test-email step is refused until a test email has reached "sent";
