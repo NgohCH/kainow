@@ -103,3 +103,7 @@ test('termsRows for finance requests', () => {
     { label: 'Amount', from: '', to: 'MYR 1,250.50' },
   ]);
 });
+
+test('termsRows shows a finance amount without a code when the currency is unknown', () => {
+  assert.deepEqual(termsRows('set_budget', { amount: '500' }, {}), [{ label: 'Budget', from: '', to: '500.00' }]);
+});

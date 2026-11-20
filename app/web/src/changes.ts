@@ -82,7 +82,7 @@ export interface CurrentView {
 
 const str = (v: unknown): string => (typeof v === 'string' ? v : '');
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
-const amountText = (amount: unknown, currency?: string) => (str(amount) === '' ? '' : money(str(amount), currency ?? '').trim());
+const amountText = (amount: unknown, currency?: string) => (str(amount) === '' ? '' : money(str(amount), currency ?? '', { code: !!currency }));
 const count = (n: number) => (n === 0 ? 'None' : `${n} ${n === 1 ? 'item' : 'items'}`);
 
 /** Side-by-side rows for a request's terms. Rows with nothing to show are left out. */

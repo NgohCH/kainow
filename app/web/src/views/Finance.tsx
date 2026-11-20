@@ -88,13 +88,12 @@ function NotRequired({ projectId, onChanged }: { projectId: string; onChanged: (
           {showing && <FinanceDetail view={history} actions={null} currency={history.currency} requests={[]} onChanged={() => undefined} />}
         </>
       )}
-      {history &&
-        requests
+      {requests
           .filter((r) => (FINANCE_REQUEST_KINDS as readonly string[]).includes(r.kind))
           .map((r) => (
             <ChangeRequestPanel
               key={r.id}
-              request={{ ...r, currentTerms: history.currency ? { currency: history.currency } : {} }}
+              request={{ ...r, currentTerms: history?.currency ? { currency: history.currency } : {} }}
               onChanged={(m) => {
                 reload();
                 onChanged(m);
@@ -333,13 +332,17 @@ function RecordSpendingForm({ projectId, currency, onSaved, onCancel }: { projec
   const [cur, setCur] = useState<Currency>(currency);
   const [enabled, setEnabled] = useState<readonly Currency[]>(CURRENCIES);
   useEffect(() => {
+    let stale = false;
     api.get<{ organisation?: { enabledCurrencies?: Currency[] } }>(`/projects/${projectId}/settings/finance`).then(
       (r) => {
         const list = r.organisation?.enabledCurrencies;
-        if (list && list.length > 0) setEnabled(list.includes(currency) ? list : [currency, ...list]);
+        if (!stale && list && list.length > 0) setEnabled(list.includes(currency) ? list : [currency, ...list]);
       },
       () => undefined,
     );
+    return () => {
+      stale = true;
+    };
   }, [projectId, currency]);
   const [description, setDescription] = useState('');
   const [reference, setReference] = useState('');
