@@ -84,6 +84,14 @@ async function markInterruptedRuns(pool: Pool, now: Date): Promise<void> {
           subjectType: 'restore_drill',
           subjectId: d.id,
         });
+        // As for backups: the drill that died could not tell anyone, so this is the one notice for it.
+        await notifyAdmins(client, {
+          kind: 'restore_drill_failed',
+          summary: `Restore drill failed. ${OPS_FAILURES.interrupted}`,
+          link: LINK,
+          now,
+          urgent: true,
+        });
       }
       await client.query('COMMIT');
     } catch (err) {

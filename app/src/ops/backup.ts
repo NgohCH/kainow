@@ -6,7 +6,7 @@
  * paths or connection strings. The last output line is `run <id> succeeded` or `run <id> failed <code>`.
  */
 import type { ChildProcess } from 'node:child_process';
-import { createReadStream, createWriteStream, existsSync, readFileSync, statSync } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { mkdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
@@ -14,13 +14,25 @@ import { pipeline } from 'node:stream/promises';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { uuidv7 } from '../common/uuid7';
-import { type FailureCode, OPS_FAILURES, currentMigrationLevel, withBackupLock } from './common';
+import {
+  type FailureCode,
+  OPS_FAILURES,
+  SNAPSHOT_IDLE_TIMEOUT,
+  TOOL_TIMEOUT_MS,
+  currentMigrationLevel,
+  killAfter,
+  onSameDisk,
+  settle,
+  withBackupLock,
+} from './common';
 import type { OpsConfig } from './config';
 import { type BackupKey, decryptStream, encryptStream, loadBackupKey, sha256Stream } from './crypto';
 import { type BackupKind, type BackupSummary, type Manifest, SET_FILES, type SourceFileCopier, decryptFile } from './manifest';
 import { expireBackups } from './expiry';
 import { notifyAdmins } from './notify';
 import type { PgTools } from './pg-tools';
+import { loadOpsSettings } from './settings';
+import { type StatFs, defaultStatfs } from './storage-check';
 
 export interface BackupDeps {
   pool: Pool;
@@ -33,6 +45,16 @@ export interface BackupDeps {
   sourceFiles?: SourceFileCopier;
   /** Test seam: called with each encrypted file's final path once it is in place, before it is read back. */
   afterWrite?(file: string): void | Promise<void>;
+  /** Free-space reader for the backup folder's disk (default: the real one). */
+  statfs?: StatFs;
+  /** Whether the backup folder is on the database disk (default: the two paths share a device). */
+  sameDisk?(backupDir: string, dbDataDir: string): boolean;
+  /** Space poll interval while pg_dump writes (spec: 30 s, as the drill). */
+  pollMs?: number;
+  /** pg_dump and the read-back's pg_restore --list are killed after this long (R22: 6 hours). */
+  toolTimeoutMs?: number;
+  /** Server-side backstop on the snapshot connection (SNAPSHOT_IDLE_TIMEOUT); tests shorten it. */
+  snapshotIdleTimeout?: string;
 }
 
 export const BACKUP_TEXT = {
@@ -42,6 +64,8 @@ export const BACKUP_TEXT = {
 
 const KINDS: readonly BackupKind[] = ['daily', 'manual', 'pre_update'];
 const OPERATIONS_LINK = '#/admin/operations';
+const GB = 1024 ** 3;
+const POLL_MS = 30_000;
 
 /** A failure with a known code, raised by the steps below. */
 class OpsFailure extends Error {
@@ -167,21 +191,51 @@ async function countTables(client: PoolClient): Promise<Manifest['tables']> {
 
 type Written = { sha256: string; bytes: number; plainSha256: string };
 
-async function writeDump(tools: PgTools, snapshot: string, key: BackupKey, tmp: string): Promise<Written> {
-  const child = tools.dump(['--format=custom', `--snapshot=${snapshot}`, '--no-owner']);
+/** True when free space is too low to go on writing (I5); null when the backup folder is on its own disk. */
+type SpaceGuard = (() => boolean) | null;
+
+async function writeDump(deps: BackupDeps, snapshot: string, key: BackupKey, tmp: string, low: SpaceGuard): Promise<Written> {
+  // The backup folder is on the database disk and already below the floor + 2 GB: nothing is written at all.
+  if (low?.()) throw new OpsFailure('no_space');
+  const child = deps.tools.dump(['--format=custom', `--snapshot=${snapshot}`, '--no-owner']);
   const exited = exitOf(child);
   child.stderr?.resume(); // never printed: it can name hosts and databases
   const plain = sha256Stream();
   const enc = sha256Stream();
+  const abort = new AbortController();
+  let stop: FailureCode | null = null;
+  const halt = (code: FailureCode): void => {
+    if (stop) return;
+    stop = code;
+    abort.abort();
+    child.kill('SIGKILL');
+  };
+  // R22: a pg_dump still running after 6 hours is killed and the run fails dump_failed (a stalled share included:
+  // the abort ends the pipeline even when the write stream itself is stuck).
+  const cancelTimeout = killAfter(child, deps.toolTimeoutMs ?? TOOL_TIMEOUT_MS, () => halt('dump_failed'));
+  // I5: while the dump is written onto the database disk, stop before it eats the space protective mode keeps free.
+  const poll = low
+    ? setInterval(() => {
+        if (low()) halt('no_space');
+      }, deps.pollMs ?? POLL_MS)
+    : null;
   try {
-    if (!child.stdout) throw new OpsFailure('dump_failed');
-    await pipeline(child.stdout, plain, encryptStream(key), enc, createWriteStream(tmp, { flags: 'wx' }));
-  } catch (err) {
-    child.kill();
-    await exited;
-    throw err;
+    try {
+      if (!child.stdout) throw new OpsFailure('dump_failed');
+      await pipeline(child.stdout, plain, encryptStream(key), enc, createWriteStream(tmp, { flags: 'wx' }), { signal: abort.signal });
+    } catch (err) {
+      child.kill('SIGKILL');
+      await settle(exited);
+      if (stop) throw new OpsFailure(stop);
+      throw err;
+    }
+    const code = await settle(exited);
+    if (stop) throw new OpsFailure(stop);
+    if (code !== 0) throw new OpsFailure('dump_failed');
+  } finally {
+    cancelTimeout();
+    if (poll) clearInterval(poll);
   }
-  if ((await exited) !== 0) throw new OpsFailure('dump_failed');
   return { sha256: enc.digest(), plainSha256: plain.digest(), bytes: statSync(tmp).size };
 }
 
@@ -192,24 +246,35 @@ async function writeEncrypted(plain: Buffer, key: BackupKey, tmp: string): Promi
 }
 
 /** Decrypts the dump in full, checks both hashes, and has pg_restore --list read it. Any mismatch is verify_failed. */
-async function verifyDump(tools: PgTools, file: string, key: BackupKey, expected: Written): Promise<void> {
+async function verifyDump(tools: PgTools, file: string, key: BackupKey, expected: Written, timeoutMs: number): Promise<void> {
   const list = tools.list();
   const exited = exitOf(list);
   list.stdout?.resume();
   list.stderr?.resume();
   const enc = sha256Stream();
   const plain = sha256Stream();
+  const abort = new AbortController();
+  let timedOut = false;
+  // R22: the read-back's pg_restore --list has the same 6-hour limit as pg_dump.
+  const cancelTimeout = killAfter(list, timeoutMs, () => {
+    timedOut = true;
+    abort.abort();
+  });
   try {
-    if (!list.stdin) throw new OpsFailure('verify_failed');
-    await pipeline(createReadStream(file), enc, decryptStream(key), plain, feed(list.stdin));
-  } catch {
-    list.kill();
-    await exited;
-    throw new OpsFailure('verify_failed');
-  }
-  const code = await exited;
-  if (code !== 0 || enc.digest() !== expected.sha256 || plain.digest() !== expected.plainSha256) {
-    throw new OpsFailure('verify_failed');
+    try {
+      if (!list.stdin) throw new OpsFailure('verify_failed');
+      await pipeline(createReadStream(file), enc, decryptStream(key), plain, feed(list.stdin), { signal: abort.signal });
+    } catch {
+      list.kill('SIGKILL');
+      await settle(exited);
+      throw new OpsFailure('verify_failed');
+    }
+    const code = await settle(exited);
+    if (timedOut || code !== 0 || enc.digest() !== expected.sha256 || plain.digest() !== expected.plainSha256) {
+      throw new OpsFailure('verify_failed');
+    }
+  } finally {
+    cancelTimeout();
   }
 }
 
@@ -272,6 +337,28 @@ async function backupLocked(kind: BackupKind, newKey: boolean, deps: BackupDeps)
     const keyChanged = previous !== undefined && previous !== key.id;
     if (keyChanged && !newKey) throw new OpsFailure('key_changed');
 
+    // I5: when the backup folder is on the database disk, the dump must not eat the safe floor (+ 2 GB, as the drill).
+    let low: SpaceGuard = null;
+    if ((deps.sameDisk ?? onSameDisk)(config.backupDir, config.dbDataDir)) {
+      let floor: number;
+      try {
+        floor = (await loadOpsSettings(pool)).safeFloorGb * GB;
+      } catch {
+        throw new OpsFailure('database_unreachable');
+      }
+      const statfs = deps.statfs ?? defaultStatfs;
+      low = () => {
+        let s: ReturnType<StatFs> = null;
+        try {
+          s = statfs(config.backupDir);
+        } catch {
+          s = null;
+        }
+        // An unreadable poll is not a low reading; the next poll decides.
+        return !!s && Number.isFinite(s.free) && s.free < floor + 2 * GB;
+      };
+    }
+
     stage = 'folder';
     await mkdir(setDir);
     setCreated = true;
@@ -285,15 +372,21 @@ async function backupLocked(kind: BackupKind, newKey: boolean, deps: BackupDeps)
     let dump: Written;
     const snap = await pool.connect();
     let broken = false;
+    // The idle-in-transaction backstop ends the session from the server side; unheard, that error would end the process.
+    const onSnapError = () => (broken = true);
+    snap.on('error', onSnapError);
     try {
       await snap.query('BEGIN ISOLATION LEVEL REPEATABLE READ READ ONLY');
       const snapshot = (await snap.query('SELECT pg_export_snapshot() AS id')).rows[0].id as string;
+      // Local to this transaction, so the pooled connection goes back without it.
+      await snap.query(`SELECT set_config('idle_in_transaction_session_timeout', $1, true)`, [deps.snapshotIdleTimeout ?? SNAPSHOT_IDLE_TIMEOUT]);
       tables = await countTables(snap);
       migrationLevel = await currentMigrationLevel(snap);
       stage = 'dump';
-      dump = await writeDump(deps.tools, snapshot, key, dumpTmp);
+      dump = await writeDump(deps, snapshot, key, dumpTmp, low);
     } finally {
       await snap.query('ROLLBACK').catch(() => (broken = true));
+      snap.off('error', onSnapError);
       snap.release(broken);
     }
     await rename(dumpTmp, dumpFile);
@@ -311,7 +404,7 @@ async function backupLocked(kind: BackupKind, newKey: boolean, deps: BackupDeps)
 
     // 7. Read everything back.
     stage = 'verify';
-    await verifyDump(deps.tools, dumpFile, key, dump);
+    await verifyDump(deps.tools, dumpFile, key, dump, deps.toolTimeoutMs ?? TOOL_TIMEOUT_MS);
     const back = await decryptFile(manifestFile, key).catch(() => {
       throw new OpsFailure('verify_failed');
     });
@@ -420,6 +513,9 @@ async function recordFailure(
     try {
       // A set with backup.json is complete by definition, so it goes first (a failure while recording the success).
       await rm(join(f.setDir, SET_FILES.summary), { force: true });
+      // A partly written file (a dump cut off by no_space or the time limit) is of no use and may hold space the
+      // database disk needs: it goes before the rename.
+      for (const name of readdirSync(f.setDir)) if (name.endsWith('.tmp')) await rm(join(f.setDir, name), { force: true });
       await rename(f.setDir, `${f.setDir}-incomplete`);
       setName = `${f.setName}-incomplete`;
     } catch {

@@ -5,6 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSy
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, before, beforeEach, describe, test, type TestContext } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { Pool } from 'pg';
 import { loadDatabaseConfig } from '../config';
 import { runMigrations } from '../db/migrate';
@@ -25,6 +26,33 @@ class FailingDump extends PgTools {
     return spawn(process.execPath, ['-e', 'process.exit(1)'], { stdio: 'pipe' });
   }
 }
+
+/** pg_dump that hangs without writing or exiting (a stalled share, a stuck server). Its pid is kept to check the kill. */
+class HangingDump extends PgTools {
+  pid: number | undefined;
+  dump(): ReturnType<PgTools['dump']> {
+    const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'pipe' });
+    this.pid = child.pid;
+    return child;
+  }
+}
+
+/** pg_dump that keeps writing a little, slowly, and never ends on its own. */
+class TricklingDump extends PgTools {
+  dump(): ReturnType<PgTools['dump']> {
+    return spawn(process.execPath, ['-e', "setInterval(() => process.stdout.write('x'.repeat(1024)), 5)"], { stdio: 'pipe' });
+  }
+}
+
+const alive = (pid: number | undefined): boolean => {
+  if (!pid) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+};
 
 describe('backup command', { skip: SKIP_NO_DB }, () => {
   let pool: Pool;
@@ -232,6 +260,83 @@ describe('backup command', { skip: SKIP_NO_DB }, () => {
     const r = await row(runIdOf(out));
     assert.equal(r.outcome, 'failed');
     assert.equal(r.set_name, sets[0]);
+  });
+
+  test('R22: a pg_dump still running at the time limit is killed; the run fails dump_failed and the lock is free again', async () => {
+    const hanging = new HangingDump(testDatabaseUrl() as string);
+    const { d, out, err, at } = deps({}, { tools: hanging, toolTimeoutMs: 300 });
+    const started = Date.now();
+    assert.equal(await runBackup([], d), 1);
+    assert.ok(Date.now() - started < 20_000, 'the run ends soon after the limit');
+    assert.match(lastLine(out), /failed dump_failed$/);
+    assert.ok(err.includes(OPS_FAILURES.dump_failed));
+    assert.equal(alive(hanging.pid), false, 'the child was killed');
+    const r = await row(runIdOf(out));
+    assert.deepEqual([r.outcome, r.failure_code, r.failure_detail], ['failed', 'dump_failed', OPS_FAILURES.dump_failed]);
+    assert.equal((await failedNotices(at)).length, 2, 'the normal failure path: one notice per administrator');
+    const sets = readdirSync(setsDir());
+    assert.equal(sets.length, 1);
+    assert.match(sets[0], /-incomplete$/);
+    assert.deepEqual(readdirSync(join(setsDir(), sets[0])), [], 'no partial dump left behind');
+    // The lock was released: the next holder gets it at once.
+    assert.equal(await withBackupLock(pool, async () => 'got'), 'got');
+    // The snapshot transaction ended: no session of this database is left idle in a transaction.
+    const idle = await pool.query(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND state = 'idle in transaction'`);
+    assert.equal(idle.rows[0].n, 0);
+  });
+
+  test('R22 backstop: the snapshot connection is ended by the server when it sits idle in its transaction too long', async () => {
+    const hanging = new HangingDump(testDatabaseUrl() as string);
+    // The server's limit (1 s) is met long before the command's own (2.5 s): the session is ended under it, and the run
+    // still fails cleanly and the process does not crash on the dropped connection.
+    const { d, out } = deps({}, { tools: hanging, toolTimeoutMs: 4000, snapshotIdleTimeout: '1s' });
+    const idleInTx = async () =>
+      (await pool.query(`SELECT count(*)::int AS n FROM pg_stat_activity WHERE datname = current_database() AND state = 'idle in transaction'`)).rows[0].n;
+    const running = runBackup([], d);
+    await sleep(400);
+    assert.equal(await idleInTx(), 1, 'the snapshot transaction is open while pg_dump runs');
+    await sleep(2000);
+    assert.equal(await idleInTx(), 0, 'the server ended it before the command did');
+    assert.equal(await running, 1);
+    assert.match(lastLine(out), /failed dump_failed$/);
+    assert.equal(await withBackupLock(pool, async () => 'got'), 'got');
+  });
+
+  test('I5: with the backup folder on the database disk, a dump that brings free space below the floor + 2 GB stops with no_space', async () => {
+    const GB = 1024 ** 3;
+    let polls = 0;
+    // Plenty of room when the dump starts; below 5 GB (the floor) + 2 GB from the third poll on.
+    const statfs = () => ({ total: 100 * GB, free: ++polls >= 3 ? 6 * GB : 50 * GB });
+    const { d, out, err, at } = deps({}, { tools: new TricklingDump(testDatabaseUrl() as string), sameDisk: () => true, statfs, pollMs: 20 });
+    assert.equal(await runBackup([], d), 1);
+    assert.match(lastLine(out), /failed no_space$/);
+    assert.ok(err.includes(OPS_FAILURES.no_space));
+    assert.ok(polls >= 3);
+    const r = await row(runIdOf(out));
+    assert.deepEqual([r.outcome, r.failure_code], ['failed', 'no_space']);
+    assert.equal((await failedNotices(at)).length, 2);
+    const sets = readdirSync(setsDir());
+    assert.equal(sets.length, 1);
+    assert.match(sets[0], /-incomplete$/);
+    assert.deepEqual(readdirSync(join(setsDir(), sets[0])), [], 'the partial dump is removed');
+  });
+
+  test('I5: below the floor + 2 GB before the dump starts, nothing is dumped at all', async () => {
+    const GB = 1024 ** 3;
+    const hanging = new HangingDump(testDatabaseUrl() as string);
+    const { d, out } = deps({}, { tools: hanging, sameDisk: () => true, statfs: () => ({ total: 100 * GB, free: 6 * GB }), toolTimeoutMs: 60_000 });
+    assert.equal(await runBackup([], d), 1);
+    assert.match(lastLine(out), /failed no_space$/);
+    assert.equal(hanging.pid, undefined, 'pg_dump was never started');
+  });
+
+  test('I5: a backup folder on its own disk is not stopped by low space there', async (t) => {
+    if (!needTools(t)) return;
+    const GB = 1024 ** 3;
+    let polls = 0;
+    const { d, out } = deps({}, { sameDisk: () => false, statfs: () => (polls++, { total: 100 * GB, free: 1 * GB }), pollMs: 1 });
+    assert.equal(await runBackup([], d), 0, out.join('\n'));
+    assert.equal(polls, 0, 'not even read');
   });
 
   test('a file changed after it was written is verify_failed', async (t) => {

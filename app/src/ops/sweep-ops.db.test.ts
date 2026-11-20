@@ -134,6 +134,10 @@ describe('the ops part of the sweep', { skip: SKIP_NO_DB }, () => {
       { action: 'ops.restore_drill_interrupted', subject_id: drill },
     ]);
     assert.equal((await notices('backup_failed')).length, 2);
+    // M3: an interrupted drill is not silent either: one urgent notice per administrator, once.
+    const drillNotices = await notices('restore_drill_failed');
+    assert.deepEqual(drillNotices.map((n) => n.user_id).sort(), [a1, a2].sort());
+    assert.ok(drillNotices.every((n) => n.summary === 'Restore drill failed. The run was interrupted before it finished.' && n.link === '#/admin/operations'));
   });
 
   test('a storage reading 31 minutes old gives one storage_check_missing per location', async () => {

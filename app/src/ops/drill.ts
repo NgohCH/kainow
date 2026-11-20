@@ -19,7 +19,7 @@ import { writeAudit } from '../audit/audit';
 import { uuidv7 } from '../common/uuid7';
 import type { ProtectedKey } from '../quarantine/protected-key';
 import { exitOf, feed } from './backup';
-import { type FailureCode, OPS_FAILURES, codeMigrationLevel, withBackupLock } from './common';
+import { type FailureCode, OPS_FAILURES, TOOL_TIMEOUT_MS, codeMigrationLevel, killAfter, settle, withBackupLock } from './common';
 import type { OpsConfig } from './config';
 import { type BackupKey, BackupCryptoError, decryptStream, loadBackupKey, sha256Stream } from './crypto';
 import { type BackupSummary, type Manifest, SET_FILES, readSet } from './manifest';
@@ -48,6 +48,8 @@ export interface DrillDeps {
   checkSourceFiles?: SourceFileCheck;
   /** Space poll interval while pg_restore runs (spec: 30 s). */
   pollMs?: number;
+  /** pg_restore is killed after this long (R22: 6 hours); the drill then fails drill_database_failed. */
+  toolTimeoutMs?: number;
   /** Test seam: called with the drill database just before the row counts are compared. */
   beforeRowCounts?(drill: Pool): Promise<void>;
 }
@@ -87,6 +89,7 @@ const DETAIL = {
   noSpace: OPS_FAILURES.drill_no_space,
   spaceLow: OPS_FAILURES.drill_space_low,
   restoreBad: OPS_FAILURES.drill_database_failed,
+  restoreTimeout: 'The restore into the drill database did not finish within 6 hours and was stopped.',
   sourceNotInUse: 'Source area: not in use for this set.',
   underTarget: 'Under the 4-hour target.',
   overTarget: 'Over the 4-hour target.',
@@ -427,6 +430,10 @@ async function steps(
     st.failed('restore', DETAIL.spaceLow, 'drill_space_low');
     return;
   }
+  if (restored === 'timeout') {
+    st.failed('restore', DETAIL.restoreTimeout, 'drill_database_failed');
+    return;
+  }
   if (restored === 'failed') {
     st.failed('restore', DETAIL.restoreBad, 'drill_database_failed');
     return;
@@ -495,13 +502,13 @@ export function safeStat(statfs: StatFs, path: string): { total: number; free: n
  * pg_restore read before it is never treated as a restore. Shared with restore (spec 8.2 step 4).
  */
 export async function restoreDump(
-  deps: Pick<DrillDeps, 'tools' | 'statfs' | 'pollMs'> & { config: Pick<OpsConfig, 'dbDataDir'> },
+  deps: Pick<DrillDeps, 'tools' | 'statfs' | 'pollMs' | 'toolTimeoutMs'> & { config: Pick<OpsConfig, 'dbDataDir'> },
   dbName: string,
   dumpFile: string,
   key: BackupKey,
   floor: number,
   options: { singleTransaction?: boolean } = {},
-): Promise<'ok' | 'crypto' | 'space_low' | 'failed'> {
+): Promise<'ok' | 'crypto' | 'space_low' | 'timeout' | 'failed'> {
   // A real restore runs as one transaction, so a failure or a killed run leaves the target empty; the drill does not need to.
   const args = ['--no-owner', '--exit-on-error', ...(options.singleTransaction ? ['--single-transaction'] : []), '-d', dbName];
   const child = deps.tools.restore(args);
@@ -509,31 +516,36 @@ export async function restoreDump(
   child.stdout?.resume();
   child.stderr?.resume(); // never printed: it can name hosts and databases
   const abort = new AbortController();
-  let low = false;
+  let stop: 'space_low' | 'timeout' | null = null;
+  const halt = (why: 'space_low' | 'timeout'): void => {
+    if (stop) return;
+    stop = why;
+    abort.abort();
+    child.kill('SIGKILL');
+  };
   const timer = setInterval(() => {
     const s = safeStat(deps.statfs, deps.config.dbDataDir);
     // An unreadable poll is not a low reading; the next poll decides.
-    if (!low && s && s.free < floor + 2 * GB) {
-      low = true;
-      abort.abort();
-      child.kill();
-    }
+    if (s && s.free < floor + 2 * GB) halt('space_low');
   }, deps.pollMs ?? POLL_MS);
+  // R22: a pg_restore still running after 6 hours is killed (the abort also ends a pipeline stuck on its input).
+  const cancelTimeout = killAfter(child, deps.toolTimeoutMs ?? TOOL_TIMEOUT_MS, () => halt('timeout'));
   try {
     try {
       if (!child.stdin) return 'failed';
       await pipeline(createReadStream(dumpFile), decryptStream(key), feed(child.stdin), { signal: abort.signal });
     } catch (err) {
-      child.kill();
-      await exited;
+      child.kill('SIGKILL');
+      await settle(exited);
       if (err instanceof BackupCryptoError) return 'crypto';
-      return low ? 'space_low' : 'failed';
+      return stop ?? 'failed';
     }
-    const code = await exited;
-    if (low) return 'space_low';
+    const code = await settle(exited);
+    if (stop) return stop;
     return code === 0 ? 'ok' : 'failed';
   } finally {
     clearInterval(timer);
+    cancelTimeout();
   }
 }
 
@@ -566,13 +578,21 @@ async function record(
   const code = failed ? r.st.code : null;
   const at = deps.now();
   for (const c of checks) deps.out(`${c.name}: ${c.result}${c.detail ? ` (${c.detail})` : ''}`);
+  let recorded = true;
   try {
     await inTransaction(deps.pool, async (c) => {
-      await c.query(
+      // Only a drill still `running` is recorded here (as R10 for backups): if the sweep already marked it interrupted
+      // (and told the administrators), the late result does not overwrite it or add a second event.
+      const done = await c.query(
         `UPDATE restore_drills SET outcome = $2, finished_at = $3, duration_seconds = $4, checks = $5, failure_code = $6, kept_database = $7
-          WHERE id = $1`,
+          WHERE id = $1 AND outcome = 'running'`,
         [r.runId, outcome, at, r.durationSeconds, JSON.stringify(checks), code, r.kept],
       );
+      if ((done.rowCount ?? 0) === 0) {
+        // The kept database must still be listed, so it can be dropped.
+        if (r.kept) await c.query(`UPDATE restore_drills SET kept_database = $2 WHERE id = $1`, [r.runId, r.kept]);
+        return;
+      }
       await writeAudit(c, {
         at,
         action: failed ? 'ops.restore_drill_failed' : 'ops.restore_drill_passed',
@@ -598,11 +618,13 @@ async function record(
       }
     });
   } catch {
+    recorded = false;
     deps.err(DRILL_TEXT.recordFailed);
   }
   if (r.kept) deps.out(`Drill database ${r.kept} kept; drop it with restore-drill --drop ${r.kept}.`);
   if (failed) deps.err(code ? OPS_FAILURES[code] : DRILL_TEXT.checksFailed);
   else if (over) deps.out(DRILL_TEXT.overTarget);
   deps.out(`run ${r.runId} ${outcome}`);
-  return failed ? 1 : 0;
+  // A result Kainow could not record is not a success for cron: the Operations page shows nothing for it.
+  return failed || !recorded ? 1 : 0;
 }

@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { cpSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -287,6 +288,70 @@ describe('restore drill', { skip: SKIP_NO_DB }, () => {
     assert.equal(check(row, 'restore')?.result, 'failed');
     assert.ok(calls >= 3);
     assert.deepEqual(await drillDatabases(), []);
+  });
+
+  test('R22: a pg_restore still running at the time limit is killed: drill_database_failed, database dropped, lock free', async (t) => {
+    if (!needTools(t)) return;
+    await backup();
+    let pid: number | undefined;
+    class HangingRestore extends PgTools {
+      restore(): ReturnType<PgTools['restore']> {
+        // Reads nothing and never exits: a stuck server or share.
+        const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'pipe' });
+        pid = child.pid;
+        return child;
+      }
+    }
+    // Without the limit this never returns: the child neither reads its input nor exits.
+    const { code, err, row } = await drill([], { tools: new HangingRestore(testDatabaseUrl() as string), toolTimeoutMs: 500 });
+    assert.equal(code, 1);
+    assert.equal(row.outcome, 'failed');
+    assert.equal(row.failure_code, 'drill_database_failed');
+    assert.deepEqual(check(row, 'restore'), {
+      name: 'restore',
+      result: 'failed',
+      detail: 'The restore into the drill database did not finish within 6 hours and was stopped.',
+    });
+    assert.ok(err.includes(OPS_FAILURES.drill_database_failed));
+    let gone = false;
+    try {
+      process.kill(pid as number, 0);
+    } catch {
+      gone = true;
+    }
+    assert.ok(gone, 'the child was killed');
+    assert.deepEqual(await drillDatabases(), [], 'the temporary database is dropped');
+    assert.equal(await withBackupLock(pool, async () => 'got'), 'got', 'the lock is released');
+    assert.equal((await pool.query(`SELECT count(*)::int AS n FROM notifications WHERE kind = 'restore_drill_failed' AND created_at = $1`, [row.finished_at])).rows[0].n, 2);
+  });
+
+  test('M3: a drill the sweep already marked interrupted keeps that outcome; no second audit event or notice', async (t) => {
+    if (!needTools(t)) return;
+    await backup();
+    const { code, row } = await drill([], {
+      beforeRowCounts: async () => {
+        await pool.query(`UPDATE restore_drills SET outcome = 'failed', failure_code = 'interrupted', finished_at = now() WHERE outcome = 'running'`);
+      },
+    });
+    assert.equal(code, 0, 'the drill itself passed; the command says so');
+    assert.deepEqual([row.outcome, row.failure_code], ['failed', 'interrupted']);
+    assert.deepEqual(row.checks, [], 'the late result does not overwrite the interrupted row');
+    assert.deepEqual((await pool.query(`SELECT action FROM audit_events WHERE subject_id = $1`, [row.id])).rows, []);
+  });
+
+  test('M4: a drill whose result cannot be recorded exits 1, not 0', async (t) => {
+    if (!needTools(t)) return;
+    await backup();
+    // A constraint added for this test only makes the recording UPDATE fail, as a database gone at the end would.
+    await pool.query(`ALTER TABLE restore_drills ADD CONSTRAINT m4_block CHECK (outcome <> 'passed') NOT VALID`);
+    try {
+      const { code, out, err } = await drill();
+      assert.equal(code, 1);
+      assert.ok(err.includes(DRILL_TEXT.recordFailed));
+      assert.match(out[out.length - 1], /^run \S+ passed$/);
+    } finally {
+      await pool.query(`ALTER TABLE restore_drills DROP CONSTRAINT m4_block`);
+    }
   });
 
   test('--sample records sampled; --set latest takes a set with no run row and never an -incomplete one', async (t) => {
