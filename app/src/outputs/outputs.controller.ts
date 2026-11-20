@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Put, Query, Req, UploadedFile, UseInterceptors } from '@nestjs/common';
+import { BadRequestException, Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Put, Query, Req, UploadedFile, UseInterceptors } from '@nestjs/common';
 import { AnySignedInUser } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
@@ -70,6 +70,17 @@ export class OutputsController {
     return this.outputs.decline(who(req), projectId, outputId, reason);
   }
 
+  /** `{ targetOutputId }`: a Submitted output's versions become new versions of a Registered one (spec 4.3). */
+  @Post(':outputId/accept-into')
+  @AnySignedInUser()
+  @HttpCode(200)
+  acceptInto(@Param('projectId') projectId: string, @Param('outputId') outputId: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    ids(projectId, outputId);
+    const target = body && typeof body === 'object' ? (body as Record<string, unknown>).targetOutputId : undefined;
+    if (typeof target !== 'string' || !UUID.test(target)) throw new BadRequestException('Choose the registered output to add this submission to.');
+    return this.outputs.acceptInto(who(req), projectId, outputId, target);
+  }
+
   /** Any of `{ title, reportTypeId, categoryIds, issueDate, contributors }`, with an optional `reason`. */
   @Put(':outputId')
   @AnySignedInUser()
@@ -80,7 +91,7 @@ export class OutputsController {
     return this.outputs.update(who(req), projectId, outputId, patch, reason);
   }
 
-  /** A new version: the same bodies as submitting; the title may be left out (the output keeps its own). */
+  /** A new version: the same bodies as submitting, without a title (the output keeps its own). */
   @Post(':outputId/versions')
   @AnySignedInUser()
   @HttpCode(201)

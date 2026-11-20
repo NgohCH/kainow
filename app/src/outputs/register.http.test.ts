@@ -6,7 +6,7 @@ import type { AuthUser } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
 import { ProjectAccess } from '../projects/access.service';
 import type { StorageConnector } from '../storage/connector';
-import type { StorageConnectorFactory } from '../storage/connector-factory';
+import { type StorageConnectorFactory, StorageWaitingForKey } from '../storage/connector-factory';
 import { type ItemState, StorageError } from '../storage/types';
 import { SKIP_NO_DB } from '../testing/db';
 import { type SeededDraft, materialFor, seedDraft } from '../testing/drafts';
@@ -26,8 +26,10 @@ function multipart(fields: Record<string, string>, file: { name: string; bytes: 
   return { body: Buffer.concat(parts), type: `multipart/form-data; boundary=${b}` };
 }
 
-/** Links the stub storage resolves: url → the drive it lies in and the item. Anything else is not found. */
-const links = new Map<string, { driveId: string; item: ItemState }>();
+/** Links the stub storage resolves: url → the drive it lies in and the item (or the fault it raises). Anything else is not found. */
+const links = new Map<string, { driveId: string; item: ItemState } | { fail: Error }>();
+/** Folder parents in the stub drives: folder item id → its parent id ('root' is the drive root). */
+const folders = new Map<string, string>([['folder-1', 'root']]);
 const stubConnectors: StorageConnectorFactory = {
   forDestination: async () => {
     throw new StorageError('invalid');
@@ -38,12 +40,18 @@ const stubConnectors: StorageConnectorFactory = {
       resolveLink: async (url: string) => {
         const l = links.get(url);
         if (!l) throw new StorageError('not_found');
+        if ('fail' in l) throw l.fail;
         return { dest: { id: '', connector: 'graph', driveId: l.driveId, rootItemId: 'root' }, item: l.item };
+      },
+      getItem: async (_dest: unknown, itemId: string) => {
+        const parent = folders.get(itemId);
+        if (parent === undefined) throw new StorageError('not_found');
+        return { ...item(itemId, itemId), parentId: parent };
       },
     }) as unknown as StorageConnector,
 };
-const item = (name: string, itemId = `item-${uuidv7().slice(-8)}`): ItemState => ({
-  itemId, parentId: 'folder-1', name, path: `/Shared Documents/Plans/${name}`, size: 2048, providerHash: 'qxh==', etag: 'e1', ctag: 'c1', webUrl: `https://files.example.org/sites/plans/${name}`,
+const item = (name: string, itemId = `item-${uuidv7().slice(-8)}`, parentId = 'folder-1'): ItemState => ({
+  itemId, parentId, name, path: `/Shared Documents/Plans/${name}`, size: 2048, providerHash: 'qxh==', etag: 'e1', ctag: 'c1', webUrl: `https://files.example.org/sites/plans/${name}`,
 });
 
 describe('output register over HTTP', { skip: SKIP_NO_DB }, () => {
@@ -87,12 +95,12 @@ describe('output register over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.equal(r.status, 200, JSON.stringify(r.body));
     return r.body.outputs.map((o: { id: string }) => o.id) as string[];
   };
-  const destination = async (driveId: string, status = 'approved', purpose = 'outputs') => {
+  const destination = async (driveId: string, status = 'approved', purpose = 'outputs', rootItemId = 'root') => {
     const id = uuidv7();
     await t.pool.query(
       `INSERT INTO storage_destinations (id, connector, kind, purpose, label, drive_id, root_item_id, status, created_by, created_at)
-       VALUES ($1, 'graph', 'sharepoint_library', $2, $3, $4, 'root', $5, $6, now())`,
-      [id, purpose, `Library ${driveId}`, driveId, status, ids.admin],
+       VALUES ($1, 'graph', $2, $3, $4, $5, $6, $7, $8, now())`,
+      [id, rootItemId === 'root' ? 'sharepoint_library' : 'onedrive', purpose, `Library ${driveId}`, driveId, rootItemId, status, ids.admin],
     );
     return id;
   };
@@ -259,6 +267,42 @@ describe('output register over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.equal(seen.body.versions[0].filing.path, it.path);
   });
 
+  test('a link must lie under the destination’s own folder, not merely in its drive', async () => {
+    // A OneDrive destination rooted at a subfolder: Plans (under Projects, under the drive root).
+    folders.set('folder-plans', 'folder-projects').set('folder-projects', 'root').set('folder-deep', 'folder-plans').set('folder-private', 'root');
+    const dest = await destination('drive-od', 'approved', 'outputs', 'folder-plans');
+    links.set('https://files.example.org/od/inside.docx', { driveId: 'drive-od', item: item('inside.docx', 'item-in', 'folder-deep') });
+    links.set('https://files.example.org/od/direct.docx', { driveId: 'drive-od', item: item('direct.docx', 'item-direct', 'folder-plans') });
+    links.set('https://files.example.org/od/private.docx', { driveId: 'drive-od', item: item('private.docx', 'item-out', 'folder-private') });
+    links.set('https://files.example.org/od/top.docx', { driveId: 'drive-od', item: item('top.docx', 'item-top', 'root') });
+    for (const name of ['inside', 'direct']) {
+      const out = await created(c.ada.request('POST', url(), { kind: 'link', url: `https://files.example.org/od/${name}.docx`, title: `Plan ${name}` }));
+      const f = (await t.pool.query(`SELECT f.destination_id FROM stored_files f JOIN output_versions v ON v.stored_file_id = f.id WHERE v.output_id = $1`, [out.id])).rows[0];
+      assert.equal(f.destination_id, dest, name);
+    }
+    for (const name of ['private', 'top']) {
+      const r = await c.ada.request('POST', url(), { kind: 'link', url: `https://files.example.org/od/${name}.docx`, title: 'Elsewhere in the drive' });
+      assert.equal(r.status, 400, name);
+      assert.equal(r.body.message, LINK_REFUSED);
+    }
+  });
+
+  test('a storage fault while checking a link is reported as unavailable, not as outside approved locations', async () => {
+    await destination('drive-plans');
+    links.set('https://files.example.org/x/a.docx', { fail: new StorageError('unauthorised') });
+    links.set('https://files.example.org/x/b.docx', { fail: new StorageError('server') });
+    links.set('https://files.example.org/x/c.docx', { fail: new StorageWaitingForKey() });
+    links.set('https://files.example.org/x/d.docx', { fail: new StorageError('forbidden') });
+    for (const name of ['a', 'b', 'c']) {
+      const r = await c.ada.request('POST', url(), { kind: 'link', url: `https://files.example.org/x/${name}.docx`, title: 'Plan' });
+      assert.equal(r.status, 503, name);
+      assert.equal(r.body.message, 'The storage service cannot be reached right now, so the link could not be checked. Try again later.');
+    }
+    const forbidden = await c.ada.request('POST', url(), { kind: 'link', url: 'https://files.example.org/x/d.docx', title: 'Plan' });
+    assert.equal(forbidden.status, 400);
+    assert.equal(forbidden.body.message, LINK_REFUSED);
+  });
+
   test('submitted outputs are visible to submitter, PM and Deputies only', async () => {
     const out = await created(upload(c.ada, 'plan.md', Buffer.from('# Plan')));
     for (const who of ['ada', 'pm', 'deputy']) {
@@ -269,6 +313,10 @@ describe('output register over HTTP', { skip: SKIP_NO_DB }, () => {
       assert.equal((await c[who].request('GET', url(`/${out.id}`))).status, 404, who);
       assert.deepEqual(await listIds(c[who]), [], who);
     }
+    // The security review follows the same rule: a Member who is not the submitter cannot report it (404).
+    const report = { kind: 'output', id: out.id, marked: ['Plan'], reason: 'Looks like a key' };
+    assert.equal((await c.bob.request('POST', `/projects/${project}/secret-reports`, report)).status, 404);
+    assert.equal((await c.auditor.request('POST', `/projects/${project}/secret-reports`, report)).status, 404);
     assert.equal((await c.outsider.request('GET', url())).status, 404);
     assert.equal((await c.outsider.request('GET', url(`/${out.id}`))).status, 404);
     assert.equal((await c.pm.request('GET', url(`/${out.id}`, await seedProject(t.pool, { status: 'active', members: [{ userId: ids.pm, role: 'pm' }] })))).status, 404, 'only under its own project');
@@ -398,6 +446,7 @@ describe('output register over HTTP', { skip: SKIP_NO_DB }, () => {
     await meeting('Board meeting', 'The pump service is booked for Thursday morning.', [ids.ada]);
     const d = await draft('ada', 'pump service');
     const out = await created(submitDraft(c.pm, d.aiVersionId));
+    t.clock.advanceSeconds(1);
     assert.equal(out.audience.mode, 'restricted');
     assert.deepEqual(out.audience.people.map((p: { id: string }) => p.id).sort(), [ids.pm, ids.deputy, ids.owner, ids.sponsor].sort());
     // A Member who submits it is in its audience too, so they still see their own submission.
@@ -418,6 +467,33 @@ describe('output register over HTTP', { skip: SKIP_NO_DB }, () => {
     // Kept as a sub-project 4a audience row with its named people.
     const a = (await t.pool.query(`SELECT a.mode, a.project_id FROM outputs o JOIN audiences a ON a.id = o.audience_id WHERE o.id = $1`, [out.id])).rows[0];
     assert.deepEqual(a, { mode: 'restricted', project_id: project });
+    // In review, only the PM, Deputies, Owner and Sponsors within the audience who can read the material.
+    assert.equal((await register(c.pm, own.id, { reportTypeId: minutes, audience: { mode: 'restricted', namedUserIds: [ids.pm, ids.sponsor, ids.ada] } })).status, 200);
+    await t.pool.query(`UPDATE outputs SET review_state = 'review_required' WHERE id = $1`, [own.id]);
+    assert.equal((await c.sponsor.request('GET', url(`/${own.id}`))).status, 200);
+    assert.equal((await c.owner.request('GET', url(`/${own.id}`))).status, 404, 'an Owner outside the audience');
+    assert.equal((await c.ada.request('GET', url(`/${own.id}`))).status, 404, 'a Member in the audience, while in review');
+    // Every audience change is recorded: the audience made at submission, then narrowed at registration.
+    const events = (await t.pool.query(
+      `SELECT e.from_mode, e.to_mode, e.from_named, e.to_named, e.actor_id, e.reason FROM audience_events e JOIN outputs o ON o.audience_id = e.audience_id
+        WHERE o.id = $1 ORDER BY e.at, e.id`,
+      [out.id],
+    )).rows;
+    assert.equal(events.length, 2);
+    assert.deepEqual([events[0].from_mode, events[0].to_mode, events[0].from_named, [...events[0].to_named].sort()], ['project', 'restricted', [], [ids.pm, ids.deputy, ids.owner, ids.sponsor].sort()]);
+    assert.equal(events[0].actor_id, ids.pm);
+    assert.deepEqual([events[1].from_mode, events[1].to_mode, [...events[1].to_named].sort(), events[1].reason], ['restricted', 'restricted', [ids.pm, ids.ada].sort(), 'Set when the output was registered']);
+    // Restricted to Project-wide (open material) and back are recorded too.
+    const openOut = await created(upload(c.ada, 'open.md', Buffer.from('# Open')));
+    assert.equal((await register(c.pm, openOut.id, { reportTypeId: minutes, audience: { mode: 'restricted', namedUserIds: [ids.pm] } })).status, 200);
+    const openAudience = (await t.pool.query(`SELECT audience_id FROM outputs WHERE id = $1`, [openOut.id])).rows[0].audience_id;
+    await t.pool.query(`UPDATE outputs SET status = 'submitted' WHERE id = $1`, [openOut.id]);
+    t.clock.advanceSeconds(1);
+    assert.equal((await register(c.pm, openOut.id, { reportTypeId: minutes, audience: { mode: 'project', namedUserIds: [] } })).status, 200);
+    const flips = (await t.pool.query(`SELECT from_mode, to_mode FROM audience_events WHERE audience_id = $1 ORDER BY at, id`, [openAudience])).rows;
+    assert.deepEqual(flips.map((f) => `${f.from_mode}>${f.to_mode}`), ['project>restricted', 'restricted>project']);
+    assert.equal((await t.pool.query(`SELECT audience_id FROM outputs WHERE id = $1`, [openOut.id])).rows[0].audience_id, null);
+
     // Open material keeps an output Project-wide.
     const wide = await created(submitDraft(c.pm, (await draft('ada', 'valve audit')).aiVersionId));
     assert.equal(wide.audience.mode, 'project');
@@ -440,6 +516,8 @@ describe('output register over HTTP', { skip: SKIP_NO_DB }, () => {
     const notReader = await created(upload(c.ada, 'plan3.md', Buffer.from('# Plan 3')));
     assert.equal((await register(c.pm, notReader.id, { reportTypeId: minutes, audience: { mode: 'restricted', namedUserIds: [ids.pm, ids.bob] } })).status, 200);
     assert.equal((await c.pm.request('POST', url(`/${notReader.id}/versions`), { kind: 'draft', draftVersionId: restricted.aiVersionId, format: 'md' })).status, 409);
+    // A new version keeps the output's title: one sent with it is refused, not ignored.
+    assert.equal((await upload(c.pm, 'p.md', Buffer.from('# P'), { title: 'Other title' }, url(`/${narrow.id}/versions`))).status, 400);
     // Versions are added by the PM or a Deputy, to registered outputs only.
     assert.equal((await upload(c.ada, 'p.md', Buffer.from('# P'), {}, url(`/${narrow.id}/versions`))).status, 403);
     const submitted = await created(upload(c.ada, 'p.md', Buffer.from('# P')));
@@ -498,5 +576,54 @@ describe('output register over HTTP', { skip: SKIP_NO_DB }, () => {
     const history = (await c.pm.request('GET', url(`/${a.id}`))).body.history.map((h: { kind: string }) => h.kind);
     assert.deepEqual(history, ['submitted', 'registered', 'version_added', 'updated']);
     await assert.rejects(t.pool.query(`UPDATE output_events SET reason = 'x'`));
+  });
+
+  test('a submission is accepted into a registered output as new versions', async () => {
+    const minutes = await typeId('Minutes');
+    const target = await created(upload(c.pm, 'target.md', Buffer.from('# Target'), { title: 'Weekly status' }));
+    t.clock.advanceSeconds(1);
+    assert.equal((await register(c.pm, target.id, { reportTypeId: minutes })).status, 200);
+    t.clock.advanceSeconds(1);
+    const d = await draft('ada', 'valve audit');
+    const sub = await created(submitDraft(c.ada, d.aiVersionId, 'docx', 'My status'));
+    const bytesBefore = (await t.pool.query(`SELECT b.bytes FROM output_versions v JOIN output_version_bytes b ON b.output_version_id = v.id WHERE v.output_id = $1`, [sub.id])).rows[0].bytes;
+    const accept = (who: Client, from: string, to: string) => who.request('POST', url(`/${from}/accept-into`), { targetOutputId: to });
+
+    assert.equal((await accept(c.ada, sub.id, target.id)).status, 403, 'a Member cannot');
+    assert.equal((await accept(c.owner, sub.id, target.id)).status, 404, 'the submission is not visible to the Owner');
+    assert.equal((await accept(c.pm, sub.id, sub.id)).status, 400);
+    const unregistered = await created(upload(c.bob, 'u.md', Buffer.from('# U')));
+    assert.equal((await accept(c.pm, sub.id, unregistered.id)).status, 409, 'only into a registered output');
+
+    const r = await accept(c.deputy, sub.id, target.id);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body.versions.map((v: { no: number; origin: string; status: string }) => [v.no, v.origin, v.status]), [[1, 'upload', 'draft'], [2, 'draft_report', 'draft']]);
+    assert.equal(r.body.aiAssisted, true, 'the target gains the AI label from the accepted version');
+    const moved = (await t.pool.query(`SELECT b.bytes FROM output_versions v JOIN output_version_bytes b ON b.output_version_id = v.id WHERE v.output_id = $1 AND v.version_no = 2`, [target.id])).rows[0].bytes;
+    assert.ok(moved.equals(bytesBefore), 'the bytes move with the version');
+    const source = await c.ada.request('GET', url(`/${sub.id}`));
+    assert.equal(source.status, 200, 'still visible to its submitter');
+    assert.equal(source.body.status, 'declined');
+    assert.equal(source.body.history.find((h: { kind: string }) => h.kind === 'declined').reason, 'Accepted into Weekly status');
+    assert.equal((await accept(c.pm, sub.id, target.id)).status, 409, 'only once');
+    const ev = (await t.pool.query(`SELECT kind, detail FROM output_events WHERE output_id = $1 ORDER BY at, id`, [target.id])).rows;
+    assert.deepEqual(ev.map((e) => e.kind), ['submitted', 'registered', 'version_added']);
+    assert.equal(ev[2].detail.acceptedFrom, sub.id);
+  });
+
+  test('a submission whose material is narrower than the target audience is refused', async () => {
+    const minutes = await typeId('Minutes');
+    await meeting('Board meeting', 'The pump service is booked for Thursday morning.', [ids.ada]);
+    const d = await draft('ada', 'pump service');
+    const sub = await created(submitDraft(c.ada, d.aiVersionId));
+    const wide = await created(upload(c.pm, 'wide.md', Buffer.from('# Wide'), { title: 'Wide' }));
+    assert.equal((await register(c.pm, wide.id, { reportTypeId: minutes })).status, 200);
+    const refused = await c.pm.request('POST', url(`/${sub.id}/accept-into`), { targetOutputId: wide.id });
+    assert.equal(refused.status, 409);
+    assert.match(refused.body.message, /Narrow/);
+    assert.equal((await t.pool.query(`SELECT status FROM outputs WHERE id = $1`, [sub.id])).rows[0].status, 'submitted', 'nothing changed');
+    const narrow = await created(upload(c.pm, 'narrow.md', Buffer.from('# Narrow'), { title: 'Narrow' }));
+    assert.equal((await register(c.pm, narrow.id, { reportTypeId: minutes, audience: { mode: 'restricted', namedUserIds: [ids.pm, ids.ada] } })).status, 200);
+    assert.equal((await c.pm.request('POST', url(`/${sub.id}/accept-into`), { targetOutputId: narrow.id })).status, 200);
   });
 });

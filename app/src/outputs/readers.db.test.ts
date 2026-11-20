@@ -131,6 +131,10 @@ describe('output readers', { skip: SKIP_NO_DB }, () => {
     const cleared = await output({ review: 'cleared', draftVersionId: seeded.aiVersionId });
     assert.deepEqual(names(await outputReaders(t.pool, cleared, at)), everyone);
 
+    // In review and Restricted: only those of them also in the audience (an Owner outside it reads nothing).
+    const narrowReview = await output({ review: 'review_required', draftVersionId: seeded.aiVersionId, audience: [ids.pm, ids.sponsor, ids.ada] });
+    assert.deepEqual(names(await outputReaders(t.pool, narrowReview, at)), ['pm', 'sponsor']);
+
     // Submitted, Declined, Withdrawn: submitter, PM and Deputies, within the audience.
     for (const status of ['submitted', 'declined', 'withdrawn']) {
       assert.deepEqual(names(await outputReaders(t.pool, await output({ status, author: ids.bob }), at)), ['bob', 'deputy', 'pm'], status);

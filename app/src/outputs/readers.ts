@@ -116,7 +116,8 @@ export async function readsAllMaterial(db: Db, ctx: ProjectContext, row: Pick<Ou
  * Audit/Oversight grants within their dates; never Leadership grants or the Administrator alone). A Restricted output
  * is read by the people named in its audience only (an output's audience is exactly its named people; roles add
  * nobody). Submitted, Declined and Withdrawn: its submitter, the PM and Deputies, within the audience. Registered and
- * in "Access review required": the PM, Deputies, Owner and Sponsors who can still read all its material. Deleted or
+ * in "Access review required": the PM, Deputies, Owner and Sponsors within the audience who can still read all its
+ * material (D101 limits; it never widens). Deleted or
  * held: nobody here, except that `lookThroughCase` (a security review of that case) sees a held output as if it were not.
  */
 export async function readsOutput(db: Db, ctx: ProjectContext | null, row: OutputAccessRow, opts: { lookThroughCase?: string | null } = {}): Promise<boolean> {
@@ -128,7 +129,7 @@ export async function readsOutput(db: Db, ctx: ProjectContext | null, row: Outpu
     return (row.authorId === ctx.viewerId || mayRegister) && inOutputAudience(ctx, row);
   }
   if (row.reviewState === 'review_required') {
-    return ctx.roles.some((r) => OUTPUT_MANAGER_ROLES.includes(r)) && (await readsAllMaterial(db, ctx, row));
+    return ctx.roles.some((r) => OUTPUT_MANAGER_ROLES.includes(r)) && inOutputAudience(ctx, row) && (await readsAllMaterial(db, ctx, row));
   }
   return inOutputAudience(ctx, row);
 }

@@ -49,25 +49,45 @@ function splitFile(fileName: string): { head: string; tail: string } {
 
 const total = (parts: string[], fileName: string): number => length([...parts, fileName].join('/'));
 
+/** The suffix of a restricted project folder (spec 5.4); kept whole when the folder name is shortened. */
+export const RESTRICTED_SUFFIX = ' (restricted)';
+
+/** Even with every name cut to one character the path does not fit. */
+export class PathTooLong extends Error {
+  constructor() {
+    super('The storage path is too long even with every name shortened.');
+    this.name = 'PathTooLong';
+  }
+}
+
+/** A name split into the part that may be shortened and a suffix that is always kept. */
+function splitFolder(name: string): { head: string; tail: string } {
+  return name.endsWith(RESTRICTED_SUFFIX) && name.length > RESTRICTED_SUFFIX.length
+    ? { head: name.slice(0, -RESTRICTED_SUFFIX.length), tail: RESTRICTED_SUFFIX }
+    : { head: name, tail: '' };
+}
+
 /**
  * The folders and the file name, shortened so the whole path (joined with `/`) stays under `limit` code points. The
  * title in the file name is shortened first; then the folders from the last one up (for a restricted output the last
- * folder is its own, named for its title); each first down to 10 characters, then further only if still needed.
- * Returns the folders followed by the file name.
+ * folder is its own, named for its title); each first down to 10 characters, then further only if still needed. The
+ * version tail of the file name and the " (restricted)" suffix of a project folder are never cut. Returns the folders
+ * followed by the file name; throws PathTooLong when even the shortest names do not fit.
  */
 export function fitPath(parts: string[], fileName: string, limit = MAX_PATH): string[] {
-  const folders = [...parts];
+  const folders = parts.map(splitFolder);
   const file = splitFile(fileName);
-  let head = file.head;
-  const over = () => total(folders, `${head}${file.tail}`) - (limit - 1);
-  const shorten = (s: string, floor: number): string => {
+  const join = () => [...folders.map((f) => `${f.head}${f.tail}`), `${file.head}${file.tail}`];
+  const over = () => length(join().join('/')) - (limit - 1);
+  const shorten = (part: { head: string }, floor: number): void => {
     const excess = over();
-    if (excess <= 0 || length(s) <= floor) return s;
-    return safeName(s, Math.max(floor, length(s) - excess));
+    if (excess <= 0 || length(part.head) <= floor) return;
+    part.head = safeName(part.head, Math.max(floor, length(part.head) - excess));
   };
   for (const floor of [MIN_PART, 1]) {
-    head = shorten(head, floor);
-    for (let i = folders.length - 1; i >= 0 && over() > 0; i--) folders[i] = shorten(folders[i], floor);
+    shorten(file, floor);
+    for (let i = folders.length - 1; i >= 0 && over() > 0; i--) shorten(folders[i], floor);
   }
-  return [...folders, `${head}${file.tail}`];
+  if (over() > 0) throw new PathTooLong();
+  return join();
 }

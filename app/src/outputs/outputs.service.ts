@@ -17,6 +17,7 @@ import { MAX_UPLOAD_BYTES } from '../notes/text';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { decide } from '../projects/matrix';
 import { todayUtc8 } from '../projects/membership';
+import type { StorageConnector } from '../storage/connector';
 import { STORAGE_CONNECTORS, type StorageConnectorFactory, StorageWaitingForKey } from '../storage/connector-factory';
 import { type OutputFormat, loadStorageSettings } from '../storage/settings';
 import { type DestinationRef, type ItemState, StorageError } from '../storage/types';
@@ -50,8 +51,14 @@ const NOT_CONTRIBUTOR = 'Only people who take or took part in this project can b
 const BAD_DEPARTMENT = 'Choose departments from the active departments.';
 const BAD_TYPE = 'Choose a report type from the list.';
 const NOTHING_TO_CHANGE = 'Nothing to change.';
+const STORAGE_UNAVAILABLE = 'The storage service cannot be reached right now, so the link could not be checked. Try again later.';
+/** How many folders up a link's parents are followed before giving up. */
+const MAX_FOLDER_DEPTH = 64;
+const ACCEPT_INTO_ITSELF = 'Choose another output to add this submission to.';
+const ACCEPT_INTO_REGISTERED = 'A submission can be added only to a registered output.';
 const SAME_TIME = 'Someone else changed this output at the same time. Try again.';
 const AUDIENCE_SET_AT_REGISTRATION = 'Set when the output was registered';
+const AUDIENCE_SET_AT_SUBMISSION = 'Restricted when submitted: built from material some of the project’s readers cannot read';
 
 /** D77 draft kinds and the report type each is suggested as (spec 4.4). */
 export const DEFAULT_REPORT_TYPES: Readonly<Record<ReportKind, string>> = {
@@ -182,7 +189,7 @@ export class OutputsService {
     const id = uuidv7(at.getTime());
     await this.tx(async (c) => {
       await this.access.authorize(user, 'output.submit', projectId, c, true);
-      const audienceId = audience ? await this.createAudience(c, projectId, audience, user.id, at) : null;
+      const audienceId = audience ? await this.createAudience(c, projectId, audience, user.id, at, AUDIENCE_SET_AT_SUBMISSION) : null;
       await c.query(
         `INSERT INTO outputs (id, project_id, title, report_type_id, audience_id, status, ai_assisted, author_id, created_at)
          VALUES ($1, $2, $3, $4, $5, 'submitted', $6, $7, $8)`,
@@ -289,41 +296,60 @@ export class OutputsService {
    * stays where it is; Kainow keeps no copy and no checksum of its own (only the provider's).
    */
   private async fromLink(url: string): Promise<PreparedVersion> {
-    let resolved: { dest: DestinationRef | null; item: ItemState };
     try {
       const connector = await this.connectors.forNew('sharepoint_library');
-      resolved = await connector.resolveLink(url);
+      const resolved = await connector.resolveLink(url);
+      const ref = resolved.dest;
+      if (!ref?.driveId) throw new BadRequestException(LINK_REFUSED);
+      const candidates = (
+        await this.pool.query<{ id: string; connector: 'graph' | 'local'; rootItemId: string | null }>(
+          `SELECT id, connector, root_item_id AS "rootItemId" FROM storage_destinations
+            WHERE purpose = 'outputs' AND status = 'approved' AND drive_id = $1 ORDER BY created_at, id`,
+          [ref.driveId],
+        )
+      ).rows;
+      for (const dest of candidates) {
+        if (!dest.rootItemId || !(await this.liesUnder(connector, ref, resolved.item, dest.rootItemId))) continue;
+        const item = resolved.item;
+        return {
+          origin: 'link',
+          format: LINK_FORMATS[extOf(item.name)] ?? 'other',
+          bytes: null,
+          sha256: '',
+          size: item.size,
+          draftVersionId: null,
+          aiAssisted: false,
+          material: null,
+          link: { destinationId: dest.id, connector: dest.connector, driveId: ref.driveId, item },
+          defaultTypeId: null,
+        };
+      }
+      throw new BadRequestException(LINK_REFUSED);
     } catch (err) {
-      if (err instanceof StorageWaitingForKey) throw new ServiceUnavailableException(err.message);
+      if (err instanceof StorageWaitingForKey) throw new ServiceUnavailableException(STORAGE_UNAVAILABLE);
       if (err instanceof StorageError) {
-        if (['not_found', 'invalid', 'forbidden', 'unauthorised'].includes(err.code)) throw new BadRequestException(LINK_REFUSED);
-        throw new ServiceUnavailableException(err.message);
+        // Not there, not a link, or not somewhere Kainow may reach: outside the approved locations. Anything else is a fault.
+        if (['not_found', 'invalid', 'forbidden'].includes(err.code)) throw new BadRequestException(LINK_REFUSED);
+        throw new ServiceUnavailableException(STORAGE_UNAVAILABLE);
       }
       throw err;
     }
-    const driveId = resolved.dest?.driveId;
-    const dest = driveId
-      ? (
-          await this.pool.query<{ id: string; connector: 'graph' | 'local' }>(
-            `SELECT id, connector FROM storage_destinations WHERE purpose = 'outputs' AND status = 'approved' AND drive_id = $1 ORDER BY created_at, id LIMIT 1`,
-            [driveId],
-          )
-        ).rows[0]
-      : undefined;
-    if (!dest || !driveId) throw new BadRequestException(LINK_REFUSED);
-    const item = resolved.item;
-    return {
-      origin: 'link',
-      format: LINK_FORMATS[extOf(item.name)] ?? 'other',
-      bytes: null,
-      sha256: '',
-      size: item.size,
-      draftVersionId: null,
-      aiAssisted: false,
-      material: null,
-      link: { destinationId: dest.id, connector: dest.connector, driveId, item },
-      defaultTypeId: null,
-    };
+  }
+
+  /**
+   * Whether the item lies under the destination's root folder: its parents are walked up through the provider until
+   * that folder (inside) or the drive's own root (outside) is reached. A destination rooted at the drive root holds
+   * everything in the drive.
+   */
+  private async liesUnder(connector: StorageConnector, ref: DestinationRef, item: ItemState, rootItemId: string): Promise<boolean> {
+    if (rootItemId === ref.rootItemId) return true;
+    let parent = item.parentId;
+    for (let depth = 0; depth < MAX_FOLDER_DEPTH; depth++) {
+      if (parent === rootItemId) return true;
+      if (!parent || parent === ref.rootItemId) return false;
+      parent = (await connector.getItem(ref, parent)).parentId;
+    }
+    return false;
   }
 
   private async assertOutputFormat(projectId: string, format: OutputFormat): Promise<void> {
@@ -361,14 +387,32 @@ export class OutputsService {
     return ids;
   }
 
-  private async createAudience(c: PoolClient, projectId: string, people: string[], actorId: string, at: Date): Promise<string> {
+  /** A new Restricted audience (sub-project 4a row) for an output, recorded as a change from Project-wide. */
+  private async createAudience(c: PoolClient, projectId: string, people: string[], actorId: string, at: Date, reason: string): Promise<string> {
     const id = uuidv7(at.getTime());
     await c.query(`INSERT INTO audiences (id, project_id, mode, created_at) VALUES ($1, $2, 'restricted', $3)`, [id, projectId, at]);
     for (const userId of people) {
       await c.query(`INSERT INTO audience_members (audience_id, user_id, added_by, added_at) VALUES ($1, $2, $3, $4)`, [id, userId, actorId, at]);
     }
+    await this.audienceEvent(c, id, actorId, { mode: 'project', named: [] }, { mode: 'restricted', named: people }, reason, at);
     return id;
   }
+
+  private async audienceEvent(
+    c: PoolClient,
+    audienceId: string,
+    actorId: string,
+    from: { mode: 'project' | 'restricted'; named: string[] },
+    to: { mode: 'project' | 'restricted'; named: string[] },
+    reason: string,
+    at: Date,
+  ): Promise<void> {
+    await c.query(
+      `INSERT INTO audience_events (id, audience_id, actor_id, from_mode, to_mode, from_named, to_named, reason, at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+      [uuidv7(at.getTime()), audienceId, actorId, from.mode, to.mode, from.named, to.named, reason, at],
+    );
+  }
+
 
   private async insertVersion(c: PoolClient, outputId: string, projectId: string, versionNo: number, p: PreparedVersion, actorId: string, at: Date): Promise<string> {
     const versionId = uuidv7(at.getTime());
@@ -516,6 +560,62 @@ export class OutputsService {
     return this.get(user, projectId, outputId);
   }
 
+  /**
+   * Accepts a participant's Submitted output into an existing Registered output of the same project (spec 4.3): its
+   * versions become new Draft versions of the target, numbered after the target's last, and the submission is Declined
+   * with "Accepted into <target title>". The submission's material must be readable by everyone who reads the target.
+   * Its bytes and any linked file move with the versions; nothing is copied or deleted.
+   */
+  async acceptInto(user: AuthUser, projectId: string, outputId: string, targetOutputId: string): Promise<OutputDetail> {
+    await this.visible(user, projectId, outputId);
+    if (targetOutputId === outputId) throw new BadRequestException(ACCEPT_INTO_ITSELF);
+    await this.visible(user, projectId, targetOutputId);
+    const at = this.clock();
+    await this.tx(async (c) => {
+      const { row: source } = await this.manage(c, user, projectId, outputId);
+      const { row: target } = await this.visible(user, projectId, targetOutputId, c, true);
+      if (source.status !== 'submitted') throw new ConflictException(NOT_SUBMITTED);
+      if (target.status !== 'registered') throw new ConflictException(ACCEPT_INTO_REGISTERED);
+      const material = await this.outputMaterial(c, source, at);
+      if (material) {
+        const readers = await contentReaderContexts(c, projectId, at);
+        const current = readers.map((r) => r.viewerId).filter((id) => target.audienceMode !== 'restricted' || target.audienceUserIds.includes(id));
+        if (current.some((id) => !material.has(id))) throw new ConflictException(NARROW_FIRST);
+      }
+      const t = (await c.query<{ title: string; latest: number }>(
+        `SELECT o.title, (SELECT COALESCE(max(v.version_no), 0) FROM output_versions v WHERE v.output_id = o.id)::int AS latest FROM outputs o WHERE o.id = $1`,
+        [targetOutputId],
+      )).rows[0];
+      const versions = (await c.query(
+        `SELECT id, version_no AS no, origin, format, draft_version_id AS "draftVersionId", stored_file_id AS "storedFileId", sha256, size_bytes AS "sizeBytes", created_by AS "createdBy"
+           FROM output_versions WHERE output_id = $1 ORDER BY version_no`,
+        [outputId],
+      )).rows;
+      let no = t.latest;
+      for (const v of versions) {
+        no += 1;
+        const newId = uuidv7(at.getTime());
+        if (v.storedFileId) await c.query(`UPDATE output_versions SET stored_file_id = NULL WHERE id = $1`, [v.id]);
+        await c.query(
+          `INSERT INTO output_versions (id, output_id, version_no, origin, format, draft_version_id, stored_file_id, status, sha256, size_bytes, created_by, created_at)
+           VALUES ($1, $2, $3, $4, $5, $6, $7, 'draft', $8, $9, $10, $11)`,
+          [newId, targetOutputId, no, v.origin, v.format, v.draftVersionId, v.storedFileId, v.sha256, v.sizeBytes, v.createdBy, at],
+        );
+        await c.query(
+          `INSERT INTO output_version_bytes (output_version_id, bytes, kept_until) SELECT $2, bytes, kept_until FROM output_version_bytes WHERE output_version_id = $1`,
+          [v.id, newId],
+        );
+        await c.query(`DELETE FROM output_version_bytes WHERE output_version_id = $1`, [v.id]);
+        await this.event(c, targetOutputId, 'version_added', user.id, at, { versionId: newId, detail: { versionNo: no, origin: v.origin, format: v.format, acceptedFrom: outputId } });
+      }
+      await c.query(`UPDATE outputs SET ai_assisted = ai_assisted OR (SELECT ai_assisted FROM outputs WHERE id = $2) WHERE id = $1`, [targetOutputId, outputId]);
+      await c.query(`UPDATE outputs SET status = 'declined' WHERE id = $1`, [outputId]);
+      await this.event(c, outputId, 'declined', user.id, at, { reason: `Accepted into ${t.title}`, detail: { acceptedInto: targetOutputId } });
+      await writeAudit(c, { at, action: 'output.accepted_into', actorUserId: user.id, subjectType: 'output', subjectId: targetOutputId, detail: { from: outputId, versions: versions.length } });
+    });
+    return this.get(user, projectId, targetOutputId);
+  }
+
   private async setCategories(c: PoolClient, outputId: string, ids: string[]): Promise<void> {
     await c.query(`DELETE FROM output_categories WHERE output_id = $1 AND NOT (report_type_id = ANY($2::uuid[]))`, [outputId, ids]);
     for (const id of ids) await c.query(`INSERT INTO output_categories (output_id, report_type_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`, [outputId, id]);
@@ -569,6 +669,11 @@ export class OutputsService {
     const material = await this.outputMaterial(c, row, at);
     if (change.mode === 'project') {
       if (material && [...readers].some((id) => !material.has(id))) throw new BadRequestException(MUST_RESTRICT);
+      if (row.audienceId && row.audienceMode === 'restricted') {
+        await c.query(`UPDATE audiences SET mode = 'project' WHERE id = $1`, [row.audienceId]);
+        await c.query(`DELETE FROM audience_members WHERE audience_id = $1`, [row.audienceId]);
+        await this.audienceEvent(c, row.audienceId, actorId, { mode: 'restricted', named: row.audienceUserIds }, { mode: 'project', named: [] }, reason, at);
+      }
       if (row.audienceId) await c.query(`UPDATE outputs SET audience_id = NULL WHERE id = $1`, [row.id]);
       return 'project';
     }
@@ -585,13 +690,10 @@ export class OutputsService {
       for (const id of named.filter((x) => !before.includes(x))) {
         await c.query(`INSERT INTO audience_members (audience_id, user_id, added_by, added_at) VALUES ($1, $2, $3, $4)`, [row.audienceId, id, actorId, at]);
       }
-      await c.query(
-        `INSERT INTO audience_events (id, audience_id, actor_id, from_mode, to_mode, from_named, to_named, reason, at) VALUES ($1, $2, $3, 'restricted', 'restricted', $4, $5, $6, $7)`,
-        [uuidv7(at.getTime()), row.audienceId, actorId, before, named, reason, at],
-      );
+      await this.audienceEvent(c, row.audienceId, actorId, { mode: 'restricted', named: before }, { mode: 'restricted', named }, reason, at);
       return 'restricted';
     }
-    const audienceId = await this.createAudience(c, row.projectId, named, actorId, at);
+    const audienceId = await this.createAudience(c, row.projectId, named, actorId, at, reason);
     await c.query(`UPDATE outputs SET audience_id = $2 WHERE id = $1`, [row.id, audienceId]);
     return 'restricted';
   }

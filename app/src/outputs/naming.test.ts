@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { fitPath, outputFileName, safeName } from './naming';
+import { PathTooLong, fitPath, outputFileName, safeName } from './naming';
 
 const codePoints = (s: string) => [...s].length;
 const isLoneSurrogate = (s: string) => /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(s);
@@ -50,15 +50,26 @@ test('fitPath keeps the total under 400 by shortening the title', () => {
   assert.ok(fitted[4].endsWith(' v1.docx'));
   assert.ok(fitted[4].startsWith('T'));
 
-  // Restricted: the output folder is the title too, and is shortened with it.
-  const restricted = ['D'.repeat(100), 'P'.repeat(90) + ' (restricted)', 'T'.repeat(100)];
+  // Restricted: the file title goes first, then the output folder (its title); the project folder keeps " (restricted)".
+  const restricted = ['D'.repeat(100), 'P'.repeat(80) + ' (restricted)', 'T'.repeat(100)];
   const r = fitPath(restricted, outputFileName('T'.repeat(100), 2, 'pdf', 2), 400);
   assert.ok(codePoints(r.join('/')) < 400);
   assert.ok(r[3].endsWith(' v2 (2).pdf'));
-  assert.equal(r[0], restricted[0]);
+  assert.deepEqual(r.slice(0, 3), restricted, 'only the file title was needed');
+  const tight = fitPath(restricted, outputFileName('T'.repeat(100), 2, 'pdf', 2), 200);
+  assert.ok(codePoints(tight.join('/')) < 200, tight.join('/'));
+  assert.ok(codePoints(tight[2]) < 100, 'the output folder (its title) is shortened next');
+  assert.ok(tight[3].endsWith(' v2 (2).pdf'));
+  const tighter = fitPath(restricted, outputFileName('T'.repeat(100), 2, 'pdf', 2), 60);
+  assert.ok(codePoints(tighter.join('/')) < 60, tighter.join('/'));
+  assert.ok(tighter[1].endsWith(' (restricted)'), 'the suffix is never cut');
+  assert.ok(codePoints(tighter[1]) < codePoints(restricted[1]));
 
   // A small limit still gives a usable path.
   const tiny = fitPath(['Dept', 'Project'], outputFileName('Some long title here', 1, 'md'), 30);
   assert.ok(codePoints(tiny.join('/')) < 30, tiny.join('/'));
   assert.ok(tiny[2].endsWith(' v1.md'));
+
+  // Even one character per name cannot fit: refused, never a broken path.
+  assert.throws(() => fitPath(['Dept', 'Project (restricted)', 'Title'], outputFileName('Title', 1, 'docx'), 20), PathTooLong);
 });

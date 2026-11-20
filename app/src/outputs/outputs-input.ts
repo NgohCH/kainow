@@ -45,6 +45,7 @@ const BAD_DATE = 'Give the issue date as a day (YYYY-MM-DD).';
 const BAD_CONTRIBUTORS = 'Name contributors by their account id, and contributing departments by their id.';
 const BAD_KIND = 'Submit a draft report, an uploaded file or a link.';
 const BAD_FORMAT = 'Choose Markdown, DOCX or PDF.';
+const TITLE_ON_VERSION = 'A new version keeps the output’s title. Change the title in the register details instead.';
 
 const obj = (b: unknown): Record<string, unknown> => (b && typeof b === 'object' && !Array.isArray(b) ? (b as Record<string, unknown>) : {});
 const uuid = (v: unknown, refusal: string): string => {
@@ -77,11 +78,13 @@ const optionalType = (v: unknown): string | undefined => (v === undefined || v =
 /**
  * The submission: a multipart upload when a file came with the request (fields `title`, `reportTypeId`), otherwise JSON
  * `{ kind: 'draft', draftVersionId, format, title, reportTypeId? }` or `{ kind: 'link', url, title, reportTypeId? }`.
- * With `titleOptional` (a new version of an existing output) the title may be left out.
+ * With `forVersion` (a new version of an existing output) there is no title: the output keeps its own, and a title
+ * sent anyway is refused rather than silently dropped.
  */
-export function parseSubmitBody(body: unknown, file: { originalname: string; buffer: Buffer } | undefined, titleOptional = false): SubmitInput {
+export function parseSubmitBody(body: unknown, file: { originalname: string; buffer: Buffer } | undefined, forVersion = false): SubmitInput {
   const b = obj(body);
-  const title = titleOptional && (b.title === undefined || b.title === '') ? '' : readTitle(b.title);
+  if (forVersion && b.title !== undefined) throw new BadRequestException(TITLE_ON_VERSION);
+  const title = forVersion ? '' : readTitle(b.title);
   const reportTypeId = optionalType(b.reportTypeId);
   if (file) return { kind: 'upload', filename: file.originalname, bytes: file.buffer, title, reportTypeId };
   if (b.kind === 'draft') {
