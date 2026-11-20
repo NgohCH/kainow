@@ -40,7 +40,7 @@ export async function flagStoredFile(deps: SourceFileDeps, fileId: string, flag:
     await c.query('BEGIN');
     const { rowCount } = await c.query(
       `UPDATE stored_files SET check_status = $2, last_checked_at = $3
-        WHERE id = $1 AND state = 'stored' AND check_status NOT IN ('changed', 'missing')`,
+        WHERE id = $1 AND state IN ('stored', 'relocating') AND check_status NOT IN ('changed', 'missing')`,
       [fileId, flag, at],
     );
     if (rowCount) await deps.notify(c, { kind: flag === 'changed' ? SOURCE_FILE_CHANGED : SOURCE_FILE_MISSING, subjectId: fileId });
@@ -74,9 +74,11 @@ export async function openOriginal(deps: SourceFileDeps, versionId: string): Pro
     )
   ).rows[0];
   if (!row) return null;
-  if (row.state === 'stored' && row.check_status === 'changed') return { refused: 'changed' };
-  if (row.state === 'stored' && row.check_status === 'missing') return { refused: 'missing' };
-  if (row.state !== 'stored' || !row.destination_id || !row.item_id) return null;
+  // A file being relocated is served from its current (old) copy until the new one is confirmed (spec 9.3).
+  const current = row.state === 'stored' || row.state === 'relocating';
+  if (current && row.check_status === 'changed') return { refused: 'changed' };
+  if (current && row.check_status === 'missing') return { refused: 'missing' };
+  if (!current || !row.destination_id || !row.item_id) return null;
 
   let bytes: Buffer;
   try {

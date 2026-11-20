@@ -268,8 +268,10 @@ export async function ensureSourceProjectsFolder(
   return { id: row.id, itemId: row.item_id };
 }
 
-/** `projects/<project id>/sources/<source id>/v<n>` under the source-area root. */
-async function versionFolder(deps: StorageDeps, connector: StorageConnector, dest: DestinationRef, v: VersionRow): Promise<string> {
+/** `projects/<project id>/sources/<source id>/v<n>` under the source-area root (also where relocation puts a file). */
+export async function versionFolder(
+  deps: StorageDeps, connector: StorageConnector, dest: DestinationRef, v: { project_id: string | null; source_id: string; version_no: number },
+): Promise<string> {
   const projects = (await ensureSourceProjectsFolder(deps, connector, dest)).itemId;
   let folder = projects;
   for (const name of [v.project_id as string, 'sources', v.source_id, `v${v.version_no}`]) {

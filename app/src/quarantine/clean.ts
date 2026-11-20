@@ -349,7 +349,8 @@ async function planDerived(
     [ids],
   );
   // A file another case already withholds is held by this case too, so it comes back only once neither holds it.
-  const inStorage = (state: string | null) => state === 'stored' || state === 'withheld';
+  // A file being relocated is in storage too (its copy is abandoned when the relocation finds it withheld).
+  const inStorage = (state: string | null) => state === 'stored' || state === 'relocating' || state === 'withheld';
   for (const r of stored.rows) {
     if (r.original_id && inStorage(r.original_state)) {
       plan.files.add(r.original_id);
@@ -476,7 +477,7 @@ export async function cleanItem(
     );
     for (const b of bytes.rows) plan.set('output_version_bytes', { output_version_id: b.output_version_id }, 'bytes', b.bytes, null);
     const files = await c.query<{ id: string }>(
-      `SELECT f.id FROM output_versions v JOIN stored_files f ON f.id = v.stored_file_id WHERE v.output_id = $1 AND f.state IN ('stored', 'withheld') ORDER BY f.id`,
+      `SELECT f.id FROM output_versions v JOIN stored_files f ON f.id = v.stored_file_id WHERE v.output_id = $1 AND f.state IN ('stored', 'relocating', 'withheld') ORDER BY f.id`,
       [itemId],
     );
     for (const f of files.rows) plan.files.add(f.id);

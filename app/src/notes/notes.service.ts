@@ -502,7 +502,7 @@ export class NotesService {
   async getOriginal(sourceId: string, versionNo: number): Promise<{ filename: string; mediaType: string; bytes: Buffer }> {
     const { rows } = await this.pool.query<{ id: string; filename: string; media_type: string; original_bytes: Buffer | null; stored: boolean }>(
       `SELECT v.id, v.filename, v.media_type, v.original_bytes,
-              EXISTS (SELECT 1 FROM stored_files f WHERE f.id = v.original_stored_file_id AND f.state = 'stored') AS stored
+              EXISTS (SELECT 1 FROM stored_files f WHERE f.id = v.original_stored_file_id AND f.state IN ('stored', 'relocating')) AS stored
          FROM source_versions v JOIN sources s ON s.id = v.source_id
         WHERE v.source_id = $1 AND v.version_no = $2 AND ${liveSourceSql('s')} AND v.origin = 'upload'`,
       [sourceId, versionNo],

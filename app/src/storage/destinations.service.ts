@@ -13,7 +13,8 @@ import { StorageError, type DestinationCheck, type PermissionInfo } from './type
 
 export type DestinationKind = 'sharepoint_library' | 'onedrive' | 'local';
 export type DestinationPurpose = 'source_area' | 'outputs';
-export type DestinationStatus = 'proposed' | 'approved' | 'withdrawn';
+/** `retiring`: the source area being moved away from (spec 9.3), still read from until every file has moved. */
+export type DestinationStatus = 'proposed' | 'approved' | 'retiring' | 'withdrawn';
 
 export interface Destination {
   id: string;
@@ -59,6 +60,7 @@ const LOCAL_REFUSED = 'The local storage folder is for development only and is n
 export const DESTINATION_EVENTS_ORDER = `at, CASE kind WHEN 'proposed' THEN 1 WHEN 'checked' THEN 2 WHEN 'approved' THEN 3 WHEN 'withdrawn' THEN 4 END, id`;
 
 const SECOND_SOURCE_AREA = 'Another source area is already approved. Withdraw it first.';
+const MOVING = 'The source area is being moved. Wait until every file has moved.';
 
 /**
  * What the library permission check refuses (D103): everything except the site's owners group, site collection
@@ -203,6 +205,7 @@ export class DestinationsService {
     const why = readReason(reason);
     const before = await this.load(this.pool, id);
     if (before.status === 'approved') throw new ConflictException('This destination is already approved.');
+    if (before.status === 'retiring') throw new ConflictException(MOVING);
     if (before.purpose === 'source_area' && (await this.approvedSourceArea())) throw new ConflictException(SECOND_SOURCE_AREA);
     const result = await this.runCheck(user, id);
     if (!result.ok) {
@@ -216,6 +219,7 @@ export class DestinationsService {
         await c.query(`SELECT 1 FROM storage_settings FOR UPDATE`);
         const row = await this.load(c, id, true);
         if (row.status === 'approved') throw new ConflictException('This destination is already approved.');
+        if (row.status === 'retiring') throw new ConflictException(MOVING);
         if (row.kind === 'onedrive' && !(await loadStorageSettings(c)).directoryLookup) throw new ConflictException(ONEDRIVE_NEEDS_LOOKUP);
         await c.query(`UPDATE storage_destinations SET status = 'approved' WHERE id = $1`, [id]);
         await this.event(c, id, 'approved', user.id, at, why, {});
@@ -243,6 +247,12 @@ export class DestinationsService {
     await this.inTransaction(async (c) => {
       const row = await this.load(c, id, true);
       if (row.status === 'withdrawn') throw new ConflictException('This destination is already withdrawn.');
+      // Neither side of a source-area move is withdrawn by hand: the old one is withdrawn when every file has moved.
+      if (row.status === 'retiring') throw new ConflictException(MOVING);
+      if (row.purpose === 'source_area' && row.status === 'approved') {
+        const moving = await c.query(`SELECT 1 FROM storage_destinations WHERE purpose = 'source_area' AND status = 'retiring'`);
+        if (moving.rowCount) throw new ConflictException(MOVING);
+      }
       await c.query(`UPDATE storage_destinations SET status = 'withdrawn' WHERE id = $1`, [id]);
       await this.event(c, id, 'withdrawn', user.id, at, why, {});
     });

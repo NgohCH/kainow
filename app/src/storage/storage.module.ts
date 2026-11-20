@@ -2,6 +2,8 @@ import { type DynamicModule, Module, type Provider } from '@nestjs/common';
 import { StorageAdminsService } from './admins.service';
 import { DbStorageConnectorFactory, STORAGE_CONNECTORS, type StorageConnectorFactory } from './connector-factory';
 import { DestinationsService } from './destinations.service';
+import { ManifestService } from './manifest';
+import { SourceAreaMoveService } from './relocate';
 import { StorageController } from './storage.controller';
 import { StorageSettingsService } from './settings.service';
 
@@ -16,7 +18,7 @@ export class StorageModule {
       module: StorageModule,
       global: true,
       controllers: [StorageController],
-      providers: [StorageSettingsService, DestinationsService, StorageAdminsService, factory],
+      providers: [StorageSettingsService, DestinationsService, StorageAdminsService, SourceAreaMoveService, ManifestService, factory],
       exports: [StorageSettingsService, DestinationsService, StorageAdminsService, STORAGE_CONNECTORS],
     };
   }

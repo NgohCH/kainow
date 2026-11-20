@@ -151,11 +151,12 @@ export async function desiredFolderGrants(db: Db, folderId: string, at: Date): P
     if ((await isWholeProject(db, outputId, at)) && o.placement !== f.id) return out;
     ids = [...(await outputReaders(db, outputId, at))];
   } else if (f.level === 'source_root') {
-    // Only designated storage Administrators; being an Enterprise Administrator gives nothing here.
+    // Only designated storage Administrators; being an Enterprise Administrator gives nothing here. A source area being
+    // moved away from (retiring) keeps their access until it is withdrawn (spec 9.3).
     ids = (
       await db.query<{ user_id: string }>(
         `SELECT a.user_id FROM storage_admins a JOIN storage_folders f ON f.id = $1
-           JOIN storage_destinations d ON d.id = f.destination_id AND d.purpose = 'source_area' AND d.status = 'approved'
+           JOIN storage_destinations d ON d.id = f.destination_id AND d.purpose = 'source_area' AND d.status IN ('approved', 'retiring')
           WHERE a.ended_at IS NULL ORDER BY a.user_id`,
         [folderId],
       )
@@ -604,7 +605,7 @@ export async function reconcileSharing(deps: StorageDeps, at: Date = deps.clock(
     await deps.pool.query<{ id: string; level: string }>(
       `SELECT f.id, f.level FROM storage_folders f JOIN storage_destinations d ON d.id = f.destination_id
         WHERE (f.level IN ('project', 'output') AND d.purpose = 'outputs')
-           OR (f.level = 'source_root' AND d.purpose = 'source_area' AND d.status = 'approved')
+           OR (f.level = 'source_root' AND d.purpose = 'source_area' AND d.status IN ('approved', 'retiring'))
         ORDER BY f.id`,
     )
   ).rows;

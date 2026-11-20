@@ -41,6 +41,8 @@ import '../outputs/checks';
 import '../outputs/sharing';
 // Register withholding held files (withhold, restore-withheld), its final-failure notice and the daily retry.
 import '../storage/withhold';
+// Register relocating stored files (relocate), its final failure and the daily retry and move completion.
+import '../storage/relocate';
 // Register renaming an output's folder and files after its title is cleaned or restored.
 import '../outputs/rename';
 

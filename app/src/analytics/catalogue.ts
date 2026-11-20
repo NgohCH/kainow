@@ -239,6 +239,8 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['storage.file_restored', 'A withheld file was put back in storage after its security case was released unchanged.'],
     ['storage.admin_designated', 'A person was made a storage Administrator (direct access to the source area), with a reason.'],
     ['storage.admin_ended', 'A storage Administrator designation was ended, with a reason.'],
+    ['storage.source_area_move_started', 'An Enterprise Administrator started moving the source area to a new destination, with a reason.'],
+    ['storage.manifest_downloaded', 'An Enterprise Administrator downloaded the storage manifest (references only, never content).'],
   ]),
 
   // ---- per-domain event tables --------------------------------------------------------------------------------------
@@ -316,6 +318,7 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['proposed', 'A storage destination was proposed.'],
     ['checked', 'A storage destination was checked.'],
     ['approved', 'A storage destination was approved.'],
+    ['retiring', 'The source area began moving to a new destination; it stays readable until every file has moved.'],
     ['withdrawn', 'A storage destination was withdrawn.'],
   ]),
   ...group('storage_admin_events', 'Storage', ADMIN, 'storage Administrator', [

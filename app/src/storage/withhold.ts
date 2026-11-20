@@ -11,6 +11,7 @@ import { StorageWaitingForKey } from './connector-factory';
 import { type StorageDeps, registerStorageDailyTask, registerStorageFinalFailure, registerStorageHandler } from './jobs';
 import { queueStorageJob } from './outbox';
 import { quickXorHash } from './quickxor';
+import { queueRelocationIfAway } from './relocate';
 import { TEXT_FILE_NAME } from './sources';
 import { type DestinationRef, StorageError, type StoredRef } from './types';
 
@@ -82,7 +83,7 @@ export async function queueWithhold(c: PoolClient, fileIds: string[], caseId: st
   const files = (
     await c.query<{ id: string; state: string; withhold_case_id: string | null }>(
       `SELECT id, state, withhold_case_id FROM stored_files
-        WHERE id = ANY($1::uuid[]) AND item_id IS NOT NULL AND state IN ('stored', 'withheld')
+        WHERE id = ANY($1::uuid[]) AND item_id IS NOT NULL AND state IN ('stored', 'relocating', 'withheld')
         ORDER BY id FOR UPDATE`,
       [fileIds],
     )
@@ -94,7 +95,8 @@ export async function queueWithhold(c: PoolClient, fileIds: string[], caseId: st
        ON CONFLICT (stored_file_id, case_id) DO UPDATE SET release_requested_at = NULL, released_at = NULL`,
       [f.id, caseId],
     );
-    if (f.state !== 'stored') {
+    // A file being relocated is withheld at its current place; the relocation then abandons its copy.
+    if (f.state === 'withheld') {
       // Withheld already, and on its way back (no case held it): this case holds it again, and the job carries on for it.
       if (f.withhold_case_id === null) {
         await c.query(`UPDATE stored_files SET withhold_case_id = $2 WHERE id = $1`, [f.id, caseId]);
@@ -492,6 +494,8 @@ async function uploadCleanedText(deps: StorageDeps, f: FileRow, caseId: string):
         WHERE id = $1`,
       [f.id, dest.id, dest.connector, dest.driveId, ref.itemId, ref.path, ref.size, sha256(bytes), ref.providerHash, ref.etag, ref.ctag, ref.webUrl, at],
     );
+    // Uploaded where the old text was: if the source area has moved since, it follows (spec 9.3).
+    await queueRelocationIfAway(c, f.id);
     return true;
   });
   if (!recorded) {
@@ -693,6 +697,9 @@ async function record(
     if (f.purpose === 'output') {
       const o = (await c.query<{ output_id: string }>(`SELECT output_id FROM output_versions WHERE stored_file_id = $1`, [f.id])).rows[0];
       if (o) await queueOutputPlacement(c, o.output_id, 'widen');
+    } else {
+      // Put back where it was withheld from: if the source area has moved since, it follows (spec 9.3).
+      await queueRelocationIfAway(c, f.id);
     }
     await writeAudit(c, { at, action: 'storage.file_restored', actorUserId: null, subjectType: 'stored_file', subjectId: f.id, detail: { projectId: f.project_id, purpose: f.purpose } });
   });

@@ -100,7 +100,8 @@ CREATE TABLE storage_destinations (
   site_id          text,
   drive_id         text,
   root_item_id     text,
-  status           text        NOT NULL CHECK (status IN ('proposed', 'approved', 'withdrawn')),
+  -- retiring: the source area being moved away from (spec 9.3); readable until every file has moved, then withdrawn.
+  status           text        NOT NULL CHECK (status IN ('proposed', 'approved', 'retiring', 'withdrawn')),
   last_check       jsonb,
   last_checked_at  timestamptz,
   created_by       uuid        NOT NULL REFERENCES users (id),
@@ -108,12 +109,14 @@ CREATE TABLE storage_destinations (
 );
 -- At most one approved source area.
 CREATE UNIQUE INDEX one_source_area ON storage_destinations ((true)) WHERE purpose = 'source_area' AND status = 'approved';
+-- At most one source-area move at a time.
+CREATE UNIQUE INDEX one_retiring_source_area ON storage_destinations ((true)) WHERE purpose = 'source_area' AND status = 'retiring';
 CREATE INDEX storage_destinations_purpose_idx ON storage_destinations (purpose, status);
 
 CREATE TABLE storage_destination_events (
   id              uuid PRIMARY KEY,
   destination_id  uuid        NOT NULL REFERENCES storage_destinations (id),
-  kind            text        NOT NULL CHECK (kind IN ('proposed', 'checked', 'approved', 'withdrawn')),
+  kind            text        NOT NULL CHECK (kind IN ('proposed', 'checked', 'approved', 'retiring', 'withdrawn')),
   actor_id        uuid        REFERENCES users (id),
   at              timestamptz NOT NULL,
   reason          text,
@@ -211,6 +214,12 @@ CREATE TABLE stored_file_moves (
   at                  timestamptz NOT NULL
 );
 CREATE INDEX stored_file_moves_file_idx ON stored_file_moves (stored_file_id, at);
+CREATE INDEX stored_file_moves_destinations_idx ON stored_file_moves (old_destination_id, new_destination_id);
+
+-- A relocation that switched the reference to a new item but has not yet removed the old copy (spec 9.4): the move row
+-- holds the old reference; cleared once the old copy is gone.
+ALTER TABLE stored_files ADD COLUMN old_copy_move_id uuid REFERENCES stored_file_moves (id);
+CREATE INDEX stored_files_old_copy_idx ON stored_files (old_copy_move_id) WHERE old_copy_move_id IS NOT NULL;
 
 CREATE TABLE storage_outbox (
   id          uuid PRIMARY KEY,
