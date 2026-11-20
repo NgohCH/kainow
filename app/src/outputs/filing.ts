@@ -238,38 +238,48 @@ export async function ensureOutputFolder(
     return levels;
   };
 
-  const lockKey = `${dest.id}/${projectId}`;
+  return withOutputFolderLock(deps, dest.id, projectId, async () => {
+    // The owning department, unless a department transfer is still moving the project's folders here from another
+    // (spec 10): then a filing joins them there and moves with them.
+    const d = await filingDepartment(deps.pool, dest.id, projectId, f.departmentId);
+    const departmentName = d === f.departmentId
+      ? f.departmentName
+      : (await deps.pool.query<{ name: string }>(`SELECT name FROM departments WHERE id = $1`, [d])).rows[0].name;
+    let parent: string | null = null;
+    let rec: FolderRecord | undefined;
+    const path: string[] = [];
+    for (const l of levelsUnder(d, departmentName)) {
+      rec = await recordedFolder(deps, dest.id, l.level, l.key);
+      if (!rec) {
+        const made = await makeFolder(conn, dest, parent, l);
+        await deps.pool.query(
+          `INSERT INTO storage_folders (id, destination_id, level, key, item_id, name, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)
+           ON CONFLICT (destination_id, level, key) DO NOTHING`,
+          [uuidv7(), dest.id, l.level, l.key, made.itemId, made.name, deps.clock()],
+        );
+        rec = await recordedFolder(deps, dest.id, l.level, l.key);
+        if (!rec) throw new Error('folder record missing');
+      }
+      parent = rec.item_id;
+      path.push(rec.name);
+    }
+    const last = rec as FolderRecord;
+    return { itemId: last.item_id, name: last.name, recordId: last.id, path };
+  });
+}
+
+/**
+ * Runs `work` holding the one lock on a project's folders in a destination: one worker at a time creates, names or
+ * moves them (filing here, a department transfer's folder move).
+ */
+export async function withOutputFolderLock<T>(deps: Pick<StorageDeps, 'pool'>, destinationId: string, projectId: string, work: () => Promise<T>): Promise<T> {
+  const lockKey = `${destinationId}/${projectId}`;
   const lock = await deps.pool.connect();
   let broken: Error | undefined;
   try {
     await lock.query(`SELECT pg_advisory_lock(hashtext('output-folders'), hashtext($1))`, [lockKey]);
     try {
-      // The owning department, unless a department transfer is still moving the project's folders here from another
-      // (spec 10): then a filing joins them there and moves with them.
-      const d = await filingDepartment(deps.pool, dest.id, projectId, f.departmentId);
-      const departmentName = d === f.departmentId
-        ? f.departmentName
-        : (await deps.pool.query<{ name: string }>(`SELECT name FROM departments WHERE id = $1`, [d])).rows[0].name;
-      let parent: string | null = null;
-      let rec: FolderRecord | undefined;
-      const path: string[] = [];
-      for (const l of levelsUnder(d, departmentName)) {
-        rec = await recordedFolder(deps, dest.id, l.level, l.key);
-        if (!rec) {
-          const made = await makeFolder(conn, dest, parent, l);
-          await deps.pool.query(
-            `INSERT INTO storage_folders (id, destination_id, level, key, item_id, name, created_at) VALUES ($1, $2, $3, $4, $5, $6, $7)
-             ON CONFLICT (destination_id, level, key) DO NOTHING`,
-            [uuidv7(), dest.id, l.level, l.key, made.itemId, made.name, deps.clock()],
-          );
-          rec = await recordedFolder(deps, dest.id, l.level, l.key);
-          if (!rec) throw new Error('folder record missing');
-        }
-        parent = rec.item_id;
-        path.push(rec.name);
-      }
-      const last = rec as FolderRecord;
-      return { itemId: last.item_id, name: last.name, recordId: last.id, path };
+      return await work();
     } finally {
       try {
         await lock.query(`SELECT pg_advisory_unlock(hashtext('output-folders'), hashtext($1))`, [lockKey]);

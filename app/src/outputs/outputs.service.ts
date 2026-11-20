@@ -36,7 +36,7 @@ import { renderMarkdown } from './render/markdown';
 import { renderPdf } from './render/pdf';
 import { notSharedFor } from './sharing';
 import { queueOutputPlacement } from './sharing-queue';
-import { MOVING_LABEL, keptLabel } from '../projects/department-transfer';
+import { MOVING_LABEL, keptLabel, notMovedLabel, oldPlaces } from '../projects/department-transfer';
 
 type Db = Pool | PoolClient;
 
@@ -121,7 +121,8 @@ export interface Filing {
   tryAgain?: true;
   /**
    * A file filed under a department that no longer owns the project (spec 10): "Moving files" while a department
-   * transfer moves its folder, otherwise "Kept at its existing location (filed under <department>)".
+   * transfer moves its folder, "Files not moved — still at <old path>" when that move failed, otherwise (the folder
+   * was kept) "Kept at its existing location (filed under <department>)".
    */
   location?: string;
   /** Checked, Changed, Moved, Missing, Access denied or Unverified (spec 5.8), for a filed or linked file. */
@@ -993,12 +994,16 @@ export class OutputsService {
     );
     // The project's latest department transfer, for files still filed under the department it left (spec 10).
     const transfer = (
-      await this.pool.query<{ from: string; moving: boolean }>(
-        `SELECT from_department_id AS from, folder_choice = 'move' AND state = 'moving' AS moving FROM project_department_transfers
+      await this.pool.query<{ from: string; choice: string | null; state: string }>(
+        `SELECT from_department_id AS from, folder_choice AS choice, state FROM project_department_transfers
           WHERE project_id = $1 ORDER BY at DESC, id DESC LIMIT 1`,
         [ctx.project.id],
       )
     ).rows[0];
+    /** For files the latest transfer chose to move: "Moving files", or after a failure where they still are. */
+    const pendingMove = transfer?.choice === 'move' && transfer.state !== 'done'
+      ? transfer.state === 'moving' ? MOVING_LABEL : notMovedLabel(await oldPlaces(this.pool, ctx.project.id, transfer.from))
+      : null;
     const mayFile = decide({ action: 'output.manage', roles: ctx.roles, status: ctx.project.status }).allowed;
     return rows.map((r) => {
       let filing: Filing;
@@ -1026,7 +1031,7 @@ export class OutputsService {
       }
       if (seesPath && r.fileState) filing.path = r.path;
       if (r.awayDepartmentId && ['stored', 'relocating', 'withheld', 'missing'].includes(r.fileState)) {
-        filing.location = transfer?.moving && transfer.from === r.awayDepartmentId ? MOVING_LABEL : keptLabel(r.awayDepartment);
+        filing.location = pendingMove && transfer?.from === r.awayDepartmentId ? pendingMove : keptLabel(r.awayDepartment);
       }
       return {
         no: r.no,

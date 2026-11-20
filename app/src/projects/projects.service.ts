@@ -15,7 +15,7 @@ import { writeOutbox } from '../email/outbox';
 import { isCalendarDate } from '../extraction/due';
 import { type ProjectContext, ProjectAccess, managesGrants, managesRoles } from './access.service';
 import { loadArchiveState } from './archive';
-import { CHOOSE_FOLDER, filedOutputFiles } from './department-transfer.service';
+import { DepartmentTransferService } from './department-transfer.service';
 import { OrganisationService } from './organisation.service';
 import { grantState } from './grants';
 import { type ClosureOutcome, STAGES, checkTransition } from './lifecycle';
@@ -57,6 +57,7 @@ export class ProjectsService {
     private readonly org: OrganisationService,
     @Inject(APP_CONFIG) private readonly config: AppConfig,
     @Inject(EMAIL_NUDGE) private readonly nudge: EmailNudge,
+    private readonly transfers: DepartmentTransferService,
   ) {}
 
   /** Checks a full or partial set of project details. Missing keys keep `current` values. */
@@ -315,40 +316,12 @@ export class ProjectsService {
     return this.detail(user, id);
   }
 
-  /** The Administrator moves a project to another owning department (Consolidated Specification §3). */
+  /**
+   * The Administrator moves a project to another owning department (Consolidated Specification §3): the same transfer
+   * as `PUT /projects/:id/owning-department` (spec 10, D108), answered with the project's details as before.
+   */
   async moveDepartment(user: AuthUser, id: string, input: Record<string, unknown>) {
-    const at = this.now();
-    const client = await this.pool.connect();
-    try {
-      await client.query('BEGIN');
-      const ctx = await this.access.context(user, id, client, true);
-      if (!ctx.isAdmin) throw new ForbiddenException('Only an Enterprise Administrator can move a project to another owning department.');
-      const reason = typeof input.reason === 'string' ? input.reason.trim() : '';
-      readReason(reason, 'a reason', { refusal: 'A reason is required.' });
-      const to = input.departmentId;
-      if (typeof to !== 'string' || !UUID.test(to)) throw new BadRequestException('Choose an active department.');
-      const dept = (await client.query(`SELECT id FROM departments WHERE id = $1 AND status = 'active'`, [to])).rows[0];
-      if (!dept) throw new BadRequestException('Choose an active department.');
-      const from = (await client.query(`SELECT owning_department_id AS d FROM projects WHERE id = $1`, [id])).rows[0].d as string;
-      if (from === to) throw new ConflictException('The project already belongs to that department.');
-      const contributes = (await client.query(`SELECT 1 FROM project_departments WHERE project_id = $1 AND department_id = $2`, [id, to])).rowCount;
-      if (contributes) throw new ConflictException('That department contributes to this project; remove it from the contributing departments first.');
-      // A project with filed outputs needs the folder choice of the owning-department transfer (spec 10, D108).
-      if ((await filedOutputFiles(client, id)) > 0) throw new BadRequestException(CHOOSE_FOLDER);
-      await client.query(`UPDATE projects SET owning_department_id = $2 WHERE id = $1`, [id, to]);
-      await client.query(
-        `INSERT INTO project_department_changes (id, project_id, from_department_id, to_department_id, actor_id, reason, files_decision, at)
-         VALUES ($1, $2, $3, $4, $5, $6, 'kept_in_place', $7)`,
-        [uuidv7(at.getTime()), id, from, to, user.id, reason, at],
-      );
-      await writeAudit(client, { at, action: 'project.department_moved', actorUserId: user.id, subjectType: 'project', subjectId: id, detail: { from, to } });
-      await client.query('COMMIT');
-    } catch (err) {
-      await client.query('ROLLBACK').catch(() => undefined);
-      throw err;
-    } finally {
-      client.release();
-    }
+    await this.transfers.transferDepartment(user, id, { departmentId: input.departmentId, reason: input.reason, folderChoice: input.folderChoice });
     return this.detail(user, id);
   }
 

@@ -9,12 +9,13 @@ import { queueStorageJob } from '../storage/outbox';
 import { ProjectAccess, type ProjectContext } from './access.service';
 import { MOVING_LABEL, keptLabel, moveClashes, notMovedLabel, oldPlaces } from './department-transfer';
 
-export const ADMIN_ONLY = "Only an Enterprise Administrator can change a project's owning department.";
-export const CHOOSE_FOLDER = "This project has filed outputs. Choose whether to move the project's folder or keep it where it is.";
+export const ADMIN_ONLY = 'Only an Enterprise Administrator can change a project’s owning department.';
+export const CHOOSE_FOLDER = 'This project has filed outputs. Choose whether to move the project’s folder or keep it where it is.';
 const CHOOSE_DEPARTMENT = 'Choose an active department.';
 const SAME_DEPARTMENT = 'The project already belongs to that department.';
 const CONTRIBUTES = 'That department contributes to this project; remove it from the contributing departments first.';
-const STILL_MOVING = "The project's files are still being moved. Wait until the move finishes.";
+const STILL_MOVING = 'The project’s files are still being moved. Wait until the move finishes.';
+const LAST_MOVE_FAILED = 'The last folder move did not finish. Try it again before changing the department again.';
 const FOLDER_THERE = 'Kainow already keeps a folder for this project under that department. Choose "Keep it where it is" instead.';
 const NOTHING_TO_RETRY = 'There is no failed move of this project’s files to try again.';
 
@@ -80,6 +81,7 @@ export class DepartmentTransferService {
       }
       const latest = (await c.query<{ state: string }>(`SELECT state FROM project_department_transfers WHERE project_id = $1 ORDER BY at DESC, id DESC LIMIT 1`, [projectId])).rows[0];
       if (latest?.state === 'moving') throw new ConflictException(STILL_MOVING);
+      if (latest?.state === 'move_failed') throw new ConflictException(LAST_MOVE_FAILED);
       const filedFiles = await filedOutputFiles(c, projectId);
       let folderChoice: FolderChoice | null = null;
       if (filedFiles > 0) {
@@ -106,6 +108,7 @@ export class DepartmentTransferService {
 
   /** "Try again" on a failed move: the project's latest transfer only, back to Moving files with the job queued. */
   async retry(user: AuthUser, projectId: string): Promise<{ transferId: string; state: 'moving' }> {
+    const at = this.now();
     return this.tx(async (c) => {
       await this.admin(user, projectId, c, true);
       const latest = (
@@ -114,6 +117,7 @@ export class DepartmentTransferService {
       if (!latest || latest.state !== 'move_failed') throw new ConflictException(NOTHING_TO_RETRY);
       await c.query(`UPDATE project_department_transfers SET state = 'moving' WHERE id = $1`, [latest.id]);
       await queueStorageJob(c, 'transfer-folders', latest.id);
+      await writeAudit(c, { at, action: 'project.department_transfer_retried', actorUserId: user.id, subjectType: 'project', subjectId: projectId, detail: { transferId: latest.id } });
       return { transferId: latest.id, state: 'moving' as const };
     });
   }

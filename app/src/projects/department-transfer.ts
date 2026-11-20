@@ -1,6 +1,7 @@
 import type { Pool, PoolClient } from 'pg';
 import { uuidv7 } from '../common/uuid7';
-import { recordedFolderPath } from '../outputs/filing';
+import { checkFile } from '../outputs/checks';
+import { recordedFolderPath, withOutputFolderLock } from '../outputs/filing';
 import { MAX_NAME, RESTRICTED_SUFFIX, safeName } from '../outputs/naming';
 import type { StorageConnector } from '../storage/connector';
 import { type StorageDeps, registerStorageFinalFailure, registerStorageHandler } from '../storage/jobs';
@@ -133,32 +134,11 @@ export async function markTransferFailed(deps: StorageDeps, transferId: string):
   await deps.pool.query(`UPDATE project_department_transfers SET state = 'move_failed' WHERE id = $1 AND state = 'moving'`, [transferId]);
 }
 
-/** Under the folder lock filing takes for this destination and project (filing.ts `ensureOutputFolder`). */
-async function withFolderLock<T>(deps: StorageDeps, destinationId: string, projectId: string, work: () => Promise<T>): Promise<T> {
-  const key = `${destinationId}/${projectId}`;
-  const lock = await deps.pool.connect();
-  let broken: Error | undefined;
-  try {
-    await lock.query(`SELECT pg_advisory_lock(hashtext('output-folders'), hashtext($1))`, [key]);
-    try {
-      return await work();
-    } finally {
-      try {
-        await lock.query(`SELECT pg_advisory_unlock(hashtext('output-folders'), hashtext($1))`, [key]);
-      } catch (err) {
-        broken = err instanceof Error ? err : new Error('unlock failed');
-      }
-    }
-  } finally {
-    lock.release(broken);
-  }
-}
-
 interface Moved { root: Root; name: string }
 
 async function moveInDestination(deps: StorageDeps, t: TransferRow, destinationId: string): Promise<void> {
   const { connector, dest } = await deps.connectors.forDestination(destinationId);
-  await withFolderLock(deps, destinationId, t.project_id, async () => {
+  await withOutputFolderLock(deps, destinationId, t.project_id, async () => {
     const roots = await rootsUnder(deps.pool, t.project_id, t.from_department_id, destinationId);
     if (roots.length === 0) return;
     for (const r of roots) {
@@ -178,10 +158,12 @@ async function moveInDestination(deps: StorageDeps, t: TransferRow, destinationI
         const here = await connector.getItem(dest, r.item_id);
         moved.push({ root: r, name: here.parentId === target ? here.name : await moveFolder(connector, dest, r, target) });
       }
-      await verifyFiles(connector, dest, await filesUnder(deps.pool, destinationId, t));
+      // The folders are where they were sent, and every file in them still resolves with its recorded content.
+      for (const r of roots) if ((await connector.getItem(dest, r.item_id)).parentId !== target) throw new StorageError('server');
+      await verifyFiles(deps, connector, dest, await filesUnder(deps.pool, destinationId, t));
       await switchRecords(deps, t, destinationId, moved);
     } catch (err) {
-      await putBack(deps, connector, dest, roots, oldParent, target);
+      await putBack(deps, t.id, connector, dest, roots, oldParent, target);
       throw err;
     }
   });
@@ -235,24 +217,31 @@ async function moveFolder(connector: StorageConnector, dest: DestinationRef, r: 
  * or by a move whose answer was lost) goes back where the records say it is, under its recorded name, so nothing is
  * anywhere but its old path while the transfer is not done. One that cannot be put back is found by the next attempt.
  */
-async function putBack(deps: StorageDeps, connector: StorageConnector, dest: DestinationRef, roots: Root[], oldParent: string, target: string): Promise<void> {
+async function putBack(
+  deps: StorageDeps, transferId: string, connector: StorageConnector, dest: DestinationRef, roots: Root[], oldParent: string, target: string,
+): Promise<void> {
   for (const r of [...roots].reverse()) {
     try {
       const here = await connector.getItem(dest, r.item_id);
       if (here.parentId === target) await connector.move(dest, r.item_id, oldParent, r.name);
     } catch {
-      (deps.log ?? ((x) => console.warn(x)))('A project folder moved for a department transfer that did not complete could not be put back; the next attempt finds it.');
+      (deps.log ?? ((x) => console.warn(x)))(
+        `A project folder moved for department transfer ${transferId}, which did not complete, could not be put back; the next attempt finds it.`,
+      );
     }
   }
 }
 
-interface FileRow { id: string; item_id: string; drive_id: string; name: string; path: string | null; folder_id: string; size_bytes: string | null; skip: boolean }
+interface FileRow {
+  id: string; item_id: string; drive_id: string; name: string; path: string | null; folder_id: string;
+  size_bytes: string | null; provider_hash: string | null; skip: boolean;
+}
 
 /** Every stored output file recorded in a folder of the project's tree under the department moved from (`<dept>/<project>/…`). */
 async function filesUnder(db: Db, destinationId: string, t: TransferRow): Promise<FileRow[]> {
   return (
     await db.query<FileRow>(
-      `SELECT f.id, f.item_id, f.drive_id, f.name, f.path, f.folder_id, f.size_bytes,
+      `SELECT f.id, f.item_id, f.drive_id, f.name, f.path, f.folder_id, f.size_bytes, f.provider_hash,
               (f.state = 'missing' OR f.check_status = 'missing') AS skip
          FROM stored_files f JOIN storage_folders sf ON sf.id = f.folder_id
         WHERE f.purpose = 'output' AND f.destination_id = $1 AND sf.destination_id = $1 AND f.item_id IS NOT NULL AND f.removed_at IS NULL
@@ -265,14 +254,26 @@ async function filesUnder(db: Db, destinationId: string, t: TransferRow): Promis
 }
 
 /**
- * Every file still resolves by its item id after the move (spec 9.4: verified before the reference changes). A file
- * already known to be Missing cannot resolve and is not what is being checked; its path is refreshed all the same.
+ * Every file still resolves by its item id after the move, with its recorded size and provider hash (when both are
+ * known), as a relocation verifies (spec 9.4: verified before the reference changes). A file that no longer resolves
+ * was gone before the move (a folder move takes everything in it): it is flagged Missing as the check routine flags it
+ * (check status, time, output event and notice) and does not hold the move up; its path is refreshed all the same. A
+ * file already known to be Missing is not looked up.
  */
-async function verifyFiles(connector: StorageConnector, dest: DestinationRef, files: FileRow[]): Promise<void> {
+async function verifyFiles(deps: StorageDeps, connector: StorageConnector, dest: DestinationRef, files: FileRow[]): Promise<void> {
   for (const f of files) {
     if (f.skip) continue;
-    const it = await connector.getItem(dest, f.item_id);
-    if (it.itemId !== f.item_id || (f.size_bytes !== null && it.size !== Number(f.size_bytes))) throw new StorageError('server');
+    let it;
+    try {
+      it = await connector.getItem(dest, f.item_id);
+    } catch (err) {
+      if (!(err instanceof StorageError && err.code === 'not_found')) throw err;
+      await checkFile(deps, f.id);
+      continue;
+    }
+    const sizeDiffers = f.size_bytes !== null && it.size !== Number(f.size_bytes);
+    const hashDiffers = !!f.provider_hash && !!it.providerHash && it.providerHash !== f.provider_hash;
+    if (it.itemId !== f.item_id || sizeDiffers || hashDiffers) throw new StorageError('server');
   }
 }
 

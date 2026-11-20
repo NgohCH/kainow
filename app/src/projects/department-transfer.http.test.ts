@@ -19,6 +19,7 @@ const APP_ID = '11111111-2222-4333-8444-555555555555';
 const PROJECT = 'Pump station renewal';
 const OLD = 'Water Services';
 const NEW = 'Asset Management';
+const CHOOSE = 'This project has filed outputs. Choose whether to move the project’s folder or keep it where it is.';
 
 function multipart(fields: Record<string, string>, file: { name: string; bytes: Buffer }): { body: Buffer; type: string } {
   const b = 'transferboundary42';
@@ -143,7 +144,7 @@ describe('owning department transfer', { skip: SKIP_NO_DB }, () => {
   test('only an Enterprise Administrator transfers, in any project state, with a reason', async () => {
     const pm = await transfer(c.pm, { departmentId: newDept, reason: 'Reorganised' });
     assert.equal(pm.status, 403);
-    assert.equal(pm.body.message, "Only an Enterprise Administrator can change a project's owning department.");
+    assert.equal(pm.body.message, 'Only an Enterprise Administrator can change a project’s owning department.');
     assert.equal((await transfer(c.ada, { departmentId: newDept, reason: 'Reorganised' })).status, 403);
     assert.equal((await transfer(c.admin, { departmentId: newDept })).status, 400, 'a reason is required');
     assert.equal((await transfer(c.admin, { departmentId: newDept, reason: '   ' })).status, 400);
@@ -187,7 +188,7 @@ describe('owning department transfer', { skip: SKIP_NO_DB }, () => {
     assert.equal((await c.admin.request('GET', transferUrl())).body.filedFiles, 1);
     const missing = await transfer(c.admin, { departmentId: dept, reason: 'Back again' });
     assert.equal(missing.status, 400);
-    assert.equal(missing.body.message, "This project has filed outputs. Choose whether to move the project's folder or keep it where it is.");
+    assert.equal(missing.body.message, CHOOSE);
     assert.equal((await transfer(c.admin, { departmentId: dept, reason: 'Back again', folderChoice: 'sideways' })).status, 400);
     assert.equal((await rows(`SELECT owning_department_id FROM projects WHERE id = $1`, [project]))[0].owning_department_id, newDept);
     const kept = await transfer(c.admin, { departmentId: dept, reason: 'Back again', folderChoice: 'keep' });
@@ -197,7 +198,7 @@ describe('owning department transfer', { skip: SKIP_NO_DB }, () => {
     t.clock.advanceSeconds(60);
     const old = await c.admin.request('POST', `/projects/${project}/department`, { departmentId: newDept, reason: 'Again' });
     assert.equal(old.status, 400);
-    assert.equal(old.body.message, "This project has filed outputs. Choose whether to move the project's folder or keep it where it is.");
+    assert.equal(old.body.message, CHOOSE);
   });
 
   test('move relocates both folders, keeps grants and item ids, refreshes paths', async () => {
@@ -300,7 +301,13 @@ describe('owning department transfer', { skip: SKIP_NO_DB }, () => {
     assert.equal(view.transfer.state, 'move_failed');
     assert.equal(view.transfer.label, `Files not moved — still at ${OLD}/${PROJECT}`);
     assert.equal(view.transfer.tryAgain, true);
-    assert.equal((await versionFiling(wide)).location, `Kept at its existing location (filed under ${OLD})`);
+    assert.equal((await versionFiling(wide)).location, `Files not moved — still at ${OLD}/${PROJECT}`);
+    // No other transfer until this one is tried again.
+    t.clock.advanceSeconds(60);
+    const third = await seedDepartment(t.pool, 'Facilities');
+    const blocked = await transfer(c.admin, { departmentId: third, reason: 'Again', folderChoice: 'keep' });
+    assert.equal(blocked.status, 409);
+    assert.equal(blocked.body.message, 'The last folder move did not finish. Try it again before changing the department again.');
 
     // Filing meanwhile goes into the folder that is still where it was, so it moves with the rest.
     const later = await registered('Monthly status');
@@ -312,6 +319,8 @@ describe('owning department transfer', { skip: SKIP_NO_DB }, () => {
     const again = await c.admin.request('POST', `${transferUrl()}/retry`);
     assert.equal(again.status, 200, JSON.stringify(again.body));
     assert.deepEqual(again.body, { transferId: r.body.transferId, state: 'moving' });
+    const retried = await rows(`SELECT actor_user_id, subject_id, detail FROM audit_events WHERE action = 'project.department_transfer_retried'`);
+    assert.deepEqual(retried.map((a) => [a.actor_user_id, a.subject_id, a.detail]), [[ids.admin, project, { transferId: r.body.transferId }]]);
     assert.equal((await c.admin.request('POST', `${transferUrl()}/retry`)).status, 409, 'nothing to try again while moving');
     assert.deepEqual((await drain()).map((x) => x.failed), [undefined]);
     assert.equal((await rows(`SELECT state FROM project_department_transfers WHERE id = $1`, [r.body.transferId]))[0].state, 'done');
@@ -344,6 +353,56 @@ describe('owning department transfer', { skip: SKIP_NO_DB }, () => {
     assert.equal((await versionFiling(later)).location, undefined);
     assert.deepEqual(await granted(npf.id), await granted(pf.id));
     assert.ok((await granted(npf.id)).includes('ada@example.org'));
+  });
+
+  test('a file whose content differs from the record stops the move, and nothing is recorded as moved', async () => {
+    const out = await registered('Weekly status');
+    const f = await filed(out);
+    const od = (await folder('department', dept))!;
+    const pf = (await folder('project', `${dept}/${project}`))!;
+    // Same size, different content: only the provider hash tells.
+    fake.changeContent(drive.driveId, f.item_id, Buffer.from('# Weekly status\n\nThe valve audit is on Monday.\n'));
+    assert.equal((await item(f.item_id)).size, Number(f.size_bytes));
+    const r = await transfer(c.admin, { departmentId: newDept, reason: 'Reorganised', folderChoice: 'move' });
+    const ran = await drain();
+    assert.deepEqual(ran.map((x) => [x.job, x.failed]), [['transfer-folders', 'server']]);
+    await onFinalFailure(deps(), 'transfer-folders', r.body.transferId, 'server');
+    assert.equal((await rows(`SELECT state FROM project_department_transfers WHERE id = $1`, [r.body.transferId]))[0].state, 'move_failed');
+    assert.equal((await item(pf.item_id)).parentId, od.item_id, 'the folder is put back');
+    assert.equal((await fileRow(out)).path, f.path);
+    assert.ok(await folder('project', `${dept}/${project}`));
+    assert.equal((await rows(`SELECT count(*)::int AS n FROM stored_file_moves`))[0].n, 0);
+  });
+
+  test('a file deleted outside Kainow is flagged Missing and does not hold the move up', async () => {
+    const gone = await registered('Weekly status');
+    const kept = await registered('Monthly status');
+    const fg = await filed(gone);
+    await filed(kept);
+    fake.deleteItem(drive.driveId, fg.item_id);
+    const r = await transfer(c.admin, { departmentId: newDept, reason: 'Reorganised', folderChoice: 'move' });
+    assert.deepEqual((await drain()).map((x) => x.failed), [undefined]);
+    assert.equal((await rows(`SELECT state FROM project_department_transfers WHERE id = $1`, [r.body.transferId]))[0].state, 'done');
+    const g = await fileRow(gone);
+    assert.equal(g.check_status, 'missing');
+    assert.ok(g.last_checked_at);
+    assert.equal(g.path, `${NEW}/${PROJECT}/2026/Status reports/Weekly status v1.md`);
+    assert.deepEqual((await rows(`SELECT kind FROM output_events WHERE output_id = $1 AND kind = 'missing_found'`, [gone])).length, 1);
+    assert.equal((await fileRow(kept)).path, `${NEW}/${PROJECT}/2026/Status reports/Monthly status v1.md`);
+  });
+
+  test('the earlier department route makes the same transfer', async () => {
+    const r = await c.admin.request('POST', `/projects/${project}/department`, { departmentId: newDept, reason: 'Reorganised' });
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.equal(r.body.project.owningDepartment.name, NEW, 'answered with the project details');
+    const tr = await rows(`SELECT from_department_id, to_department_id, reason, state FROM project_department_transfers WHERE project_id = $1`, [project]);
+    assert.deepEqual(tr, [{ from_department_id: dept, to_department_id: newDept, reason: 'Reorganised', state: 'done' }]);
+    assert.equal((await rows(`SELECT count(*)::int AS n FROM audit_events WHERE action = 'project.department_transferred'`))[0].n, 1);
+    const h = await c.ada.request('GET', `/projects/${project}/history/deletions`);
+    const line = h.body.lines.find((l: { kind: string }) => l.kind === 'department_transfer');
+    assert.deepEqual([line.fromDepartment, line.toDepartment, line.reason], [OLD, NEW, 'Reorganised']);
+    const refused = await c.pm.request('POST', `/projects/${project}/department`, { departmentId: dept, reason: 'Back' });
+    assert.equal(refused.status, 403);
   });
 
   test('history shows the old department, reason and choice', async () => {
