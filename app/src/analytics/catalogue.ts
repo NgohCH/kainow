@@ -296,6 +296,12 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
   ...group('resource_settings_changes', 'Resources', ADMIN, 'resource and finance settings', [['changed', 'An organisation resource or finance setting changed: previous and new values, with a reason.']]),
   ...audit('Finance', PERSON, 'project financial tracking', [['finance.project_settings_changed', 'A project’s finance settings were changed, with a reason (D94).']]),
   ...audit('Finance', PERSON, 'project spending entry', [['finance.spending_recorded', 'A spending entry was recorded in a project (the entry id only).']]),
+  ...audit('Finance', 'The Owner or Sponsor whose approval completed the count', 'project budget', [
+    ['finance.budget_approved', 'A proposed budget (set_budget change request) was approved and became the project’s current budget version (ids only).'],
+  ]),
+  ...audit('Finance', 'The Owner or Sponsor whose approval completed the count', 'project spending entry', [
+    ['finance.adjustment_approved', 'A correction, refund or conversion of a spending entry (finance_adjustment change request) was approved (ids and type only).'],
+  ]),
   ...group('project_finance_changes', 'Finance', PERSON, 'project financial tracking', [['changed', 'A project’s financial tracking setting changed: previous and new values, with a reason.']]),
   ...group('approval_policy_changes', 'Proposals and changes', PERSON, 'approval policy', [['changed', 'An approval policy field changed, with a reason.']]),
   ...group('notification_settings_changes', 'Notifications', PERSON, 'notification settings', [['changed', 'A notification setting changed, with a reason.']]),

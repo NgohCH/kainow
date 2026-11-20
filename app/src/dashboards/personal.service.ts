@@ -86,6 +86,8 @@ const KIND_LABEL: Record<ChangeKind, string> = {
   deadline_review: 'Review a deadline',
   reconcile_completion: 'Confirm work finished during a pause',
   risk_handover: 'Take over a risk',
+  set_budget: 'Set the budget',
+  finance_adjustment: 'Adjust a spending entry',
 };
 
 const DUE_SOON_DAYS = 7;
