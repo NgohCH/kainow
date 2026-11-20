@@ -8,7 +8,7 @@ import { runMigrations } from '../db/migrate';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { seedUser } from '../testing/projects';
 import { OPS_DEFAULTS } from './settings';
-import { OpsSettingsService } from './settings.service';
+import { FLOOR_TOO_HIGH, OpsSettingsService } from './settings.service';
 import type { OpsSettings } from './settings';
 
 /** Skips the service's own validation so that the database CHECK is what refuses the values. */
@@ -150,5 +150,47 @@ describe('operations schema and settings', { skip: SKIP_NO_DB }, () => {
     await pool.query(`INSERT INTO storage_daily (day, location) VALUES ('2026-11-20', 'backup_disk')`);
     await raises(`INSERT INTO backup_runs (id, kind, started_at, outcome) VALUES ($1, 'weekly', $2, 'running')`, [uuidv7(), AT]);
     await raises(`INSERT INTO storage_readings (id, at, location) VALUES ($1, $2, 'cloud')`, [uuidv7(), AT]);
+  });
+
+  test('R23: a safe floor at or above the fresh database-disk free space is refused with 400 and the fixed text', async () => {
+    const GB = 1024 ** 3;
+    const reading = (minutesAgo: number, location: string, freeGb: number, unavailable = false) =>
+      pool.query(`INSERT INTO storage_readings (id, at, location, total_bytes, free_bytes, used_bytes, unavailable) VALUES ($1, $2, $3, $4, $5, $6, $7)`, [
+        uuidv7(),
+        new Date(AT.getTime() - minutesAgo * 60_000),
+        location,
+        100 * GB,
+        unavailable ? null : freeGb * GB,
+        unavailable ? null : (100 - freeGb) * GB,
+        unavailable,
+      ]);
+    await pool.query('DELETE FROM storage_readings');
+    try {
+      // A reading 31 minutes old is not fresh, and the backup disk does not count: nothing to compare with.
+      await reading(31, 'database_disk', 1);
+      await reading(1, 'backup_disk', 1);
+      assert.equal((await service.update(admin, { safeFloorGb: 10, reason: 'No fresh reading' })).safeFloorGb, 10);
+      // A fresh reading of 20 GB free: 20 and above are refused, 19 is taken.
+      await reading(5, 'database_disk', 20);
+      const changes = (await service.get()).changes.length;
+      for (const floor of [20, 25]) {
+        await assert.rejects(
+          service.update(admin, { safeFloorGb: floor, reason: 'Too high' }),
+          (e: unknown) => e instanceof BadRequestException && e.message === FLOOR_TOO_HIGH,
+        );
+      }
+      assert.equal((await service.get()).settings.safeFloorGb, 10, 'nothing changed');
+      assert.equal((await service.get()).changes.length, changes, 'no history row for a refused change');
+      assert.equal((await service.update(admin, { safeFloorGb: 19, reason: 'Just below' })).safeFloorGb, 19);
+      // Changing another value leaves the floor alone, so it is not checked again.
+      await reading(1, 'database_disk', 2);
+      assert.equal((await service.update(admin, { backupRetentionDays: 40, reason: 'Keep longer' })).backupRetentionDays, 40);
+      // An unavailable newest reading is no reading: the 2 GB one, 1 minute old, still decides.
+      await reading(0.5, 'database_disk', 0, true);
+      await assert.rejects(service.update(admin, { safeFloorGb: 2, reason: 'Lower' }), (e: unknown) => e instanceof BadRequestException);
+      assert.equal((await service.update(admin, { safeFloorGb: 1, reason: 'Lower still' })).safeFloorGb, 1);
+    } finally {
+      await pool.query('DELETE FROM storage_readings');
+    }
   });
 });

@@ -4,10 +4,17 @@ import { uuidv7 } from '../common/uuid7';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedUser } from '../testing/projects';
+import { shortTime } from './operations.service';
 import { PROTECTIVE_BANNER } from './protective';
 import { OperationsState } from './state';
 
 const GB = 1024 ** 3;
+
+test('banner times use fixed month names in UTC+8, never a locale short month such as "Sept"', () => {
+  assert.equal(shortTime(new Date('2026-09-21T18:04:00Z')), '22 Sep 02:04');
+  assert.equal(shortTime(new Date('2026-11-20T18:04:00Z')), '21 Nov 02:04');
+  assert.equal(shortTime(new Date('2026-06-01T00:00:00Z')), '1 Jun 08:00');
+});
 
 describe('operations API', { skip: SKIP_NO_DB }, () => {
   let t: TestApp;
@@ -152,6 +159,12 @@ describe('operations API', { skip: SKIP_NO_DB }, () => {
     assert.equal(p.body.changes.length, 1);
     assert.equal(p.body.changes[0].previous.safeFloorGb, 5);
     assert.equal(p.body.changes[0].next.safeFloorGb, 6);
+    // R23: with a fresh database-disk reading of 10 GB free, a floor of 10 GB is refused with the fixed text.
+    await reading('database_disk', 90);
+    const high = await admin.request('PUT', '/admin/operations/settings', { safeFloorGb: 10, reason: 'Far too high' });
+    assert.equal(high.status, 400);
+    assert.match(JSON.stringify(high.body), /The safe floor must be lower than the free space on the database disk now/);
+    assert.equal((await admin.request('PUT', '/admin/operations/settings', { safeFloorGb: 9, reason: 'Just below' })).status, 200);
   });
 
   test('banner: a member sees protective mode only; an administrator also sees backup trouble', async () => {

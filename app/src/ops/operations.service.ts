@@ -136,11 +136,13 @@ export type BannerView = { protective: boolean; admin?: { backups: BackupStatus;
 const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
 const SEVERITY: Record<StorageLevel, number> = { normal: 0, unknown: 1, warning: 2, critical: 3 };
 
+/** Fixed month names, as the email and digest dates: a locale's own short month can read "Sept". */
+const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
 /** '21 Nov 02:04' in UTC+8. */
 export function shortTime(at: Date): string {
   const d = new Date(at.getTime() + UTC8_MS);
-  const month = d.toLocaleString('en-GB', { month: 'short', timeZone: 'UTC' });
-  return `${d.getUTCDate()} ${month} ${d.toISOString().slice(11, 16)}`;
+  return `${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]} ${d.toISOString().slice(11, 16)}`;
 }
 
 /** Row to the view type; a `running` row older than 6 hours is shown as failed (interrupted). */

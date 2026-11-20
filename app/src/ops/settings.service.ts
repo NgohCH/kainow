@@ -8,6 +8,10 @@ import { PG_POOL } from '../db/database.module';
 import { OPS_BOUNDS, OPS_DEFAULTS, OPS_KEYS, type OpsSettings, loadOpsSettings, validateOpsSettings } from './settings';
 
 const REASON = 'Give a reason for the change (up to 1,000 characters).';
+export const FLOOR_TOO_HIGH =
+  'The safe floor must be lower than the free space on the database disk now, or Kainow would turn read-only at once.';
+const GB = 1024 ** 3;
+const FRESH_MS = 30 * 60_000;
 
 /** Keeps only the known keys of a request body. */
 function pick(body: unknown): Partial<OpsSettings> {
@@ -41,6 +45,23 @@ export class OpsSettingsService {
     return value;
   }
 
+  /**
+   * R23: a safe floor at or above the database disk's free space would turn Kainow read-only at the next storage check,
+   * and Resume could never pass while it stands (the settings change itself is refused in protective mode). Refused when
+   * the latest database-disk reading is fresh (under 30 minutes); with no fresh reading there is nothing to compare.
+   */
+  private async checkFloor(db: Pick<PoolClient, 'query'>, floorGb: number, at: Date): Promise<void> {
+    const r = (
+      await db.query(
+        `SELECT free_bytes::text AS free FROM storage_readings
+          WHERE location = 'database_disk' AND NOT unavailable AND free_bytes IS NOT NULL AND at > $1
+          ORDER BY at DESC, id DESC LIMIT 1`,
+        [new Date(at.getTime() - FRESH_MS)],
+      )
+    ).rows[0] as { free: string } | undefined;
+    if (r && floorGb * GB >= Number(r.free)) throw new BadRequestException(FLOOR_TOO_HIGH);
+  }
+
   /** Writes the row, one history row and the audit event together. `body` holds any subset of the values and `reason`. */
   async update(actorId: string, body: unknown): Promise<OpsSettings> {
     const src = body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
@@ -51,6 +72,7 @@ export class OpsSettingsService {
       await client.query('BEGIN');
       const previous = await loadOpsSettings(client, true);
       const value = this.merge(previous, body);
+      if (value.safeFloorGb !== previous.safeFloorGb) await this.checkFloor(client, value.safeFloorGb, at);
       try {
         await client.query(
           `UPDATE operations_settings SET backup_retention_days = $1, storage_warning_pct = $2, storage_critical_pct = $3,
