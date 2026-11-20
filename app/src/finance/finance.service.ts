@@ -184,8 +184,22 @@ export async function loadFiguresMany(db: Db, projectIds: string[]): Promise<Map
     [ids],
   );
   const budgets = new Map<string, bigint>(versions.map((v) => [v.projectId as string, minor(v.amount as string)]));
+  // An entry in the reporting currency with no approved adjustment counts at its own amount, so those are summed in the
+  // database (one row a project) and only the rest (foreign or adjusted entries) are read one by one: the same figures
+  // from a fraction of the rows (leadership summary bench, spec 13).
+  const { rows: plainRows } = await db.query(
+    `SELECT e.project_id AS "projectId", sum(e.amount)::text AS amount
+       FROM expenditures e JOIN project_finance_settings s ON s.project_id = e.project_id
+      WHERE e.project_id = ANY($1::uuid[]) AND e.currency = s.currency
+        AND NOT EXISTS (SELECT 1 FROM expenditure_adjustments a WHERE a.expenditure_id = e.id)
+      GROUP BY e.project_id`,
+    [ids],
+  );
   const { rows: entryRows } = await db.query(
-    `SELECT e.id, e.project_id AS "projectId", e.amount::text AS amount, e.currency FROM expenditures e WHERE e.project_id = ANY($1::uuid[])`,
+    `SELECT e.id, e.project_id AS "projectId", e.amount::text AS amount, e.currency
+       FROM expenditures e JOIN project_finance_settings s ON s.project_id = e.project_id
+      WHERE e.project_id = ANY($1::uuid[])
+        AND (e.currency <> s.currency OR EXISTS (SELECT 1 FROM expenditure_adjustments a WHERE a.expenditure_id = e.id))`,
     [ids],
   );
   const { rows: adjRows } = await db.query(
@@ -201,6 +215,8 @@ export async function loadFiguresMany(db: Db, projectIds: string[]): Promise<Map
     adjByEntry.set(a.entryId as string, list);
   }
   const entriesByProject = new Map<string, { amount: bigint; currency: Currency; adjustments: Adj[] }[]>();
+  const reportingOf = new Map<string, Currency>(settings.map((r) => [r.projectId as string, r.currency as Currency]));
+  for (const r of plainRows) entriesByProject.set(r.projectId as string, [{ amount: minor(r.amount as string), currency: reportingOf.get(r.projectId as string) as Currency, adjustments: [] }]);
   for (const e of entryRows) {
     const list = entriesByProject.get(e.projectId as string) ?? [];
     list.push({ amount: minor(e.amount), currency: e.currency, adjustments: adjByEntry.get(e.id as string) ?? [] });

@@ -362,6 +362,20 @@ CREATE TABLE expenditure_adjustments (id uuid PRIMARY KEY, expenditure_id uuid N
 - **Permission tests** for every route; **catalogue completeness**; **quarantine registry completeness**; **migration test**.
 - **Web helper tests:** "Not provided" / "Not required" / explicit 0 wording, overlap wording, money formatting per currency, status filter defaults, form validation.
 - **Bench (`npm run bench-resources`, own database):** sub-project 7's data plus 300 catalogue items, 5,000 resource lines (40% on catalogue items, many overlapping), 60 tracking projects with 20,000 spending entries and 1,000 adjustments. **Aims (approved by the Product Owner, 20 November 2026): `GET /projects/:id/resources` p95 < 200 ms for a project with 100 lines; `GET /projects/:id/finance` p95 < 200 ms with 1,000 entries; `GET /admin/analytics?panel=resources` p95 < 500 ms; `GET /dashboard/leadership` (organisation scope) stays < 500 ms with the new fields.** Results are recorded here, met or missed.
+- **Bench results (20 November 2026).** Machine: developer laptop (11th Gen Intel Core i7-1185G7, 32 GB), Docker Postgres 16, one run through the real HTTP app on loopback, database `kainow_bench_sp8`. Data: sub-project 7's bench data (200 users, 100 projects, 30,000 tasks, 3,000 risks) plus 10 categories and 300 catalogue items, 5,000 resource lines (2,000 on catalogue items, 40%, on 300 shared items so many overlap; 100 in the timed project), 60 tracking projects (MYR, one budget version each) with 20,000 spending entries (1,000 in the timed project; one in five in USD) and 1,000 approved adjustments (500 conversions, 250 corrections, 250 refunds). Timed people: the Administrator, who is Project Manager of both timed projects, for the first three requests; the organisation-scope leadership holder (all fields shown, including Resources and Budget) for the fourth. 5 warm-up requests, then 50 counted; p95 is nearest-rank. Run with `npm run bench-resources`.
+
+  | Request | Aim p95 | p50 | p95 | max | Result |
+  |---|---|---|---|---|---|
+  | `GET /projects/:id/resources` (100 lines) | < 200 ms | 50.0 ms | 96.0 ms | 105.2 ms | met |
+  | `GET /projects/:id/finance` (1,000 entries) | < 200 ms | 19.7 ms | 27.9 ms | 41.0 ms | met |
+  | `GET /admin/analytics?panel=resources` | < 500 ms | 70.5 ms | 79.5 ms | 81.7 ms | met |
+  | `GET /dashboard/leadership` (organisation scope, new fields shown) | < 500 ms | 405.2 ms | 489.4 ms | 513.7 ms | met |
+
+  The first full run missed two aims, both for reasons no index could cure (the overlap and figures queries run in about 1 ms and 10 ms), so the fixes are in the code, and the run above is after them:
+  - **Resources tab, 216.9 ms p95 before, 58.0 to 96.0 ms after (two runs).** About 88 other projects overlapped the timed project's lines, and the viewer's right to open each was checked one after another, a few queries each. The checks now run together (`overlapsFor`); the rule applied to each project is unchanged.
+  - **Leadership, 667.5 ms p95 before, 459.5 to 489.4 ms after (two runs).** The budget figures read all 20,000 entries into memory. Entries in the reporting currency with no adjustment are now summed in the database and only foreign or adjusted entries are read one by one (`loadFiguresMany`); the result is identical to the per-project figures for all 60 tracking projects.
+
+  Leadership is met with little room: without the new fields, sub-project 7's code on this data set measured 378.7 ms p50 and 497.3 ms p95 on the same machine the same day, so almost all of its time is sub-project 7's task measures, and the Resources and Budget fields add about 30 ms at p50. Run-to-run variation on this laptop is about 100 ms at p95 (one run in the series read 609.7 ms). No index was added.
 - Screens checked at desktop width and 375 px, by keyboard, both themes; WCAG 2.2 AA.
 
 ## 14. Left to the builder, and open items

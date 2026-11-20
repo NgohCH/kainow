@@ -174,18 +174,25 @@ export async function overlapsFor(
       ORDER BY p.name, p.created_at, o.project_id, mine.id`,
     [eligible.map((l) => l.id)],
   );
-  for (const r of rows as { lineId: string; projectId: string; name: string }[]) {
-    let canSee = visible.get(r.projectId);
-    if (canSee === undefined) {
-      canSee = await access.context(user, r.projectId, db).then(
-        () => true,
-        (err: unknown) => {
-          if (err instanceof NotFoundException) return false;
-          throw err;
-        },
+  // Which of the overlapping projects the viewer may open: one check per distinct project, run together (a line can overlap
+  // dozens of projects, and one after another they were the whole cost of this request).
+  const unseen = [...new Set((rows as { projectId: string }[]).map((r) => r.projectId))].filter((id) => !visible.has(id));
+  await Promise.all(
+    unseen.map(async (id) => {
+      visible.set(
+        id,
+        await access.context(user, id, db).then(
+          () => true,
+          (err: unknown) => {
+            if (err instanceof NotFoundException) return false;
+            throw err;
+          },
+        ),
       );
-      visible.set(r.projectId, canSee);
-    }
+    }),
+  );
+  for (const r of rows as { lineId: string; projectId: string; name: string }[]) {
+    const canSee = visible.get(r.projectId);
     const overlap = out.get(r.lineId) as Overlap;
     if (canSee) overlap.named.push({ projectId: r.projectId, name: r.name });
     else overlap.others += 1;

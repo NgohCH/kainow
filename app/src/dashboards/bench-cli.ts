@@ -177,7 +177,7 @@ export async function seedDashboards(pool: Pool, log: (m: string) => void = cons
 }
 
 /** The organisation-scope leadership grant, made as the Administrator through the app (a person cannot grant to themselves). */
-async function ensureGrant(pool: Pool, admin: Session): Promise<void> {
+export async function ensureGrant(pool: Pool, admin: Session): Promise<void> {
   const leader = (await pool.query(`SELECT id FROM users WHERE email = $1`, [LEADER_EMAIL])).rows[0].id as string;
   if ((await pool.query(`SELECT 1 FROM leadership_grants WHERE user_id = $1 AND revoked_at IS NULL`, [leader])).rows[0]) return;
   const r = await admin.request('POST', '/admin/leadership-grants', {
