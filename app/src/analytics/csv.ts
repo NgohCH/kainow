@@ -193,12 +193,19 @@ function resourcesTable(d: ResourcesPanel, table: ResourcesTable): Table {
   }
   const rows: unknown[][] = [];
   for (const g of d.finance) {
-    rows.push([g.currency, 'Currency total', `All ${g.currency} projects`, '', g.projectsTracking, g.budgetNotProvided, g.totalBudget, g.totalSpent, g.atFirst, g.atSecond, '', '']);
-    for (const r of g.projects) rows.push([g.currency, 'Project', r.name, r.owningDepartment, '', '', r.budget ?? 'Not provided', r.spent, '', '', r.percentUsed ?? '', r.level]);
+    rows.push([g.currency, 'Currency total', `All ${g.currency} projects`, '', g.projectsTracking, g.budgetNotProvided, g.totalBudget, g.currency, g.totalSpent, g.currency, g.atFirst, g.atSecond, '', '', '', '']);
+    for (const r of g.projects) {
+      const percent = r.percentUsed ?? (r.budget === null ? 'Not provided' : 'Not applicable');
+      const notIn = r.notInTotals.map((n) => `${n.currency} ${n.amount}`).join('; ');
+      rows.push([g.currency, 'Project', r.name, r.owningDepartment, '', '', r.budget ?? 'Not provided', g.currency, r.spent, g.currency, '', '', percent, r.overBudget ? 'Over budget' : 'No', r.level, notIn || 'None']);
+    }
   }
-  rows.push(['', 'Not required', 'Projects with financial tracking not required', '', d.notRequired, '', '', '', '', '', '', '']);
+  rows.push(['', 'Not required', 'Projects with financial tracking not required', '', d.notRequired, '', 'Not required', '', 'Not required', '', '', '', '', '', '', '']);
   return {
-    columns: ['Currency', 'Level', 'Name', 'Owning department', 'Projects', 'Budget not provided', 'Approved budget', 'Spent', 'At first threshold', 'At second threshold', 'Percent used', 'Warning level'],
+    columns: [
+      'Currency', 'Level', 'Name', 'Owning department', 'Projects', 'Budget not provided', 'Approved budget', 'Approved budget currency', 'Spent', 'Spent currency',
+      'At first threshold', 'At second threshold', 'Percent used', 'Over budget', 'Warning level', 'Not in totals (currency and amount)',
+    ],
     rows,
   };
 }

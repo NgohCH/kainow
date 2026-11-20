@@ -242,9 +242,12 @@ describe('analytics Resources and finance panel', { skip: SKIP_NO_DB }, () => {
     const fin = await exportOf('table=finance');
     const rows = parseCsv(fin.text).rows;
     assert.equal(rows[0][0], 'Currency');
-    assert.deepEqual(rows.find((r) => r[0] === 'USD' && r[1] === 'Currency total'), ['USD', 'Currency total', 'All USD projects', '', '1', '0', '500.00', '600.00', '1', '1', '', '']);
-    assert.deepEqual(rows.find((r) => r[0] === 'MYR' && r[2] === 'Beta works'), ['MYR', 'Project', 'Beta works', 'Alpha Unit', '', '', 'Not provided', '0.00', '', '', '', '0']);
-    assert.deepEqual(rows.find((r) => r[1] === 'Not required')?.slice(4, 5), ['1']);
+    assert.deepEqual(rows.find((r) => r[0] === 'USD' && r[1] === 'Currency total'), ['USD', 'Currency total', 'All USD projects', '', '1', '0', '500.00', 'USD', '600.00', 'USD', '1', '1', '', '', '', '']);
+    assert.equal(rows[0].length, 16);
+    assert.ok(rows.every((r) => r.length === 16));
+    assert.deepEqual(rows.find((r) => r[0] === 'MYR' && r[2] === 'Beta works'), ['MYR', 'Project', 'Beta works', 'Alpha Unit', '', '', 'Not provided', 'MYR', '0.00', 'MYR', '', '', 'Not provided', 'No', '0', 'None']);
+    assert.deepEqual(rows.find((r) => r[0] === 'USD' && r[1] === 'Project')?.slice(12, 15), ['120', 'Over budget', '2']);
+    assert.deepEqual(rows.find((r) => r[1] === 'Not required')?.slice(4, 9), ['1', '', 'Not required', '', 'Not required']);
     assert.doesNotMatch(fin.text, /Survey pegs|Dummy Supplier|INV-77/);
 
     const audit = (await t.pool.query(`SELECT actor_user_id, detail FROM audit_events WHERE action = 'analytics.exported' ORDER BY id`)).rows;
@@ -296,7 +299,12 @@ describe('analytics Resources and finance panel', { skip: SKIP_NO_DB }, () => {
     assert.equal(fin.body.records, undefined);
     const dept = await drill(`level=department&id=${deptB}&measure=financeAtSecond`);
     assert.equal(dept.body.counts.total, 1);
-    assert.deepEqual(dept.body.counts.breakdown.map((b: any) => [b.name, b.value]), [['=Gamma yard', 1], ['Zeta plan', 0]]);
+    assert.deepEqual(dept.body.counts.breakdown.map((b: any) => [b.name, b.value]), [['=Gamma yard', 1]]);
+    assert.equal(dept.body.notRequired, 1);
+    const zetaDrill = await drill(`level=project&id=${zeta}&measure=financeBudgetNotProvided`);
+    assert.equal(zetaDrill.body.notRequired, 1);
+    assert.equal((await drill('level=org&measure=financeAtFirst')).body.notRequired, 1);
+    assert.equal((await drill('level=org&measure=linesNeeded')).body.notRequired, undefined);
     assert.equal((await drill(`level=org&measure=financeBudgetNotProvided`)).body.counts.total, 1);
     // A project outside the filters is not found.
     assert.equal((await drill(`level=project&id=${zeta}&measure=linesNeeded&status=active`)).status, 404);

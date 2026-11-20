@@ -50,6 +50,8 @@ export interface DrillResult {
   records?: DrillRecord[];
   /** Resource line detail (the Resources tab's fields), for a participant only; never any finance detail. */
   lines?: LineView[];
+  /** Finance measures: projects in this level whose financial tracking is Not required, counted apart and never as zero. */
+  notRequired?: number;
   limited?: string;
   computedAt: string;
 }
@@ -138,20 +140,23 @@ export class DrillService {
     }
 
     // The same panel the Administrator is looking at, so every count here equals one there.
-    const { rows, departments, computedAt } = await this.rows(m, f);
+    const { rows, departments, computedAt, notRequired } = await this.rows(m, f);
+    const nr = (pred: (r: { departmentId: string; id: string }) => boolean): { notRequired?: number } => (notRequired ? { notRequired: notRequired.filter(pred).length } : {});
     const breakdownOf = (list: Row[]) => list.map((r) => ({ id: r.id, name: r.name, value: r.value }));
 
     if (level === 'org') {
       const breakdown = departments.map((d) => ({ id: d.id, name: d.name, value: sum(rows.filter((r) => r.departmentId === d.id).map((r) => r.value), m) }));
-      return { level, id, measure: m, counts: { total: sum(rows.map((r) => r.value), m), breakdown }, computedAt };
+      return { level, id, measure: m, counts: { total: sum(rows.map((r) => r.value), m), breakdown }, ...nr(() => true), computedAt };
     }
     if (level === 'department') {
       if (!departments.some((d) => d.id === id)) throw new NotFoundException();
       const own = rows.filter((r) => r.departmentId === id);
-      return { level, id, measure: m, counts: { total: sum(own.map((r) => r.value), m), breakdown: breakdownOf(own) }, computedAt };
+      return { level, id, measure: m, counts: { total: sum(own.map((r) => r.value), m), breakdown: breakdownOf(own) }, ...nr((r) => r.departmentId === id), computedAt };
     }
 
     const row = rows.find((r) => r.id === id);
+    // A project whose financial tracking is Not required is in scope but has no finance figure: say so, never 0.
+    if (!row && notRequired?.some((r) => r.id === id)) return { level: 'project', id, measure: m, counts: { total: 0 }, notRequired: 1, computedAt };
     if (!row) throw new NotFoundException();
     const out: DrillResult = { level: 'project', id, measure: m, counts: { total: row.value }, computedAt };
     const listing = LISTING[m];
@@ -172,7 +177,12 @@ export class DrillService {
     return canReadContent(ctx);
   }
 
-  private async rows(m: DrillMeasure, f: AnalyticsFilters): Promise<{ rows: Row[]; departments: Array<{ id: string; name: string }>; computedAt: string }> {
+  private async rows(m: DrillMeasure, f: AnalyticsFilters): Promise<{
+    rows: Row[];
+    departments: Array<{ id: string; name: string }>;
+    computedAt: string;
+    notRequired?: Array<{ id: string; departmentId: string }>;
+  }> {
     if (m === 'completion' || m === 'onTime') {
       const p = await this.panels.progress(f);
       return {
@@ -190,10 +200,13 @@ export class DrillService {
         if (!r) return 0;
         return m === 'financeBudgetNotProvided' ? (r.budget === null ? 1 : 0) : m === 'financeAtFirst' ? (r.level >= 1 ? 1 : 0) : r.level === 2 ? 1 : 0;
       };
+      // Finance rows are the tracked projects only; the others are returned apart as Not required.
+      const projects = field ? p.lines.projects : p.lines.projects.filter((r) => fin.has(r.id));
       return {
-        rows: p.lines.projects.map((r) => ({ id: r.id, name: r.name, departmentId: r.departmentId, value: field ? r[field] : finance(r.id) })),
+        rows: projects.map((r) => ({ id: r.id, name: r.name, departmentId: r.departmentId, value: field ? r[field] : finance(r.id) })),
         departments: p.lines.departments.map((d) => ({ id: d.id, name: d.name })),
         computedAt: p.computedAt,
+        ...(field ? {} : { notRequired: p.lines.projects.filter((r) => !fin.has(r.id)).map((r) => ({ id: r.id, departmentId: r.departmentId })) }),
       };
     }
     const key = (m === 'overdue' ? 'overdueTasks' : m === 'blocked' ? 'blockedTasks' : m) as (typeof PROBLEM_KEYS)[number];
