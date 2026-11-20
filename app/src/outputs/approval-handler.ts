@@ -2,6 +2,7 @@ import { ConflictException } from '@nestjs/common';
 import { writeAudit } from '../audit/audit';
 import { uuidv7 } from '../common/uuid7';
 import { decide } from '../projects/matrix';
+import type { PoolClient } from 'pg';
 import type { ChangeHandler } from '../changes/handlers';
 
 /** Shown wherever an output approval is asked for or answered (spec 4.3; outputs rules 6, O13). */
@@ -18,6 +19,37 @@ export const LATER_APPROVED = 'A later version is already approved, so this earl
 
 /** The check results that stop a version being approved (spec 4.3). */
 const BAD_CHECKS = ['changed', 'missing', 'access_denied'];
+
+export const OUTPUT_ENDED = 'The output was withdrawn, declined, deleted or held, so this approval request ended.';
+export const LATER_VERSION_APPROVED = 'A later version of the output was approved.';
+
+/**
+ * Ends the output's pending approval requests in the caller's transaction: withdrawn (the output itself is gone from
+ * approval: withdrawn, declined, deleted, held) or superseded (`beforeVersionNo`: a later version was approved, so
+ * only requests for earlier versions end). `by` is whoever caused it. Returns how many ended.
+ */
+export async function endOutputApprovalRequests(
+  c: PoolClient,
+  outputId: string,
+  by: string,
+  at: Date,
+  opts: { beforeVersionNo?: number } = {},
+): Promise<number> {
+  const superseding = opts.beforeVersionNo !== undefined;
+  const { rows } = await c.query<{ id: string; projectId: string; version: number }>(
+    `UPDATE change_requests SET status = $4, decided_by = $2, decided_at = $3, reason = $5
+      WHERE kind = 'approve_output' AND status = 'pending'
+        AND target_id IN (SELECT id FROM output_versions WHERE output_id = $1 AND ($6::int IS NULL OR version_no < $6))
+      RETURNING id, project_id AS "projectId", version`,
+    [outputId, by, at, superseding ? 'superseded' : 'withdrawn', superseding ? LATER_VERSION_APPROVED : OUTPUT_ENDED, opts.beforeVersionNo ?? null],
+  );
+  for (const r of rows) {
+    const detail = { projectId: r.projectId, version: r.version, outputId };
+    if (superseding) await writeAudit(c, { at, action: 'change.superseded', actorUserId: by, subjectType: 'change_request', subjectId: r.id, detail });
+    else await writeAudit(c, { at, action: 'change.withdrawn', actorUserId: by, subjectType: 'change_request', subjectId: r.id, detail });
+  }
+  return rows.length;
+}
 
 /**
  * Approval of one exact output version through the project's approval policy (spec 4.3, D100). Raised by the PM or a
@@ -55,14 +87,24 @@ export const approveOutputHandler: ChangeHandler = {
     if (f.state === 'linked' && f.checkStatus !== 'ok') throw new ConflictException(NOT_CHECKED);
     return { outputId: target.outputId, versionNo: target.versionNo };
   },
+  async afterSubmit(c, ctx, target, request, at) {
+    await c.query(`INSERT INTO output_events (id, output_id, version_id, kind, actor_id, at, detail) VALUES ($1, $2, $3, 'approval_requested', $4, $5, $6)`, [
+      uuidv7(at.getTime()), target.outputId, target.id, request.submittedBy, at, JSON.stringify({ requestId: request.id, versionNo: target.versionNo }),
+    ]);
+    await writeAudit(c, {
+      at, action: 'output.approval_requested', actorUserId: request.submittedBy, subjectType: 'output', subjectId: target.outputId,
+      detail: { projectId: ctx.project.id, versionNo: target.versionNo, requestId: request.id },
+    });
+  },
   async apply(c, ctx, target, _terms, request, at) {
     const by = request.decidedBy as string;
-    const event = (kind: string, versionId: string, detail: Record<string, unknown>) =>
+    // History orders by time: approved first, then each replaced version one millisecond later, in version order.
+    const event = (kind: string, versionId: string, when: Date, detail: Record<string, unknown>) =>
       c.query(`INSERT INTO output_events (id, output_id, version_id, kind, actor_id, at, detail) VALUES ($1, $2, $3, $4, $5, $6, $7)`, [
-        uuidv7(at.getTime()), target.outputId, versionId, kind, by, at, JSON.stringify(detail),
+        uuidv7(when.getTime()), target.outputId, versionId, kind, by, when, JSON.stringify(detail),
       ]);
     await c.query(`UPDATE output_versions SET status = 'approved', approval_request_id = $2 WHERE id = $1`, [target.id, request.id]);
-    await event('approved', target.id, { requestId: request.id, versionNo: target.versionNo });
+    await event('approved', target.id, at, { requestId: request.id, versionNo: target.versionNo });
     const replaced = (
       await c.query<{ id: string; versionNo: number }>(
         `UPDATE output_versions SET status = 'superseded'
@@ -70,7 +112,10 @@ export const approveOutputHandler: ChangeHandler = {
         [target.outputId, target.versionNo],
       )
     ).rows;
-    for (const r of replaced.sort((a, b) => a.versionNo - b.versionNo)) await event('superseded', r.id, { by: target.versionNo, requestId: request.id });
+    replaced.sort((a, b) => a.versionNo - b.versionNo);
+    for (const [i, r] of replaced.entries()) await event('superseded', r.id, new Date(at.getTime() + i + 1), { by: target.versionNo, requestId: request.id });
+    // A request still waiting for an earlier version is set aside: a later version is the approved one.
+    await endOutputApprovalRequests(c, target.outputId, by, at, { beforeVersionNo: target.versionNo });
     await writeAudit(c, {
       at, action: 'output.approved', actorUserId: by, subjectType: 'output', subjectId: target.outputId,
       detail: { projectId: ctx.project.id, versionNo: target.versionNo, requestId: request.id, superseded: replaced.map((r) => r.versionNo) },

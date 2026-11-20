@@ -22,7 +22,7 @@ import type { StorageConnector } from '../storage/connector';
 import { STORAGE_CONNECTORS, type StorageConnectorFactory, StorageWaitingForKey } from '../storage/connector-factory';
 import { type OutputFormat, loadStorageSettings } from '../storage/settings';
 import { type DestinationRef, type ItemState, StorageError } from '../storage/types';
-import { DOES_NOT_APPROVE_COMMITMENTS, approveOutputHandler } from './approval-handler';
+import { DOES_NOT_APPROVE_COMMITMENTS, approveOutputHandler, endOutputApprovalRequests } from './approval-handler';
 import { ALREADY_FILED, BEING_FILED, LINKED_NOT_FILED, NOT_KEPT, NO_DESTINATION, REGISTER_FIRST, filingFailedLabel, requestFiling } from './filing';
 import { effectiveFormats, outputRefusal } from './formats';
 import { outputFileName } from './naming';
@@ -511,6 +511,7 @@ export class OutputsService {
       if (row.status !== 'submitted') throw new ConflictException(NOT_SUBMITTED);
       const reason = readReason(reasonInput);
       await c.query(`UPDATE outputs SET status = 'declined' WHERE id = $1`, [outputId]);
+      await endOutputApprovalRequests(c, outputId, user.id, at);
       await this.event(c, outputId, 'declined', user.id, at, { reason });
       await writeAudit(c, { at, action: 'output.declined', actorUserId: user.id, subjectType: 'output', subjectId: outputId });
     });
@@ -622,6 +623,7 @@ export class OutputsService {
       }
       await c.query(`UPDATE outputs SET ai_assisted = ai_assisted OR (SELECT ai_assisted FROM outputs WHERE id = $2) WHERE id = $1`, [targetOutputId, outputId]);
       await c.query(`UPDATE outputs SET status = 'declined' WHERE id = $1`, [outputId]);
+      await endOutputApprovalRequests(c, outputId, user.id, at);
       await this.event(c, outputId, 'declined', user.id, at, { reason: `Accepted into ${t.title}`, detail: { acceptedInto: targetOutputId } });
       await writeAudit(c, { at, action: 'output.accepted_into', actorUserId: user.id, subjectType: 'output', subjectId: targetOutputId, detail: { from: outputId, versions: versions.length } });
     });
@@ -776,18 +778,13 @@ export class OutputsService {
    */
   async requestApproval(user: AuthUser, projectId: string, outputId: string, versionNo: number): Promise<{ request: RequestView; notice: string }> {
     await this.visible(user, projectId, outputId);
-    const at = this.clock();
     let request: RequestView | undefined;
     await this.tx(async (c) => {
-      const { ctx } = await this.visible(user, projectId, outputId, c, true);
-      const verdict = decide({ action: 'output.approve_request', roles: ctx.roles, status: ctx.project.status });
-      if (!verdict.allowed) throw new ForbiddenException(verdict.reason);
+      await this.visible(user, projectId, outputId, c, true);
       const v = (await c.query(`SELECT id FROM output_versions WHERE output_id = $1 AND version_no = $2`, [outputId, versionNo])).rows[0];
       if (!v) throw new NotFoundException();
       const made = await this.changes.submitWithin(c, user, projectId, { kind: 'approve_output', targetKind: 'output_version', targetId: v.id, terms: {} }, {}, () => undefined);
       request = made.request;
-      await this.event(c, outputId, 'approval_requested', user.id, at, { versionId: v.id, detail: { requestId: request.id, versionNo } });
-      await writeAudit(c, { at, action: 'output.approval_requested', actorUserId: user.id, subjectType: 'output', subjectId: outputId, detail: { versionNo, requestId: request.id } });
     });
     return { request: request as RequestView, notice: DOES_NOT_APPROVE_COMMITMENTS };
   }

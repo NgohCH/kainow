@@ -4,7 +4,7 @@ import { uuidv7 } from '../common/uuid7';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
-import { DOES_NOT_APPROVE_COMMITMENTS, FILE_NOT_AS_FILED, IN_REVIEW, LATER_APPROVED, NOT_A_DRAFT, NOT_CHECKED, NOT_FILED, NOT_REGISTERED } from './approval-handler';
+import { DOES_NOT_APPROVE_COMMITMENTS, endOutputApprovalRequests, FILE_NOT_AS_FILED, IN_REVIEW, LATER_APPROVED, NOT_A_DRAFT, NOT_CHECKED, NOT_FILED, NOT_REGISTERED } from './approval-handler';
 
 function multipart(fields: Record<string, string>, file: { name: string; bytes: Buffer }): { body: Buffer; type: string } {
   const b = 'approvalboundary42';
@@ -23,12 +23,12 @@ describe('approving an output version', { skip: SKIP_NO_DB }, () => {
   const rows = async (sql: string, params: unknown[] = []) => (await t.pool.query(sql, params)).rows;
 
   /** A registered output (version 1 uploaded, not filed). */
-  async function registered(title = 'Status report', by = 'pm'): Promise<string> {
+  async function registered(title = 'Status report', by = 'pm', restrictTo?: string[]): Promise<string> {
     const m = multipart({ title }, { name: 'report.md', bytes: Buffer.from(`# ${title}\n\nThe valve audit is on Friday.\n`) });
     const sub = await c[by].upload('POST', url(), m.body, m.type);
     assert.equal(sub.status, 201, JSON.stringify(sub.body));
     const typeId = (await rows(`SELECT id FROM report_types WHERE name = 'Status reports'`))[0].id;
-    const reg = await c[by].request('POST', url(`/${sub.body.id}/register`), { reportTypeId: typeId, issueDate: '2026-11-09' });
+    const reg = await c[by].request('POST', url(`/${sub.body.id}/register`), { reportTypeId: typeId, issueDate: '2026-11-09', ...(restrictTo ? { audience: { mode: 'restricted', namedUserIds: restrictTo } } : {}) });
     assert.equal(reg.status, 200, JSON.stringify(reg.body));
     return sub.body.id;
   }
@@ -112,7 +112,8 @@ describe('approving an output version', { skip: SKIP_NO_DB }, () => {
     const done = await approve(c.sponsor, await asked(c.deputy, out, 2));
     assert.equal(done.status, 200, JSON.stringify(done.body));
     assert.deepEqual(await statuses(out), ['1:superseded', '2:approved']);
-    assert.deepEqual((await events(out)).filter((e) => e.startsWith('approved') || e.startsWith('superseded')).sort(), ['approved:1', 'approved:2', 'superseded:1']);
+    // The approval first, then the version it replaced, in that order (not sorted; the test clock is frozen, so only offsets order them).
+    assert.deepEqual((await events(out)).filter((e) => e === 'approved:2' || e === 'superseded:1'), ['approved:2', 'superseded:1']);
 
     // A draft earlier version is not changed by a later approval, and can no longer be approved itself.
     const other = await registered('Second report');
@@ -217,6 +218,9 @@ describe('approving an output version', { skip: SKIP_NO_DB }, () => {
     const versionId = (await rows(`SELECT id FROM output_versions WHERE output_id = $1`, [out]))[0].id;
     const sub = await c.pmowner.request('POST', `/projects/${both}/changes`, { kind: 'approve_output', targetKind: 'output_version', targetId: versionId, terms: {}, approve: true });
     assert.equal(sub.status, 201, JSON.stringify(sub.body));
+    // Asking by the generic route records the request on the output and the audit trail just as the output route does.
+    assert.ok((await events(out)).includes('approval_requested:1'));
+    assert.equal((await rows(`SELECT count(*)::int AS n FROM audit_events WHERE action = 'output.approval_requested' AND subject_id = $1`, [out]))[0].n, 1);
     const req = sub.body.request;
     assert.equal(req.status, 'pending');
     assert.equal(req.approvals.length, 1);
@@ -286,6 +290,54 @@ describe('approving an output version', { skip: SKIP_NO_DB }, () => {
     assert.equal((await approve(c.owner, wreq)).status, 409);
     await t.pool.query(`UPDATE projects SET status = 'planned' WHERE id = $1`, [project]);
     assert.equal((await approve(c.owner, wreq)).status, 200);
+  });
+
+  test('approval requests are listed only to people who may read the output, and leave with a Deleted one', async () => {
+    const out = await registered('Board paper', 'pm', [ids.pm, ids.owner, ids.sponsor]);
+    await filed(out, 1);
+    const req = await asked(c.pm, out);
+    assert.equal((await ask(c.deputy, out)).status, 404); // a Deputy outside the audience cannot even see it
+    const listed = async (who: Client) => {
+      const r = await who.request('GET', `/projects/${project}/changes`);
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+      return (r.body.requests ?? r.body) as Array<{ id: string; output?: unknown }>;
+    };
+    assert.ok((await listed(c.owner)).some((x) => x.id === req.id));
+    const seen = await listed(c.ada);
+    assert.ok(!seen.some((x) => x.id === req.id));
+    assert.ok(!JSON.stringify(seen).includes('Board paper'));
+    // The people who may not read it do not get it from their own dashboard either.
+    assert.ok(!JSON.stringify((await c.ada.request('GET', '/dashboard/me')).body).includes('Board paper'));
+    await t.pool.query(`UPDATE outputs SET deleted_at = now(), deleted_by = $2, delete_reason = 'x' WHERE id = $1`, [out, ids.pm]);
+    assert.ok(!(await listed(c.owner)).some((x) => x.id === req.id));
+  });
+
+  test('ending an output ends its waiting approval requests; approving a later version ends earlier ones', async () => {
+    const ended = await registered('Withdrawn soon');
+    await filed(ended, 1);
+    const req = await asked(c.pm, ended);
+    const cx = await t.pool.connect();
+    try {
+      await cx.query('BEGIN');
+      assert.equal(await endOutputApprovalRequests(cx, ended, ids.pm, new Date()), 1);
+      await cx.query('COMMIT');
+    } finally {
+      cx.release();
+    }
+    const row = (await rows(`SELECT status, decided_by AS "by" FROM change_requests WHERE id = $1`, [req.id]))[0];
+    assert.deepEqual([row.status, row.by], ['withdrawn', ids.pm]);
+    assert.equal((await approve(c.owner, req)).status, 409);
+
+    const out = await registered('Two versions');
+    await filed(out, 1);
+    await addVersion(out);
+    await filed(out, 2);
+    const first = await asked(c.pm, out, 1);
+    const second = await asked(c.pm, out, 2);
+    assert.equal((await approve(c.owner, second)).status, 200);
+    assert.equal((await rows(`SELECT status FROM change_requests WHERE id = $1`, [first.id]))[0].status, 'superseded');
+    assert.deepEqual(await statuses(out), ['1:draft', '2:approved']);
+    assert.equal((await approve(c.owner, first)).status, 409);
   });
 
   test('approval response carries the does-not-approve-commitments text', async () => {

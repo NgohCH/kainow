@@ -11,6 +11,7 @@ import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/
 import { GRANT_READ_ONLY, type ProjectStatus } from '../projects/matrix';
 import { membershipState } from '../projects/membership';
 import { DOES_NOT_APPROVE_COMMITMENTS } from '../outputs/approval-handler';
+import { loadOutputAccessRow, readsOutput } from '../outputs/readers';
 import type { Created } from '../records/records.service';
 import { type ChangeHandler, HANDLERS, type RequestRow, type Row, type TargetKind } from './handlers';
 import { PolicyService } from './policy.service';
@@ -152,7 +153,16 @@ export function listedRequestSql(readable: boolean, userParam: string, todayPara
                    LEFT JOIN audiences xa ON xa.id = xs.audience_id
                   WHERE xi.id = change_requests.target_id AND ${notHeldSql('xi')}
                     AND CASE WHEN xs.publication = 'published' THEN COALESCE(${audienceVisibleSql('xa', userParam, todayParam)}, false)
-                             ELSE xs.submitted_by = ${userParam}::uuid OR ${activeManagerSql('xs.project_id', userParam, todayParam)} END)))`;
+                             ELSE xs.submitted_by = ${userParam}::uuid OR ${activeManagerSql('xs.project_id', userParam, todayParam)} END)))
+          -- An output approval is listed only for someone who may read the output: not a Deleted or held one, nor one
+          -- whose Restricted audience leaves the viewer out, nor one in access review (the person-by-person rule,
+          -- readsOutput, is applied again where requests are listed to one person).
+          AND (target_kind <> 'output_version' OR (${readable ? 'true' : 'false'} AND EXISTS (
+                 SELECT 1 FROM output_versions ov JOIN outputs oo ON oo.id = ov.output_id
+                  WHERE ov.id = change_requests.target_id AND ov.held_case_id IS NULL AND oo.deleted_at IS NULL AND oo.held_case_id IS NULL
+                    AND (oo.review_state <> 'review_required' OR change_requests.status <> 'pending')
+                    AND (NOT EXISTS (SELECT 1 FROM audiences oa WHERE oa.id = oo.audience_id AND oa.mode = 'restricted')
+                         OR EXISTS (SELECT 1 FROM audience_members om WHERE om.audience_id = oo.audience_id AND om.user_id = ${userParam}::uuid)))))`;
 }
 
 /**
@@ -330,6 +340,7 @@ export class ChangesService {
     ]);
     const request = await this.lockRequest(c, id);
     await this.audit(c, at, 'submitted', user.id, request, { kind: input.kind, targetKind: input.targetKind, targetId: target.id, required });
+    if (handler.afterSubmit) await handler.afterSubmit(c, ctx, target, request, at);
     let applied: AppliedResult | undefined;
     if (approving) applied = await this.recordApproval(c, ctx, request, target, handler, user, at, later);
     return { request: await this.view(c, ctx, user, await this.lockRequest(c, id)), ...(applied ? { applied } : {}) };
@@ -510,7 +521,25 @@ export class ChangesService {
         ORDER BY submitted_at DESC, id DESC`,
       [projectId, status ?? null, user.id, ctx.today],
     );
-    return this.views(this.pool, ctx, user, rows as RequestRow[]);
+    // An output approval is listed to someone who may read that output (readsOutput, person by person).
+    const readable = await this.readableOutputs(this.pool, ctx, (rows as RequestRow[]).filter((r) => r.kind === 'approve_output').map((r) => r.targetId));
+    return this.views(this.pool, ctx, user, (rows as RequestRow[]).filter((r) => r.kind !== 'approve_output' || readable.has(r.targetId)));
+  }
+
+  /** The output versions (by id) whose output the viewer may read now, with what an approval request shows of them. */
+  private async readableOutputs(db: Pool | PoolClient, ctx: ProjectContext, versionIds: string[]): Promise<Map<string, NonNullable<RequestView['output']>>> {
+    const out = new Map<string, NonNullable<RequestView['output']>>();
+    if (versionIds.length === 0) return out;
+    const { rows } = await db.query(
+      `SELECT v.id AS "versionId", o.id, o.title, v.version_no AS "versionNo" FROM output_versions v JOIN outputs o ON o.id = v.output_id
+        WHERE v.id = ANY($1::uuid[]) AND v.held_case_id IS NULL`,
+      [[...new Set(versionIds)]],
+    );
+    for (const o of rows) {
+      const access = await loadOutputAccessRow(db, o.id);
+      if (access && (await readsOutput(db, ctx, access))) out.set(o.versionId, { id: o.id, title: o.title, versionNo: o.versionNo });
+    }
+    return out;
   }
 
   /** One request as the viewer sees it. */
@@ -556,16 +585,7 @@ export class ChangesService {
         )
       ).rows) offers.set(o.riskId, { fromProject: { id: o.projectId, name: o.name }, risk: { id: o.riskId, description: o.description, severity: o.severity } });
     }
-    const outputs = new Map<string, NonNullable<RequestView['output']>>();
-    const versionIds = [...new Set(rows.filter((r) => r.kind === 'approve_output').map((r) => r.targetId))];
-    if (versionIds.length > 0) {
-      for (const o of (
-        await db.query(
-          `SELECT v.id AS "versionId", o.id, o.title, v.version_no AS "versionNo" FROM output_versions v JOIN outputs o ON o.id = v.output_id WHERE v.id = ANY($1::uuid[])`,
-          [versionIds],
-        )
-      ).rows) outputs.set(o.versionId, { id: o.id, title: o.title, versionNo: o.versionNo });
-    }
+    const outputs = await this.readableOutputs(db, ctx, rows.filter((r) => r.kind === 'approve_output').map((r) => r.targetId));
     return rows.map((r) => {
       const version = versions.get(r.id) as { terms: Record<string, unknown>; reason: string | null };
       const given = approvals.get(r.id) ?? [];
