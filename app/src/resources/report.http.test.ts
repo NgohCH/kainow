@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
+import { uuidv7 } from '../common/uuid7';
 import { seedProject, seedUser } from '../testing/projects';
 
 const START = Date.UTC(2026, 10, 9, 15, 50, 0);
@@ -88,8 +89,33 @@ describe('project resources report over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.match(text, /Financial tracking is not required for this project\. Earlier entries are kept here for reference\./);
   });
 
+  test('overlap names only a project the viewer can open; the other is counted, with no leak in JSON or CSV', async () => {
+    const owner = await seedUser(t.pool, 'other@example.org');
+    const annId = (await t.pool.query(`SELECT id FROM users WHERE email = 'ann@example.org'`)).rows[0].id as string;
+    const item = uuidv7();
+    await t.pool.query(`INSERT INTO resource_items (id, kind, reference, name, created_by, created_at, status) VALUES ($1, 'equipment', 'P-04', 'Dummy projector', $2, now(), 'active')`, [item, owner]);
+    const hidden = await seedProject(t.pool, { status: 'active', name: 'Hidden Yard', members: [{ userId: owner, role: 'pm' }] });
+    const open = await seedProject(t.pool, { status: 'active', name: 'Open Works', members: [{ userId: owner, role: 'pm' }, { userId: annId, role: 'member' }] });
+    for (const [pid, qty, notes] of [[hidden, 7, 'Secret hidden notes'], [open, 9, 'Open notes']] as const) {
+      await t.pool.query(
+        `INSERT INTO resource_lines (id, project_id, item_id, description, quantity, unit, starts_on, ends_on, notes, status, created_by, created_at, updated_at)
+         VALUES ($1, $2, $3, '', $4, 'items', '2026-12-05', '2026-12-10', $5, 'needed', $6, now(), now())`,
+        [uuidv7(), pid, item, qty, notes, owner],
+      );
+    }
+    assert.equal((await pm.request('POST', `/projects/${projectId}/resources/lines`, { itemId: item, quantity: '1', unit: 'items', startsOn: '2026-12-03', endsOn: '2026-12-14' })).status, 201);
+    const json = await ann.request('GET', url());
+    const mine = json.body.lines.find((l: { item: unknown }) => l.item);
+    assert.deepEqual(mine.overlap, { named: [{ projectId: open, name: 'Open Works' }], others: 1 });
+    const csv = (await ann.raw('GET', url('?format=csv'))).text;
+    assert.match(csv, /,Open Works,1,/);
+    for (const body of [JSON.stringify(json.body), csv]) assert.doesNotMatch(body, /Hidden Yard|Secret hidden notes|7\.00/);
+    assert.doesNotMatch(csv, /Open notes/);
+  });
+
   test('the audit event holds the project and section names only', async () => {
     await csv(ann);
+    t.clock.advanceSeconds(1);
     await csv(pm);
     const rows = (await t.pool.query(`SELECT actor_user_id, detail FROM audit_events WHERE action = 'resources.report_exported' ORDER BY occurred_at, id`)).rows;
     assert.equal(rows.length, 2);

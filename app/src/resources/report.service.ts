@@ -52,7 +52,10 @@ export class ResourcesReportService {
       neededByPassed: listed.lines.filter((l) => l.neededByPassed),
       people: listed.people,
     };
-    if (mayReadFinance(ctx, await loadProjectFinanceSettings(this.pool, projectId))) report.finance = await this.finance.read(user, projectId);
+    if (mayReadFinance(ctx, await loadProjectFinanceSettings(this.pool, projectId))) {
+      const { aiSpendThisMonth: _ai, ...finance } = (await this.finance.read(user, projectId)) as FinanceView & { aiSpendThisMonth?: unknown };
+      report.finance = finance;
+    }
     return report;
   }
 
@@ -127,7 +130,7 @@ export function toCsv(report: ResourcesReport): string {
   const parts = [
     csvTable(
       { ...head, Section: 'lines' },
-      ['Status', 'Item or description', 'Kind', 'Quantity', 'Unit', 'Period start', 'Period end', 'Needed by', 'Needed-by passed', 'Overlapping projects (named)', 'Other overlapping projects', 'Notes'],
+      ['Status', 'Item or description', 'Kind', 'Quantity', 'Unit', 'Period start', 'Period end', 'Needed by', 'Needed-by passed', 'Overlapping projects (named)', 'Other overlapping projects (not named)', 'Notes'],
       report.lines.map(lineRow),
     ),
     csvTable({ ...head, Section: 'people' }, ['Name', 'Roles', 'Open tasks', 'Overdue'], report.people.map((p) => [p.name, p.roles.join('; '), p.openTasks, p.overdue])),
