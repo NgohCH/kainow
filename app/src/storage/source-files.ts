@@ -87,8 +87,9 @@ export async function openOriginal(deps: SourceFileDeps, versionId: string): Pro
       await flagStoredFile(deps, row.file_id, 'missing', deps.clock());
       return { refused: 'missing' };
     }
-    // Waiting for the key, a refused connection, a provider fault: the store cannot be reached for now.
-    return { refused: 'unreachable' };
+    // Only the store's own faults (and waiting for the key) mean "cannot be reached"; a bug must surface as a 500.
+    if (err instanceof StorageError || err instanceof StorageWaitingForKey) return { refused: 'unreachable' };
+    throw err;
   }
   if (sha256(bytes) !== row.original_sha256) {
     await flagStoredFile(deps, row.file_id, 'changed', deps.clock());
@@ -111,31 +112,39 @@ interface CheckRow {
  */
 export async function checkSourceFiles(deps: SourceFileDeps, now: Date, limit = 2000): Promise<{ checked: number; flagged: number }> {
   const scheduled = (await loadStorageSettings(deps.pool)).scheduledChecks;
+  // A destination whose connector cannot be obtained is left out of this run altogether, so it takes no slots.
+  const connectors = new Map<string, { connector: StorageConnector; dest: DestinationRef }>();
+  const dead: string[] = [];
+  const dests = await deps.pool.query<{ destination_id: string }>(
+    `SELECT DISTINCT destination_id FROM stored_files
+      WHERE state = 'stored' AND purpose IN ('source_original', 'source_text') AND destination_id IS NOT NULL AND item_id IS NOT NULL
+      ORDER BY destination_id`,
+  );
+  for (const d of dests.rows) {
+    try {
+      connectors.set(d.destination_id, await deps.connectors.forDestination(d.destination_id));
+    } catch (err) {
+      if (!(err instanceof StorageWaitingForKey || err instanceof StorageError)) throw err;
+      dead.push(d.destination_id);
+    }
+  }
   const { rows } = await deps.pool.query<CheckRow>(
     `SELECT id, destination_id, item_id, size_bytes, provider_hash, etag FROM stored_files
       WHERE state = 'stored' AND purpose IN ('source_original', 'source_text')
         AND destination_id IS NOT NULL AND item_id IS NOT NULL
+        AND destination_id <> ALL($3::uuid[])
         AND check_status NOT IN ('changed', 'missing')
         AND ($2::boolean OR last_checked_at IS NULL)
       ORDER BY last_checked_at NULLS FIRST, id
       LIMIT $1`,
-    [limit, scheduled],
+    [limit, scheduled, dead],
   );
-  const connectors = new Map<string, { connector: StorageConnector; dest: DestinationRef }>();
   let checked = 0;
   let flagged = 0;
   for (const r of rows) {
-    let c = connectors.get(r.destination_id);
-    if (!c) {
-      try {
-        c = await deps.connectors.forDestination(r.destination_id);
-      } catch (err) {
-        if (err instanceof StorageWaitingForKey || err instanceof StorageError) continue;
-        throw err;
-      }
-      connectors.set(r.destination_id, c);
-    }
-    let verdict: 'ok' | Flag | 'access_denied';
+    const c = connectors.get(r.destination_id);
+    if (!c) continue;
+    let verdict: 'ok' | Flag | 'access_denied' | 'skipped';
     try {
       const item = await c.connector.getItem(c.dest, r.item_id);
       const differs =
@@ -144,14 +153,20 @@ export async function checkSourceFiles(deps: SourceFileDeps, now: Date, limit = 
         (r.etag !== null && item.etag !== null && r.etag !== item.etag);
       verdict = differs ? 'changed' : 'ok';
     } catch (err) {
+      if (err instanceof StorageWaitingForKey) break;
       if (!(err instanceof StorageError)) throw err;
       if (err.code === 'not_found') verdict = 'missing';
       else if (err.code === 'forbidden') verdict = 'access_denied';
-      else break;
+      // The whole connection is failing (or being throttled): the rest would fail the same way. Stop; they keep their place.
+      else if (err.code === 'unauthorised' || err.code === 'throttled' || err.code === 'unreachable') break;
+      // Something about this one item (server fault, timeout, invalid): look at it again another day, behind the others.
+      else verdict = 'skipped';
     }
     checked++;
     if (verdict === 'changed' || verdict === 'missing') {
       if (await flagStoredFile(deps, r.id, verdict, now)) flagged++;
+    } else if (verdict === 'skipped') {
+      await deps.pool.query(`UPDATE stored_files SET last_checked_at = $2 WHERE id = $1 AND state = 'stored'`, [r.id, now]);
     } else {
       await deps.pool.query(
         `UPDATE stored_files SET check_status = $2, last_checked_at = $3 WHERE id = $1 AND state = 'stored' AND check_status NOT IN ('changed', 'missing')`,
