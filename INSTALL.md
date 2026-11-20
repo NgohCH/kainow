@@ -121,7 +121,7 @@ Kainow takes its own backups: a complete copy of the database, encrypted with a 
 
 ### 1. Choose the backup folder
 
-Pick a folder that is not on the database's disk: a mounted network share or a second disk. It may be offline at times; a backup then fails visibly (below) and Kainow warns. Set it in `.env`, then give the Kainow container user (uid 1000) ownership of it:
+Pick a folder that is not on the database's disk: a mounted network share or a second disk. It may be offline at times; a backup then fails visibly (below) and Kainow warns. If the folder is on the database's disk after all, a backup stops with `no_space` before it takes the database disk below the safe floor plus 2 GB, so it never pushes Kainow into protective read-only mode. **Use one backup folder per installation**: never point a test installation and the live one at the same folder, because each would expire the other's backup copies. Set it in `.env`, then give the Kainow container user (uid 1000) ownership of it:
 
 ```
 KAINOW_BACKUP_DIR=/srv/kainow-backups
@@ -181,7 +181,7 @@ The three commands, with their other options:
 | `storage-check-cli.js` | One storage reading for the database disk and the backup disk | none |
 | `restore-drill-cli.js` | A restore drill (below) | `--set <name>\|latest`, `--keep`, `--sample <n>`, `--drop <kainow_drill_name>` |
 
-Failures say which of these happened, never a raw error: `folder_missing` (the folder is not mounted), `folder_not_writable` (check the `chown` above), `key_missing`, `key_invalid` (the key file is not exactly 32 bytes), `key_changed`, `no_space` (the backup folder's disk is full), `dump_failed`, `verify_failed` (the files written did not read back correctly), `protected_key_missing`, `database_unreachable`, `interrupted` (set by Kainow when a run is still unfinished after 6 hours).
+Failures say which of these happened, never a raw error: `folder_missing` (the folder is not mounted), `folder_not_writable` (check the `chown` above), `key_missing`, `key_invalid` (the key file is not exactly 32 bytes), `key_changed`, `no_space` (the backup folder's disk is full, or the folder is on the database disk and free space there fell to the safe floor plus 2 GB), `dump_failed` (also when the database copy is still running after 6 hours: it is stopped then), `verify_failed` (the files written did not read back correctly), `protected_key_missing`, `database_unreachable`, `interrupted` (set by Kainow when a run is still unfinished after 6 hours). A restore drill whose restore is still running after 6 hours is stopped and fails with `drill_database_failed`.
 
 ### 5. See the status in Kainow
 
@@ -219,7 +219,33 @@ A backup run refuses with `key_changed` when the key differs from the last succe
 
 When free space on the database disk falls below the safe floor, Kainow enters **protective read-only mode** at once: people can still sign in and read everything, every change is refused with "Kainow is read-only for now to protect your data. Nothing you have saved is affected.", background work waits with its queue kept, and backups still run. Nothing is ever deleted to free space. The mode never ends by itself: after you free space, an Enterprise Administrator chooses **Resume normal use** on the Operations page, with a reason, and Kainow accepts it only when a reading from the last 10 minutes shows free space at or above the floor and the health checks pass. **The safe floor has not yet been verified on a real disk**: the check is in `docs/operations/verify-low-space.md` and needs a Linux VM. Until it has been run, treat 5 GB as a proposal, and leave plenty of headroom on the database disk.
 
-Routine diagnostics (storage readings, the job-queue archive, the backup log) are kept 30 days by default (7 to 365, set on the same page). Container logs are rotated by Docker: three files of 10 MB per service.
+The safe floor must stay below the database disk's free space: a change to a floor at or above the free space in the latest reading (from the last 30 minutes) is refused, because it would make Kainow read-only at once.
+
+**Read-only and Resume keeps failing because the floor is too high.** If the floor was set at or above the free space the disk can ever reach (for example before a reading existed), Resume never passes, and the setting cannot be changed in Kainow while the mode is on. Lower the floor on the server, in the installation's project folder. Replace `admin@example.org` with an Enterprise Administrator's sign-in address (recorded as the person who made the change) and `5` with the new floor in GB, below the free space shown on the Operations page:
+
+```
+docker compose exec -T db psql -U kainow -d kainow -v ON_ERROR_STOP=1 <<'SQL'
+DO $$
+DECLARE
+  admin uuid;
+  prev jsonb;
+BEGIN
+  SELECT id INTO STRICT admin FROM users WHERE lower(email) = lower('admin@example.org') AND role = 'enterprise_administrator';
+  SELECT jsonb_build_object('backupRetentionDays', backup_retention_days, 'storageWarningPct', storage_warning_pct,
+                            'storageCriticalPct', storage_critical_pct, 'safeFloorGb', safe_floor_gb,
+                            'diagnosticRetentionDays', diagnostic_retention_days)
+    INTO STRICT prev FROM operations_settings;
+  UPDATE operations_settings SET safe_floor_gb = 5;
+  INSERT INTO operations_settings_changes (id, actor_id, at, reason, previous, next)
+  VALUES (gen_random_uuid(), admin, now(), 'Safe floor lowered on the server: it was above the free space, so Kainow could not resume',
+          prev, prev || jsonb_build_object('safeFloorGb', 5));
+END $$;
+SQL
+```
+
+It changes the floor and writes the change, with its reason, to the settings history in one step; if the address is not an Enterprise Administrator's, nothing changes. Wait for the next storage check (up to five minutes), then choose **Resume normal use**.
+
+Routine diagnostics retention (default 30 days, 7 to 365, set on the same page) covers the storage readings. The job-queue archive is not governed by it: the job queue removes its own archive after a fixed 7 days. The backup log `/var/log/kainow-ops.log` is the server's own file, which Kainow never rotates: rotate it with `logrotate` (see "Schedule it"). Container logs are rotated by Docker: three files of 10 MB per service.
 
 ### What a backup does not cover
 
@@ -281,15 +307,15 @@ For a real disaster: the server or the database is lost and you need Kainow back
    ```
 
    `migrate` brings an older backup up to the current version while the mode is on, and the worker starts with nothing to replay.
-5. **Sign in and resume.** Everyone is signed out (sessions and unused sign-in codes are gone, and setup and recovery links are expired). An Enterprise Administrator signs in (sign-in works in protective mode), reviews People, grants and Administrators, and chooses **Resume normal use** on the Operations page, with a reason. Every Enterprise Administrator has an urgent notice about the restore.
+5. **Install the crontab, then sign in and resume.** On a new server, first put the crontab lines from "Backups" (step 4, "Schedule it") in place: Resume needs a storage check from the last 10 minutes, and nothing runs one until the crontab does. Wait for the first check (up to five minutes). Everyone is signed out (sessions and unused sign-in codes are gone, and setup and recovery links are expired). An Enterprise Administrator signs in (sign-in works in protective mode), reviews People, grants and Administrators, and chooses **Resume normal use** on the Operations page, with a reason. Every Enterprise Administrator has an urgent notice about the restore.
 
-**What the restore does not repeat.** Emails that were queued show "Not sent — restored from backup" in the delivery history. Queued AI, analysis, extraction and storage work ends with "Not run — restored from backup", and AI spend reserved for it stays counted as uncertain. Quarantine cleaning waits until you resume, then runs. Nothing is sent or filed again on its own: decide what to repeat once you have resumed.
+**What the restore does not repeat.** Emails that were queued show "Not sent — restored from backup" in the delivery history. An email that was being sent when the backup was taken shows as uncertain, marked as a possible duplicate: the old installation very probably sent it, so resend it only if you know it was not. Notices still waiting for their email (a daily email, someone away) stay in Kainow but are not emailed, and the day's scheduled digest is not sent on the day of the restore: the old installation may have sent them after the backup. Queued AI, analysis, extraction and storage work ends with "Not run — restored from backup", and AI spend reserved for it stays counted as uncertain. Quarantine cleaning waits until you resume, then runs. Nothing is sent or filed again on its own: decide what to repeat once you have resumed.
 
 **Protected key.** Without the protected key's recovery copy, sealed AI keys and the storage secret cannot be opened: the restore prints a reminder, and Kainow shows the same warning. Mount it and restart `api` and `worker`.
 
 **Source files.** Files in the managed source area stay where they are. If that area was lost as well, the source-file restore command comes with the managed source area (sub-project 9) and is not yet in this installation.
 
-**If the restore is interrupted or fails** once it has started (power loss, a full disk, a message beginning "The restore ... "), the target database may be half-restored and **must not be used**. Do not start Kainow on it. Drop it and recreate it empty, then run step 3 again:
+**If the restore is interrupted or fails** once it has started (power loss, a full disk, a message beginning "The restore ... " or "Row counts differ"), the target database may be half-restored and **must not be used**. Do not start Kainow on it. Drop it and recreate it empty, then run step 3 again:
 
 ```
 docker compose exec -T db psql -U kainow -d postgres -c "DROP DATABASE kainow WITH (FORCE)" -c "CREATE DATABASE kainow OWNER kainow"
