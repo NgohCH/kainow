@@ -34,3 +34,6 @@ export const FORMAT_LABEL: Readonly<Record<InputFormat | OutputFormat, string>> 
 
 export const inputRefusal = (format: InputFormat): string =>
   `This project does not accept ${FORMAT_LABEL[format]} files. A PM, Owner or Sponsor can change this in Project settings › Outputs.`;
+
+export const outputRefusal = (format: OutputFormat): string =>
+  `This project does not make ${FORMAT_LABEL[format]} outputs. A PM, Owner or Sponsor can change this in Project settings › Outputs.`;

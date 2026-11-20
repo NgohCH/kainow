@@ -49,6 +49,10 @@ test('the matrix holds exactly the agreed rows', () => {
     'outputs.settings': ['pm,owner,sponsor', 'draft,planned,active'],
     'ai.connections.view': ['pm,deputy_pm,owner,sponsor', 'draft,planned,active,deferred,closed'],
     'ai.usage.view': ['pm,owner,sponsor', 'draft,planned,active,deferred,closed'],
+    'output.submit': ['pm,deputy_pm,owner,sponsor,member', 'draft,planned,active'],
+    'output.manage': ['pm,deputy_pm', 'draft,planned,active'],
+    'output.approve_request': ['pm,deputy_pm', 'planned,active'],
+    'output.audience': ['pm,owner,sponsor', 'draft,planned,active,deferred,closed'],
   });
   assert.equal(PROJECT_MATRIX['proposal.review'].refusal, 'Only the Owner or a Sponsor can approve or reject proposals, and only while the project is Planned or Active.');
 });

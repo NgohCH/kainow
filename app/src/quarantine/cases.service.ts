@@ -38,6 +38,7 @@ import { findCredentialMatches, findCredentials } from '../extraction/credential
 import { HELD, liveRecordSql } from '../history/deleted-sql';
 import { requeueDigest } from '../digests/digest';
 import { HELD_EMAIL_REASON, cancelQueuedHolding, sentHolding } from '../notifications/mailing';
+import { loadOutputAccessRow, readsOutput } from '../outputs/readers';
 import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { grantGivesAccess } from '../projects/grants';
 import { effectiveRoles } from '../projects/membership';
@@ -788,14 +789,9 @@ export class CasesService {
         return !!f && !held(f.held_case_id) && (f.reporter_id === user.id || ctx.roles.some((r) => RESTRICTED_ROLES.includes(r)));
       }
       case 'output': {
-        // A registered output is read by the project, or by the people named when its audience is restricted.
-        const o = (await db.query(
-          `SELECT o.deleted_at, o.status, o.held_case_id, a.mode, EXISTS (SELECT 1 FROM audience_members m WHERE m.audience_id = o.audience_id AND m.user_id = $2) AS named
-             FROM outputs o LEFT JOIN audiences a ON a.id = o.audience_id WHERE o.id = $1`,
-          [id, user.id],
-        )).rows[0];
-        if (!o || o.deleted_at || held(o.held_case_id) || o.status === 'declined') return false;
-        return o.mode !== 'restricted' || o.named === true;
+        // The output register's own rule (spec 4.6): audience, submission and review state, hold and deletion.
+        const row = await loadOutputAccessRow(db, id);
+        return !!row && (await readsOutput(db, ctx, row, { lookThroughCase: reviewing }));
       }
     }
   }

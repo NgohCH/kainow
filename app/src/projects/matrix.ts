@@ -49,7 +49,11 @@ export type ProjectAction =
   | 'ai.connections.manage'
   | 'outputs.settings'
   | 'ai.connections.view'
-  | 'ai.usage.view';
+  | 'ai.usage.view'
+  | 'output.submit'
+  | 'output.manage'
+  | 'output.approve_request'
+  | 'output.audience';
 
 interface MatrixRow {
   roles: ReadonlyArray<ProjectRole | 'participant'>;
@@ -243,6 +247,26 @@ export const PROJECT_MATRIX: Readonly<Record<ProjectAction, MatrixRow>> = {
     roles: ['owner', 'sponsor'],
     states: ['planned', 'active'],
     refusal: 'Only the Owner or a Sponsor can approve or reject proposals, and only while the project is Planned or Active.',
+  },
+  'output.submit': {
+    roles: ['pm', 'deputy_pm', 'owner', 'sponsor', 'member'],
+    states: OPEN,
+    refusal: 'Only people in the project can submit an output, and not while the project is Deferred or Closed.',
+  },
+  'output.manage': {
+    roles: ['pm', 'deputy_pm'],
+    states: OPEN,
+    refusal: 'Only the Project Manager or a Deputy can register, decline or change outputs, and not while the project is Deferred or Closed.',
+  },
+  'output.approve_request': {
+    roles: ['pm', 'deputy_pm'],
+    states: ['planned', 'active'],
+    refusal: 'Only the Project Manager or a Deputy can ask for an output to be approved, and only while the project is Planned or Active.',
+  },
+  'output.audience': {
+    roles: ['pm', 'owner', 'sponsor'],
+    states: ALL,
+    refusal: 'Only the Project Manager, the Owner or a Sponsor can change who may read an output.',
   },
 };
 
