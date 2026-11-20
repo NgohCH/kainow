@@ -62,7 +62,10 @@ export function parseOutputSettingsBody(body: unknown): { reason: string; patch:
     patch.inputFormats = input;
   }
   const output = list('outputFormats', OUTPUT_FORMATS, true);
-  if (output !== undefined) patch.outputFormats = output;
+  if (output !== undefined) {
+    if (output !== null && output.length === 0) throw new BadRequestException('A project needs at least one output format.');
+    patch.outputFormats = output;
+  }
   const roles = list('exportRoles', EXPORT_ROLES, false);
   if (roles !== undefined) {
     if (!roles || roles.length === 0) throw new BadRequestException('Choose at least one export role.');
@@ -122,7 +125,7 @@ export class OutputSettingsService {
       sources: {
         destination: own?.destinationId ? 'project' : 'none',
         formats: { input: own?.inputFormats ? 'project' : 'organisation', output: own?.outputFormats ? 'project' : 'organisation' },
-        exportRoles: own ? 'project' : 'organisation',
+        exportRoles: own && !same(own.exportRoles, [...DEFAULT_EXPORT_ROLES]) ? 'project' : 'organisation',
       },
       updatedAt: own?.updatedAt ?? null,
     };

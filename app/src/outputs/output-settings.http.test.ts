@@ -74,6 +74,17 @@ describe('project output settings over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.equal((await outsider.request('PUT', url(), { reason, inputFormats: ['md'] })).status, 404);
   });
 
+  test('each value is labelled with where it comes from, not just whether the project has a row', async () => {
+    assert.equal((await pm.request('PUT', url(), { reason, inputFormats: ['md'] })).status, 200);
+    let r = (await pm.request('GET', url())).body;
+    assert.deepEqual(r.sources.formats, { input: 'project', output: 'organisation' });
+    assert.equal(r.sources.exportRoles, 'organisation');
+    assert.equal((await pm.request('PUT', url(), { reason, inputFormats: null, exportRoles: ['pm', 'audit'] })).status, 200);
+    r = (await pm.request('GET', url())).body;
+    assert.deepEqual(r.sources.formats, { input: 'organisation', output: 'organisation' });
+    assert.equal(r.sources.exportRoles, 'project');
+  });
+
   test('PM, Owner or Sponsor edit when delegated; Deputy and Member cannot', async () => {
     const dest = await destination();
     for (const [who, c] of [['pm', pm], ['owner', owner], ['sponsor', sponsor]] as const) {
@@ -152,6 +163,7 @@ describe('project output settings over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.equal((await pm.request('PUT', url(), { reason, inputFormats: ['rtf'] })).status, 400);
     assert.equal((await pm.request('PUT', url(), { reason, inputFormats: [] })).status, 400);
     assert.equal((await pm.request('PUT', url(), { reason, outputFormats: ['txt'] })).status, 400);
+    assert.equal((await pm.request('PUT', url(), { reason, outputFormats: [] })).status, 400, 'at least one output format');
   });
 
   test('changes need a reason and are versioned', async () => {
