@@ -8,7 +8,7 @@ import { closeEpisode, openEpisode } from './alerts';
 import { OPS_FAILURES } from './common';
 import { notifyAdmins } from './notify';
 import { loadOpsSettings } from './settings';
-import { INTERRUPTED_AFTER_MS, type RunRow, backupStatus } from './status';
+import { INTERRUPTED_AFTER_MS, type RunRow, TARGET_MS, backupStatus } from './status';
 
 const LINK = '#/admin/operations';
 const MIN = 60_000;
@@ -95,7 +95,13 @@ async function loadRuns(pool: Pool): Promise<RunRow[]> {
 
 async function checkBackupTarget(pool: Pool, now: Date): Promise<void> {
   const { status } = backupStatus(await loadRuns(pool), now);
-  if (status === 'target_exceeded') {
+  // No backup ever counts as the target exceeded once the organisation was registered more than 24 hours ago.
+  let exceeded = status === 'target_exceeded';
+  if (status === 'none') {
+    const reg = (await pool.query('SELECT registered_at FROM organisation WHERE id = 1')).rows[0]?.registered_at as Date | null | undefined;
+    exceeded = !!reg && now.getTime() - reg.getTime() > TARGET_MS;
+  }
+  if (exceeded) {
     if (await openEpisode(pool, 'backup_target_exceeded', null, now)) {
       await notifyAdmins(pool, {
         kind: 'backup_target_exceeded',

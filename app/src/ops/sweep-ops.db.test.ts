@@ -91,9 +91,22 @@ describe('the ops part of the sweep', { skip: SKIP_NO_DB }, () => {
     assert.equal((await notices('backup_target_exceeded')).length, 2);
   });
 
-  test('no backup yet opens nothing', async () => {
+  const register = async (at: Date): Promise<void> => {
+    await pool.query(
+      `INSERT INTO organisation (id, name, registered_at, updated_at) VALUES (1, 'Example Organisation', $1, $1)
+       ON CONFLICT (id) DO UPDATE SET registered_at = $1`,
+      [at],
+    );
+  };
+
+  test('no backup yet: quiet until the organisation was registered more than 24 hours ago', async () => {
+    await register(ago(23 * H));
     await runOpsSweep(pool, NOW);
-    assert.equal((await pool.query('SELECT count(*)::int AS n FROM notifications')).rows[0].n, 0);
+    assert.equal((await notices('backup_target_exceeded')).length, 0);
+    await register(ago(25 * H));
+    await runOpsSweep(pool, NOW);
+    await runOpsSweep(pool, new Date(NOW.getTime() + MIN));
+    assert.deepEqual((await notices('backup_target_exceeded')).map((r) => r.user_id).sort(), [a1, a2].sort());
   });
 
   test('interrupted runs and drills are marked failed once, with an audit event each', async () => {
