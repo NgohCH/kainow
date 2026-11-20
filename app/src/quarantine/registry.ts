@@ -857,6 +857,7 @@ export const NO_USER_TEXT: Readonly<Record<string, string>> = {
   'storage_settings.approved_input_formats': 'file formats from a fixed list, never typed by a person',
   'storage_settings.approved_output_formats': 'file formats from a fixed list, never typed by a person',
   'storage_settings.client_id': 'the application (client) id of the connection, entered by an Administrator: organisation-level, no project scope (spec 7.4)',
+  'storage_settings.last_check_state': 'a fixed state word from the last connection check, never typed by a person',
   'storage_settings.tenant_id': 'the tenant id of the connection, entered by an Administrator: organisation-level, no project scope (spec 7.4)',
   'storage_settings_changes.next': SETTING,
   'storage_settings_changes.previous': SETTING,

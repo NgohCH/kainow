@@ -6,6 +6,7 @@ import { ManifestService } from './manifest';
 import { SourceAreaMoveService } from './relocate';
 import { StorageController } from './storage.controller';
 import { StorageSettingsService } from './settings.service';
+import { StorageSummaryService } from './summary.service';
 
 @Module({})
 export class StorageModule {
@@ -18,7 +19,7 @@ export class StorageModule {
       module: StorageModule,
       global: true,
       controllers: [StorageController],
-      providers: [StorageSettingsService, DestinationsService, StorageAdminsService, SourceAreaMoveService, ManifestService, factory],
+      providers: [StorageSettingsService, DestinationsService, StorageAdminsService, SourceAreaMoveService, ManifestService, StorageSummaryService, factory],
       exports: [StorageSettingsService, DestinationsService, StorageAdminsService, STORAGE_CONNECTORS],
     };
   }

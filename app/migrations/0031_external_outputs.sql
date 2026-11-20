@@ -39,7 +39,11 @@ CREATE TABLE storage_settings (
   projects_may_choose_destination  boolean NOT NULL DEFAULT true,
   projects_may_set_export_roles    boolean NOT NULL DEFAULT true,
   directory_lookup                 boolean NOT NULL DEFAULT false,
-  scheduled_checks                 boolean NOT NULL DEFAULT false
+  scheduled_checks                 boolean NOT NULL DEFAULT false,
+  -- The result of the last "Check connection" (go-live step 12 and the Storage page read it; no provider call is made to show it).
+  -- Cleared when the tenant, application id or secret changes.
+  last_check_state                 text CHECK (last_check_state IN ('connected', 'refused', 'unreachable', 'not_configured', 'protected_key_missing')),
+  last_checked_at                  timestamptz
 );
 INSERT INTO storage_settings DEFAULT VALUES;
 

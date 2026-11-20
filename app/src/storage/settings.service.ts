@@ -189,7 +189,8 @@ export class StorageSettingsService {
       const fields = (Object.keys(patch) as Array<keyof SettingsPatch>).filter((k) => JSON.stringify(before[k]) !== JSON.stringify(after[k]));
       if (fields.length === 0) return;
       const sets = fields.map((k, i) => `${COLUMNS[k]} = $${i + 1}`);
-      await c.query(`UPDATE storage_settings SET ${sets.join(', ')}`, fields.map((k) => after[k]));
+      const forget = fields.some((k) => k === 'tenantId' || k === 'clientId') ? ', last_check_state = NULL, last_checked_at = NULL' : '';
+      await c.query(`UPDATE storage_settings SET ${sets.join(', ')}${forget}`, fields.map((k) => after[k]));
       await this.record(c, at, user.id, reason, before, after, fields);
       // A changed connection may now reach the source area: versions left waiting are stored (spec 9.1).
       if (fields.some((k) => k === 'tenantId' || k === 'clientId')) await queueSourceBackfill(c);
@@ -205,6 +206,7 @@ export class StorageSettingsService {
       await c.query(`SELECT 1 FROM storage_settings FOR UPDATE`);
       const before = await loadStorageSettings(c);
       await c.query(`UPDATE storage_connection_secrets SET superseded_at = $1 WHERE superseded_at IS NULL`, [at]);
+      await c.query(`UPDATE storage_settings SET last_check_state = NULL, last_checked_at = NULL`);
       await c.query(
         `INSERT INTO storage_connection_secrets (id, ciphertext, nonce, tag, key_id, saved_by, saved_at) VALUES ($1, $2, $3, $4, $5, $6, $7)`,
         [uuidv7(at.getTime()), sealed.ciphertext, sealed.nonce, sealed.tag, sealed.keyId, user.id, at],
@@ -215,28 +217,35 @@ export class StorageSettingsService {
     return this.view();
   }
 
+  /** Runs the check and records its result, so go-live and the Storage page can use it without calling the provider. */
   async check(): Promise<{ state: CheckState }> {
+    const state = await this.runCheck();
+    await this.pool.query(`UPDATE storage_settings SET last_check_state = $1, last_checked_at = $2`, [state, this.clock()]);
+    return { state };
+  }
+
+  private async runCheck(): Promise<CheckState> {
     const s = await loadStorageSettings(this.pool);
-    if (!s.tenantId || !s.clientId || !s.hasSecret) return { state: 'not_configured' };
-    if (!this.protectedKey) return { state: 'protected_key_missing' };
+    if (!s.tenantId || !s.clientId || !s.hasSecret) return 'not_configured';
+    if (!this.protectedKey) return 'protected_key_missing';
     const tokens = await storageTokenSource(this.pool, this.protectedKey, this.fetchFn, this.clock);
-    if (!tokens) return { state: 'refused' }; // saved with another protected key: the secret cannot be opened
+    if (!tokens) return 'refused'; // saved with another protected key: the secret cannot be opened
     let token: string;
     try {
       token = await tokens.token();
     } catch (e) {
       const status = e instanceof TokenError ? e.status : 0;
-      return { state: status === 400 || status === 401 || status === 403 ? 'refused' : 'unreachable' };
+      return status === 400 || status === 401 || status === 403 ? 'refused' : 'unreachable';
     }
     try {
       // Sites.Selected without a grant on the root site answers 403: that is the expected, healthy answer.
       const res = await this.fetchFn(`${GRAPH_BASE}/sites/root?$select=id`, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(15_000) });
       await res.body?.cancel().catch(() => undefined);
-      if (res.status === 401) return { state: 'refused' };
+      if (res.status === 401) return 'refused';
     } catch {
       // the token was issued: the credentials are accepted
     }
-    return { state: 'connected' };
+    return 'connected';
   }
 
   /** Runs a lookup of the Administrator's own address with the merged settings; refuses (saves nothing) when it fails. */

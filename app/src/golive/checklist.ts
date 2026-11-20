@@ -74,7 +74,9 @@ export async function conditions(db: Db): Promise<Record<string, boolean>> {
       EXISTS (SELECT 1 FROM users WHERE status = 'active' AND role <> 'enterprise_administrator') AS users,
       (EXISTS (SELECT 1 FROM projects WHERE status = 'active')
         OR EXISTS (SELECT 1 FROM project_transitions WHERE to_status = 'active')) AS project,
-      false AS storage`);
+      -- Connection checked (the Administrator's last "Check connection" succeeded) and a source area approved.
+      (EXISTS (SELECT 1 FROM storage_settings WHERE last_check_state = 'connected')
+        AND EXISTS (SELECT 1 FROM storage_destinations WHERE purpose = 'source_area' AND status = 'approved')) AS storage`);
   return rows[0] as Record<string, boolean>;
 }
 

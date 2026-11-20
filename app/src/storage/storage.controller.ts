@@ -6,6 +6,7 @@ import { StorageAdminsService } from './admins.service';
 import { DestinationsService, parseAddBody } from './destinations.service';
 import { ManifestService } from './manifest';
 import { SourceAreaMoveService } from './relocate';
+import { StorageSummaryService } from './summary.service';
 import { StorageSettingsService, parseSecretBody, parseSettingsBody } from './settings.service';
 
 interface HttpResponse {
@@ -27,7 +28,15 @@ export class StorageController {
     private readonly admins: StorageAdminsService,
     private readonly moves: SourceAreaMoveService,
     private readonly manifest: ManifestService,
+    private readonly summaryService: StorageSummaryService,
   ) {}
+
+  /** Everything the Storage page shows at a glance (spec 8.6). */
+  @Get('summary')
+  @RequireAction('storage.manage')
+  summary() {
+    return this.summaryService.summary();
+  }
 
   @Get()
   @RequireAction('storage.manage')

@@ -35,6 +35,14 @@ export class GoLiveController {
     return this.service.change(who(req), 'logos', 'skip', body(b));
   }
 
+  /** Any step that can be skipped (logos, storage). */
+  @Post('steps/:key/skip')
+  @HttpCode(200)
+  @AnySignedInUser()
+  skipStep(@Param('key') key: string, @Body() b: unknown, @Req() req: HttpRequest) {
+    return this.service.change(who(req), key, 'skip', body(b));
+  }
+
   @Post('steps/:key/tick')
   @HttpCode(200)
   @AnySignedInUser()
