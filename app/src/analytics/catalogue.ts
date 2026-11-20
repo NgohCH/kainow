@@ -187,6 +187,7 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['output.updated', 'An output’s register details were changed.'],
     ['output.version_added', 'A version was added to an output.'],
     ['output.accepted_into', 'A submitted output was accepted into a registered one as new versions.'],
+    ['output.filing_requested', 'The PM or a Deputy asked for an output version to be filed in storage (or filed again).'],
     ['analysis_settings.changed', 'The organisation analysis settings were changed.'],
     ['analysis_settings.project_changed', 'A project’s analysis settings were changed.'],
     ['extraction.requested', 'An extraction was requested.'],

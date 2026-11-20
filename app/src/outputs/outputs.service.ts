@@ -21,7 +21,9 @@ import type { StorageConnector } from '../storage/connector';
 import { STORAGE_CONNECTORS, type StorageConnectorFactory, StorageWaitingForKey } from '../storage/connector-factory';
 import { type OutputFormat, loadStorageSettings } from '../storage/settings';
 import { type DestinationRef, type ItemState, StorageError } from '../storage/types';
+import { ALREADY_FILED, BEING_FILED, LINKED_NOT_FILED, NOT_KEPT, NO_DESTINATION, REGISTER_FIRST, filingFailedLabel, requestFiling } from './filing';
 import { effectiveFormats, outputRefusal } from './formats';
+import { outputFileName } from './naming';
 import { type ContributorInput, type OutputPatch, type RegisterInput, type SubmitInput, readTitle } from './outputs-input';
 import { OUTPUT_MANAGER_ROLES, type OutputAccessRow, contentReaderContexts, loadOutputAccessRow, materialReaders, readsOutput } from './readers';
 import { RenderTooLarge, parseBlocks } from './render/blocks';
@@ -102,6 +104,8 @@ export interface Filing {
   lastCheckedAt: Date | null;
   /** The provider path: shown to the PM, Deputies, Owner and Sponsors only (spec 4.6). */
   path?: string | null;
+  /** Filing failed and the PM or a Deputy may file it again ("Try again"). */
+  tryAgain?: true;
 }
 
 export interface OutputVersionView {
@@ -699,6 +703,51 @@ export class OutputsService {
   }
 
   // -------------------------------------------------------------------------------------------------------------------
+  // Filing (spec 5.4; PM or Deputy)
+  // -------------------------------------------------------------------------------------------------------------------
+
+  /**
+   * Files a version of a registered output in the project's output destination: the stored file is recorded pending
+   * and the `file-output` job queued in the same transaction. A version whose filing failed is filed again ("Try
+   * again"). The output row is locked, so two requests at once give one stored file: the second is told the version is
+   * already being filed.
+   */
+  async file(user: AuthUser, projectId: string, outputId: string, versionNo: number): Promise<OutputDetail> {
+    await this.visible(user, projectId, outputId);
+    const at = this.clock();
+    await this.tx(async (c) => {
+      const { row } = await this.manage(c, user, projectId, outputId);
+      const v = (
+        await c.query<{ id: string; origin: string; format: string; storedFileId: string | null; state: string | null; kept: boolean; title: string }>(
+          `SELECT v.id, v.origin, v.format, v.stored_file_id AS "storedFileId", f.state, o.title,
+                  EXISTS (SELECT 1 FROM output_version_bytes b WHERE b.output_version_id = v.id AND b.bytes IS NOT NULL) AS kept
+             FROM output_versions v JOIN outputs o ON o.id = v.output_id LEFT JOIN stored_files f ON f.id = v.stored_file_id
+            WHERE v.output_id = $1 AND v.version_no = $2
+              FOR UPDATE OF v`,
+          [outputId, versionNo],
+        )
+      ).rows[0];
+      if (!v) throw new NotFoundException();
+      if (v.origin === 'link' || v.state === 'linked') throw new ConflictException(LINKED_NOT_FILED);
+      if (row.status !== 'registered') throw new ConflictException(REGISTER_FIRST);
+      if (v.state === 'pending' || v.state === 'storing') throw new ConflictException(BEING_FILED);
+      if (v.state && v.state !== 'failed') throw new ConflictException(ALREADY_FILED);
+      if (!v.kept) throw new ConflictException(NOT_KEPT);
+      const dest = (
+        await c.query<{ id: string }>(
+          `SELECT d.id FROM project_output_settings s JOIN storage_destinations d ON d.id = s.destination_id
+            WHERE s.project_id = $1 AND d.purpose = 'outputs' AND d.status = 'approved'`,
+          [projectId],
+        )
+      ).rows[0];
+      if (!dest) throw new BadRequestException(NO_DESTINATION);
+      await requestFiling(c, { versionId: v.id, projectId, storedFileId: v.storedFileId, fileName: outputFileName(v.title, versionNo, v.format) }, dest.id, at);
+      await writeAudit(c, { at, action: 'output.filing_requested', actorUserId: user.id, subjectType: 'output', subjectId: outputId, detail: { versionNo, again: v.state === 'failed' } });
+    });
+    return this.get(user, projectId, outputId);
+  }
+
+  // -------------------------------------------------------------------------------------------------------------------
   // Reading (spec 4.6)
   // -------------------------------------------------------------------------------------------------------------------
 
@@ -821,7 +870,7 @@ export class OutputsService {
     const { rows } = await this.pool.query(
       `SELECT v.version_no AS no, v.origin, v.format, v.status, v.size_bytes AS "sizeBytes", v.created_at AS "createdAt",
               v.created_by AS "createdById", u.display_name AS "createdByName",
-              f.state AS "fileState", f.check_status AS "checkStatus", f.last_checked_at AS "lastCheckedAt", f.path,
+              f.state AS "fileState", f.failure_code AS "failureCode", f.check_status AS "checkStatus", f.last_checked_at AS "lastCheckedAt", f.path,
               b.output_version_id IS NOT NULL AND b.bytes IS NOT NULL AS kept
          FROM output_versions v JOIN users u ON u.id = v.created_by
          LEFT JOIN stored_files f ON f.id = v.stored_file_id
@@ -829,12 +878,17 @@ export class OutputsService {
         WHERE v.output_id = $1 ORDER BY v.version_no`,
       [outputId],
     );
+    const mayFile = decide({ action: 'output.manage', roles: ctx.roles, status: ctx.project.status }).allowed;
     return rows.map((r) => {
       let filing: Filing;
-      if (!r.fileState) {
-        filing = r.kept
-          ? { state: 'not_filed', label: 'Not filed', checkStatus: null, lastCheckedAt: null }
-          : { state: 'not_kept', label: 'Not filed — file no longer kept; generate or upload it again', checkStatus: null, lastCheckedAt: null };
+      if ((!r.fileState || r.fileState === 'failed') && !r.kept) {
+        // Not filed and its bytes are gone (90 days unfiled, spec 5.4): there is nothing left to file.
+        filing = { state: 'not_kept', label: NOT_KEPT, checkStatus: null, lastCheckedAt: null };
+      } else if (!r.fileState) {
+        filing = { state: 'not_filed', label: 'Not filed', checkStatus: null, lastCheckedAt: null };
+      } else if (r.fileState === 'failed') {
+        filing = { state: 'failed', label: filingFailedLabel(r.failureCode), checkStatus: r.checkStatus, lastCheckedAt: r.lastCheckedAt };
+        if (mayFile) filing.tryAgain = true;
       } else if (r.fileState === 'linked') {
         filing = { state: 'linked', label: KEPT_LABEL, sharing: SHARING_OUTSIDE, checkStatus: r.checkStatus, lastCheckedAt: r.lastCheckedAt };
       } else {

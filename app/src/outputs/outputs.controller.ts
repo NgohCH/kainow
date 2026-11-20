@@ -100,4 +100,14 @@ export class OutputsController {
     ids(projectId, outputId);
     return this.outputs.addVersion(who(req), projectId, outputId, parseSubmitBody(body, file, true));
   }
+
+  /** Files a version (or files it again after a failure) in the project's output destination (spec 5.4). */
+  @Post(':outputId/versions/:n/file')
+  @AnySignedInUser()
+  @HttpCode(200)
+  file(@Param('projectId') projectId: string, @Param('outputId') outputId: string, @Param('n') n: string, @Req() req: HttpRequest) {
+    ids(projectId, outputId);
+    if (!/^[1-9][0-9]{0,8}$/.test(n)) throw new NotFoundException();
+    return this.outputs.file(who(req), projectId, outputId, Number(n));
+  }
 }

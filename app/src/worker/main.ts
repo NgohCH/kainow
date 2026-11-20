@@ -33,6 +33,8 @@ import { registerStorageWorker } from '../storage/storage-worker';
 import '../storage/sources';
 // Register the daily source-file check.
 import '../storage/source-files';
+// Register the file-output handler, its final failure and the daily drop of unfiled output bytes.
+import '../outputs/filing';
 
 async function main(): Promise<void> {
   const config = loadWorkerConfig();

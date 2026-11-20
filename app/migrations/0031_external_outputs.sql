@@ -366,7 +366,8 @@ CREATE TABLE output_versions (
   held_case_id         uuid        REFERENCES quarantine_cases (id),
   UNIQUE (output_id, version_no)
 );
-CREATE INDEX output_versions_stored_file_idx ON output_versions (stored_file_id) WHERE stored_file_id IS NOT NULL;
+-- A stored file belongs to one version at most: filing a version twice at once can never give it two.
+CREATE UNIQUE INDEX output_versions_stored_file_idx ON output_versions (stored_file_id) WHERE stored_file_id IS NOT NULL;
 CREATE INDEX output_versions_draft_idx ON output_versions (draft_version_id) WHERE draft_version_id IS NOT NULL;
 
 -- Immutable except status, stored_file_id, approval_request_id and held_case_id; never deleted.
