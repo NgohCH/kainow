@@ -404,10 +404,17 @@ describe('opening, checking and reconciling output files', { skip: SKIP_NO_DB },
     const { out, file } = await filedOutput('Weekly status');
     const archive = (await connector.createFolder({ ...driveRoot(), rootItemId: outputsRoot }, null, 'Archive')).itemId;
     fake.moveItem(drive.driveId, file.item_id, archive, 'Weekly status (old).md');
-    // Opening a moved file still takes the reader to it.
+    // Opening a moved file still takes the reader to it, also when opened again within the minute (no provider call).
+    const before = itemReads(file.item_id);
     const open = await c.ada.raw('GET', vUrl(out, 1, 'open'));
-    assert.equal(open.status, 303);
-    assert.equal(open.headers.get('location'), (await connector.getItem(driveRoot(), file.item_id)).webUrl);
+    t.clock.advanceSeconds(20);
+    const reopen = await c.pm.raw('GET', vUrl(out, 1, 'open'));
+    assert.equal(itemReads(file.item_id), before + 1, 'one provider call for both opens');
+    const current = (await connector.getItem(driveRoot(), file.item_id)).webUrl;
+    assert.notEqual(current, file.web_url);
+    assert.deepEqual([open.status, open.headers.get('location')], [303, current]);
+    assert.deepEqual([reopen.status, reopen.headers.get('location')], [303, current]);
+    assert.equal((await fileRow(out)).path, file.path, 'the recorded place waits for a relink');
     assert.equal((await fileRow(out)).check_status, 'moved');
     assert.equal(await events(out, 'moved_found'), 1);
     assert.equal((await notices('output_file_moved')).length, 2);

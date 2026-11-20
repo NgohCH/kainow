@@ -231,7 +231,8 @@ async function inspect(deps: CheckDeps, f: FileRow & { destination_id: string; i
 /**
  * Records a check result. A newly found Changed, Moved or Missing writes its output event and notifies the PM and
  * Deputies; a file found as recorded again after any of those writes `checked`. Nothing is recorded if the file was
- * relinked meanwhile. A file found as recorded has its eTag, content tag and web URL refreshed.
+ * relinked meanwhile. A file found as recorded has its eTag, content tag and web URL refreshed; a moved file only its
+ * web URL (the URL is kept only to open the file, so an open within the minute still finds it).
  */
 async function record(deps: CheckDeps, f: FileRow, status: Exclude<CheckStatus, 'unverified'>, at: Date, item?: ItemState): Promise<void> {
   const c = await deps.pool.connect();
@@ -247,6 +248,9 @@ async function record(deps: CheckDeps, f: FileRow, status: Exclude<CheckStatus, 
       await c.query(`UPDATE stored_files SET check_status = $2, last_checked_at = $3 WHERE id = $1`, [f.id, status, at]);
       if (status === 'ok' && item) {
         await c.query(`UPDATE stored_files SET etag = $2, ctag = $3, web_url = COALESCE($4, web_url) WHERE id = $1`, [f.id, item.etag, item.ctag, item.webUrl]);
+      } else if (status === 'moved' && item) {
+        // Only where to open it: the recorded path, folder and identity stay until the PM or a Deputy relinks.
+        await c.query(`UPDATE stored_files SET web_url = COALESCE($2, web_url) WHERE id = $1`, [f.id, item.webUrl]);
       }
       if (now.check_status !== status) {
         const v = (await c.query<{ id: string; output_id: string; version_no: number }>(`SELECT id, output_id, version_no FROM output_versions WHERE stored_file_id = $1`, [f.id])).rows[0];
@@ -574,12 +578,24 @@ export async function registerChangedContent(deps: StorageDeps, versionId: strin
 
 /** Ends a pending request: `change_register_failed` (the reason is fixed text), so the PM can ask again. */
 export async function registrationFailed(deps: Pick<StorageDeps, 'pool' | 'clock'>, versionId: string, reason: string): Promise<void> {
-  const at = deps.clock();
-  await deps.pool.query(
-    `INSERT INTO output_events (id, output_id, version_id, kind, actor_id, at, detail)
-     SELECT $1, v.output_id, v.id, 'change_register_failed', NULL, $3, $4 FROM output_versions v WHERE v.id = $2 AND ${changeStateSql('v.id').pending}`,
-    [uuidv7(at.getTime()), versionId, at, JSON.stringify({ reason })],
-  );
+  const c = await deps.pool.connect();
+  try {
+    await c.query('BEGIN');
+    // The output row, as a successful registration locks it: the request ends once, one way or the other.
+    await c.query(`SELECT 1 FROM outputs WHERE id = (SELECT output_id FROM output_versions WHERE id = $1) FOR UPDATE`, [versionId]);
+    const at = deps.clock();
+    await c.query(
+      `INSERT INTO output_events (id, output_id, version_id, kind, actor_id, at, detail)
+       SELECT $1, v.output_id, v.id, 'change_register_failed', NULL, $3, $4 FROM output_versions v WHERE v.id = $2 AND ${changeStateSql('v.id').pending}`,
+      [uuidv7(at.getTime()), versionId, at, JSON.stringify({ reason })],
+    );
+    await c.query('COMMIT');
+  } catch (err) {
+    await c.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    c.release();
+  }
 }
 
 async function registerLocked(deps: StorageDeps, versionId: string): Promise<void> {
