@@ -88,14 +88,13 @@ async function main(): Promise<void> {
     connectors: new DbStorageConnectorFactory(pool, clock, key),
     key,
     clock,
-    // No storage notices exist yet; the features that raise them replace this.
+    // TODO(Task 8/13/17): replace with real notices.
     notify: async () => undefined,
   };
   await registerStorageWorker(boss, storageDeps);
   const storageLog = new Logger('Storage');
-  const storageBoss = boss;
   const storage = {
-    sendOutbox: () => sendStorageOutbox(pool, storageBoss),
+    sendOutbox: () => sendStorageOutbox(pool, boss),
     daily: () => runStorageDaily(storageDeps, (m) => storageLog.warn(m)),
   };
   await registerSchedules(boss, { sweep, dispatcher, analysis, quarantine: quarantineJob, storage });

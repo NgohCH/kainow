@@ -12,8 +12,8 @@ import {
   type StorageDeps, type StorageJob, type StorageJobData,
   registerStorageDailyTask, registerStorageFinalFailure, registerStorageHandler, runStorageDaily,
 } from './jobs';
-import { URGENT_PRIORITY, queueStorageJob, sendStorageOutbox } from './outbox';
-import { registerStorageWorker } from './storage-worker';
+import { NORMAL_PRIORITY, STORAGE_JOB_OPTIONS, URGENT_PRIORITY, queueStorageJob, sendStorageOutbox, storageSingletonKey } from './outbox';
+import { BOOKKEEPING_FAILED, registerStorageWorker } from './storage-worker';
 import { StorageError, type StorageErrorCode } from './types';
 
 const migrationsDir = loadDatabaseConfig({ DATABASE_URL: 'x' }).migrationsDir;
@@ -284,5 +284,87 @@ describe('storage jobs', { skip: SKIP_NO_DB }, () => {
     await runStorageDaily(deps(), (m) => logs.push(m));
     assert.deepEqual(ran, ['a', 'b']);
     assert.deepEqual(logs, ['The daily storage task test-a failed; it will run again tomorrow.']);
+  });
+  /** A retry already queued for the key, 30 minutes out in real time, as the worker would have sent it. */
+  async function queuedRetry(job: StorageJob, subjectId: string, attempt: number): Promise<void> {
+    const id = await boss.send(QUEUES.storage, { job, subjectId, attempt, firstFailureAt: T0.toISOString() } satisfies StorageJobData, {
+      ...STORAGE_JOB_OPTIONS, singletonKey: storageSingletonKey(job, subjectId), priority: NORMAL_PRIORITY, startAfter: new Date(Date.now() + 30 * MINUTE),
+    });
+    assert.ok(id);
+  }
+
+  test('an urgent change refreshes a queued retry: one queued job, due now, urgent, with a fresh attempt budget', async () => {
+    const subject = uuidv7();
+    await queuedRetry('share-sync', subject, 4);
+    await queue('share-sync', subject, 'urgent');
+    assert.equal(await sendStorageOutbox(pool, boss), 1);
+    const jobs = await jobsFor('share-sync', subject);
+    assert.equal(jobs.length, 1);
+    const [j] = jobs;
+    assert.ok(j.startAfter.getTime() <= Date.now());
+    assert.equal(j.priority, URGENT_PRIORITY);
+    assert.deepEqual(j.data, { job: 'share-sync', subjectId: subject });
+  });
+
+  test('a change while the last retry is queued gets its own attempts: one more failure does not fail the subject', async () => {
+    const subject = uuidv7();
+    await queuedRetry('check', subject, 5);
+    await queue('check', subject);
+    await sendStorageOutbox(pool, boss);
+    const seen: number[] = [];
+    registerStorageHandler('check', async (_d, _s, attempt) => {
+      seen.push(attempt);
+      if (attempt === 1) throw new StorageError('server', { status: 503 });
+    });
+    await registerStorageWorker(boss, deps());
+    await until(async () => (await attempts(subject)).some((r) => r.outcome === 'ok'));
+    assert.deepEqual(seen, [1, 2]);
+    assert.deepEqual(failures, []);
+  });
+
+  test('a retry is dropped, with a fixed log line, when a fresher job for the subject is already queued', async () => {
+    const subject = uuidv7();
+    const seen: number[] = [];
+    const logs: string[] = [];
+    registerStorageHandler('check', async (_d, subjectId, attempt) => {
+      seen.push(attempt);
+      if (seen.length === 1) {
+        // A change arrives while this attempt runs: a fresh job takes the queued slot.
+        await queue('check', subjectId);
+        await sendStorageOutbox(pool, boss);
+        throw new StorageError('server');
+      }
+    });
+    await registerStorageWorker(boss, deps(), (m) => logs.push(m));
+    await queue('check', subject);
+    await sendStorageOutbox(pool, boss);
+    await until(async () => (await attempts(subject)).some((r) => r.outcome === 'ok'));
+    assert.deepEqual(seen, [1, 1]);
+    assert.deepEqual(logs, ['A newer storage check job for the same subject is already queued; it replaces this retry.']);
+    assert.deepEqual(failures, []);
+  });
+
+  test('a failing final-failure hook leaves only a fixed message with the job', async () => {
+    const subject = uuidv7();
+    const logs: string[] = [];
+    registerStorageHandler('file-output', async () => {
+      throw new StorageError('forbidden');
+    });
+    registerStorageFinalFailure('file-output', async () => {
+      throw new Error('hook failed near Kp9vault-Rotor42 for Ada Lovelace');
+    });
+    await registerStorageWorker(boss, deps(), (m) => logs.push(m));
+    await queue('file-output', subject);
+    await sendStorageOutbox(pool, boss);
+    let stored: JobWithMetadata<StorageJobData> | undefined;
+    await until(async () => {
+      stored = (await jobsFor('file-output', subject)).find((j) => j.state === 'retry' || j.state === 'failed');
+      return stored !== undefined;
+    });
+    const output = JSON.stringify(stored?.output);
+    assert.ok(output.includes(BOOKKEEPING_FAILED), output);
+    for (const leak of ['Kp9vault', 'Ada']) assert.ok(!output.includes(leak), leak);
+    assert.ok(logs.includes('Recording a storage file-output job attempt failed; the job will be tried again.'));
+    assert.ok(!logs.join(' ').includes('Kp9vault'));
   });
 });

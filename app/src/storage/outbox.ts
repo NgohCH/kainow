@@ -10,13 +10,19 @@ export const NORMAL_PRIORITY = 0;
 
 /**
  * pg-boss options for every storage job. The retry schedule is not pg-boss's: the worker sends the job again with its own
- * start time (spec 5.6). pg-boss's retries only cover the worker itself failing (for example the database going away
- * while an attempt is recorded); they run the same attempt again.
+ * start time (spec 5.6). pg-boss's retries only cover the worker itself failing (it died, or the database went away
+ * while an attempt was recorded); they run the same attempt again.
+ *
+ * Delivery is at least once: an attempt can run again after a crash, a lost heartbeat or a failed record. Every handler
+ * must be idempotent and recheck the subject's state before acting (A11).
  */
 export const STORAGE_JOB_OPTIONS = {
   retryLimit: 4,
   retryDelay: 60,
-  // Longer than the slowest single attempt (a large upload at 120 seconds a chunk), so a live attempt is not taken over.
+  // A dead worker stops its heartbeat, and pg-boss retries the job within a minute or two.
+  heartbeatSeconds: 60,
+  // Bounds a live attempt only (a large upload at up to 120 seconds a chunk, or a relocation copy); the heartbeat, not
+  // this, catches a dead worker.
   expireInSeconds: 3600,
 } as const;
 
@@ -45,8 +51,8 @@ const BATCH = 100;
 
 /**
  * Sends every unsent outbox row as a storage job and marks it sent; urgent rows first. Rows are claimed with SKIP LOCKED,
- * so two ticks at once send each row once. A row whose job is already queued (same key) is marked sent too: the queued
- * job rechecks the subject when it runs. Returns how many rows were sent.
+ * so two ticks at once send each row once. A row whose key already has a queued job refreshes that job instead
+ * (`sendOrRefresh`). Returns how many rows were sent.
  */
 export async function sendStorageOutbox(pool: Pool, boss: PgBoss): Promise<number> {
   let total = 0;
@@ -64,11 +70,7 @@ export async function sendStorageOutbox(pool: Pool, boss: PgBoss): Promise<numbe
         [BATCH],
       );
       for (const r of rows) {
-        await boss.send(QUEUES.storage, { job: r.job, subjectId: r.subject_id } satisfies StorageJobData, {
-          ...STORAGE_JOB_OPTIONS,
-          singletonKey: storageSingletonKey(r.job, r.subject_id),
-          priority: r.urgent ? URGENT_PRIORITY : NORMAL_PRIORITY,
-        });
+        await sendOrRefresh(boss, { job: r.job, subjectId: r.subject_id }, r.urgent ? URGENT_PRIORITY : NORMAL_PRIORITY);
       }
       if (rows.length > 0) await c.query(`UPDATE storage_outbox SET sent_at = now() WHERE id = ANY($1::uuid[])`, [rows.map((r) => r.id)]);
       await c.query('COMMIT');
@@ -82,4 +84,25 @@ export async function sendStorageOutbox(pool: Pool, boss: PgBoss): Promise<numbe
     total += claimed;
     if (claimed < BATCH) return total;
   }
+}
+
+/**
+ * Sends a fresh job for a change. Under the queue's stately policy a key holds one queued job and one running one, so if
+ * a job is already queued for the key (for example a retry 30 minutes out, or the last retry), the send is refused; that
+ * queued job is then refreshed to stand for the change: due now, at the higher of the two priorities, and with a fresh
+ * attempt budget (data back to `{ job, subjectId }`). If the only job for the key is running, the send queues normally.
+ */
+export async function sendOrRefresh(boss: PgBoss, data: { job: StorageJob; subjectId: string }, priority: number): Promise<'sent' | 'refreshed'> {
+  const singletonKey = storageSingletonKey(data.job, data.subjectId);
+  const fresh: StorageJobData = { job: data.job, subjectId: data.subjectId };
+  // The queued job may start running between the refused send and the refresh; then the queued slot is free, so try again.
+  for (let i = 0; i < 3; i++) {
+    if (await boss.send(QUEUES.storage, fresh, { ...STORAGE_JOB_OPTIONS, singletonKey, priority })) return 'sent';
+    const queued = await boss.findJobs<StorageJobData>(QUEUES.storage, { key: singletonKey, queued: true });
+    if (queued.length === 0) continue;
+    const top = Math.max(priority, ...queued.map((j) => j.priority));
+    const r = await boss.update(QUEUES.storage, fresh, { singletonKey, priority: top, startAfter: new Date(), match: 'all' });
+    if (r.updated > 0) return 'refreshed';
+  }
+  throw new Error('The storage queue did not accept the job.');
 }
