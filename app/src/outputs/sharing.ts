@@ -47,6 +47,8 @@ export const placeFailedNotice = (projectName: string): string =>
 
 /** What a stored file's move is recorded with in `stored_file_moves`. */
 const MOVE_REASON = 'Readers changed';
+/** Logged (fixed text) when revocations after a failed narrowing move fail too; the rows stay listed to repair. */
+const REVOKE_AFTER_MOVE_FAILED = 'Removing access after a failed output move failed too; it stays listed under Sharing to repair.';
 /** How many ` (n)` names are tried when a moved file's name is taken in its new folder. */
 const MAX_SUFFIX = 20;
 
@@ -189,7 +191,8 @@ async function syncLocked(deps: StorageDeps, folderId: string, opts: SyncOptions
   const leaving: GrantRow[] = [];
   for (const g of live.filter((x) => !desired.has(x.user_id))) {
     if (g.state === 'not_found' || g.state === 'external' || (g.state === 'failed' && g.none_created)) {
-      await setGrant(deps, g.id, 'revoked', g.permission_id);
+      // No permission id is kept: an external one was never Kainow's and must never later be taken for Kainow's.
+      await setGrant(deps, g.id, 'revoked', null);
       continue;
     }
     if (g.state !== 'revoking') await setGrant(deps, g.id, 'revoking', g.permission_id);
@@ -243,10 +246,11 @@ async function setGrant(deps: StorageDeps, id: string, state: GrantState | 'revo
   );
 }
 
-/** Permission ids Kainow itself created on the folder (its own grants, whatever their state). */
+/** Permission ids of Kainow's own live grants on the folder (never an external one, never a settled row). */
 async function kainowPermissionIds(db: Db, folderId: string): Promise<Set<string>> {
   const { rows } = await db.query<{ permission_id: string }>(
-    `SELECT permission_id FROM storage_grants WHERE folder_id = $1 AND permission_id IS NOT NULL AND state <> 'external'`,
+    `SELECT permission_id FROM storage_grants
+      WHERE folder_id = $1 AND permission_id IS NOT NULL AND state IN ('pending', 'granted', 'revoking', 'failed')`,
     [folderId],
   );
   return new Set(rows.map((r) => r.permission_id));
@@ -434,7 +438,11 @@ async function placeLocked(deps: StorageDeps, outputId: string): Promise<void> {
     await deps.pool.query(`UPDATE outputs SET place_failed_at = $2 WHERE id = $1`, [outputId, deps.clock()]);
     // Narrowed: whoever lost access through the output's own folder loses it now, move or no move.
     if (!whole) {
-      for (const id of await outputFolderIds(deps.pool, outputId)) await syncFolderGrants(deps, id, { revokeOnly: true }).catch(() => undefined);
+      for (const id of await outputFolderIds(deps.pool, outputId)) {
+        await syncFolderGrants(deps, id, { revokeOnly: true }).catch(() =>
+          (deps.log ?? ((m: string) => console.warn(m)))(REVOKE_AFTER_MOVE_FAILED),
+        );
+      }
     }
     throw err;
   }
@@ -587,9 +595,10 @@ export async function reconcileSharing(deps: StorageDeps, at: Date = deps.clock(
     try {
       await syncFolderGrants(deps, f.id, { retryNotFound: true });
       out.synced += 1;
-    } catch {
+    } catch (err) {
       await withTx(deps, (c) => queueFolderSharing(c, f.id, 'urgent'));
-      await noticeStuckRevocations(deps, f.id);
+      // Busy (another worker holds the folder) is no failure: the job's own attempts decide.
+      if (!(err instanceof StorageError && err.code === 'throttled')) await noticeStuckRevocations(deps, f.id);
       out.queued += 1;
     }
   }

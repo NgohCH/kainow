@@ -534,7 +534,7 @@ describe('folder sharing kept in step with readers', { skip: SKIP_NO_DB }, () =>
     assert.equal((await grantRow(pf.id, joe)).state, 'revoked');
   });
 
-  test('a person who already has a permission is recorded external, never touched, and keeps it after leaving', async () => {
+  test('a person who already has a permission is recorded external, never touched, and keeps it after leaving and returning', async () => {
     await t.pool.query(`INSERT INTO memberships (id, project_id, user_id, role, starts_on) VALUES ($1, $2, $3, 'member', '2026-11-01')`, [uuidv7(), project, ids.kim]);
     const out = await registered('Weekly status');
     assert.equal((await c.pm.request('POST', url(`/${out}/versions/1/file`))).status, 200);
@@ -542,7 +542,7 @@ describe('folder sharing kept in step with readers', { skip: SKIP_NO_DB }, () =>
     await fileOutputVersion(deps(), vid);
     const pf = await projectFolder();
     // Someone else shares the folder with Kim directly, before Kainow first shares it.
-    const theirs = fake.seedPermission(drive.driveId, pf.item_id, { kind: 'user', principal: 'kim@example.org', roles: ['read'] });
+    const theirs = fake.seedPermission(drive.driveId, pf.item_id, { kind: 'user', principal: 'kim@example.org', roles: ['write'] });
     await drain();
     assert.deepEqual(await grantRow(pf.id, ids.kim), { state: 'external', permission_id: theirs, none_created: false });
     assert.equal(invitedTo('kim@example.org'), 0, 'Kainow never invites over it');
@@ -550,10 +550,18 @@ describe('folder sharing kept in step with readers', { skip: SKIP_NO_DB }, () =>
     const mark = fake.calls.length;
     await leave(ids.kim);
     await drain();
-    assert.equal(providerCallsSince(mark).filter((x) => x.method === 'DELETE').length, 0);
+    assert.deepEqual(await grantRow(pf.id, ids.kim), { state: 'revoked', permission_id: null, none_created: false });
+    // Back again, and gone again: still never invited over, never deleted.
+    await appoint(ids.kim);
+    await drain();
+    assert.deepEqual(await grantRow(pf.id, ids.kim), { state: 'external', permission_id: theirs, none_created: false });
+    await leave(ids.kim);
+    await drain();
     assert.equal((await grantRow(pf.id, ids.kim)).state, 'revoked');
+    assert.equal(invitedTo('kim@example.org'), 0, 'never invited');
+    assert.equal(providerCallsSince(mark).filter((x) => x.method === 'DELETE').length, 0, 'never deleted');
     const still = (await connector.listPermissions(dest(), pf.item_id)).find((p) => p.id === theirs);
-    assert.deepEqual(still?.roles, ['read'], 'their permission survives unchanged');
+    assert.deepEqual(still?.roles, ['write'], 'their permission survives with its original roles');
   });
 
   test('a returning person is re-granted only while their permission still stands', async () => {
