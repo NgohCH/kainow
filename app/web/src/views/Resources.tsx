@@ -1,6 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import { formatWhen, plural } from '../format.ts';
+import { rolesText } from '../projects.ts';
 import {
   LINE_STATUSES,
   type LineEvent,
@@ -17,6 +18,7 @@ import {
 } from '../resources.ts';
 import { FinanceSection } from './Finance.tsx';
 import { ResourceLineForm } from './ResourceLineForm.tsx';
+import { useReturnFocus } from './useReturnFocus.ts';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 const ORDER: LineStatus[] = ['needed', 'arranged', 'in_use', 'finished', 'cancelled'];
@@ -42,6 +44,7 @@ export function Resources({ projectId, roles, status }: { projectId: string; rol
   const [adding, setAdding] = useState(false);
   const [editing, setEditing] = useState<string | null>(null);
   const actions = resourceActions(roles, status);
+  useReturnFocus(adding ? 'add-resource' : null);
 
   const load = useCallback(() => {
     api.get<ResourcesList>(`/projects/${projectId}/resources`).then(
@@ -71,9 +74,9 @@ export function Resources({ projectId, roles, status }: { projectId: string; rol
     <>
       <section aria-labelledby="resources-heading">
         <div className="row">
-          <h2 id="resources-heading">Resources</h2>
+          <h2 id="resources-heading" tabIndex={-1}>Resources</h2>
           {actions.editLines && (
-            <button type="button" className="primary" aria-expanded={adding} onClick={() => setAdding((a) => !a)}>
+            <button type="button" className="primary" data-opener="add-resource" aria-expanded={adding} onClick={() => setAdding((a) => !a)}>
               + Add resource
             </button>
           )}
@@ -126,7 +129,7 @@ export function Resources({ projectId, roles, status }: { projectId: string; rol
           <ul className="plain">
             {data.people.map((p) => (
               <li key={p.userId}>
-                <a href={`#/projects/${projectId}/work`}>{p.name}</a> · {p.roles.join(', ')}
+                <a href={`#/projects/${projectId}/work`}>{p.name}</a> · {rolesText(p.roles)}
                 {p.department ? ` · ${p.department}` : ''} · {plural(p.openTasks, 'open task')}
                 {p.overdue > 0 ? ` (${p.overdue} overdue)` : ''}
               </li>
@@ -157,6 +160,7 @@ function LineRow({ projectId, line: l, canEdit, editing, onEdit, onChanged }: { 
   const [pickedStatus, setPickedStatus] = useState<string>(l.status);
   const [busy, setBusy] = useState(false);
   const overlap = overlapText(l.overlap);
+  const focus = useReturnFocus(editing ? `edit-${l.id}` : mode ? `${mode}-${l.id}` : null);
   useEffect(() => setPickedStatus(l.status), [l.status]);
 
   useEffect(() => {
@@ -192,6 +196,7 @@ function LineRow({ projectId, line: l, canEdit, editing, onEdit, onChanged }: { 
     setBusy(true);
     try {
       await api.post(`/projects/${projectId}/resources/lines/${l.id}/cancel`, { reason: reason.trim() });
+      focus.leaving('resources-heading');
       setMode(null);
       setReason('');
       onChanged('Resource cancelled.');
@@ -237,14 +242,14 @@ function LineRow({ projectId, line: l, canEdit, editing, onEdit, onChanged }: { 
           <button type="button" disabled={busy || pickedStatus === l.status} onClick={() => void setStatus(pickedStatus)}>Set status</button>
         )}
         {canEdit && (
-          <button type="button" aria-expanded={editing} onClick={onEdit}>{editing ? 'Close edit' : 'Edit'}</button>
+          <button type="button" data-opener={`edit-${l.id}`} aria-expanded={editing} onClick={onEdit}>{editing ? 'Close edit' : 'Edit'}</button>
         )}
         {canEdit && (
-          <button type="button" className="reject" aria-expanded={mode === 'cancel'} onClick={() => setMode(mode === 'cancel' ? null : 'cancel')}>
+          <button type="button" className="reject" data-opener={`cancel-${l.id}`} aria-expanded={mode === 'cancel'} onClick={() => setMode(mode === 'cancel' ? null : 'cancel')}>
             Cancel resource
           </button>
         )}
-        <button type="button" className="quiet" aria-expanded={mode === 'history'} onClick={() => setMode(mode === 'history' ? null : 'history')}>
+        <button type="button" className="quiet" data-opener={`history-${l.id}`} aria-expanded={mode === 'history'} onClick={() => setMode(mode === 'history' ? null : 'history')}>
           {mode === 'history' ? 'Hide history' : 'History'}
         </button>
       </div>

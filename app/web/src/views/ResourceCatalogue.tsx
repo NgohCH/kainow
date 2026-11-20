@@ -2,6 +2,7 @@ import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import { plural } from '../format.ts';
 import { EMPTY_ITEM as EMPTY, type ItemDraft, itemProblem } from '../resourceScreens.ts';
+import { useReturnFocus } from './useReturnFocus.ts';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 const KINDS: Array<[string, string]> = [['equipment', 'Equipment'], ['facility', 'Facility']];
@@ -130,6 +131,14 @@ export function ResourceCatalogue({ embedded = false }: { embedded?: boolean } =
   const [newCategory, setNewCategory] = useState('');
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
   const [retiringCategory, setRetiringCategory] = useState<string | null>(null);
+  const focus = useReturnFocus(
+    adding ? 'add-item'
+      : editing ? `edit-${editing}`
+      : retiring ? `retire-${retiring}`
+      : renaming ? `rename-${renaming.id}`
+      : retiringCategory ? `retire-category-${retiringCategory}`
+      : null,
+  );
 
   const load = useCallback(() => {
     api.get<{ items: Item[]; categories: Category[] }>('/resources/catalogue?all=1').then(
@@ -161,7 +170,7 @@ export function ResourceCatalogue({ embedded = false }: { embedded?: boolean } =
 
   return (
     <Wrapper className={embedded ? 'panel' : 'page'} aria-labelledby="catalogue-heading">
-      <Heading id="catalogue-heading">Resource catalogue</Heading>
+      <Heading id="catalogue-heading" tabIndex={-1}>Resource catalogue</Heading>
       <p className="meta">Shared equipment and facilities that projects choose from. A retired item stays on existing lines and cannot be chosen for new ones.</p>
       <p role="status" aria-live="polite" className="ok">{notice ?? ''}</p>
       {error && <p role="alert" className="error">{error}</p>}
@@ -209,7 +218,10 @@ export function ResourceCatalogue({ embedded = false }: { embedded?: boolean } =
                   onCancel={() => setRetiringCategory(null)}
                   onRetire={async (reason) => {
                     const refused = await run(() => api.post(`/resources/catalogue/categories/${c.id}/retire`, { reason }), 'Category retired.');
-                    if (!refused) setRetiringCategory(null);
+                    if (!refused) {
+                      focus.leaving('catalogue-heading');
+                      setRetiringCategory(null);
+                    }
                     return refused;
                   }}
                 />
@@ -221,8 +233,8 @@ export function ResourceCatalogue({ embedded = false }: { embedded?: boolean } =
                   </span>
                   {c.status === 'active' && (
                     <span>
-                      <button type="button" className="link-button" onClick={() => setRenaming({ id: c.id, name: c.name })}>Rename</button>{' '}
-                      <button type="button" className="link-button" onClick={() => setRetiringCategory(c.id)}>Retire</button>
+                      <button type="button" className="link-button" data-opener={`rename-${c.id}`} onClick={() => setRenaming({ id: c.id, name: c.name })}>Rename</button>{' '}
+                      <button type="button" className="link-button" data-opener={`retire-category-${c.id}`} onClick={() => setRetiringCategory(c.id)}>Retire</button>
                     </span>
                   )}
                 </>
@@ -234,7 +246,7 @@ export function ResourceCatalogue({ embedded = false }: { embedded?: boolean } =
 
       <div className="row">
         <h3>Items</h3>
-        <button type="button" className="primary" aria-expanded={adding} onClick={() => setAdding((a) => !a)} disabled={categories.every((c) => c.status !== 'active')}>
+        <button type="button" className="primary" data-opener="add-item" aria-expanded={adding} onClick={() => setAdding((a) => !a)} disabled={categories.every((c) => c.status !== 'active')}>
           + Add item
         </button>
       </div>
@@ -308,8 +320,8 @@ export function ResourceCatalogue({ embedded = false }: { embedded?: boolean } =
                   </span>
                   {i.status === 'active' && (
                     <span>
-                      <button type="button" className="link-button" aria-label={`Edit ${i.reference}`} onClick={() => setEditing(i.id)}>Edit</button>{' '}
-                      <button type="button" className="link-button" aria-label={`Retire ${i.reference}`} onClick={() => setRetiring(retiring === i.id ? null : i.id)}>Retire</button>
+                      <button type="button" className="link-button" data-opener={`edit-${i.id}`} aria-label={`Edit ${i.reference}`} onClick={() => setEditing(i.id)}>Edit</button>{' '}
+                      <button type="button" className="link-button" data-opener={`retire-${i.id}`} aria-label={`Retire ${i.reference}`} onClick={() => setRetiring(retiring === i.id ? null : i.id)}>Retire</button>
                     </span>
                   )}
                 </div>
@@ -320,7 +332,10 @@ export function ResourceCatalogue({ embedded = false }: { embedded?: boolean } =
                   onCancel={() => setRetiring(null)}
                   onRetire={async (reason) => {
                     const refused = await run(() => api.post(`/resources/catalogue/items/${i.id}/retire`, { reason }), 'Item retired.');
-                    if (!refused) setRetiring(null);
+                    if (!refused) {
+                      focus.leaving('catalogue-heading');
+                      setRetiring(null);
+                    }
                     return refused;
                   }}
                 />

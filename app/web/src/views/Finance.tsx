@@ -23,6 +23,7 @@ import {
 import { formatWhen, plural } from '../format.ts';
 import { type ResourceActions } from '../resources.ts';
 import { ChangeRequestPanel, useRequests } from './ChangeRequest.tsx';
+import { useReturnFocus } from './useReturnFocus.ts';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 
@@ -66,6 +67,7 @@ function NotRequired({ projectId, onChanged }: { projectId: string; onChanged: (
   const { requests, reload } = useRequests(projectId);
   const [history, setHistory] = useState<FinanceView | null>(null);
   const [showing, setShowing] = useState(false);
+  useReturnFocus(showing ? 'finance-history' : null);
   useEffect(() => {
     let stale = false;
     api.get<FinanceView>(`/projects/${projectId}/finance`).then(
@@ -82,7 +84,7 @@ function NotRequired({ projectId, onChanged }: { projectId: string; onChanged: (
       <p>Financial tracking: {NOT_REQUIRED}</p>
       {history && (
         <>
-          <button type="button" className="quiet" aria-expanded={showing} onClick={() => setShowing((s) => !s)}>
+          <button type="button" className="quiet" data-opener="finance-history" aria-expanded={showing} onClick={() => setShowing((s) => !s)}>
             {showing ? 'Hide finance history' : 'Finance history'}
           </button>
           {showing && <FinanceDetail view={history} actions={null} currency={history.currency} requests={[]} onChanged={() => undefined} />}
@@ -120,6 +122,7 @@ function FinanceReader({
   const { currency, figures } = summary;
   const [view, setView] = useState<FinanceView | null>(null);
   const [panel, setPanel] = useState<Panel>(null);
+  useReturnFocus(panel);
   const [loadError, setLoadError] = useState<string | null>(null);
   const { requests, reload: reloadRequests } = useRequests(projectId);
   const load = useCallback(() => {
@@ -155,7 +158,7 @@ function FinanceReader({
           {money(figures.budget, currency)}
           {latest ? ` (approved ${formatWhen(latest.approvedAt)})` : ''}{' '}
           {actions.proposeBudget && (
-            <button type="button" className="quiet" aria-expanded={panel === 'budget'} onClick={() => setPanel(panel === 'budget' ? null : 'budget')}>
+            <button type="button" className="quiet" data-opener="budget" aria-expanded={panel === 'budget'} onClick={() => setPanel(panel === 'budget' ? null : 'budget')}>
               Propose change
             </button>
           )}
@@ -184,11 +187,11 @@ function FinanceReader({
       {loadError && <p role="alert" className="error">{loadError}</p>}
       <div className="decision">
         {actions.recordSpending && (
-          <button type="button" aria-expanded={panel === 'spending'} onClick={() => setPanel(panel === 'spending' ? null : 'spending')}>
+          <button type="button" data-opener="spending" aria-expanded={panel === 'spending'} onClick={() => setPanel(panel === 'spending' ? null : 'spending')}>
             Record spending
           </button>
         )}
-        <button type="button" aria-expanded={panel === 'list'} onClick={() => setPanel(panel === 'list' ? null : 'list')}>
+        <button type="button" data-opener="list" aria-expanded={panel === 'list'} onClick={() => setPanel(panel === 'list' ? null : 'list')}>
           Spending list
         </button>
       </div>
@@ -225,6 +228,7 @@ function FinanceDetail({
   onChanged: (message: string) => void;
 }) {
   const [adjusting, setAdjusting] = useState<string | null>(null);
+  useReturnFocus(adjusting ? `adjust-${adjusting}` : null);
   const reporting = currency ?? view.currency;
   return (
     <div className="panel">
@@ -307,7 +311,7 @@ function EntryItem({
       {e.pending && <p className="warn">{pendingLabel(e.pending)}</p>}
       {request && <ChangeRequestPanel request={{ ...request, currentTerms: reporting ? { currency: reporting } : {} }} onChanged={onChanged} />}
       {canAdjust && !e.pending && reporting && (
-        <button type="button" className="quiet" aria-expanded={adjusting} onClick={onAdjust}>
+        <button type="button" className="quiet" data-opener={`adjust-${e.id}`} aria-expanded={adjusting} onClick={onAdjust}>
           {adjusting ? 'Close' : 'Propose correction, refund or conversion'}
         </button>
       )}

@@ -4,6 +4,7 @@ import { CURRENCIES, type Currency } from '../finance.ts';
 import { formatWhen } from '../format.ts';
 import { orgSettingsProblem, settingsChangeText } from '../resourceScreens.ts';
 import { ResourceCatalogue } from './ResourceCatalogue.tsx';
+import { useReturnFocus } from './useReturnFocus.ts';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 
@@ -32,6 +33,7 @@ function Maintainers() {
   const [removeReason, setRemoveReason] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const focus = useReturnFocus(removing ? `remove-${removing}` : null);
 
   const load = useCallback(() => {
     api.get<{ maintainers: Maintainer[] }>('/admin/resources/maintainers').then((r) => setList(r.maintainers), (e) => setError(errText(e)));
@@ -63,6 +65,7 @@ function Maintainers() {
     try {
       const r = await api.delete<{ maintainers: Maintainer[] }>('/admin/resources/maintainers', { userId: m.userId, reason: removeReason });
       setList(r.maintainers);
+      focus.leaving('maintainers-heading');
       setRemoving(null);
       setRemoveReason('');
       setNotice(`${m.name} no longer maintains the catalogue.`);
@@ -74,7 +77,7 @@ function Maintainers() {
   const taken = new Set((list ?? []).map((m) => m.userId));
   return (
     <section className="panel" aria-labelledby="maintainers-heading">
-      <h2 id="maintainers-heading">Catalogue maintainers</h2>
+      <h2 id="maintainers-heading" tabIndex={-1}>Catalogue maintainers</h2>
       <p className="meta">Administrators can always maintain the catalogue. Name other people here; each addition and removal is recorded with a reason, and either can be undone at any time.</p>
       <form className="stack" onSubmit={add} aria-label="Add a catalogue maintainer">
         <div className="grid-2">
@@ -103,7 +106,7 @@ function Maintainers() {
                 <span>
                   {m.name} <span className="meta">({m.email}) · added by {m.addedBy}, {formatWhen(m.addedAt)} · Reason: {m.reason}</span>
                 </span>
-                <button type="button" className="link-button" aria-label={`Remove ${m.name}`} onClick={() => setRemoving(removing === m.userId ? null : m.userId)}>Remove</button>
+                <button type="button" className="link-button" data-opener={`remove-${m.userId}`} aria-label={`Remove ${m.name}`} onClick={() => setRemoving(removing === m.userId ? null : m.userId)}>Remove</button>
               </div>
               {removing === m.userId && (
                 <form className="inline-form" onSubmit={(e) => void remove(m, e)} aria-label={`Remove ${m.name}`}>
