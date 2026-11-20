@@ -214,6 +214,27 @@ describe('storage connection settings over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.equal((await admin.request('PUT', '/admin/storage', { reason, directoryLookup: false })).status, 200);
   });
 
+  test('saving the connection queues the source-area backfill when a source area is approved', async () => {
+    const outbox = async () => (await rows(`SELECT job, subject_id FROM storage_outbox ORDER BY created_at, id`)).map((r) => r.job);
+    // No source area: nothing to store.
+    assert.equal((await admin.request('PUT', '/admin/storage', { reason, tenantId: 'tenant-1', clientId: 'client-1' })).status, 200);
+    assert.deepEqual(await outbox(), []);
+    const area = uuidv7();
+    await t.pool.query(
+      `INSERT INTO storage_destinations (id, connector, kind, purpose, label, drive_id, root_item_id, status, created_by, created_at)
+       VALUES ($1, 'graph', 'sharepoint_library', 'source_area', 'Sources', 'd', 'r', 'approved', $2, now())`,
+      [area, adminId],
+    );
+    assert.equal((await admin.request('PUT', '/admin/storage', { reason, scheduledChecks: true })).status, 200);
+    assert.deepEqual(await outbox(), [], 'a change that is not the connection queues nothing');
+    assert.equal((await admin.request('PUT', '/admin/storage', { reason, tenantId: 'tenant-2' })).status, 200);
+    assert.equal((await admin.request('POST', '/admin/storage/secret', { reason, clientSecret: SECRET_A })).status, 200);
+    assert.deepEqual(await rows(`SELECT job, subject_id FROM storage_outbox ORDER BY created_at, id`), [
+      { job: 'backfill-sources', subject_id: area },
+      { job: 'backfill-sources', subject_id: area },
+    ]);
+  });
+
   test('approved formats must keep at least one input format', async () => {
     const empty = await admin.request('PUT', '/admin/storage', { reason, approvedInputFormats: [] });
     assert.equal(empty.status, 400);

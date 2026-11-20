@@ -9,6 +9,7 @@ import { M365TokenSource, TokenError } from '../email/m365-token';
 import { PROTECTED_KEY, type ProtectedKey } from '../quarantine/protected-key';
 import { GraphConnector } from './connectors/graph';
 import { INPUT_FORMATS, OUTPUT_FORMATS, type InputFormat, type OutputFormat, type StorageSettings, loadStorageSettings } from './settings';
+import { queueSourceBackfill } from './source-backfill';
 import { STORAGE_CONNECTION_ID, StorageSecretUnreadable, normaliseClientSecret, openStorageSecret, sealStorageSecret } from './secret';
 
 export const NO_PROTECTED_KEY = 'Storage credentials cannot be saved until the protected key is installed. See INSTALL.md.';
@@ -190,6 +191,8 @@ export class StorageSettingsService {
       const sets = fields.map((k, i) => `${COLUMNS[k]} = $${i + 1}`);
       await c.query(`UPDATE storage_settings SET ${sets.join(', ')}`, fields.map((k) => after[k]));
       await this.record(c, at, user.id, reason, before, after, fields);
+      // A changed connection may now reach the source area: versions left waiting are stored (spec 9.1).
+      if (fields.some((k) => k === 'tenantId' || k === 'clientId')) await queueSourceBackfill(c);
     });
     return this.view();
   }
@@ -207,6 +210,7 @@ export class StorageSettingsService {
         [uuidv7(at.getTime()), sealed.ciphertext, sealed.nonce, sealed.tag, sealed.keyId, user.id, at],
       );
       await this.record(c, at, user.id, reason, before, { ...before, hasSecret: true }, ['clientSecret']);
+      await queueSourceBackfill(c);
     });
     return this.view();
   }

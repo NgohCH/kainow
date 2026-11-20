@@ -10,7 +10,7 @@ import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 import { keyFile } from '../testing/ai-connections';
 import { DbStorageConnectorFactory, STORAGE_CONNECTORS, StorageWaitingForKey } from './connector-factory';
-import { libraryPermissionProblems } from './destinations.service';
+import { DESTINATION_EVENTS_ORDER, libraryPermissionProblems } from './destinations.service';
 import { StorageSettingsService } from './settings.service';
 import { StorageError, type PermissionInfo } from './types';
 
@@ -301,14 +301,15 @@ describe('storage destinations over HTTP', { skip: SKIP_NO_DB }, () => {
     await approve(added.body.id, 'Checked and fine');
     t.clock.advanceSeconds(1);
     await admin.request('POST', `/admin/storage/destinations/${added.body.id}/withdraw`, { reason: 'Retired' });
-    const ev = await rows(`SELECT kind, actor_id, reason, detail FROM storage_destination_events WHERE destination_id = $1 ORDER BY at, id`, [added.body.id]);
+    const ev = await rows(
+      `SELECT kind, actor_id, reason, detail FROM storage_destination_events WHERE destination_id = $1 ORDER BY ${DESTINATION_EVENTS_ORDER}`,
+      [added.body.id],
+    );
     const kinds = ev.map((e) => e.kind);
-    // Adding runs the check at the same (frozen) instant, so the first two events tie on `at` and their order is the ids'.
-    assert.deepEqual(kinds.slice(0, 2).sort(), ['checked', 'proposed']);
-    assert.deepEqual([...new Set(kinds)].sort(), ['approved', 'checked', 'proposed', 'withdrawn']);
-    assert.equal(kinds.at(-1), 'withdrawn');
+    // Adding runs the check in the same instant: the order by step keeps proposed before checked.
+    assert.deepEqual(kinds, ['proposed', 'checked', 'checked', 'checked', 'approved', 'withdrawn']);
     assert.ok(ev.every((e) => e.actor_id === adminId));
-    assert.equal(ev[0].reason, reason);
+    assert.equal(ev.find((e) => e.kind === 'proposed').reason, reason);
     assert.equal(ev.find((e) => e.kind === 'approved').reason, 'Checked and fine');
     assert.equal(ev.find((e) => e.kind === 'checked').detail.ok, true);
     assert.equal(JSON.stringify(ev).includes(SECRET), false);

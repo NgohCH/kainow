@@ -51,6 +51,12 @@ const OPEN_TO_OTHERS = (who: string) => `Others can open everything in this libr
 const ONLY_OWNERS = 'Only site owners and administrators can open the library';
 const ONEDRIVE_NEEDS_LOOKUP = 'OneDrive destinations need directory lookup. Turn directory lookup on in the storage connection first.';
 const LOCAL_REFUSED = 'The local storage folder is for development only and is not available here.';
+/**
+ * The one order of a destination's events wherever they are listed: by time, then by the step they record (adding runs
+ * the check in the same instant, so `proposed` and `checked` share a time), then by id. Never by id alone within a time.
+ */
+export const DESTINATION_EVENTS_ORDER = `at, CASE kind WHEN 'proposed' THEN 1 WHEN 'checked' THEN 2 WHEN 'approved' THEN 3 WHEN 'withdrawn' THEN 4 END, id`;
+
 const SECOND_SOURCE_AREA = 'Another source area is already approved. Withdraw it first.';
 
 /**

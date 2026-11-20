@@ -13,17 +13,25 @@ import type { StorageConnectorFactory } from './connector-factory';
 import { LocalConnector } from './connectors/local';
 import { type StorageDeps, onFinalFailure } from './jobs';
 import { quickXorHash } from './quickxor';
-import { backfillSources, storeSourceVersion } from './sources';
+import { standaloneCases } from '../testing/quarantine';
+import { backfillSources, dailySourceTask, storeSourceVersion } from './sources';
 import { type DestinationRef, StorageError, type StoredRef } from './types';
 
 /** The local connector, recording every upload's path, and able to misreport one hash or lose one upload's answer. */
 class SpyConnector extends LocalConnector {
   uploads: string[] = [];
+  uploadedIds: string[] = [];
   alterHashOnce = false;
   loseAnswerOnce = false;
+  /** Runs once, after the next upload has landed (for example a quarantine clean while storing). */
+  afterUploadOnce: (() => Promise<void>) | null = null;
   override async upload(dest: DestinationRef, folderId: string, name: string, bytes: Buffer, opts: { conflict: 'fail' }): Promise<StoredRef> {
     const ref = await super.upload(dest, folderId, name, bytes, opts);
     this.uploads.push(ref.path);
+    this.uploadedIds.push(ref.itemId);
+    const after = this.afterUploadOnce;
+    this.afterUploadOnce = null;
+    await after?.();
     if (this.loseAnswerOnce) {
       this.loseAnswerOnce = false;
       throw new StorageError('timeout');
@@ -199,6 +207,47 @@ describe('managed source area: storing source versions', { skip: SKIP_NO_DB }, (
     await storeSourceVersion(deps(), v.id);
     assert.deepEqual((await filesOf(v.id)).map((f) => f.state), ['stored', 'stored']);
     assert.equal((await version(v.id)).original_bytes, null);
+  });
+
+  test('a clean while uploading records nothing stored and removes what was uploaded', async () => {
+    const areaId = await approveArea();
+    const { source, version: v } = await uploadNote();
+    // Kainow reports a secret in the note (with the protected key: held and cleaned at once) while the original uploads.
+    spy.afterUploadOnce = async () => {
+      await standaloneCases(t.pool, t.clock.now).report('kainow', { projectId: project, kind: 'source', id: source.id, marked: ['pump'], reason: null });
+    };
+    await assert.rejects(storeSourceVersion(deps(), v.id), (e: unknown) => e instanceof StorageError && e.code === 'conflict');
+    assert.deepEqual((await filesOf(v.id)).map((f) => [f.state, f.item_id, f.stored_at, f.attempts]), [['pending', null, null, 0], ['pending', null, null, 0]]);
+    assert.ok(spy.uploadedIds.length > 0);
+    const dest = { id: areaId, connector: 'local' as const, driveId: 'drive1', rootItemId: 'root' };
+    for (const id of spy.uploadedIds) {
+      await assert.rejects(spy.getItem(dest, id), (e: unknown) => e instanceof StorageError && e.code === 'not_found', 'the uploaded copy was removed');
+    }
+    // The next attempt finds the source held and stores nothing.
+    const uploads = spy.uploads.length;
+    await storeSourceVersion(deps(), v.id);
+    assert.equal(spy.uploads.length, uploads);
+    assert.equal((await rows(`SELECT count(*)::int AS n FROM stored_files WHERE state = 'stored'`))[0].n, 0);
+  });
+
+  test('the daily tick tries a failed version again once its last attempt is a day old', async () => {
+    const areaId = await approveArea();
+    const { version: v } = await uploadNote();
+    await onFinalFailure(deps(), 'store-source', v.id, 'server');
+    await t.pool.query(
+      `INSERT INTO storage_attempts (id, job, subject_id, outcome, duration_ms, at) VALUES ($1, 'store-source', $2, 'server', 1, $3)`,
+      [uuidv7(), v.id, new Date(t.clock.now().getTime() - 3600_000)],
+    );
+    const queued = async () => (await rows(`SELECT job, subject_id FROM storage_outbox WHERE sent_at IS NULL ORDER BY created_at, id`));
+    await t.pool.query(`UPDATE storage_outbox SET sent_at = now()`);
+    await dailySourceTask(deps());
+    assert.deepEqual(await queued(), [{ job: 'backfill-sources', subject_id: areaId }], 'an hour after its last attempt it rests');
+    await t.pool.query(`UPDATE storage_outbox SET sent_at = now()`);
+    t.clock.advanceSeconds(24 * 3600);
+    await dailySourceTask(deps());
+    assert.deepEqual(await queued(), [{ job: 'backfill-sources', subject_id: areaId }, { job: 'store-source', subject_id: v.id }]);
+    await storeSourceVersion(deps(), v.id);
+    assert.deepEqual((await filesOf(v.id)).map((f) => f.state), ['stored', 'stored']);
   });
 
   test('after the last attempt the files show as failed', async () => {

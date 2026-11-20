@@ -4,7 +4,9 @@ import { uuidv7 } from '../common/uuid7';
 import type { StorageConnector } from './connector';
 import { StorageWaitingForKey } from './connector-factory';
 import { type StorageDeps, registerStorageDailyTask, registerStorageFinalFailure, registerStorageHandler } from './jobs';
+import { sweepMarkSql, sweptSince } from '../quarantine/sweep-lock';
 import { queueStorageJob } from './outbox';
+import { queueSourceBackfill } from './source-backfill';
 import { quickXorHash } from './quickxor';
 import { type DestinationRef, StorageError, type StoredRef } from './types';
 
@@ -75,7 +77,10 @@ interface VersionRow {
   id: string; source_id: string; version_no: number; filename: string | null; origin: string;
   original_bytes: Buffer | null; quarantined_at: Date | null; text_content: string;
   original_stored_file_id: string | null; text_stored_file_id: string | null;
-  project_id: string | null; held: boolean;
+  original_sha256: string | null; text_sha256: string;
+  project_id: string | null; held_case_id: string | null; held: boolean;
+  /** The project's quarantine sweep marker, read in the same statement as the text (quarantine/sweep-lock.ts). */
+  mark: string;
 }
 
 interface FileRow { id: string; purpose: 'source_original' | 'source_text'; name: string; state: string }
@@ -102,16 +107,22 @@ async function storeVersion(deps: StorageDeps, versionId: string): Promise<Outco
   const areaId = await sourceArea(deps);
   if (!areaId) return 'not_ready';
   const lock = await deps.pool.connect();
+  // A connection whose unlock failed may still hold the lock: it is destroyed, never returned to the pool.
+  let broken: Error | undefined;
   try {
     const got = (await lock.query<{ ok: boolean }>(`SELECT pg_try_advisory_lock(hashtext('store-source'), hashtext($1)) AS ok`, [versionId])).rows[0].ok;
     if (!got) return 'skipped';
     try {
       return await storeLocked(deps, areaId, versionId);
     } finally {
-      await lock.query(`SELECT pg_advisory_unlock(hashtext('store-source'), hashtext($1))`, [versionId]);
+      try {
+        await lock.query(`SELECT pg_advisory_unlock(hashtext('store-source'), hashtext($1))`, [versionId]);
+      } catch (err) {
+        broken = err instanceof Error ? err : new Error('unlock failed');
+      }
     }
   } finally {
-    lock.release();
+    lock.release(broken);
   }
 }
 
@@ -119,7 +130,8 @@ async function loadVersion(deps: StorageDeps, versionId: string): Promise<Versio
   return (
     await deps.pool.query<VersionRow>(
       `SELECT v.id, v.source_id, v.version_no, v.filename, v.origin, v.original_bytes, v.quarantined_at, v.text_content,
-              v.original_stored_file_id, v.text_stored_file_id, s.project_id, s.held_case_id IS NOT NULL AS held
+              v.original_stored_file_id, v.text_stored_file_id, v.original_sha256, v.text_sha256,
+              s.project_id, s.held_case_id, s.held_case_id IS NOT NULL AS held, ${sweepMarkSql('s.project_id')} AS mark
          FROM source_versions v JOIN sources s ON s.id = v.source_id WHERE v.id = $1`,
       [versionId],
     )
@@ -185,7 +197,25 @@ async function storeLocked(deps: StorageDeps, areaId: string, versionId: string)
   }
 
   const at = deps.clock();
-  await inTransaction(deps, async (c) => {
+  const unchanged = await inTransaction(deps, async (c) => {
+    // A report, hold or clean while the files were uploading changes what may be kept: nothing is recorded (the
+    // quarantine sweep-lock pattern). The project's sweep lock is taken shared before any row lock, as every sweep
+    // takes it exclusive first, then the version is read again under lock and compared with what was uploaded.
+    if (await sweptSince(c, v!.project_id!, v!.mark)) return false;
+    const now = (
+      await c.query<{ quarantined_at: Date | null; original_sha256: string | null; text_sha256: string; held_case_id: string | null }>(
+        `SELECT v.quarantined_at, v.original_sha256, v.text_sha256, s.held_case_id
+           FROM source_versions v JOIN sources s ON s.id = v.source_id WHERE v.id = $1
+            FOR UPDATE OF v FOR SHARE OF s`,
+        [versionId],
+      )
+    ).rows[0];
+    if (
+      !now || now.held_case_id !== v!.held_case_id || now.original_sha256 !== v!.original_sha256 || now.text_sha256 !== v!.text_sha256
+      || (now.quarantined_at?.getTime() ?? null) !== (v!.quarantined_at?.getTime() ?? null)
+    ) {
+      return false;
+    }
     for (const d of done) {
       await c.query(
         `UPDATE stored_files SET state = 'stored', destination_id = $2, connector = $3, drive_id = $4, item_id = $5, path = $6,
@@ -199,7 +229,15 @@ async function storeLocked(deps: StorageDeps, areaId: string, versionId: string)
     if (original && done.some((d) => d.id === original.id)) {
       await c.query(`UPDATE source_versions SET original_bytes = NULL WHERE id = $1 AND original_bytes IS NOT NULL`, [versionId]);
     }
+    return true;
   });
+  if (!unchanged) {
+    // What was uploaded may hold what a case has since removed: it is taken away again and the next attempt decides
+    // (a held source waits; a cleaned one stores its cleaned text). Not a provider failure, so no attempt is counted.
+    for (const d of done) await connector.removePermanently(dest, d.ref.itemId).catch(() => undefined);
+    await deps.pool.query(`UPDATE stored_files SET state = 'pending', failure_code = 'conflict' WHERE id = ANY($1::uuid[]) AND state = 'storing'`, [ids]);
+    throw new StorageError('conflict');
+  }
   return 'stored';
 }
 
@@ -339,8 +377,32 @@ registerStorageFinalFailure('store-source', async (deps, versionId, code) => {
     [versionId, code],
   );
 });
-/** Once a day the backfill runs again, for versions left waiting (no connection then, or a held source since released). */
-registerStorageDailyTask('backfill-sources', async (deps) => {
-  const areaId = await sourceArea(deps);
-  if (areaId) await inTransaction(deps, (c) => queueStorageJob(c, 'backfill-sources', areaId));
-});
+/** How long a version whose storing failed rests before the daily tick tries it again. */
+export const FAILED_RETRY_AFTER_MS = 24 * 3600_000;
+/** At most this many failed versions are tried again per day. */
+const FAILED_RETRY_LIMIT = 500;
+
+/**
+ * Once a day: the backfill runs again (for versions left waiting: no connection then, or a held source since released),
+ * and each version with a failed file (or a file an attempt failed on and no job is carrying) whose last store-source
+ * attempt is more than 24 hours old gets a new store-source job, oldest version first.
+ */
+export async function dailySourceTask(deps: StorageDeps): Promise<void> {
+  if (!(await sourceArea(deps))) return;
+  const before = new Date(deps.clock().getTime() - FAILED_RETRY_AFTER_MS);
+  await inTransaction(deps, async (c) => {
+    await queueSourceBackfill(c);
+    const { rows } = await c.query<{ id: string }>(
+      `SELECT v.id FROM source_versions v
+         JOIN stored_files f ON f.id IN (v.original_stored_file_id, v.text_stored_file_id)
+        WHERE (f.state = 'failed' OR (f.state = 'pending' AND f.attempts > 0))
+          AND NOT EXISTS (SELECT 1 FROM storage_attempts a WHERE a.subject_id = v.id AND a.job = 'store-source' AND a.at > $1)
+        GROUP BY v.id, v.created_at
+        ORDER BY v.created_at, v.id
+        LIMIT $2`,
+      [before, FAILED_RETRY_LIMIT],
+    );
+    for (const r of rows) await queueStorageJob(c, 'store-source', r.id);
+  });
+}
+registerStorageDailyTask('source-area', dailySourceTask);
