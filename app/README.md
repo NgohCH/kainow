@@ -96,7 +96,7 @@ DATABASE_URL=postgres://.../kainow_bench_sp8 npm run migrate
 DATABASE_URL=postgres://.../kainow_bench_sp8 npm run bench-resources
 ```
 
-Result of the run on 20 November 2026 (p95, all four aims met): Resources tab with 100 lines 96.0 ms (aim 200); finance with 1,000 entries 27.9 ms (aim 200); Resources and finance panel 79.5 ms (aim 500); leadership summary at organisation scope 489.4 ms (aim 500, little room; most of its time is sub-project 7's task measures). The full table and the two fixes made after the first run are in the spec. All seeded names are dummy and the e-mail addresses are at `@example.org`.
+Result of the run on 20 November 2026 (p95, all four aims met): Resources tab with 100 lines 96.0 ms (aim 200; 36.4 ms after the final fix wave); finance with 1,000 entries 27.9 ms (aim 200); Resources and finance panel 79.5 ms (aim 500); leadership summary at organisation scope 489.4 ms (aim 500, little room; most of its time is sub-project 7's task measures; the two re-runs after the final fix wave read 561.7 and 540.6 ms, missed, with no change to its code path). The full table and the two fixes made after the first run are in the spec. All seeded names are dummy and the e-mail addresses are at `@example.org`.
 
 ## Milestones
 

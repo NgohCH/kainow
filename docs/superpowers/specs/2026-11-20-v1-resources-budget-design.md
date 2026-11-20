@@ -366,16 +366,16 @@ CREATE TABLE expenditure_adjustments (id uuid PRIMARY KEY, expenditure_id uuid N
 
   | Request | Aim p95 | p50 | p95 | max | Result |
   |---|---|---|---|---|---|
-  | `GET /projects/:id/resources` (100 lines) | < 200 ms | 50.0 ms | 96.0 ms | 105.2 ms | met |
+  | `GET /projects/:id/resources` (100 lines) | < 200 ms | 25.0 ms | 36.4 ms | 48.2 ms | met (final fix wave; was 50.0 / 96.0 / 105.2 ms) |
   | `GET /projects/:id/finance` (1,000 entries) | < 200 ms | 19.7 ms | 27.9 ms | 41.0 ms | met |
   | `GET /admin/analytics?panel=resources` | < 500 ms | 70.5 ms | 79.5 ms | 81.7 ms | met |
   | `GET /dashboard/leadership` (organisation scope, new fields shown) | < 500 ms | 405.2 ms | 489.4 ms | 513.7 ms | met |
 
   The first full run missed two aims, both for reasons no index could cure (the overlap and figures queries run in about 1 ms and 10 ms), so the fixes are in the code, and the run above is after them:
-  - **Resources tab, 216.9 ms p95 before, 58.0 to 96.0 ms after (two runs).** About 88 other projects overlapped the timed project's lines, and the viewer's right to open each was checked one after another, a few queries each. The checks now run together (`overlapsFor`); the rule applied to each project is unchanged.
+  - **Resources tab, 216.9 ms p95 before, 58.0 to 96.0 ms after (two runs).** About 88 other projects overlapped the timed project's lines, and the viewer's right to open each was checked one after another, a few queries each. The checks first ran together; in the final fix wave they became one batched load of every overlapping project's memberships and grants (`loadProjectContexts`, three queries however many projects), built by the same rule as `ProjectAccess.context`: 36.9 and 36.4 ms p95 (two runs, 20 November 2026).
   - **Leadership, 667.5 ms p95 before, 459.5 to 489.4 ms after (two runs).** The budget figures read all 20,000 entries into memory. Entries in the reporting currency with no adjustment are now summed in the database and only foreign or adjusted entries are read one by one (`loadFiguresMany`); the result is identical to the per-project figures for all 60 tracking projects.
 
-  Leadership is met with little room: without the new fields, sub-project 7's code on this data set measured 378.7 ms p50 and 497.3 ms p95 on the same machine the same day, so almost all of its time is sub-project 7's task measures, and the Resources and Budget fields add about 30 ms at p50. Run-to-run variation on this laptop is about 100 ms at p95 (one run in the series read 609.7 ms). No index was added.
+  Leadership is met with little room: without the new fields, sub-project 7's code on this data set measured 378.7 ms p50 and 497.3 ms p95 on the same machine the same day, so almost all of its time is sub-project 7's task measures, and the Resources and Budget fields add about 30 ms at p50. Run-to-run variation on this laptop is about 100 ms at p95 (one run in the series read 609.7 ms). No index was added. The two re-runs after the final fix wave, which did not change the leadership code path, read 561.7 and 540.6 ms p95 (475.1 and 458.3 ms p50) for leadership: missed on those runs, within the variation recorded above; the other three requests were met on both (finance 26.0 and 28.3 ms, panel 96.3 and 86.4 ms).
 - Screens checked at desktop width and 375 px, by keyboard, both themes; WCAG 2.2 AA.
 
 ## 14. Left to the builder, and open items
