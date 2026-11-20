@@ -34,13 +34,15 @@ export async function queueFolderSharing(c: PoolClient, folderId: string, priori
 /**
  * Re-syncs every shared folder that concerns a person: those holding a live grant of theirs (so a disabled account
  * loses them) and those of every project they belong to or hold Audit/Oversight access in (so a re-enabled account
- * gets them back once its memberships are restored).
+ * gets them back once its memberships are restored). The source area's folder is included for a designated storage
+ * Administrator (disable revokes the write grant, enable restores it).
  */
 export async function queueUserSharing(c: PoolClient, userId: string, priority: SharingPriority = 'urgent'): Promise<void> {
   const { rows } = await c.query<{ id: string }>(
     `SELECT DISTINCT f.id FROM storage_folders f
-      WHERE f.level IN ('project', 'output')
+      WHERE f.level IN ('project', 'output', 'source_root')
         AND (EXISTS (SELECT 1 FROM storage_grants g WHERE g.folder_id = f.id AND g.user_id = $1 AND g.state <> 'revoked')
+             OR (f.level = 'source_root' AND EXISTS (SELECT 1 FROM storage_admins a WHERE a.user_id = $1 AND a.ended_at IS NULL))
              OR split_part(f.key, '/', 2) IN (SELECT project_id::text FROM memberships WHERE user_id = $1
                                                UNION SELECT project_id::text FROM access_grants WHERE user_id = $1))
       ORDER BY f.id`,

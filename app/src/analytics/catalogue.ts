@@ -237,6 +237,8 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['storage.connection_changed', 'The storage connection settings or client secret were changed, with a reason; no secret is kept.'],
     ['storage.file_withheld', 'A stored file holding a suspected credential was kept encrypted and removed from storage for a security case.'],
     ['storage.file_restored', 'A withheld file was put back in storage after its security case was released unchanged.'],
+    ['storage.admin_designated', 'A person was made a storage Administrator (direct access to the source area), with a reason.'],
+    ['storage.admin_ended', 'A storage Administrator designation was ended, with a reason.'],
   ]),
 
   // ---- per-domain event tables --------------------------------------------------------------------------------------

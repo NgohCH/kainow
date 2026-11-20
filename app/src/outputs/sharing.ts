@@ -14,10 +14,12 @@ export { queueFolderSharing, queueOutputPlacement, queueProjectSharing, queueUse
  * folder (`<dept>/<project>`) with everyone who may read the project's content, and each output folder
  * (`<dept>/<project>/output/<output>`) with that output's readers, in output destinations only.
  *
+ * The same machinery keeps storage Administrators' `write` on the source area's `projects` folder (spec 8.4, D104).
+ *
  * Kainow never alters access it did not create. Before it first invites a person to a folder it reads the folder's
  * permissions: a person who already has one (given by someone else) is recorded `external`, counted as shared, and that
  * permission is never invited over, changed or removed. Before any removal the folder's permissions are read again, and
- * only a permission whose id Kainow recorded and whose roles are exactly read is deleted; anything else stays listed to
+ * only a permission whose id Kainow recorded and whose roles are exactly the role Kainow granted (read; write on the source area) is deleted; anything else stays listed to
  * repair. Revoking never invites.
  *
  * Order matters. A sync removes before it adds. An output whose readers narrow has its files moved out of the project
@@ -65,12 +67,19 @@ interface GrantRow { id: string; user_id: string; state: GrantState; permission_
 const loadFolder = async (db: Db, folderId: string): Promise<FolderRow | undefined> =>
   (await db.query<FolderRow>(`SELECT id, destination_id, level, key, item_id FROM storage_folders WHERE id = $1`, [folderId])).rows[0];
 
-/** Only project folders and output folders are ever shared; every other level (and the restricted root) never is. */
-const SHARED_LEVELS: ReadonlySet<string> = new Set(['project', 'output']);
+/**
+ * Only project folders and output folders (read, in output destinations) and the source area's `projects` folder
+ * (write, for storage Administrators, spec 8.4) are ever shared; every other level (and the restricted root) never is.
+ * The connector never grants on a library root, so the source-area grant sits on the recorded `projects` folder, which
+ * holds every stored source file.
+ */
+const SHARED_LEVELS: ReadonlySet<string> = new Set(['project', 'output', 'source_root']);
+type Role = 'read' | 'write';
+const roleOf = (level: string): Role => (level === 'source_root' ? 'write' : 'read');
+const sharesRole = (p: PermissionInfo, role: Role): boolean => p.roles.length === 1 && p.roles[0] === role;
 const projectOfKey = (key: string): string => key.split('/')[1];
 const outputOfKey = (key: string): string => key.split('/')[3];
 const sameEmail = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase();
-const readOnly = (p: PermissionInfo): boolean => p.roles.length === 1 && p.roles[0] === 'read';
 /** A provider's definite refusal (a 4xx answer): the invitation created nothing. Anything else may have. */
 const definite = (err: unknown): boolean => err instanceof StorageError && err.status !== undefined && err.status >= 400 && err.status < 500;
 
@@ -139,6 +148,9 @@ export async function desiredFolderGrants(db: Db, folderId: string, at: Date): P
     if (!o || o.status === 'withdrawn' || o.deleted || o.held) return out;
     if ((await isWholeProject(db, outputId, at)) && o.placement !== f.id) return out;
     ids = [...(await outputReaders(db, outputId, at))];
+  } else if (f.level === 'source_root') {
+    // Only designated storage Administrators; being an Enterprise Administrator gives nothing here.
+    ids = (await db.query<{ user_id: string }>(`SELECT user_id FROM storage_admins WHERE ended_at IS NULL ORDER BY user_id`)).rows.map((r) => r.user_id);
   } else {
     return out;
   }
@@ -151,17 +163,18 @@ export async function desiredFolderGrants(db: Db, folderId: string, at: Date): P
   return out;
 }
 
-const liveGrants = async (db: Db, folderId: string): Promise<GrantRow[]> =>
+const liveGrants = async (db: Db, folderId: string, role: Role): Promise<GrantRow[]> =>
   (
     await db.query<GrantRow>(
       `SELECT id, user_id, state, permission_id, none_created FROM storage_grants
-        WHERE folder_id = $1 AND role = 'read' AND state <> 'revoked' ORDER BY id`,
-      [folderId],
+        WHERE folder_id = $1 AND role = $2 AND state <> 'revoked' ORDER BY id`,
+      [folderId, role],
     )
   ).rows;
 
-const isOutputsDestination = async (db: Db, destinationId: string): Promise<boolean> =>
-  ((await db.query(`SELECT 1 FROM storage_destinations WHERE id = $1 AND purpose = 'outputs'`, [destinationId])).rowCount ?? 0) > 0;
+/** Output folders are shared only in output destinations; the source area's folder only in the source area. */
+const isSharingDestination = async (db: Db, destinationId: string, level: string): Promise<boolean> =>
+  ((await db.query(`SELECT 1 FROM storage_destinations WHERE id = $1 AND purpose = $2`, [destinationId, level === 'source_root' ? 'source_area' : 'outputs'])).rowCount ?? 0) > 0;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The share-sync job
@@ -183,13 +196,14 @@ export async function syncFolderGrants(deps: StorageDeps, folderId: string, opts
   await exclusively(deps, 'share-sync', folderId, () => syncLocked(deps, folderId, opts));
 }
 
-interface SyncCtx { deps: StorageDeps; connector: StorageConnector; dest: DestinationRef; f: FolderRow }
+interface SyncCtx { deps: StorageDeps; connector: StorageConnector; dest: DestinationRef; f: FolderRow; role: Role }
 
 async function syncLocked(deps: StorageDeps, folderId: string, opts: SyncOptions): Promise<void> {
   const f = await loadFolder(deps.pool, folderId);
-  if (!f || !SHARED_LEVELS.has(f.level) || !(await isOutputsDestination(deps.pool, f.destination_id))) return;
+  if (!f || !SHARED_LEVELS.has(f.level) || !(await isSharingDestination(deps.pool, f.destination_id, f.level))) return;
+  const role = roleOf(f.level);
   const desired = await desiredFolderGrants(deps.pool, folderId, deps.clock());
-  const live = await liveGrants(deps.pool, folderId);
+  const live = await liveGrants(deps.pool, folderId, role);
 
   // Removals that need no provider call are settled at once: nobody was shared with (not found), a permission that was
   // never Kainow's (external, left as it is), or a grant the provider definitely refused. Every other removal is
@@ -217,7 +231,7 @@ async function syncLocked(deps: StorageDeps, folderId: string, opts: SyncOptions
   if (leaving.length === 0 && joining.length === 0) return;
 
   const { connector, dest } = await deps.connectors.forDestination(f.destination_id);
-  const ctx: SyncCtx = { deps, connector, dest, f };
+  const ctx: SyncCtx = { deps, connector, dest, f, role };
   let failure: unknown;
   const emails = await emailsOf(deps.pool, leaving.map((g) => g.user_id));
   for (const g of leaving) {
@@ -281,7 +295,7 @@ async function externalPermissionIds(db: Db, folderId: string): Promise<Set<stri
  * Never on the destination's root, never on a file (the connector checks the item is a folder too).
  */
 async function grantOne(ctx: SyncCtx, perms: PermissionInfo[], userId: string, email: string, g: GrantRow | undefined): Promise<void> {
-  const { deps, connector, dest, f } = ctx;
+  const { deps, connector, dest, f, role } = ctx;
   if (f.item_id === dest.rootItemId) throw new StorageError('invalid');
   if (g?.permission_id && (g.state === 'revoking' || g.state === 'external' || g.state === 'granted')) {
     if (perms.some((p) => p.id === g.permission_id)) {
@@ -294,14 +308,14 @@ async function grantOne(ctx: SyncCtx, perms: PermissionInfo[], userId: string, e
   const others = perms.filter((p) => p.kind === 'user' && sameEmail(p.principal, email) && !ours.has(p.id));
   const unknownOutcome = !!g && !g.permission_id && (g.state === 'pending' || g.state === 'revoking' || (g.state === 'failed' && !g.none_created));
   if (others.length > 0) {
-    const state = unknownOutcome && others.length === 1 && readOnly(others[0]) ? 'granted' : 'external';
-    await upsertGrant(deps, f.id, userId, g, state, others[0].id);
+    const state = unknownOutcome && others.length === 1 && sharesRole(others[0], role) ? 'granted' : 'external';
+    await upsertGrant(deps, f.id, userId, g, state, others[0].id, role);
     return;
   }
-  const id = await upsertGrant(deps, f.id, userId, g, 'pending', null);
+  const id = await upsertGrant(deps, f.id, userId, g, 'pending', null, role);
   let result;
   try {
-    result = await connector.grant(dest, f.item_id, email, 'read');
+    result = await connector.grant(dest, f.item_id, email, role);
   } catch (err) {
     await setGrant(deps, id, 'failed', null, definite(err));
     throw err;
@@ -311,7 +325,7 @@ async function grantOne(ctx: SyncCtx, perms: PermissionInfo[], userId: string, e
 }
 
 async function upsertGrant(
-  deps: StorageDeps, folderId: string, userId: string, g: GrantRow | undefined, state: GrantState, permissionId: string | null,
+  deps: StorageDeps, folderId: string, userId: string, g: GrantRow | undefined, state: GrantState, permissionId: string | null, role: Role,
 ): Promise<string> {
   if (g) {
     await setGrant(deps, g.id, state, permissionId);
@@ -319,8 +333,8 @@ async function upsertGrant(
   }
   const id = uuidv7();
   await deps.pool.query(
-    `INSERT INTO storage_grants (id, folder_id, user_id, role, state, permission_id, updated_at) VALUES ($1, $2, $3, 'read', $4, $5, $6)`,
-    [id, folderId, userId, state, permissionId, deps.clock()],
+    `INSERT INTO storage_grants (id, folder_id, user_id, role, state, permission_id, updated_at) VALUES ($1, $2, $3, $7, $4, $5, $6)`,
+    [id, folderId, userId, state, permissionId, deps.clock(), role],
   );
   return id;
 }
@@ -333,7 +347,7 @@ async function upsertGrant(
  * stays `revoking`, listed to repair.
  */
 async function revokeOne(ctx: SyncCtx, g: GrantRow, email: string | null): Promise<void> {
-  const { deps, connector, dest, f } = ctx;
+  const { deps, connector, dest, f, role } = ctx;
   const perms = await connector.listPermissions(dest, f.item_id);
   let target: PermissionInfo | undefined;
   if (g.permission_id) {
@@ -354,7 +368,7 @@ async function revokeOne(ctx: SyncCtx, g: GrantRow, email: string | null): Promi
     target = matches[0];
     await setGrant(deps, g.id, 'revoking', target.id);
   }
-  if (!readOnly(target)) throw new StorageError('conflict');
+  if (!sharesRole(target, role)) throw new StorageError('conflict');
   try {
     await connector.revoke(dest, f.item_id, target.id);
   } catch (err) {
@@ -557,9 +571,9 @@ export async function sharingAfterFiled(c: PoolClient, outputId: string, at: Dat
 // ---------------------------------------------------------------------------------------------------------------------
 
 /** Whether a folder's grants differ from what they should be, or any is unfinished, failed, not found or external (to recheck). */
-async function needsSync(db: Db, folderId: string, at: Date): Promise<boolean> {
+async function needsSync(db: Db, folderId: string, level: string, at: Date): Promise<boolean> {
   const desired = await desiredFolderGrants(db, folderId, at);
-  const live = await liveGrants(db, folderId);
+  const live = await liveGrants(db, folderId, roleOf(level));
   if (live.some((g) => g.state !== 'granted' || !desired.has(g.user_id))) return true;
   const have = new Set(live.map((g) => g.user_id));
   return [...desired.keys()].some((id) => !have.has(id));
@@ -578,13 +592,14 @@ async function needsSync(db: Db, folderId: string, at: Date): Promise<boolean> {
 export async function reconcileSharing(deps: StorageDeps, at: Date = deps.clock()): Promise<{ synced: number; queued: number; placed: number }> {
   const out = { synced: 0, queued: 0, placed: 0 };
   const folders = (
-    await deps.pool.query<{ id: string }>(
-      `SELECT f.id FROM storage_folders f JOIN storage_destinations d ON d.id = f.destination_id
-        WHERE f.level IN ('project', 'output') AND d.purpose = 'outputs' ORDER BY f.id`,
+    await deps.pool.query<{ id: string; level: string }>(
+      `SELECT f.id, f.level FROM storage_folders f JOIN storage_destinations d ON d.id = f.destination_id
+        WHERE (f.level IN ('project', 'output') AND d.purpose = 'outputs') OR (f.level = 'source_root' AND d.purpose = 'source_area')
+        ORDER BY f.id`,
     )
   ).rows;
   for (const f of folders) {
-    if (!(await needsSync(deps.pool, f.id, at))) continue;
+    if (!(await needsSync(deps.pool, f.id, f.level, at))) continue;
     try {
       await syncFolderGrants(deps, f.id, { retryNotFound: true });
       out.synced += 1;

@@ -241,22 +241,36 @@ async function storeLocked(deps: StorageDeps, areaId: string, versionId: string)
   return 'stored';
 }
 
-/** `projects/<project id>/sources/<source id>/v<n>` under the source-area root; the `projects` folder is recorded. */
+/**
+ * The `projects` folder under the source-area root, created and recorded (`source_root`) when missing. It holds every
+ * stored source file, and is the folder storage Administrators are granted write on (the connector never grants on the
+ * library root itself; spec 8.4).
+ */
+export async function ensureSourceProjectsFolder(
+  deps: StorageDeps, connector: StorageConnector, dest: DestinationRef,
+): Promise<{ id: string; itemId: string }> {
+  const find = async () =>
+    (
+      await deps.pool.query<{ id: string; item_id: string }>(
+        `SELECT id, item_id FROM storage_folders WHERE destination_id = $1 AND level = 'source_root' AND key = 'projects'`,
+        [dest.id],
+      )
+    ).rows[0];
+  const found = await find();
+  if (found) return { id: found.id, itemId: found.item_id };
+  const itemId = (await connector.ensureFolder(dest, null, 'projects')).itemId;
+  await deps.pool.query(
+    `INSERT INTO storage_folders (id, destination_id, level, key, item_id, name, created_at) VALUES ($1, $2, 'source_root', 'projects', $3, 'projects', $4)
+     ON CONFLICT (destination_id, level, key) DO NOTHING`,
+    [uuidv7(), dest.id, itemId, deps.clock()],
+  );
+  const row = (await find())!;
+  return { id: row.id, itemId: row.item_id };
+}
+
+/** `projects/<project id>/sources/<source id>/v<n>` under the source-area root. */
 async function versionFolder(deps: StorageDeps, connector: StorageConnector, dest: DestinationRef, v: VersionRow): Promise<string> {
-  let projects = (
-    await deps.pool.query<{ item_id: string }>(
-      `SELECT item_id FROM storage_folders WHERE destination_id = $1 AND level = 'source_root' AND key = 'projects'`,
-      [dest.id],
-    )
-  ).rows[0]?.item_id;
-  if (!projects) {
-    projects = (await connector.ensureFolder(dest, null, 'projects')).itemId;
-    await deps.pool.query(
-      `INSERT INTO storage_folders (id, destination_id, level, key, item_id, name, created_at) VALUES ($1, $2, 'source_root', 'projects', $3, 'projects', $4)
-       ON CONFLICT (destination_id, level, key) DO NOTHING`,
-      [uuidv7(), dest.id, projects, deps.clock()],
-    );
-  }
+  const projects = (await ensureSourceProjectsFolder(deps, connector, dest)).itemId;
   let folder = projects;
   for (const name of [v.project_id as string, 'sources', v.source_id, `v${v.version_no}`]) {
     folder = (await connector.ensureFolder(dest, folder, name)).itemId;

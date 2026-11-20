@@ -2,6 +2,7 @@ import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Put, R
 import { RequireAction } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
+import { StorageAdminsService } from './admins.service';
 import { DestinationsService, parseAddBody } from './destinations.service';
 import { StorageSettingsService, parseSecretBody, parseSettingsBody } from './settings.service';
 
@@ -14,7 +15,11 @@ const who = (req: HttpRequest): AuthUser => {
 /** Enterprise Administrator only. The secret body is parsed here and never logged, echoed or put in an error text. */
 @Controller('admin/storage')
 export class StorageController {
-  constructor(private readonly settings: StorageSettingsService, private readonly destinations: DestinationsService) {}
+  constructor(
+    private readonly settings: StorageSettingsService,
+    private readonly destinations: DestinationsService,
+    private readonly admins: StorageAdminsService,
+  ) {}
 
   @Get()
   @RequireAction('storage.manage')
@@ -71,6 +76,26 @@ export class StorageController {
   @HttpCode(200)
   approveDestination(@Param('id') id: string, @Body() body: unknown, @Req() req: HttpRequest) {
     return this.destinations.approve(who(req), id, (body as { reason?: unknown } | null)?.reason as string);
+  }
+
+  @Get('admins')
+  @RequireAction('storage.manage')
+  listAdmins() {
+    return this.admins.list();
+  }
+
+  @Post('admins')
+  @RequireAction('storage.manage')
+  designateAdmin(@Body() body: unknown, @Req() req: HttpRequest) {
+    const b = (body ?? {}) as { userId?: unknown; reason?: unknown };
+    return this.admins.designate(who(req), b.userId, b.reason);
+  }
+
+  @Post('admins/:id/end')
+  @RequireAction('storage.manage')
+  @HttpCode(200)
+  endAdmin(@Param('id') id: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    return this.admins.end(who(req), id, (body as { reason?: unknown } | null)?.reason);
   }
 
   @Post('destinations/:id/withdraw')

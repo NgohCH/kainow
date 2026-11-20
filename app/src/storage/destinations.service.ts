@@ -253,7 +253,7 @@ export class DestinationsService {
       kainowGrantPermissionIds: new Set(
         (await this.pool.query<{ permission_id: string }>(
           `SELECT g.permission_id FROM storage_grants g JOIN storage_folders f ON f.id = g.folder_id
-            WHERE f.destination_id = $1 AND g.permission_id IS NOT NULL AND g.state <> 'revoked'`,
+            WHERE f.destination_id = $1 AND g.permission_id IS NOT NULL AND g.state IN ('pending', 'granted', 'revoking', 'failed')`,
           [row.id],
         )).rows.map((r) => r.permission_id),
       ),
