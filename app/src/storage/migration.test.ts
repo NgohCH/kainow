@@ -335,4 +335,10 @@ describe('migration 0031 (external outputs)', { skip: SKIP_NO_DB }, () => {
     assert.equal(r.rowCount, 1);
     assert.equal(r.rows[0].position, 12);
   });
+
+  test('storage outbox rows are normal priority unless marked urgent', async () => {
+    const id = uuidv7();
+    await pool.query(`INSERT INTO storage_outbox (id, job, subject_id, created_at) VALUES ($1, 'check', $2, now())`, [id, uuidv7()]);
+    assert.equal((await pool.query(`SELECT urgent FROM storage_outbox WHERE id = $1`, [id])).rows[0].urgent, false);
+  });
 });

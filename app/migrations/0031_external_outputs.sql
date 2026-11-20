@@ -185,10 +185,12 @@ CREATE TABLE storage_outbox (
   id          uuid PRIMARY KEY,
   job         text        NOT NULL,
   subject_id  uuid        NOT NULL,
+  -- Revocations and narrowing moves go ahead of other storage work (spec 5.5).
+  urgent      boolean     NOT NULL DEFAULT false,
   created_at  timestamptz NOT NULL,
   sent_at     timestamptz
 );
-CREATE INDEX storage_outbox_unsent_idx ON storage_outbox (created_at) WHERE sent_at IS NULL;
+CREATE INDEX storage_outbox_unsent_idx ON storage_outbox (urgent DESC, created_at, id) WHERE sent_at IS NULL;
 
 CREATE TABLE storage_attempts (
   id               uuid PRIMARY KEY,

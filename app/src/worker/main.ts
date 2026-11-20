@@ -24,6 +24,10 @@ import type { PgBoss } from 'pg-boss';
 import { loadProtectedKey } from '../quarantine/protected-key';
 import { QUEUES, startQueues } from './queues';
 import { registerSchedules } from './schedules';
+import { DbStorageConnectorFactory } from '../storage/connector-factory';
+import { type StorageDeps, runStorageDaily } from '../storage/jobs';
+import { sendStorageOutbox } from '../storage/outbox';
+import { registerStorageWorker } from '../storage/storage-worker';
 
 async function main(): Promise<void> {
   const config = loadWorkerConfig();
@@ -78,7 +82,23 @@ async function main(): Promise<void> {
   const analysis = new AnalysisTick({ pool, clock, queue: bossAnalysisQueue(boss), spend: new SpendService(pool, clock), key });
   const quarantineLog = new Logger('Quarantine');
   const quarantineJob = key ? { cleanWaiting: () => cleanWaitingCases(pool, key, clock(), (m) => quarantineLog.warn(m)) } : undefined;
-  await registerSchedules(boss, { sweep, dispatcher, analysis, quarantine: quarantineJob });
+  // Storage jobs (external outputs spec 5.6). Without the protected key, jobs needing the storage secret wait.
+  const storageDeps: StorageDeps = {
+    pool,
+    connectors: new DbStorageConnectorFactory(pool, clock, key),
+    key,
+    clock,
+    // No storage notices exist yet; the features that raise them replace this.
+    notify: async () => undefined,
+  };
+  await registerStorageWorker(boss, storageDeps);
+  const storageLog = new Logger('Storage');
+  const storageBoss = boss;
+  const storage = {
+    sendOutbox: () => sendStorageOutbox(pool, storageBoss),
+    daily: () => runStorageDaily(storageDeps, (m) => storageLog.warn(m)),
+  };
+  await registerSchedules(boss, { sweep, dispatcher, analysis, quarantine: quarantineJob, storage });
   console.log(`kainow worker started (at most ${AI_CONCURRENCY} AI jobs at once in this process; the AI places setting is the real limit)`);
 
   const stop = async (): Promise<void> => {

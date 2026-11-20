@@ -11,6 +11,8 @@ export interface ScheduleDeps {
   analysis?: Pick<AnalysisTick, 'run'>;
   /** Cleans quarantine cases waiting for the protected key; only when the worker has the key (history spec 7.3). */
   quarantine?: { cleanWaiting(): Promise<number> };
+  /** Storage jobs (external outputs spec 5.6): the outbox tick every minute and the daily tick at 02:30 UTC+8. */
+  storage?: { sendOutbox(): Promise<number>; daily(): Promise<void> };
   /** Fixed messages only; never an error object or message. */
   log?: (message: string) => void;
 }
@@ -19,6 +21,11 @@ const EVERY_MINUTE = '* * * * *';
 export const SWEEP_FAILED = 'The notification sweep failed; it will run again on the next tick.';
 export const ANALYSIS_FAILED = 'The analysis tick failed; it will run again on the next tick.';
 export const DISPATCH_FAILED = 'The email dispatch failed; it will run again on the next tick.';
+export const STORAGE_OUTBOX_FAILED = 'Sending the storage outbox failed; it will run again on the next tick.';
+export const STORAGE_DAILY_FAILED = 'The daily storage tick failed; it will run again tomorrow.';
+/** 02:30 in UTC+8, the time the daily storage work runs (spec 5.5). */
+const DAILY_0230 = '30 2 * * *';
+const UTC8 = 'Asia/Kuala_Lumpur';
 export const QUARANTINE_FAILED = 'Cleaning the quarantine cases waiting for the protected key failed; it will run again on the next tick.';
 
 /**
@@ -63,6 +70,25 @@ export async function registerSchedules(boss: PgBoss, deps: ScheduleDeps): Promi
       }
     });
     await boss.send(QUEUES.quarantine, { start: true }, { singletonKey: 'start' });
+  }
+  const storage = deps.storage;
+  if (storage) {
+    await boss.schedule(QUEUES.storageOutbox, EVERY_MINUTE, null, { key: 'tick', singletonKey: 'tick' });
+    await boss.schedule(QUEUES.storageDaily, DAILY_0230, null, { key: 'tick', singletonKey: 'tick', tz: UTC8 });
+    await boss.work(QUEUES.storageOutbox, { localConcurrency: 1 }, async () => {
+      try {
+        await storage.sendOutbox();
+      } catch {
+        log(STORAGE_OUTBOX_FAILED);
+      }
+    });
+    await boss.work(QUEUES.storageDaily, { localConcurrency: 1 }, async () => {
+      try {
+        await storage.daily();
+      } catch {
+        log(STORAGE_DAILY_FAILED);
+      }
+    });
   }
   const analysis = deps.analysis;
   if (analysis) {
