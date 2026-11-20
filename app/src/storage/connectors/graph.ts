@@ -530,6 +530,29 @@ export class GraphConnector implements StorageConnector {
     return perms.map((p) => classify(p, this.opts.appClientId));
   }
 
+  // ---- for the real-tenant probe only (probe-storage-cli.ts); nothing else in Kainow calls these ----
+
+  /** Each permission as Kainow classifies it, with the identity facets Graph sent (e.g. `grantedToV2.siteUser`). */
+  async permissionFacets(dest: DestinationRef, itemId: string): Promise<Array<PermissionInfo & { facets: string[] }>> {
+    const perms = await this.listAll<GraphPermission>(`${this.itemPath(dest, itemId)}/permissions`);
+    return perms.map((p) => ({ ...classify(p, this.opts.appClientId), facets: facetsOf(p) }));
+  }
+
+  /**
+   * One folder invitation exactly as `grant` sends it, but without the directory or domain check, answering Graph's
+   * status and error code (a short code, never the message), so the probe can see how an unknown person is refused.
+   */
+  async probeInvite(dest: DestinationRef, folderId: string, email: string, role: 'read' | 'write'): Promise<{ status: number; code: string | null; permissionId: string | null }> {
+    const r = await this.call('POST', `${this.itemPath(dest, folderId)}/invite`, {
+      body: { recipients: [{ email: email.trim() }], roles: [role], requireSignIn: true, sendInvitation: false },
+      allow: [400, 403, 404, 409],
+    });
+    const raw = r.json?.error?.code;
+    const code = typeof raw === 'string' ? raw.replace(/[^A-Za-z0-9_.-]/g, '').slice(0, 60) : null;
+    const id = r.json?.value?.[0]?.id;
+    return { status: r.status, code, permissionId: typeof id === 'string' ? id : null };
+  }
+
   async resolveLink(url: string): Promise<{ dest: DestinationRef | null; item: ItemState }> {
     let u: URL;
     try { u = new URL(url); } catch { throw new StorageError('invalid'); }
@@ -545,6 +568,16 @@ export class GraphConnector implements StorageConnector {
     const dest: DestinationRef = { id: '', connector: 'graph', driveId, rootItemId: root.json.id };
     return { dest, item: await this.toRef(dest, g) };
   }
+}
+
+/** The identity facets a permission carries, as Graph names them (for the probe's report). */
+function facetsOf(p: GraphPermission): string[] {
+  const out: string[] = [];
+  if (p.link) out.push('link');
+  for (const [k, v] of Object.entries(p.grantedToV2 ?? {})) if (v) out.push(`grantedToV2.${k}`);
+  for (const [k, v] of Object.entries(p.grantedTo ?? {})) if (v) out.push(`grantedTo.${k}`);
+  if (p.invitation) out.push('invitation');
+  return out;
 }
 
 /**

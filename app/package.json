@@ -19,6 +19,8 @@
     "bench-history": "node dist/quarantine/bench-cli.js",
     "bench-dashboards": "node dist/dashboards/bench-cli.js",
     "probe-assist": "node dist/assist/probe-assist-cli.js",
+    "probe-storage": "node dist/storage/probe-storage-cli.js",
+    "bench-outputs": "node dist/storage/bench-cli.js",
     "backfill-passages": "node dist/assist/backfill-cli.js",
     "setup-invite": "node dist/users/setup-invite-cli.js",
     "golive-init": "node dist/golive/golive-init-cli.js",

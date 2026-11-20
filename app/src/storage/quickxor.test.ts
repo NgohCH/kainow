@@ -16,7 +16,8 @@ test('quickXorHash of empty buffer is AAAAAAAAAAAAAAAAAAAAAAAAAAA=', () => {
   assert.equal(quickXorHash(Buffer.alloc(0)), EMPTY);
 });
 
-// TODO(sub-project 9 Task 26): confirm against a hash returned by a real Microsoft tenant (probe-storage).
+// TODO(real tenant): confirm against Microsoft: `npm run probe-storage -- --destination <label>` uploads "abc" and a
+// 6 MiB file and its "hashes" line compares the QuickXorHash Microsoft returns with Kainow's (this "abc" vector).
 test('quickXorHash matches reference vectors derived from the algorithm description', () => {
   assert.equal(quickXorHash(Buffer.from('abc')), ABC);
   const b = Buffer.alloc(1000);
