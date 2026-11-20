@@ -73,7 +73,8 @@ export async function conditions(db: Db): Promise<Record<string, boolean>> {
     SELECT
       EXISTS (SELECT 1 FROM organisation WHERE registered_at IS NOT NULL) AS organisation,
       EXISTS (SELECT 1 FROM organisation_logos) AS logos,
-      (SELECT count(*) FROM users WHERE role = 'enterprise_administrator' AND status = 'active') >= 2 AS second_admin,
+      -- FOR SHARE: inside the closing transaction, wait for a concurrent disable to commit and then see it (second review).
+      (SELECT count(*) FROM (SELECT id FROM users WHERE role = 'enterprise_administrator' AND status = 'active' FOR SHARE) a) >= 2 AS second_admin,
       EXISTS (SELECT 1 FROM departments) AS department,
       EXISTS (SELECT 1 FROM users WHERE status = 'active' AND role <> 'enterprise_administrator') AS users,
       (EXISTS (SELECT 1 FROM projects WHERE status = 'active')

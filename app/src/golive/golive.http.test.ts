@@ -329,6 +329,31 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     assert.equal(step(last.body, 'second_admin').done, false);
   });
 
+  // G01 race (second review): an Administrator disabled while the closing transaction runs must not leave a closed
+  // checklist with one active Administrator. The disable is held open in another transaction while the last step is ticked.
+  test('an Administrator disabled during the closing transaction keeps the checklist open', async () => {
+    const second = await seedUser(t.pool, 'second@example.org', 'enterprise_administrator');
+    await get();
+    await reachLaunch();
+    await recordCustodian();
+    await queueTestEmail('sent');
+    for (const key of ['recovery', 'mailbox', 'test_email', 'calendar']) await admin.request('POST', `/go-live/steps/${key}/tick`, {});
+    const other = await t.pool.connect();
+    try {
+      await other.query('BEGIN');
+      await other.query(`UPDATE users SET status = 'disabled' WHERE id = $1`, [second]);
+      const closing = admin.request('POST', '/go-live/steps/backups/tick', {});
+      await new Promise((r) => setTimeout(r, 300));
+      await other.query('COMMIT');
+      const last = await closing;
+      assert.equal(last.status, 200);
+      assert.equal(last.body.closedAt, null, 'the close saw the committed disable');
+      assert.equal(step(last.body, 'second_admin').done, false);
+    } finally {
+      other.release();
+    }
+  });
+
   test('the checklist closes once every step but the optional logos is done, and lists what is open', async () => {
     await reachLaunch();
     assert.equal((await get()).closedAt, null);
