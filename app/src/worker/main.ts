@@ -26,10 +26,13 @@ import { QUEUES, startQueues } from './queues';
 import { registerSchedules } from './schedules';
 import { DbStorageConnectorFactory } from '../storage/connector-factory';
 import { type StorageDeps, runStorageDaily } from '../storage/jobs';
+import { makeStorageNotify } from '../storage/notices';
 import { sendStorageOutbox } from '../storage/outbox';
 import { registerStorageWorker } from '../storage/storage-worker';
 // Register the source-area handlers (store-source, backfill-sources) and their daily tick.
 import '../storage/sources';
+// Register the daily source-file check.
+import '../storage/source-files';
 
 async function main(): Promise<void> {
   const config = loadWorkerConfig();
@@ -90,8 +93,8 @@ async function main(): Promise<void> {
     connectors: new DbStorageConnectorFactory(pool, clock, key),
     key,
     clock,
-    // TODO(Task 8/13/17): replace with real notices.
-    notify: async () => undefined,
+    // Source-file notices (Task 8); the notices of Task 13 and 17 are added to the same function.
+    notify: makeStorageNotify(pool, clock),
   };
   await registerStorageWorker(boss, storageDeps);
   const storageLog = new Logger('Storage');

@@ -1,6 +1,6 @@
 import { possibleCopyLabelSql } from '../quarantine/labels';
 import { maskedVersionText } from '../discussion/masking';
-import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -14,6 +14,9 @@ import { ProjectAccess } from '../projects/access.service';
 import { summaryShownSql } from '../assist/material';
 import { liveSourceSql } from '../history/deleted-sql';
 import { indexVersion } from '../assist/passage-index';
+import { STORAGE_CONNECTORS, type StorageConnectorFactory } from '../storage/connector-factory';
+import { type StorageNotify, makeStorageNotify } from '../storage/notices';
+import { CHANGED_IN_STORAGE, MISSING_FROM_STORAGE, STORE_UNREACHABLE, openOriginal } from '../storage/source-files';
 import { type VersionStorage, addSourceVersionFiles, versionStorage } from '../storage/sources';
 import { UploadRejected, readUpload } from './readers';
 import { NoteTextError, normaliseText, sha256Hex } from './text';
@@ -115,7 +118,12 @@ export class NotesService {
     @Inject(PG_POOL) private readonly pool: Pool,
     @Inject(CLOCK) private readonly now: Clock,
     private readonly access: ProjectAccess,
-  ) {}
+    @Inject(STORAGE_CONNECTORS) private readonly connectors: StorageConnectorFactory,
+  ) {
+    this.notify = makeStorageNotify(pool, now);
+  }
+
+  private readonly notify: StorageNotify;
 
   private async prepare(content: NewContent): Promise<Prepared> {
     const hasText = content.text !== undefined;
@@ -476,15 +484,29 @@ export class NotesService {
     return { ...shown, text: await maskedVersionText(this.pool, rows[0].id, rows[0].text), provenance: await this.provenance(rows[0].id) };
   }
 
+  /**
+   * The uploaded file exactly as received: from the database while its bytes are still there, otherwise downloaded from
+   * the managed source area and checked against the recorded SHA-256 first (spec 9.2).
+   */
   async getOriginal(sourceId: string, versionNo: number): Promise<{ filename: string; mediaType: string; bytes: Buffer }> {
-    const { rows } = await this.pool.query<{ filename: string; media_type: string; original_bytes: Buffer }>(
-      `SELECT v.filename, v.media_type, v.original_bytes
+    const { rows } = await this.pool.query<{ id: string; filename: string; media_type: string; original_bytes: Buffer | null; stored: boolean }>(
+      `SELECT v.id, v.filename, v.media_type, v.original_bytes,
+              EXISTS (SELECT 1 FROM stored_files f WHERE f.id = v.original_stored_file_id AND f.state = 'stored') AS stored
          FROM source_versions v JOIN sources s ON s.id = v.source_id
-        WHERE v.source_id = $1 AND v.version_no = $2 AND ${liveSourceSql('s')} AND v.origin = 'upload' AND v.original_bytes IS NOT NULL`,
+        WHERE v.source_id = $1 AND v.version_no = $2 AND ${liveSourceSql('s')} AND v.origin = 'upload'`,
       [sourceId, versionNo],
     );
-    if (!rows[0]) throw new NotFoundException();
-    return { filename: rows[0].filename, mediaType: rows[0].media_type, bytes: rows[0].original_bytes };
+    const v = rows[0];
+    if (!v) throw new NotFoundException();
+    if (v.original_bytes) return { filename: v.filename, mediaType: v.media_type, bytes: v.original_bytes };
+    if (!v.stored) throw new NotFoundException();
+    const opened = await openOriginal({ pool: this.pool, connectors: this.connectors, clock: this.now, notify: this.notify }, v.id);
+    if (!opened) throw new NotFoundException();
+    if ('refused' in opened) {
+      if (opened.refused === 'unreachable') throw new ServiceUnavailableException(STORE_UNREACHABLE);
+      throw new ConflictException(opened.refused === 'changed' ? CHANGED_IN_STORAGE : MISSING_FROM_STORAGE);
+    }
+    return opened;
   }
 }
 

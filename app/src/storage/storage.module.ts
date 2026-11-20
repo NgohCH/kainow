@@ -13,6 +13,7 @@ export class StorageModule {
       : { provide: STORAGE_CONNECTORS, useClass: DbStorageConnectorFactory };
     return {
       module: StorageModule,
+      global: true,
       controllers: [StorageController],
       providers: [StorageSettingsService, DestinationsService, factory],
       exports: [StorageSettingsService, DestinationsService, STORAGE_CONNECTORS],
