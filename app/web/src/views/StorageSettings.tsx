@@ -126,11 +126,11 @@ function DestinationCard({ d, reload, setNotice }: { d: Destination; reload: () 
       {active && (
         <div className="stack">
           <div className="inline-form">
-            <button type="button" onClick={check} disabled={checking}>{checking ? 'Checking' : 'Check this destination'}</button>
+            <button type="button" onClick={check} disabled={checking} aria-label={`Check ${d.label}`}>{checking ? 'Checking' : 'Check this destination'}</button>
           </div>
           {d.status === 'proposed' && (
             <ReasonAction
-              label="Approve"
+              label={`Approve ${d.label}`}
               prompt="Reason for approving this destination"
               onSend={async (reason) => {
                 await api.post(`/admin/storage/destinations/${d.id}/approve`, { reason });
@@ -143,7 +143,7 @@ function DestinationCard({ d, reload, setNotice }: { d: Destination; reload: () 
           )}
           {d.status !== 'retiring' && (
             <ReasonAction
-              label="Withdraw"
+              label={`Withdraw ${d.label}`}
               prompt="Reason for withdrawing this destination"
               onSend={async (reason) => {
                 await api.post(`/admin/storage/destinations/${d.id}/withdraw`, { reason });
@@ -361,7 +361,7 @@ export function StorageSettings() {
       {summary && <RepairPanel rows={summary.sharingToRepair} />}
       {view && summary && (
         <>
-          <ConnectionPanel key={JSON.stringify(view.settings) + view.secret} view={view} reload={reload} />
+          <ConnectionPanel view={view} reload={reload} />
           <section aria-labelledby="storage-destinations" className="stack">
             <h2 id="storage-destinations">Destinations</h2>
             {summary.destinations.length === 0 ? (
@@ -373,7 +373,7 @@ export function StorageSettings() {
           </section>
           <MovePanel destinations={summary.destinations} reload={reload} setNotice={setNotice} />
           <AdminsPanel reload={reload} setNotice={setNotice} />
-          <FormatsPanel key={JSON.stringify(view.settings)} view={view} reload={reload} />
+          <FormatsPanel view={view} reload={reload} />
           <section aria-labelledby="storage-manifest">
             <h2 id="storage-manifest">Storage manifest</h2>
             <p className="meta">A CSV listing every stored file and where it is, for moving to another provider. Restricted items appear as "Restricted item". No content is included. Each download is recorded.</p>

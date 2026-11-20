@@ -2,7 +2,7 @@ import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { api } from '../api.ts';
 import { formatWhen } from '../format.ts';
 import {
-  type ConnectionState, FORMAT_LABELS, SECRET_STATE_LABEL, onOff, permissionInstructions, reasonProblem, secretProblem, storageStateLabel,
+  type ConnectionState, FORMAT_LABELS, SECRET_STATE_LABEL, sameItems, onOff, permissionInstructions, reasonProblem, secretProblem, storageStateLabel,
 } from '../storage.ts';
 import { Notice, ReasonAction, type SettingsView, errText } from './storageUi.tsx';
 
@@ -37,6 +37,16 @@ export function ConnectionPanel({ view, reload }: { view: SettingsView; reload: 
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [checking, setChecking] = useState(false);
+
+  // When the saved values change (after a save) the fields follow them; the notice stays.
+  const savedKey = JSON.stringify([s.tenantId, s.clientId, s.directoryLookup, s.scheduledChecks]);
+  useEffect(() => {
+    setTenantId(s.tenantId ?? '');
+    setClientId(s.clientId ?? '');
+    setLookup(s.directoryLookup);
+    setScheduled(s.scheduledChecks);
+    setConfirmed(false);
+  }, [savedKey]);
 
   const lookupTurnedOn = lookup && !s.directoryLookup;
   const unchanged = tenantId.trim() === (s.tenantId ?? '') && clientId.trim() === (s.clientId ?? '') && lookup === s.directoryLookup && scheduled === s.scheduledChecks;
@@ -73,6 +83,7 @@ export function ConnectionPanel({ view, reload }: { view: SettingsView; reload: 
     setBusy(true);
     try {
       await api.post('/admin/storage/secret', { clientSecret: secret.trim(), reason: secretReason.trim() });
+      setSecretReason('');
       setNotice('The client secret is saved. It is never shown again.');
       reload();
     } catch (err) {
@@ -80,7 +91,6 @@ export function ConnectionPanel({ view, reload }: { view: SettingsView; reload: 
     } finally {
       // The secret never stays in the page, saved or not.
       setSecret('');
-      setSecretReason('');
       setBusy(false);
     }
   }
@@ -178,9 +188,16 @@ export function FormatsPanel({ view, reload }: { view: SettingsView; reload: () 
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const toggle = (list: string[], set: (v: string[]) => void, f: string) => set(list.includes(f) ? list.filter((x) => x !== f) : [...list, f]);
-  const same = (a: string[], b: string[]) => a.length === b.length && a.every((x) => b.includes(x));
+  const savedKey = JSON.stringify([s.approvedInputFormats, s.approvedOutputFormats, s.projectsMayChangeFormats, s.projectsMayChooseDestination, s.projectsMaySetExportRoles]);
+  useEffect(() => {
+    setInput(s.approvedInputFormats);
+    setOutput(s.approvedOutputFormats);
+    setChange(s.projectsMayChangeFormats);
+    setChoose(s.projectsMayChooseDestination);
+    setRoles(s.projectsMaySetExportRoles);
+  }, [savedKey]);
   const unchanged =
-    same(input, s.approvedInputFormats) && same(output, s.approvedOutputFormats) && change === s.projectsMayChangeFormats &&
+    sameItems(input, s.approvedInputFormats) && sameItems(output, s.approvedOutputFormats) && change === s.projectsMayChangeFormats &&
     choose === s.projectsMayChooseDestination && roles === s.projectsMaySetExportRoles;
 
   async function save(e: FormEvent) {

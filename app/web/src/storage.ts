@@ -233,7 +233,8 @@ export function moveProgressText(m: MoveProgress): string {
 
 /** The confirmation for moving the source area must repeat the file count and size shown to the Administrator. */
 export function moveConfirmProblem(typedFiles: string, typedBytes: string, actual: { files: number; bytes: number }): string | null {
-  if (typedFiles.trim() === '' || typedBytes.trim() === '') return 'Type the number of files and the size in bytes to confirm.';
+  const digits = /^\d+$/;
+  if (!digits.test(typedFiles.trim()) || !digits.test(typedBytes.trim())) return 'Type the number of files and the size in bytes to confirm, using digits only.';
   if (Number(typedFiles) !== actual.files || Number(typedBytes) !== actual.bytes) {
     return `The numbers do not match. The source area holds ${filesLabel(actual.files, actual.bytes)}, which is ${actual.bytes.toLocaleString('en-US')} bytes.`;
   }
@@ -259,6 +260,9 @@ export const SECRET_STATE_LABEL: Readonly<Record<'none' | 'saved' | 'unreadable'
 };
 
 export const FORMAT_LABELS: Readonly<Record<string, string>> = { txt: 'Plain text (.txt)', md: 'Markdown (.md)', docx: 'Word (.docx)', pdf: 'PDF (.pdf)', csv: 'CSV (.csv)' };
+
+/** Whether two lists hold the same items, in any order. */
+export const sameItems = (a: readonly string[], b: readonly string[]): boolean => a.length === b.length && a.every((x) => b.includes(x));
 
 export const onOff = (b: boolean): string => (b ? 'On' : 'Off');
 

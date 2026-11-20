@@ -86,9 +86,18 @@ test('site grant examples use write for the source area, fullcontrol for outputs
 test('moving the source area needs the exact file count and size', () => {
   const actual = { files: 12, bytes: 4096 };
   assert.match(moveConfirmProblem('', '', actual) ?? '', /Type/);
+  assert.match(moveConfirmProblem('1e1', '4096', actual) ?? '', /digits/);
+  assert.match(moveConfirmProblem('12', '0x1000', actual) ?? '', /digits/);
+  assert.match(moveConfirmProblem('12.0', '4096', actual) ?? '', /digits/);
   assert.match(moveConfirmProblem('11', '4096', actual) ?? '', /do not match/);
   assert.match(moveConfirmProblem('12', '4000', actual) ?? '', /12 files/);
   assert.equal(moveConfirmProblem('12', '4096', actual), null);
+});
+
+test('the same items in any order are unchanged', async () => {
+  const { sameItems } = await import('./storage.ts');
+  assert.equal(sameItems(['md', 'pdf'], ['pdf', 'md']), true);
+  assert.equal(sameItems(['md'], ['md', 'pdf']), false);
 });
 
 test('the client secret is 10 to 200 printable characters', () => {

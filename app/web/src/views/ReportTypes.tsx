@@ -2,7 +2,7 @@ import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { api } from '../api.ts';
 import { plural } from '../format.ts';
 import { REPORT_TYPE_STATUS, nameProblem, reasonProblem } from '../storage.ts';
-import { Notice, ReasonAction, errText } from './storageUi.tsx';
+import { Notice, ReasonAction, errText, useReturnFocus } from './storageUi.tsx';
 
 interface ReportType {
   id: string;
@@ -17,10 +17,12 @@ function RenameForm({ t, onDone }: { t: ReportType; onDone: (message: string) =>
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  if (!open) return <button type="button" onClick={() => setOpen(true)} aria-label={`Rename ${t.name}`}>Rename</button>;
+  const { trigger, field } = useReturnFocus<HTMLButtonElement, HTMLInputElement>(open);
+  if (!open) return <button type="button" ref={trigger} onClick={() => setOpen(true)} aria-label={`Rename ${t.name}`}>Rename</button>;
 
   async function submit(e: FormEvent) {
     e.preventDefault();
+    if (name.trim() === t.name) return setError('That is already the name. Change it, or cancel.');
     const p = nameProblem(name) ?? reasonProblem(reason);
     if (p) return setError(p);
     setBusy(true);
@@ -41,7 +43,7 @@ function RenameForm({ t, onDone }: { t: ReportType; onDone: (message: string) =>
     <form className="stack" onSubmit={submit} aria-label={`Rename ${t.name}`}>
       <label>
         New name
-        <input required maxLength={100} value={name} onChange={(e) => setName(e.target.value)} />
+        <input ref={field} required maxLength={100} value={name} onChange={(e) => setName(e.target.value)} />
         <span className="hint">Files already filed stay where they are. Only new filings use the new name as their folder.</span>
       </label>
       <label>

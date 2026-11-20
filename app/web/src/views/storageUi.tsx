@@ -1,4 +1,4 @@
-import { type FormEvent, type ReactNode, useState } from 'react';
+import { type FormEvent, type ReactNode, useEffect, useRef, useState } from 'react';
 import { ApiError } from '../api.ts';
 import type { ConnectionState, DestinationKind, DestinationPurpose, MoveProgress, SharingRepairRow } from '../storage.ts';
 import { STATUS_LABELS, reasonProblem } from '../storage.ts';
@@ -57,12 +57,29 @@ export interface Summary {
 }
 
 export function Notice({ error, notice }: { error: string | null; notice: string | null }) {
+  // The status region is always mounted so a screen reader announces the text when it appears.
   return (
     <>
       {error && <p role="alert" className="error">{error}</p>}
-      {notice && <p role="status" className="ok">{notice}</p>}
+      <p role="status" className="ok">{notice ?? ''}</p>
     </>
   );
+}
+
+/**
+ * Focus for a form that opens in place of its button: into the field when it opens, back to the button when it closes.
+ * Attach `trigger` to the button and `field` to the first input.
+ */
+export function useReturnFocus<T extends HTMLElement, F extends HTMLElement>(open: boolean) {
+  const trigger = useRef<T>(null);
+  const field = useRef<F>(null);
+  const was = useRef(false);
+  useEffect(() => {
+    if (open) field.current?.focus();
+    else if (was.current) trigger.current?.focus();
+    was.current = open;
+  }, [open]);
+  return { trigger, field };
 }
 
 /** A button that asks for a reason before it acts. The reason is cleared once it is sent. */
@@ -71,6 +88,7 @@ export function ReasonAction({ label, prompt, onSend, children }: { label: strin
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const { trigger, field } = useReturnFocus<HTMLButtonElement, HTMLTextAreaElement>(open);
   async function submit(e: FormEvent) {
     e.preventDefault();
     const p = reasonProblem(reason);
@@ -87,13 +105,13 @@ export function ReasonAction({ label, prompt, onSend, children }: { label: strin
       setBusy(false);
     }
   }
-  if (!open) return <button type="button" onClick={() => setOpen(true)}>{label}</button>;
+  if (!open) return <button type="button" ref={trigger} onClick={() => setOpen(true)}>{label}</button>;
   return (
     <form className="stack" onSubmit={submit} aria-label={label}>
       {children}
       <label>
         {prompt}
-        <textarea required rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
+        <textarea ref={field} required rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
       </label>
       {error && <p role="alert" className="error">{error}</p>}
       <div className="inline-form">
