@@ -41,17 +41,20 @@ export class ExportsController {
   @Post('export/save')
   @AnySignedInUser()
   @HttpCode(201)
-  save(@Param('projectId') projectId: string, @Body() body: unknown, @Req() req: HttpRequest) {
+  async save(@Param('projectId') projectId: string, @Body() body: unknown, @Req() req: HttpRequest) {
     if (!UUID.test(projectId)) throw new NotFoundException();
+    await this.exports.participant(who(req), projectId);
     const b = obj(body);
     const kind = parseExportKind(b.kind);
     const filters = parseExportFilters(kind, b.filters);
+    const reportTypeId = b.reportTypeId === undefined || b.reportTypeId === null || b.reportTypeId === '' ? undefined : b.reportTypeId;
+    if (reportTypeId !== undefined && (typeof reportTypeId !== 'string' || !UUID.test(reportTypeId))) throw new BadRequestException('Choose a report type from the list.');
     if (b.outputId !== undefined && b.outputId !== null) {
+      if (b.title !== undefined) throw new BadRequestException('A new version keeps the output’s title. Change the title in the register details instead.');
       if (typeof b.outputId !== 'string' || !UUID.test(b.outputId)) throw new BadRequestException('Choose a registered output from the list.');
       return this.outputs.addVersion(who(req), projectId, b.outputId, { kind: 'export', exportKind: kind, filters });
     }
     const title = typeof b.title === 'string' && b.title.trim() !== '' ? b.title : undefined;
-    const reportTypeId = typeof b.reportTypeId === 'string' && UUID.test(b.reportTypeId) ? b.reportTypeId : undefined;
     return this.outputs.submit(who(req), projectId, { kind: 'export', exportKind: kind, filters, title, reportTypeId });
   }
 }

@@ -519,4 +519,38 @@ describe('project exports (D106)', { skip: SKIP_NO_DB }, () => {
     assert.equal((await c.admin.request('GET', '/admin/access-settings')).body.settings.projectExportsAllowed, true, 'other changes keep it');
     assert.equal((await c.pm.request('PUT', '/admin/access-settings', { projectExportsAllowed: false, reason })).status, 403);
   });
+
+  test('a saved register export holds only outputs every reader may read; a download is the personal view', async () => {
+    await on();
+    const base = `/projects/${project}/outputs`;
+    const register = async (id: string) => assert.equal((await c.pm.request('POST', `${base}/${id}/register`, { reportTypeId: await typeId('Status reports') })).status, 200);
+    const open = await submitMd(c.pm, 'Open report');
+    await register(open);
+    const restricted = await submitMd(c.pm, 'Restricted report');
+    await register(restricted);
+    assert.equal((await c.pm.request('PUT', `${base}/${restricted}/audience`, { mode: 'restricted', userIds: [ids.pm], reason })).status, 200);
+    const annOnly = await submitMd(c.ann, 'Ann submission');
+    const mine = (await csv(c.pm, 'outputs')).rows.map((r) => r[0]).sort();
+    assert.deepEqual(mine, [open, restricted, annOnly].sort(), 'the PM download is a personal view');
+    const save = await c.pm.request('POST', `/projects/${project}/export/save`, { kind: 'outputs' });
+    assert.equal(save.status, 201, JSON.stringify(save.body));
+    const bytes = (await t.pool.query(`SELECT b.bytes FROM output_version_bytes b JOIN output_versions v ON v.id = b.output_version_id WHERE v.output_id = $1`, [save.body.id])).rows[0].bytes as Buffer;
+    const saved = parseCsv(bytes.toString('utf8').slice(1));
+    assert.deepEqual(saved.rows.map((r) => r[0]), [open]);
+    assert.match(saved.meta.Coverage, /Restricted and unregistered outputs are omitted/);
+    assert.deepEqual((await t.pool.query(`SELECT detail FROM audit_events WHERE action = 'project.exported'`)).rows.at(-1).detail.rows, 1);
+  });
+
+  test('save body checks: participant first, report type and title with an output', async () => {
+    await on();
+    const url2 = `/projects/${project}/export/save`;
+    assert.equal((await c.outsider.request('POST', url2, { kind: 'nope' })).status, 404);
+    assert.equal((await c.pm.request('POST', url2, { kind: 'tasks', reportTypeId: 'nope' })).status, 400);
+    assert.equal((await c.pm.request('POST', url2, { kind: 'tasks', outputId: uuidv7(), title: 'Other title' })).status, 400);
+    assert.equal((await t.pool.query(`SELECT count(*)::int AS n FROM outputs`)).rows[0].n, 0);
+    const stranger = uuidv7();
+    const r = await csv(c.pm, 'tasks', `&assigneeId=${ids.outsider}`);
+    assert.equal(r.meta.Filters, `assignee: ${ids.outsider}`, 'a name outside the project is not looked up');
+    assert.ok(stranger);
+  });
 });

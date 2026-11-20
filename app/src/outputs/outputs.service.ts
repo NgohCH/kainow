@@ -251,7 +251,7 @@ export class OutputsService {
   private async fromExport(ctx: ProjectContext, projectId: string, input: Extract<SubmitInput, { kind: 'export' }>, at: Date): Promise<PreparedVersion> {
     await assertMayExport(this.pool, ctx);
     await this.assertOutputFormat(projectId, 'csv');
-    const built = await buildExport(this.pool, projectId, input.exportKind, input.filters, ctx, at);
+    const built = await buildExport(this.pool, projectId, input.exportKind, input.filters, ctx, at, { shared: true });
     return {
       origin: 'export',
       format: 'csv',

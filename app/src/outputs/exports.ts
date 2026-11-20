@@ -12,7 +12,7 @@ import { todayUtc8 } from '../projects/membership';
 import { POSSIBLE_COPY_TEXT, UNDER_REVIEW_TEXT, possibleCopySql } from '../quarantine/labels';
 import { KEPT_LABEL, NOT_KEPT, STORED_LABELS, filingFailedLabel } from './filing';
 import { DEFAULT_EXPORT_ROLES, exportRoleOf } from './output-settings.service';
-import { loadOutputAccessRow, readsOutput } from './readers';
+import { isWholeProject, loadOutputAccessRow, readsOutput } from './readers';
 
 /**
  * Project exports (D106, spec 7): a project's records as CSV, allowed when the organisation allows project exports,
@@ -27,6 +27,8 @@ export type ExportKind = (typeof EXPORT_KINDS)[number];
 export const EXPORTS_OFF = 'Project exports are turned off. An Enterprise Administrator can turn them on in Access and records settings.';
 export const NOT_AN_EXPORT_ROLE = 'Your role in this project is not one of those allowed to export its records. A PM, Owner or Sponsor can change this in Project settings › Outputs.';
 export const COVERAGE = 'All authorised records in the project except deleted ones and any under credential review';
+/** A saved register export becomes a Project-wide output, so it holds only what every reader of the project may read. */
+export const COVERAGE_SHARED = `${COVERAGE}. Restricted and unregistered outputs are omitted`;
 const BAD_KIND = 'Choose what to export: tasks, decisions, questions, risks or outputs.';
 
 /** Cut at this many characters per cell (spec 7.2). */
@@ -244,8 +246,12 @@ async function riskRows(db: Pool | PoolClient, projectId: string, filters: Expor
   return rows.map((r) => [r.id, r.label ?? r.description, words(r.severity), words(r.status), r.responsible ?? '', day(r.reviewOn), r.label ? r.label : (r.acceptedReason ?? '')]);
 }
 
-/** The register as this viewer reads it: not deleted, held or withdrawn, and only what `readsOutput` lets them see. */
-async function outputRows(db: Pool | PoolClient, projectId: string, filters: ExportFilters, viewer: ProjectContext): Promise<Table> {
+/**
+ * The register as this viewer reads it (a download is a personal view): not deleted, held or withdrawn, and only what
+ * `readsOutput` lets them see. A `shared` export (saved as a Project-wide output) holds only outputs every reader of the
+ * project may read: `isWholeProject`.
+ */
+async function outputRows(db: Pool | PoolClient, projectId: string, filters: ExportFilters, viewer: ProjectContext, shared: boolean, at: Date): Promise<Table> {
   const params: unknown[] = [projectId];
   let where = statusClause('o', filters, params);
   if (filters.reportTypeId) {
@@ -262,7 +268,8 @@ async function outputRows(db: Pool | PoolClient, projectId: string, filters: Exp
   const visible: typeof rows = [];
   for (const r of rows) {
     const access = await loadOutputAccessRow(db, r.id);
-    if (access && (await readsOutput(db, viewer, access))) visible.push(r);
+    if (!access) continue;
+    if (shared ? await isWholeProject(db, r.id, at) : await readsOutput(db, viewer, access)) visible.push(r);
   }
   if (visible.length === 0) return [];
   const ids = visible.map((r) => r.id);
@@ -301,13 +308,13 @@ async function outputRows(db: Pool | PoolClient, projectId: string, filters: Exp
 }
 
 /** The `Filters` line: what was chosen, in words, or that nothing was. */
-async function describeFilters(db: Pool | PoolClient, f: ExportFilters): Promise<string> {
+async function describeFilters(db: Pool | PoolClient, projectId: string, f: ExportFilters): Promise<string> {
   const parts: string[] = [];
   if (f.status) parts.push(`status: ${f.status.map(words).join(', ')}`);
-  if (f.assigneeId) parts.push(`assignee: ${(await db.query(`SELECT display_name FROM users WHERE id = $1`, [f.assigneeId])).rows[0]?.display_name ?? 'unknown'}`);
+  if (f.assigneeId) parts.push(`assignee: ${(await db.query(`SELECT u.display_name FROM users u WHERE u.id = $1 AND EXISTS (SELECT 1 FROM memberships m WHERE m.user_id = u.id AND m.project_id = $2)`, [f.assigneeId, projectId])).rows[0]?.display_name ?? f.assigneeId}`);
   if (f.overdue) parts.push('overdue only');
   if (f.severity) parts.push(`severity: ${words(f.severity)}`);
-  if (f.reportTypeId) parts.push(`report type: ${(await db.query(`SELECT name FROM report_types WHERE id = $1`, [f.reportTypeId])).rows[0]?.name ?? 'unknown'}`);
+  if (f.reportTypeId) parts.push(`report type: ${(await db.query(`SELECT name FROM report_types WHERE id = $1`, [f.reportTypeId])).rows[0]?.name ?? f.reportTypeId}`);
   return parts.length > 0 ? parts.join('; ') : 'None (every record of this kind)';
 }
 
@@ -318,20 +325,20 @@ async function describeFilters(db: Pool | PoolClient, f: ExportFilters): Promise
  * of its text. Nothing here reads source text, message text, quotes or private AI questions. The caller checks
  * `mayExport` first and records `project.exported`.
  */
-export async function buildExport(db: Pool | PoolClient, projectId: string, kind: ExportKind, filters: ExportFilters, viewer: ProjectContext, at: Date): Promise<BuiltExport> {
+export async function buildExport(db: Pool | PoolClient, projectId: string, kind: ExportKind, filters: ExportFilters, viewer: ProjectContext, at: Date, opts: { shared?: boolean } = {}): Promise<BuiltExport> {
   const table =
     kind === 'tasks' ? await taskRows(db, projectId, filters, at)
     : kind === 'decisions' ? await decisionRows(db, projectId, filters)
     : kind === 'questions' ? await questionRows(db, projectId, filters)
     : kind === 'risks' ? await riskRows(db, projectId, filters)
-    : await outputRows(db, projectId, filters, viewer);
+    : await outputRows(db, projectId, filters, viewer, opts.shared === true, at);
   const project = (await db.query<{ name: string }>(`SELECT name FROM projects WHERE id = $1`, [projectId])).rows[0]?.name ?? '';
   const meta = {
     Export: EXPORT_NAMES[kind],
     Project: project,
-    Filters: await describeFilters(db, filters),
+    Filters: await describeFilters(db, projectId, filters),
     'Computed at': utc8Minute(at.toISOString()),
-    Coverage: COVERAGE,
+    Coverage: kind === 'outputs' && opts.shared ? COVERAGE_SHARED : COVERAGE,
   };
   const rows = table.map((r) => r.map((c) => (typeof c === 'string' ? cut(c) : c)));
   const text = toCsv(meta, [...EXPORT_COLUMNS[kind]], rows, { bom: true });
@@ -354,6 +361,11 @@ export class ExportsService {
   ) {}
 
   /** The file for a person who may export now (404 for a non-participant, 403 with the reason otherwise); the export is recorded. */
+  /** 404 for a non-participant: checked before any request body is read. */
+  async participant(user: AuthUser, projectId: string): Promise<void> {
+    await this.access.context(user, projectId);
+  }
+
   async download(user: AuthUser, projectId: string, query: unknown): Promise<BuiltExport> {
     const ctx = await this.access.context(user, projectId);
     const kind = parseExportKind((query as Record<string, unknown> | null)?.kind);
