@@ -30,6 +30,7 @@ import { SpendModule } from './spend/spend.module';
 import { DashboardsModule } from './dashboards/dashboards.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { LeadershipModule } from './leadership/leadership.module';
+import { StorageModule } from './storage/storage.module';
 
 @Global()
 @Module({})
@@ -91,6 +92,7 @@ export class AppModule {
         DashboardsModule,
         LeadershipModule,
         AnalyticsModule,
+        StorageModule,
       ],
       controllers: [HealthController],
     };

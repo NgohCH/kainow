@@ -211,6 +211,9 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['leadership.revoked', 'A leadership grant was revoked, with a reason.'],
     ['analytics.exported', 'An Administrator downloaded an analytics CSV; the panel and filters are kept, never the data.'],
   ]),
+  ...audit('Storage', ADMIN, 'storage connection', [
+    ['storage.connection_changed', 'The storage connection settings or client secret were changed, with a reason; no secret is kept.'],
+  ]),
 
   // ---- per-domain event tables --------------------------------------------------------------------------------------
   ...group('task_events', 'Records', PERSON, 'task', [
