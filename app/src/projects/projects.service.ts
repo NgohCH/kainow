@@ -15,6 +15,7 @@ import { writeOutbox } from '../email/outbox';
 import { isCalendarDate } from '../extraction/due';
 import { type ProjectContext, ProjectAccess, managesGrants, managesRoles } from './access.service';
 import { loadArchiveState } from './archive';
+import { CHOOSE_FOLDER, filedOutputFiles } from './department-transfer.service';
 import { OrganisationService } from './organisation.service';
 import { grantState } from './grants';
 import { type ClosureOutcome, STAGES, checkTransition } from './lifecycle';
@@ -332,6 +333,8 @@ export class ProjectsService {
       if (from === to) throw new ConflictException('The project already belongs to that department.');
       const contributes = (await client.query(`SELECT 1 FROM project_departments WHERE project_id = $1 AND department_id = $2`, [id, to])).rowCount;
       if (contributes) throw new ConflictException('That department contributes to this project; remove it from the contributing departments first.');
+      // A project with filed outputs needs the folder choice of the owning-department transfer (spec 10, D108).
+      if ((await filedOutputFiles(client, id)) > 0) throw new BadRequestException(CHOOSE_FOLDER);
       await client.query(`UPDATE projects SET owning_department_id = $2 WHERE id = $1`, [id, to]);
       await client.query(
         `INSERT INTO project_department_changes (id, project_id, from_department_id, to_department_id, actor_id, reason, files_decision, at)

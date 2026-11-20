@@ -45,6 +45,8 @@ import '../storage/withhold';
 import '../storage/relocate';
 // Register renaming an output's folder and files after its title is cleaned or restored.
 import '../outputs/rename';
+// Register moving a project's folders into its new owning department (transfer-folders) and its final failure.
+import '../projects/department-transfer';
 
 async function main(): Promise<void> {
   const config = loadWorkerConfig();

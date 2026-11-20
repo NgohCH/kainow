@@ -7,7 +7,9 @@ import type { StorageErrorCode } from './types';
 /** The storage job kinds (spec 5.6). Each names what its subject id is; job data carries ids only. */
 export type StorageJob =
   | 'file-output' | 'store-source' | 'share-sync' | 'place-output' | 'check'
-  | 'register-changed' | 'relocate' | 'withhold' | 'restore-withheld' | 'backfill-sources' | 'rename-output';
+  | 'register-changed' | 'relocate' | 'withhold' | 'restore-withheld' | 'backfill-sources' | 'rename-output'
+  // Moving a project's folders into its new owning department (spec 10); the subject is a project_department_transfers id.
+  | 'transfer-folders';
 
 /**
  * What a storage job carries: its kind and subject id, and after a failure the attempt it is on and when the first failure

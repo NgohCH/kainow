@@ -18,8 +18,8 @@ export const DELETED_KINDS: readonly DeletedKind[] = ['message', 'note', 'minute
 /** One line of the project's "Deletions and restorations" (history spec 4.6). */
 export interface HistoryLine {
   at: string;
-  kind: DeletedKind | 'credential_report' | 'ai_connection';
-  action: 'deleted' | 'restored' | 'reported' | 'key_rejected';
+  kind: DeletedKind | 'credential_report' | 'ai_connection' | 'department_transfer';
+  action: 'deleted' | 'restored' | 'reported' | 'key_rejected' | 'transferred';
   /** Who acted; for a credential report, the reporter only for PM, Owner, Sponsor and Administrators (else null). */
   actor: string | null;
   reason: string | null;
@@ -27,6 +27,10 @@ export interface HistoryLine {
   itemKind?: string;
   /** For an AI connection line: the connection's label (never its key). */
   label?: string;
+  /** For a department transfer (spec 10, D108): the department it left, the one it went to, and the folder choice (null with no filed outputs). */
+  fromDepartment?: string;
+  toDepartment?: string;
+  folderChoice?: 'move' | 'keep' | null;
   /** Only for a holder of Inspect Deleted Content, and only for an item that is Deleted now and that they may open. */
   title?: string;
   href?: string;
@@ -56,7 +60,7 @@ const RECORD_TITLE: Readonly<Record<RecordKind, { table: string; title: string }
 const iso = (d: Date | string): string => (d instanceof Date ? d : new Date(d)).toISOString();
 
 /**
- * The project's history of deletions, restorations and credential reports, and the read-only Deleted items view for
+ * The project's history of deletions, restorations, credential reports and owning department transfers, and the read-only Deleted items view for
  * holders of Inspect Deleted Content (history spec 4.6, 4.7).
  *
  * Every participant and Active grant holder sees the lines: kind, actor, time and reason, never the title or text.
@@ -81,32 +85,38 @@ export class HistoryService {
     const { rows } = await this.pool.query(
       `SELECT * FROM (
          SELECT e.at, CASE s.kind WHEN 'notes' THEN 'note' ELSE s.kind END AS kind, e.kind AS action, u.display_name AS actor, e.reason,
-                s.id AS "itemId", NULL::text AS "itemKind", e.id AS "eventId", NULL::text AS label
+                s.id AS "itemId", NULL::text AS "itemKind", e.id AS "eventId", NULL::text AS label,
+                NULL::text AS "fromDepartment", NULL::text AS "toDepartment", NULL::text AS "folderChoice"
            FROM source_events e JOIN sources s ON s.id = e.source_id JOIN users u ON u.id = e.actor_id
           WHERE e.project_id = $1
          UNION ALL
-         SELECT e.at, 'task', e.kind, u.display_name, e.note, t.id, NULL, e.id, NULL
+         SELECT e.at, 'task', e.kind, u.display_name, e.note, t.id, NULL, e.id, NULL, NULL, NULL, NULL
            FROM task_events e JOIN tasks t ON t.id = e.task_id JOIN users u ON u.id = e.actor_id
           WHERE t.project_id = $1 AND e.kind IN ('deleted', 'restored')
          UNION ALL
-         SELECT e.at, e.record_kind, e.kind, u.display_name, e.note, e.record_id, NULL, e.id, NULL
+         SELECT e.at, e.record_kind, e.kind, u.display_name, e.note, e.record_id, NULL, e.id, NULL, NULL, NULL, NULL
            FROM record_events e JOIN users u ON u.id = e.actor_id
            LEFT JOIN decisions d ON e.record_kind = 'decision' AND d.id = e.record_id
            LEFT JOIN questions q ON e.record_kind = 'question' AND q.id = e.record_id
            LEFT JOIN risks r ON e.record_kind = 'risk' AND r.id = e.record_id
           WHERE e.kind IN ('deleted', 'restored') AND COALESCE(d.project_id, q.project_id, r.project_id) = $1
          UNION ALL
-         SELECT e.at, 'message', e.action, u.display_name, e.reason, e.message_id, NULL, e.id, NULL
+         SELECT e.at, 'message', e.action, u.display_name, e.reason, e.message_id, NULL, e.id, NULL, NULL, NULL, NULL
            FROM discussion_events e JOIN discussion_threads th ON th.id = e.thread_id JOIN users u ON u.id = e.actor_id
           WHERE th.project_id = $1 AND e.message_id IS NOT NULL AND e.action IN ('deleted', 'restored')
          UNION ALL
-         SELECT c.reported_at, 'credential_report', 'reported', CASE WHEN $2::boolean THEN u.display_name END, NULL, c.item_id, c.item_kind, c.id, NULL
+         SELECT c.reported_at, 'credential_report', 'reported', CASE WHEN $2::boolean THEN u.display_name END, NULL, c.item_id, c.item_kind, c.id, NULL, NULL, NULL, NULL
            FROM quarantine_cases c LEFT JOIN users u ON u.id = c.reporter_id
           WHERE c.project_id = $1
          UNION ALL
-         SELECT e.at, 'ai_connection', e.action, u.display_name, NULL, e.connection_id, NULL, e.id, e.detail->>'label'
+         SELECT e.at, 'ai_connection', e.action, u.display_name, NULL, e.connection_id, NULL, e.id, e.detail->>'label', NULL, NULL, NULL
            FROM ai_connection_events e JOIN ai_connections c ON c.id = e.connection_id LEFT JOIN users u ON u.id = e.actor_id
           WHERE c.project_id = $1 AND e.action = 'key_rejected'
+         UNION ALL
+         SELECT t.at, 'department_transfer', 'transferred', u.display_name, t.reason, t.project_id, NULL, t.id, NULL, f.name, d.name, t.folder_choice
+           FROM project_department_transfers t JOIN users u ON u.id = t.actor_id
+           JOIN departments f ON f.id = t.from_department_id JOIN departments d ON d.id = t.to_department_id
+          WHERE t.project_id = $1
        ) lines ORDER BY at DESC, "eventId" DESC`,
       [ctx.project.id, seesReporter],
     );
@@ -118,6 +128,8 @@ export class HistoryService {
       if (r.kind === 'credential_report') return { ...line, itemKind: r.itemKind };
       // A rejected AI key (spec 5.4): the label only; a null actor is Kainow itself.
       if (r.kind === 'ai_connection') return { ...line, label: r.label };
+      // A department transfer (spec 10): the old and new department, the reason and the folder choice.
+      if (r.kind === 'department_transfer') return { ...line, fromDepartment: r.fromDepartment, toDepartment: r.toDepartment, folderChoice: r.folderChoice };
       const item = openable.get(`${r.kind}:${r.itemId}`);
       const out: HistoryLine = item ? { ...line, title: item.title, href: item.href } : line;
       // Only the newest `deleted` line of an item that is still Deleted offers Restore.

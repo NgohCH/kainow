@@ -1,7 +1,8 @@
-import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Req } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Put, Req } from '@nestjs/common';
 import { AnySignedInUser } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
+import { DepartmentTransferService } from './department-transfer.service';
 import { ProjectsService } from './projects.service';
 
 const body = (b: unknown): Record<string, unknown> => (b && typeof b === 'object' ? (b as Record<string, unknown>) : {});
@@ -14,7 +15,10 @@ const who = (req: HttpRequest): AuthUser => {
 /** Project routes. Access is decided per project by ProjectAccess inside the service, not by organisation role. */
 @Controller('projects')
 export class ProjectsController {
-  constructor(private readonly projects: ProjectsService) {}
+  constructor(
+    private readonly projects: ProjectsService,
+    private readonly transfers: DepartmentTransferService,
+  ) {}
 
   @Get()
   @AnySignedInUser()
@@ -72,6 +76,29 @@ export class ProjectsController {
   @HttpCode(200)
   department(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest) {
     return this.projects.moveDepartment(who(req), id, body(b));
+  }
+
+  /** → { department, filedFiles, transfer } — Enterprise Administrator only (spec 10). */
+  @Get(':id/owning-department')
+  @AnySignedInUser()
+  owningDepartment(@Param('id') id: string, @Req() req: HttpRequest) {
+    return this.transfers.view(who(req), id);
+  }
+
+  /** { departmentId, reason, folderChoice?: 'move' | 'keep' } → { transferId, state } — Enterprise Administrator only (spec 10, D108). */
+  @Put(':id/owning-department')
+  @AnySignedInUser()
+  transferDepartment(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest) {
+    const input = body(b);
+    return this.transfers.transferDepartment(who(req), id, { departmentId: input.departmentId, reason: input.reason, folderChoice: input.folderChoice });
+  }
+
+  /** Try again after "Files not moved" → { transferId, state } — Enterprise Administrator only. */
+  @Post(':id/owning-department/retry')
+  @AnySignedInUser()
+  @HttpCode(200)
+  retryTransfer(@Param('id') id: string, @Req() req: HttpRequest) {
+    return this.transfers.retry(who(req), id);
   }
 
   /** { stage, substage?, reason? } */

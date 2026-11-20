@@ -10,6 +10,7 @@ import { queueWithhold } from '../storage/withhold';
 import { quickXorHash } from '../storage/quickxor';
 import { type DestinationRef, type FolderRef, StorageError, type StoredRef } from '../storage/types';
 import { MAX_NAME, PathTooLong, RESTRICTED_SUFFIX, fitPath, outputFileName, safeName, suffixedName } from './naming';
+import { filingDepartment } from '../projects/department-transfer';
 import { isWholeProject } from './readers';
 import { sharingAfterFiled } from './sharing';
 
@@ -192,47 +193,50 @@ export async function ensureOutputFolder(
   if (placed) return placed;
 
   const conn = connector ?? (await deps.connectors.forDestination(dest.id)).connector;
-  const d = f.departmentId;
-  const p = `${d}/${projectId}`;
-  const levels: Level[] = [{ level: 'department', key: d, adopt: true, name: async () => safeName(f.departmentName) }];
-  if (wholeProject) {
-    if (!f.year || !f.reportTypeId) throw new StorageError('invalid'); // a registered output always has both
-    levels.push(
-      { level: 'project', key: p, adopt: false, name: async (n) => `${safeName(f.projectName, MAX_NAME - tailOf(n).length)}${tailOf(n)}` },
-      { level: 'year', key: `${p}/${f.year}`, adopt: true, name: async () => f.year },
-      { level: 'report_type', key: `${p}/${f.year}/${f.reportTypeId}`, adopt: true, name: async () => safeName(f.reportTypeName) },
-    );
-  } else {
-    levels.push(
-      {
-        level: 'restricted_root',
-        key: `${p}/restricted`,
-        adopt: false,
-        // Named after the project folder as created, if there is one, so the two stay side by side after a rename.
-        name: async (n) => {
-          const base = (await recordedFolder(deps, dest.id, 'project', p))?.name ?? f.projectName;
-          return `${safeName(base, MAX_NAME - RESTRICTED_SUFFIX.length - tailOf(n).length)}${tailOf(n)}${RESTRICTED_SUFFIX}`;
+  /** The folders from the department down, under the department `d` (decided under the lock, below). */
+  const levelsUnder = (d: string, departmentName: string): Level[] => {
+    const p = `${d}/${projectId}`;
+    const levels: Level[] = [{ level: 'department', key: d, adopt: true, name: async () => safeName(departmentName) }];
+    if (wholeProject) {
+      if (!f.year || !f.reportTypeId) throw new StorageError('invalid'); // a registered output always has both
+      levels.push(
+        { level: 'project', key: p, adopt: false, name: async (n) => `${safeName(f.projectName, MAX_NAME - tailOf(n).length)}${tailOf(n)}` },
+        { level: 'year', key: `${p}/${f.year}`, adopt: true, name: async () => f.year },
+        { level: 'report_type', key: `${p}/${f.year}/${f.reportTypeId}`, adopt: true, name: async () => safeName(f.reportTypeName) },
+      );
+    } else {
+      levels.push(
+        {
+          level: 'restricted_root',
+          key: `${p}/restricted`,
+          adopt: false,
+          // Named after the project folder as created, if there is one, so the two stay side by side after a rename.
+          name: async (n) => {
+            const base = (await recordedFolder(deps, dest.id, 'project', p))?.name ?? f.projectName;
+            return `${safeName(base, MAX_NAME - RESTRICTED_SUFFIX.length - tailOf(n).length)}${tailOf(n)}${RESTRICTED_SUFFIX}`;
+          },
         },
-      },
-      {
-        level: 'output',
-        key: `${p}/output/${outputId}`,
-        adopt: false,
-        // Another output folder of the project already named so is skipped without asking the provider.
-        name: async (n) => {
-          const name = `${safeName(f.title, MAX_NAME - tailOf(n).length)}${tailOf(n)}`;
-          const taken = await deps.pool.query(
-            `SELECT 1 FROM storage_folders WHERE destination_id = $1 AND level = 'output' AND key LIKE $2 AND lower(name) = lower($3)`,
-            [dest.id, `${p}/output/%`, name],
-          );
-          return taken.rowCount ? null : name;
+        {
+          level: 'output',
+          key: `${p}/output/${outputId}`,
+          adopt: false,
+          // Another output folder of the project already named so is skipped without asking the provider.
+          name: async (n) => {
+            const name = `${safeName(f.title, MAX_NAME - tailOf(n).length)}${tailOf(n)}`;
+            const taken = await deps.pool.query(
+              `SELECT 1 FROM storage_folders WHERE destination_id = $1 AND level = 'output' AND key LIKE $2 AND lower(name) = lower($3)`,
+              [dest.id, `${p}/output/%`, name],
+            );
+            return taken.rowCount ? null : name;
+          },
         },
-      },
-    );
-    // Only the `(restricted)` root, which has no Kainow grants and is named after the project: for a held output whose
-    // title may still hold the secret, no folder is ever named after it (spec 4.7).
-    if (opts.restrictedRootOnly) levels.pop();
-  }
+      );
+      // Only the `(restricted)` root, which has no Kainow grants and is named after the project: for a held output whose
+      // title may still hold the secret, no folder is ever named after it (spec 4.7).
+      if (opts.restrictedRootOnly) levels.pop();
+    }
+    return levels;
+  };
 
   const lockKey = `${dest.id}/${projectId}`;
   const lock = await deps.pool.connect();
@@ -240,10 +244,16 @@ export async function ensureOutputFolder(
   try {
     await lock.query(`SELECT pg_advisory_lock(hashtext('output-folders'), hashtext($1))`, [lockKey]);
     try {
+      // The owning department, unless a department transfer is still moving the project's folders here from another
+      // (spec 10): then a filing joins them there and moves with them.
+      const d = await filingDepartment(deps.pool, dest.id, projectId, f.departmentId);
+      const departmentName = d === f.departmentId
+        ? f.departmentName
+        : (await deps.pool.query<{ name: string }>(`SELECT name FROM departments WHERE id = $1`, [d])).rows[0].name;
       let parent: string | null = null;
       let rec: FolderRecord | undefined;
       const path: string[] = [];
-      for (const l of levels) {
+      for (const l of levelsUnder(d, departmentName)) {
         rec = await recordedFolder(deps, dest.id, l.level, l.key);
         if (!rec) {
           const made = await makeFolder(conn, dest, parent, l);

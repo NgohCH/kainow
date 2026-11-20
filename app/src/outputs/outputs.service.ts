@@ -36,6 +36,7 @@ import { renderMarkdown } from './render/markdown';
 import { renderPdf } from './render/pdf';
 import { notSharedFor } from './sharing';
 import { queueOutputPlacement } from './sharing-queue';
+import { MOVING_LABEL, keptLabel } from '../projects/department-transfer';
 
 type Db = Pool | PoolClient;
 
@@ -118,6 +119,11 @@ export interface Filing {
   path?: string | null;
   /** Filing failed and the PM or a Deputy may file it again ("Try again"). */
   tryAgain?: true;
+  /**
+   * A file filed under a department that no longer owns the project (spec 10): "Moving files" while a department
+   * transfer moves its folder, otherwise "Kept at its existing location (filed under <department>)".
+   */
+  location?: string;
   /** Checked, Changed, Moved, Missing, Access denied or Unverified (spec 5.8), for a filed or linked file. */
   checkLabel?: string;
   /** "The approved content could not be recovered from storage", when a registered change left the original Changed. */
@@ -970,16 +976,29 @@ export class OutputsService {
               b.output_version_id IS NOT NULL AND b.bytes IS NOT NULL AS kept,
               CASE WHEN f.destination_id IS DISTINCT FROM s.destination_id THEN d.label END AS "otherDestination",
               ${changeStateSql('v.id').registered} AS "changeRegistered", ${changeStateSql('v.id').pending} AS "changePending",
-              ${changeStateSql('v.id').failed} AS "changeFailed"
+              ${changeStateSql('v.id').failed} AS "changeFailed",
+              CASE WHEN split_part(sf.key, '/', 1) <> p.owning_department_id::text THEN split_part(sf.key, '/', 1) END AS "awayDepartmentId",
+              ad.name AS "awayDepartment"
          FROM output_versions v JOIN users u ON u.id = v.created_by
          JOIN outputs o ON o.id = v.output_id
+         JOIN projects p ON p.id = o.project_id
          LEFT JOIN project_output_settings s ON s.project_id = o.project_id
          LEFT JOIN stored_files f ON f.id = v.stored_file_id
          LEFT JOIN storage_destinations d ON d.id = f.destination_id
          LEFT JOIN output_version_bytes b ON b.output_version_id = v.id
+         LEFT JOIN storage_folders sf ON sf.id = f.folder_id
+         LEFT JOIN departments ad ON ad.id::text = split_part(sf.key, '/', 1)
         WHERE v.output_id = $1 ORDER BY v.version_no`,
       [outputId],
     );
+    // The project's latest department transfer, for files still filed under the department it left (spec 10).
+    const transfer = (
+      await this.pool.query<{ from: string; moving: boolean }>(
+        `SELECT from_department_id AS from, folder_choice = 'move' AND state = 'moving' AS moving FROM project_department_transfers
+          WHERE project_id = $1 ORDER BY at DESC, id DESC LIMIT 1`,
+        [ctx.project.id],
+      )
+    ).rows[0];
     const mayFile = decide({ action: 'output.manage', roles: ctx.roles, status: ctx.project.status }).allowed;
     return rows.map((r) => {
       let filing: Filing;
@@ -1006,6 +1025,9 @@ export class OutputsService {
         if (seesPath && r.otherDestination) filing.destination = r.otherDestination;
       }
       if (seesPath && r.fileState) filing.path = r.path;
+      if (r.awayDepartmentId && ['stored', 'relocating', 'withheld', 'missing'].includes(r.fileState)) {
+        filing.location = transfer?.moving && transfer.from === r.awayDepartmentId ? MOVING_LABEL : keptLabel(r.awayDepartment);
+      }
       return {
         no: r.no,
         origin: r.origin,
