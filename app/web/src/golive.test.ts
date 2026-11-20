@@ -24,7 +24,7 @@ test('closedText and linkKind', () => {
 
 test('installText names the INSTALL.md section for the mailbox and backups steps', () => {
   assert.equal(installText('INSTALL.md, the section on Microsoft 365 email'), 'See INSTALL.md: Microsoft 365 email');
-  assert.equal(installText('INSTALL.md, the section on Back up'), 'See INSTALL.md: Back up');
+  assert.equal(installText('INSTALL.md, the section on Backups'), 'See INSTALL.md: Backups');
 });
 
 test('stepLinkHidden makes each step link unique for screen readers', () => {

@@ -144,7 +144,7 @@ npm run backup-key -- --create ../secrets/kainow-backup.key
 
 It refuses to overwrite an existing file and prints only the path and a short key id, never the key. If you created it as a user other than uid 1000, make it readable by the container: `sudo chown 1000 ../secrets/kainow-backup.key`.
 
-Then, in `compose.yaml`, uncomment the backup key line under the `ops` service (`./secrets/kainow-backup.key:/run/secrets/kainow-backup.key:ro`). The key is mounted into `ops` only, never into `api` or `worker`. If the protected source area is in use, mount the protected key into `ops` too (the commented line below it), because backups open the storage secret with it.
+Then, in `compose.yaml`, uncomment the backup key line under the `ops` service (`./secrets/kainow-backup.key:/run/secrets/kainow-backup.key:ro`). The key is mounted into `ops` only, never into `api` or `worker`. If the protected key is in use (the protected source area, AI keys or quarantined originals), uncomment **both** protected-key lines under `ops` in `compose.yaml`, exactly as they appear there: in `environment`, `KAINOW_PROTECTED_KEY_FILE: /run/secrets/kainow-protected.key`, and in `volumes`, `./secrets/kainow-protected.key:/run/secrets/kainow-protected.key:ro`. With only the mount, `ops` does not know where the key is: the drill reports sealed values as Not tested and `restore` thinks the key is missing.
 
 **Keep a recovery copy of the backup key apart from the backups and apart from the protected key's copy**: with the recovery custodian, for example, on a locked USB drive or in a password manager's secure files. A backup without its key is useless, and the key alone gives nothing. Never email the key or put it in the repository. Losing the key means every backup made with it can never be read.
 
@@ -260,7 +260,7 @@ A plain dump holds everything (notes, original files, proposals, decisions, the 
 
 For a real disaster: the server or the database is lost and you need Kainow back from the backup folder. A restore goes into a **new, empty installation only**; it never overwrites a database, and a failed live database is replaced by a new installation. You need the backup folder, the backup key's recovery copy and (if AI keys or quarantined originals were in use) the protected key's recovery copy. Try the steps on a spare machine before you need them.
 
-1. **Start the new installation's settings.** Make a new Compose project as in "Going live" (steps 1 and 2: stop the old installation, name a new project in `.env`). In `.env` set `KAINOW_BACKUP_DIR` to the backup folder. Put the recovery copies of the backup key (and the protected key) in `secrets/`, and uncomment their mounts under `ops` in `compose.yaml`.
+1. **Start the new installation's settings.** Make a new Compose project as in "Going live" (steps 1 and 2: stop the old installation, name a new project in `.env`). In `.env` set `KAINOW_BACKUP_DIR` to the backup folder. Put the recovery copies of the backup key (and the protected key) in `secrets/`, and uncomment their mounts under `ops` in `compose.yaml` (`./secrets/kainow-backup.key:/run/secrets/kainow-backup.key:ro`, and `./secrets/kainow-protected.key:/run/secrets/kainow-protected.key:ro`). For the protected key, also uncomment the `environment` line `KAINOW_PROTECTED_KEY_FILE: /run/secrets/kainow-protected.key` under `ops`; without it `restore` reports that no protected key is mounted.
 2. **Start only the database:**
 
    ```
@@ -295,7 +295,7 @@ For a real disaster: the server or the database is lost and you need Kainow back
 docker compose exec -T db psql -U kainow -d postgres -c "DROP DATABASE kainow WITH (FORCE)" -c "CREATE DATABASE kainow OWNER kainow"
 ```
 
-(If the project's database name or user differ in `compose.yaml`, use those.) This is the only supported repair: the restore itself refuses a database that already holds tables.
+**Run this only in the new installation's own project folder** (check `docker compose ls` and `COMPOSE_PROJECT_NAME` in `.env` first): it deletes the whole database of that project, and a wrong folder would destroy a live installation. (If the project's database name or user differ in `compose.yaml`, use those.) This is the only supported repair: the restore itself refuses a database that already holds tables.
 
 ## Set up AI
 

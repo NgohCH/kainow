@@ -40,14 +40,14 @@ The floor is adequate when, after a check sees free space at or above the floor,
 export LS_IMG=/var/tmp/kainow-lowspace.img
 export LS_DIR=/mnt/kainow-lowspace
 sudo truncate -s 12G "$LS_IMG"
-sudo mkfs.ext4 -q -m 0 "$LS_IMG"
+sudo mkfs.ext4 -F -q -m 0 "$LS_IMG"
 sudo mkdir -p "$LS_DIR"
 sudo mount -o loop "$LS_IMG" "$LS_DIR"
 sudo mkdir -p "$LS_DIR/pgdata" "$LS_DIR/filler"
 df -B1 "$LS_DIR"
 ```
 
-`-m 0` reserves no blocks for root, so "free" means what it says. Record the size shown.
+`-F` lets `mkfs` format a plain file without asking; `-m 0` reserves no blocks for root, so "free" means what it says. Record the size shown.
 
 ### 2. Put the database volume on it
 

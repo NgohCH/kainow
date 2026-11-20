@@ -26,6 +26,8 @@ Enterprise Administrators need an organisation-wide view of Kainow activity and 
 
 This specifies coverage areas; exact event names, payload fields and supported metric formulas still require the R02/R17 technical catalogue. A failure/reason classification must not expose a confidential free-text explanation as an analytics dimension.
 
+**Operations events (sub-project 10a, D109–D116).** The Operations area of the event catalogue lists these audit events, named exactly as in the code: `ops.settings_changed`, `ops.protective_resumed` (Enterprise Administrator actions, with a reason); `ops.backup_succeeded`, `ops.backup_failed`, `ops.backup_key_changed`, `ops.backup_expired`, `ops.backup_interrupted` (backup runs and the sweep); `ops.protective_entered`, `ops.storage_level_changed` (storage check); `ops.restore_drill_passed`, `ops.restore_drill_failed`, `ops.restore_drill_interrupted` (restore drills); and `ops.restored_from_backup` (restore into a new installation). They carry run ids, counts, key ids and fixed failure codes only, never a key, secret, path or file content. Administrator analytics has a read-only `operations` panel (status strip, run counts and growth over the chosen period) and the Operations page shows the same status.
+
 ## 3. Event and metric contract requirements
 
 Each applicable event needs stable identity, event type/schema version, time, organisation/project association, named actor or service/AI event attribution, relevant record/version reference, outcome and defined measurements. Use correlation identifiers to associate related operations and avoid double-counting retries. Present dates/times using UTC+8.

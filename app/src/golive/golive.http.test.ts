@@ -214,7 +214,7 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     assert.equal(step(body, 'recovery').explanation, 'Record the custodian on the Organisation page, then test recovery on the server with recover-admin --dry-run.');
     assert.equal(step(body, 'recovery').link, '#/organisation');
     assert.equal(step(body, 'mailbox').link, 'INSTALL.md, the section on Microsoft 365 email');
-    assert.equal(step(body, 'backups').link, 'INSTALL.md, the section on Back up');
+    assert.equal(step(body, 'backups').link, 'INSTALL.md, the section on Backups');
     assert.ok(!body.steps.some((s: any) => /[‘’]/.test(s.text + s.explanation)), 'no curly apostrophes');
     assert.equal(step(body, 'organisation').explanation, "Kainow needs the organisation's name and email domains before anyone can be invited.");
   });
