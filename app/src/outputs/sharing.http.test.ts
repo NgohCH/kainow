@@ -6,7 +6,7 @@ import type { StorageConnectorFactory } from '../storage/connector-factory';
 import { GraphConnector } from '../storage/connectors/graph';
 import { type StorageDeps, type StorageJob, onFinalFailure, storageHandler } from '../storage/jobs';
 import { makeStorageNotify } from '../storage/notices';
-import type { DestinationRef } from '../storage/types';
+import { type DestinationRef, StorageError } from '../storage/types';
 import { SKIP_NO_DB } from '../testing/db';
 import { type FakeGraph, startFakeGraph } from '../testing/fake-graph';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
@@ -36,8 +36,13 @@ describe('folder sharing kept in step with readers', { skip: SKIP_NO_DB }, () =>
   let project: string;
   const ids: Record<string, string> = {};
   const c: Record<string, Client> = {};
+  /** When set, every connector request fails as the destination would when unavailable (no key, unreadable secret, withdrawn). */
+  let destinationDown: StorageError | null = null;
   const factory: StorageConnectorFactory = {
-    forDestination: async (id) => ({ connector, dest: { id, connector: 'graph', driveId: drive.driveId, rootItemId: drive.rootItemId } }),
+    forDestination: async (id) => {
+      if (destinationDown) throw destinationDown;
+      return { connector, dest: { id, connector: 'graph', driveId: drive.driveId, rootItemId: drive.rootItemId } };
+    },
     forNew: async () => connector,
   };
   const dest = (): DestinationRef => ({ id: destId, connector: 'graph', driveId: drive.driveId, rootItemId: drive.rootItemId });
@@ -128,6 +133,7 @@ describe('folder sharing kept in step with readers', { skip: SKIP_NO_DB }, () =>
   const PROJECT_READERS = ['ada@example.org', 'aud@example.org', 'deputy@example.org', 'owner@example.org', 'pm@example.org', 'sponsor@example.org'];
 
   beforeEach(async () => {
+    destinationDown = null;
     fake = await startFakeGraph();
     connector = graphConnector(true);
     drive = fake.addDrive();
@@ -466,5 +472,164 @@ describe('folder sharing kept in step with readers', { skip: SKIP_NO_DB }, () =>
     await drain();
     assert.ok(!(await sharedWith(pf.item_id)).includes('ada@example.org'));
     assert.deepEqual(await listed(), []);
+  });
+
+  const membershipOf = async (userId: string) => (await rows(`SELECT id FROM memberships WHERE user_id = $1 AND revoked_at IS NULL`, [userId]))[0].id as string;
+  const grantRow = async (folderId: string, userId: string) =>
+    (await rows(`SELECT state, permission_id, none_created FROM storage_grants WHERE folder_id = $1 AND user_id = $2 ORDER BY updated_at DESC, id DESC LIMIT 1`, [folderId, userId]))[0];
+  const providerCallsSince = (mark: number) => fake.calls.slice(mark).filter((x) => !x.path.includes('/token'));
+  const invitedTo = (email: string) => fake.invites.filter((i) => JSON.stringify(i.body).includes(email)).length;
+  const appoint = async (userId: string) => {
+    const r = await c.pm.request('POST', `/projects/${project}/members`, { userId, role: 'member', startsOn: '2026-11-09' });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+  };
+  const leave = async (userId: string) => {
+    assert.equal((await c.pm.request('POST', `/memberships/${await membershipOf(userId)}/revoke`, { reason: 'Left' })).status, 200);
+  };
+
+  test('a grant the provider definitely refused is revoked without any provider call', async () => {
+    await filed(await registered('Weekly status'));
+    const pf = await projectFolder();
+    fake.fault({ method: 'POST', pathIncludes: '/invite' }, '403', 1);
+    await appoint(ids.kim);
+    assert.equal((await drain())[0].failed, 'forbidden');
+    assert.deepEqual(await grantRow(pf.id, ids.kim), { state: 'failed', permission_id: null, none_created: true });
+    const mark = fake.calls.length;
+    await leave(ids.kim);
+    await drain();
+    assert.deepEqual(providerCallsSince(mark), [], 'no listing, no invitation, no removal');
+    assert.equal((await grantRow(pf.id, ids.kim)).state, 'revoked');
+  });
+
+  test('an unknown-outcome grant that landed is found by listing and deleted; one that did not land is marked revoked with no invite', async () => {
+    await filed(await registered('Weekly status'));
+    const pf = await projectFolder();
+    // The invitation takes effect but its answer is lost.
+    fake.fault({ method: 'POST', pathIncludes: '/invite' }, 'drop_after_body', 1);
+    await appoint(ids.kim);
+    await drain();
+    assert.deepEqual(await grantRow(pf.id, ids.kim), { state: 'failed', permission_id: null, none_created: false });
+    assert.ok((await sharedWith(pf.item_id)).includes('kim@example.org'));
+    let mark = fake.calls.length;
+    const invites = fake.invites.length;
+    await leave(ids.kim);
+    await drain();
+    assert.equal(fake.invites.length, invites, 'revoking never invites');
+    assert.ok(providerCallsSince(mark).some((x) => x.method === 'GET' && x.path.endsWith('/permissions')));
+    assert.ok(!(await sharedWith(pf.item_id)).includes('kim@example.org'));
+    const kim = await grantRow(pf.id, ids.kim);
+    assert.equal(kim.state, 'revoked');
+    assert.ok(kim.permission_id, 'the permission found by listing is recorded');
+    // A server error: the outcome is unknown, and here nothing landed.
+    const joe = await seedUser(t.pool, 'joe@example.org');
+    fake.addUser('joe@example.org');
+    fake.fault({ method: 'POST', pathIncludes: '/invite' }, '503', 1);
+    await appoint(joe);
+    await drain();
+    assert.deepEqual(await grantRow(pf.id, joe), { state: 'failed', permission_id: null, none_created: false });
+    mark = fake.calls.length;
+    await leave(joe);
+    await drain();
+    assert.equal(providerCallsSince(mark).filter((x) => x.path.endsWith('/invite') || x.method === 'DELETE').length, 0);
+    assert.equal((await grantRow(pf.id, joe)).state, 'revoked');
+  });
+
+  test('a person who already has a permission is recorded external, never touched, and keeps it after leaving', async () => {
+    await t.pool.query(`INSERT INTO memberships (id, project_id, user_id, role, starts_on) VALUES ($1, $2, $3, 'member', '2026-11-01')`, [uuidv7(), project, ids.kim]);
+    const out = await registered('Weekly status');
+    assert.equal((await c.pm.request('POST', url(`/${out}/versions/1/file`))).status, 200);
+    const vid = (await rows(`SELECT id FROM output_versions WHERE output_id = $1`, [out]))[0].id;
+    await fileOutputVersion(deps(), vid);
+    const pf = await projectFolder();
+    // Someone else shares the folder with Kim directly, before Kainow first shares it.
+    const theirs = fake.seedPermission(drive.driveId, pf.item_id, { kind: 'user', principal: 'kim@example.org', roles: ['read'] });
+    await drain();
+    assert.deepEqual(await grantRow(pf.id, ids.kim), { state: 'external', permission_id: theirs, none_created: false });
+    assert.equal(invitedTo('kim@example.org'), 0, 'Kainow never invites over it');
+    assert.deepEqual(await granted(pf.id), PROJECT_READERS);
+    const mark = fake.calls.length;
+    await leave(ids.kim);
+    await drain();
+    assert.equal(providerCallsSince(mark).filter((x) => x.method === 'DELETE').length, 0);
+    assert.equal((await grantRow(pf.id, ids.kim)).state, 'revoked');
+    const still = (await connector.listPermissions(dest(), pf.item_id)).find((p) => p.id === theirs);
+    assert.deepEqual(still?.roles, ['read'], 'their permission survives unchanged');
+  });
+
+  test('a returning person is re-granted only while their permission still stands', async () => {
+    await filed(await registered('Weekly status'));
+    const pf = await projectFolder();
+    const first = (await grantRow(pf.id, ids.ada)).permission_id;
+    fake.fault({ method: 'DELETE', pathIncludes: '/permissions/' }, '503', 1);
+    await leave(ids.ada);
+    await drain();
+    assert.equal((await grantRow(pf.id, ids.ada)).state, 'revoking');
+    // The permission goes some other way; Ada then comes back.
+    await connector.revoke(dest(), pf.item_id, first);
+    await appoint(ids.ada);
+    await drain();
+    const ada = await grantRow(pf.id, ids.ada);
+    assert.equal(ada.state, 'granted');
+    assert.notEqual(ada.permission_id, first, 'invited afresh');
+    assert.ok((await sharedWith(pf.item_id)).includes('ada@example.org'));
+  });
+
+  test('a failed narrowing of a restricted output still revokes the removed person', async () => {
+    const out = await registered('Board briefing', [ids.pm, ids.ada]);
+    const f = await filed(out);
+    const of = await outputFolder(out);
+    assert.deepEqual(await sharedWith(of.item_id), ['ada@example.org', 'pm@example.org']);
+    fake.fault({ method: 'GET', pathIncludes: f.item_id }, '503', 1);
+    await setAudience(out, [ids.pm], 'narrow');
+    assert.deepEqual((await drain()).map((r) => [r.job, r.failed]), [['place-output', 'server']]);
+    assert.deepEqual(await sharedWith(of.item_id), ['pm@example.org']);
+    assert.equal((await grantRow(of.id, ids.ada)).state, 'revoked');
+    assert.deepEqual((await sharingToRepair(t.pool)).outputs.map((o) => o.outputId), [out]);
+    // Its attempts run out: one Administrator notice.
+    await onFinalFailure(deps(), 'place-output', out, 'server');
+    await onFinalFailure(deps(), 'place-output', out, 'server');
+    assert.deepEqual(
+      (await rows(`SELECT n.summary FROM notifications n WHERE n.kind = 'sharing_place_failed'`)).map((r) => r.summary),
+      [`Kainow could not move the files of an output in ${PROJECT} to where only its readers can open them`],
+    );
+  });
+
+  test('with the destination unavailable, a removed person is listed to repair and the notice is raised once', async () => {
+    await filed(await registered('Weekly status'));
+    const pf = await projectFolder();
+    destinationDown = new StorageError('invalid');
+    await leave(ids.ada);
+    assert.deepEqual((await drain()).map((r) => r.failed), ['invalid']);
+    assert.equal((await grantRow(pf.id, ids.ada)).state, 'revoking');
+    assert.deepEqual((await sharingToRepair(t.pool)).grants.map((g) => [g.displayName, g.state]), [['ada', 'revoking']]);
+    await onFinalFailure(deps(), 'share-sync', pf.id, 'invalid');
+    await onFinalFailure(deps(), 'share-sync', pf.id, 'invalid');
+    t.clock.advanceSeconds(86_400);
+    await reconcileSharing(deps());
+    assert.equal((await rows(`SELECT count(*)::int AS n FROM notifications WHERE kind = 'sharing_revoke_failed'`))[0].n, 1);
+    destinationDown = null;
+    await drain();
+    assert.ok(!(await sharedWith(pf.item_id)).includes('ada@example.org'));
+    assert.deepEqual((await sharingToRepair(t.pool)).grants, []);
+  });
+
+  test('a stored file left in the project tree for a restricted output is found and moved by the reconciliation', async () => {
+    const out = await registered('Weekly status');
+    const f = await filed(out);
+    const typeFolder = (await rows(`SELECT id, item_id FROM storage_folders WHERE level = 'report_type'`))[0];
+    await setAudience(out, [ids.pm], 'narrow');
+    await drain();
+    const of = await outputFolder(out);
+    assert.equal(await parentOf(f.item_id), of.item_id);
+    // As if a filing had recorded it in the project tree while the readers narrowed.
+    fake.moveItem(drive.driveId, f.item_id, typeFolder.item_id);
+    await t.pool.query(`UPDATE stored_files SET folder_id = $2 WHERE id = $1`, [f.id, typeFolder.id]);
+    const r = await reconcileSharing(deps());
+    assert.equal(r.placed, 1);
+    assert.deepEqual((await rows(`SELECT job, urgent FROM storage_outbox WHERE sent_at IS NULL`)).map((x) => [x.job, x.urgent]), [['place-output', true]]);
+    await drain();
+    assert.equal(await parentOf(f.item_id), of.item_id);
+    assert.equal((await rows(`SELECT folder_id FROM stored_files WHERE id = $1`, [f.id]))[0].folder_id, of.id);
+    assert.equal((await reconcileSharing(deps())).placed, 0, 'nothing left to place');
   });
 });

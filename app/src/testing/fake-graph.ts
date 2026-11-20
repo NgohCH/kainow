@@ -439,7 +439,11 @@ export async function startFakeGraph(): Promise<FakeGraph> {
       for (const r of recipients) {
         const u = users.get(String(r.email ?? '').toLowerCase());
         if (!u || !u.enabled) throw new GErr(404, 'notFound'); // the recipient cannot be resolved to an account
-        const existing = it.perms.find((p) => (p.grantedToV2 as any)?.user?.id === u.id);
+        // One permission per principal per item: inviting someone who already has one returns (and updates) it.
+        const existing = it.perms.find((p) => {
+          const g = (p.grantedToV2 as any)?.user;
+          return g?.id === u.id || (typeof g?.email === 'string' && same(g.email, u.email));
+        });
         if (existing) { existing.roles = [...roles]; value.push(existing); continue; }
         const perm: Perm = {
           id: randomUUID(), roles: [...roles],

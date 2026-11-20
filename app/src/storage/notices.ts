@@ -6,7 +6,7 @@ import { loadAdmins } from '../notifications/recipients';
 import { ProjectAccess } from '../projects/access.service';
 import type { StorageNotice } from './jobs';
 import { SOURCE_FILE_CHANGED, SOURCE_FILE_MISSING } from './source-files';
-import { SHARING_REVOKE_FAILED, revokeFailedNotice } from '../outputs/sharing';
+import { SHARING_PLACE_FAILED, SHARING_REVOKE_FAILED, placeFailedNotice, revokeFailedNotice } from '../outputs/sharing';
 
 /**
  * The in-app notices storage work raises. Each kind is worded here; Task 13 and 17 add theirs. Storage notices go to the
@@ -77,13 +77,29 @@ export function makeStorageNotify(pool: Pool, clock: Clock): StorageNotify {
       )
     ).rows[0];
     if (!g) return;
+    await toAdministrators(c, n.kind, g.project_id, revokeFailedNotice(g.project_name));
+  }
+
+  /** Moving an output's files keeps failing: to the Administrators, naming only the project (the title may be restricted). */
+  async function placeFailed(c: PoolClient, n: StorageNotice): Promise<void> {
+    const o = (
+      await c.query<{ project_id: string; project_name: string }>(
+        `SELECT p.id AS project_id, p.name AS project_name FROM outputs o JOIN projects p ON p.id = o.project_id WHERE o.id = $1`,
+        [n.subjectId],
+      )
+    ).rows[0];
+    if (!o) return;
+    await toAdministrators(c, n.kind, o.project_id, placeFailedNotice(o.project_name));
+  }
+
+  async function toAdministrators(c: PoolClient, kind: string, projectId: string, summary: string): Promise<void> {
     const recipients = [...new Set([...(await loadAdmins(c)), ...(await loadStorageAdmins(c))])].sort();
     const at = clock();
     for (const userId of recipients) {
       await c.query(
         `INSERT INTO notifications (id, user_id, project_id, kind, urgent, summary, link, created_at, email_off)
          VALUES ($1, $2, $3, $4, false, $5, '#/storage', $6, true)`,
-        [uuidv7(at.getTime()), userId, g.project_id, n.kind, revokeFailedNotice(g.project_name), at],
+        [uuidv7(at.getTime()), userId, projectId, kind, summary, at],
       );
     }
   }
@@ -91,6 +107,8 @@ export function makeStorageNotify(pool: Pool, clock: Clock): StorageNotify {
   return async (c, n) => {
     if (n.kind === SHARING_REVOKE_FAILED) {
       await revokeFailed(c, n);
+    } else if (n.kind === SHARING_PLACE_FAILED) {
+      await placeFailed(c, n);
     } else if (n.kind === SOURCE_FILE_CHANGED) {
       await sourceFileChanged(c, n, 'has changed in storage since Kainow recorded it. It has been flagged for the storage Administrators.');
     } else if (n.kind === SOURCE_FILE_MISSING) {

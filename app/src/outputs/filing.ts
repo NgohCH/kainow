@@ -391,6 +391,9 @@ async function fileLocked(deps: StorageDeps, versionId: string): Promise<void> {
   let recorded = false;
   try {
     await c.query('BEGIN');
+    // The output row first, as placement and audience changes lock it: the placement recorded here and the sharing
+    // queued after it see the output's readers as they are, not as they were when the upload started.
+    await c.query(`SELECT 1 FROM outputs WHERE id = $1 FOR UPDATE`, [v.output_id]);
     const now = (
       await c.query<{ stored_file_id: string | null }>(`SELECT stored_file_id FROM output_versions WHERE id = $1 FOR UPDATE`, [versionId])
     ).rows[0];
@@ -398,9 +401,10 @@ async function fileLocked(deps: StorageDeps, versionId: string): Promise<void> {
     if (now?.stored_file_id === fileId && state === 'storing') {
       await c.query(
         `UPDATE stored_files SET state = 'stored', destination_id = $2, connector = $3, drive_id = $4, item_id = $5, path = $6, name = $7,
-                size_bytes = $8, sha256 = $9, provider_hash = $10, etag = $11, ctag = $12, web_url = $13, stored_at = $14, failure_code = NULL
+                size_bytes = $8, sha256 = $9, provider_hash = $10, etag = $11, ctag = $12, web_url = $13, stored_at = $14, failure_code = NULL,
+                folder_id = $15
           WHERE id = $1`,
-        [fileId, dest.id, dest.connector, dest.driveId, ref.itemId, parts.join('/'), ref.name, ref.size, sha256(bytes), ref.providerHash, ref.etag, ref.ctag, ref.webUrl, at],
+        [fileId, dest.id, dest.connector, dest.driveId, ref.itemId, parts.join('/'), ref.name, ref.size, sha256(bytes), ref.providerHash, ref.etag, ref.ctag, ref.webUrl, at, folder.recordId],
       );
       // The output's versions all go here from now on (spec 5.4: every version lives in the same place).
       await c.query(`UPDATE outputs SET placement_folder_id = $2 WHERE id = $1 AND placement_folder_id IS DISTINCT FROM $2`, [v.output_id, folder.recordId]);

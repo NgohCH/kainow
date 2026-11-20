@@ -161,7 +161,10 @@ CREATE TABLE stored_files (
   -- Where the latest upload attempt went, recorded before it is sent: a retry adopts only a file found there.
   upload_destination_id  uuid  REFERENCES storage_destinations (id),
   upload_folder_id       text,
-  upload_name            text
+  upload_name            text,
+  -- The Kainow folder an output file was last confirmed in (filing, then each move), so the daily reconciliation finds
+  -- any file not where its output's readers need it (spec 5.5).
+  folder_id              uuid  REFERENCES storage_folders (id)
 );
 -- One reference per provider item: Kainow never adopts a file another stored file already stands for.
 CREATE UNIQUE INDEX stored_files_item_once ON stored_files (drive_id, item_id) WHERE item_id IS NOT NULL AND state <> 'linked';
@@ -217,11 +220,15 @@ CREATE TABLE storage_grants (
   folder_id      uuid        NOT NULL REFERENCES storage_folders (id),
   user_id        uuid        NOT NULL REFERENCES users (id),
   role           text        NOT NULL CHECK (role IN ('read', 'write')),
-  state          text        NOT NULL CHECK (state IN ('pending', 'granted', 'not_found', 'revoking', 'revoked', 'failed')),
+  -- external: the person already had a permission on the folder that Kainow did not create; Kainow counts them as
+  -- shared, records that permission's id and never invites, alters or removes it (spec 5.5).
+  state          text        NOT NULL CHECK (state IN ('pending', 'granted', 'not_found', 'revoking', 'revoked', 'failed', 'external')),
   permission_id  text,
   updated_at     timestamptz NOT NULL,
   -- When the Administrators were told this revocation keeps failing (once per failing revocation, spec 5.5).
-  revoke_notice_at  timestamptz
+  revoke_notice_at  timestamptz,
+  -- A failed grant whose provider answer was definite (4xx): nothing was created, so revoking it needs no provider call.
+  none_created   boolean     NOT NULL DEFAULT false
 );
 CREATE UNIQUE INDEX storage_grants_live ON storage_grants (folder_id, user_id) WHERE state <> 'revoked';
 CREATE INDEX storage_grants_user_idx ON storage_grants (user_id);
@@ -342,7 +349,9 @@ CREATE TABLE outputs (
   placement_folder_id  uuid   REFERENCES storage_folders (id),
   -- When moving the output's files to where its readers need them last failed; cleared once a move completes. Such an
   -- output is listed under "Sharing to repair" (spec 5.5).
-  place_failed_at      timestamptz
+  place_failed_at      timestamptz,
+  -- When the Administrators were told moving its files keeps failing (once per failure; cleared with place_failed_at).
+  place_notice_at      timestamptz
 );
 CREATE INDEX outputs_project_idx ON outputs (project_id, status, created_at);
 CREATE INDEX outputs_report_type_idx ON outputs (report_type_id) WHERE report_type_id IS NOT NULL;

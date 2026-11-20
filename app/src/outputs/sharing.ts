@@ -2,7 +2,7 @@ import type { Pool, PoolClient } from 'pg';
 import { uuidv7 } from '../common/uuid7';
 import type { StorageConnector } from '../storage/connector';
 import { type StorageDeps, registerStorageDailyTask, registerStorageFinalFailure, registerStorageHandler } from '../storage/jobs';
-import { type DestinationRef, StorageError, type StoredRef } from '../storage/types';
+import { type DestinationRef, type PermissionInfo, StorageError, type StoredRef } from '../storage/types';
 import { type OutputFolder, ensureOutputFolder } from './filing';
 import { MAX_NAME } from './naming';
 import { contentReaderContexts, isWholeProject, outputReaders } from './readers';
@@ -13,13 +13,18 @@ export { queueFolderSharing, queueOutputPlacement, queueProjectSharing, queueUse
 /**
  * SharePoint sharing kept in step with Kainow (spec 5.5, D103). Kainow shares folders only, read-only: the project
  * folder (`<dept>/<project>`) with everyone who may read the project's content, and each output folder
- * (`<dept>/<project>/output/<output>`) with that output's readers. It only ever touches the permissions it created and
- * recorded in `storage_grants`; site owners, administrators and anything else are never read or changed here.
+ * (`<dept>/<project>/output/<output>`) with that output's readers, in output destinations only.
+ *
+ * Kainow never alters access it did not create. Before it first invites a person to a folder it reads the folder's
+ * permissions: a person who already has one (given by someone else) is recorded `external`, counted as shared, and that
+ * permission is never invited over, changed or removed. Before any removal the folder's permissions are read again, and
+ * only a permission whose id Kainow recorded and whose roles are exactly read is deleted; anything else stays listed to
+ * repair. Revoking never invites.
  *
  * Order matters. A sync removes before it adds. An output whose readers narrow has its files moved out of the project
- * folder first (urgent `place-output`), then its own folder is synced; one whose readers widen is moved back first, and
- * nothing is revoked before the move. Kainow's own check (`readsOutput`) hides an output at once, whatever SharePoint
- * still allows, so a failed move leaves the output hidden in Kainow and listed under "Sharing to repair".
+ * folder first (urgent `place-output`), then its own folder is synced; if the move fails, the output folder's
+ * revocations still run. One whose readers widen is moved back first, and nothing is revoked before the move. Kainow's
+ * own check (`readsOutput`) hides an output at once, whatever SharePoint still allows.
  *
  * Debouncing: the spec suggests a 30-second debounce per folder. It is not done: the storage queue already keeps one
  * queued job per folder (a burst of changes refreshes it rather than adding more), and delaying a sync would delay the
@@ -35,6 +40,10 @@ export const notSharedLabel = (email: string): string => `Not shared in SharePoi
 export const SHARING_REVOKE_FAILED = 'sharing_revoke_failed';
 export const revokeFailedNotice = (projectName: string): string =>
   `Kainow could not remove SharePoint access for a person who has left ${projectName}`;
+/** The Administrator notice raised once when moving an output's files keeps failing. */
+export const SHARING_PLACE_FAILED = 'sharing_place_failed';
+export const placeFailedNotice = (projectName: string): string =>
+  `Kainow could not move the files of an output in ${projectName} to where only its readers can open them`;
 
 /** What a stored file's move is recorded with in `stored_file_moves`. */
 const MOVE_REASON = 'Readers changed';
@@ -42,7 +51,8 @@ const MOVE_REASON = 'Readers changed';
 const MAX_SUFFIX = 20;
 
 interface FolderRow { id: string; destination_id: string; level: string; key: string; item_id: string }
-interface GrantRow { id: string; user_id: string; state: 'pending' | 'granted' | 'not_found' | 'revoking' | 'failed'; permission_id: string | null }
+type GrantState = 'pending' | 'granted' | 'not_found' | 'revoking' | 'failed' | 'external';
+interface GrantRow { id: string; user_id: string; state: GrantState; permission_id: string | null; none_created: boolean }
 
 const loadFolder = async (db: Db, folderId: string): Promise<FolderRow | undefined> =>
   (await db.query<FolderRow>(`SELECT id, destination_id, level, key, item_id FROM storage_folders WHERE id = $1`, [folderId])).rows[0];
@@ -51,6 +61,10 @@ const loadFolder = async (db: Db, folderId: string): Promise<FolderRow | undefin
 const SHARED_LEVELS: ReadonlySet<string> = new Set(['project', 'output']);
 const projectOfKey = (key: string): string => key.split('/')[1];
 const outputOfKey = (key: string): string => key.split('/')[3];
+const sameEmail = (a: string, b: string): boolean => a.trim().toLowerCase() === b.trim().toLowerCase();
+const readOnly = (p: PermissionInfo): boolean => p.roles.length === 1 && p.roles[0] === 'read';
+/** A provider's definite refusal (a 4xx answer): the invitation created nothing. Anything else may have. */
+const definite = (err: unknown): boolean => err instanceof StorageError && err.status !== undefined && err.status >= 400 && err.status < 500;
 
 /** One worker at a time per subject; a second run meanwhile fails retryably and finds the work done when it runs. */
 async function exclusively<T>(deps: StorageDeps, ns: string, id: string, work: () => Promise<T>): Promise<T> {
@@ -70,6 +84,21 @@ async function exclusively<T>(deps: StorageDeps, ns: string, id: string, work: (
     }
   } finally {
     lock.release(broken);
+  }
+}
+
+async function withTx<T>(deps: StorageDeps, work: (c: PoolClient) => Promise<T>): Promise<T> {
+  const c = await deps.pool.connect();
+  try {
+    await c.query('BEGIN');
+    const out = await work(c);
+    await c.query('COMMIT');
+    return out;
+  } catch (err) {
+    await c.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    c.release();
   }
 }
 
@@ -117,53 +146,83 @@ export async function desiredFolderGrants(db: Db, folderId: string, at: Date): P
 const liveGrants = async (db: Db, folderId: string): Promise<GrantRow[]> =>
   (
     await db.query<GrantRow>(
-      `SELECT id, user_id, state, permission_id FROM storage_grants WHERE folder_id = $1 AND role = 'read' AND state <> 'revoked' ORDER BY id`,
+      `SELECT id, user_id, state, permission_id, none_created FROM storage_grants
+        WHERE folder_id = $1 AND role = 'read' AND state <> 'revoked' ORDER BY id`,
       [folderId],
     )
   ).rows;
+
+const isOutputsDestination = async (db: Db, destinationId: string): Promise<boolean> =>
+  ((await db.query(`SELECT 1 FROM storage_destinations WHERE id = $1 AND purpose = 'outputs'`, [destinationId])).rowCount ?? 0) > 0;
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The share-sync job
 // ---------------------------------------------------------------------------------------------------------------------
 
+export interface SyncOptions {
+  /** Try people not found again, and check `external` permissions still stand (the daily reconciliation). */
+  retryNotFound?: boolean;
+  /** Only remove access (after a failed narrowing move); grant nothing. */
+  revokeOnly?: boolean;
+}
+
 /**
  * The `share-sync` job: brings one shared folder's Kainow grants in line with `desiredFolderGrants`. Revocations
- * first, then grants; only `storage_grants` rows are ever revoked. A person Kainow cannot share with is recorded
- * `not_found` and tried again only by the daily reconciliation (`retryNotFound`). Every operation is tried even when
- * one fails; the first failure is then thrown so the job is tried again.
+ * first, then grants. Every operation is tried even when one fails; the first failure is then thrown so the job is
+ * tried again.
  */
-export async function syncFolderGrants(deps: StorageDeps, folderId: string, opts: { retryNotFound?: boolean } = {}): Promise<void> {
+export async function syncFolderGrants(deps: StorageDeps, folderId: string, opts: SyncOptions = {}): Promise<void> {
   await exclusively(deps, 'share-sync', folderId, () => syncLocked(deps, folderId, opts));
 }
 
-async function syncLocked(deps: StorageDeps, folderId: string, opts: { retryNotFound?: boolean }): Promise<void> {
+interface SyncCtx { deps: StorageDeps; connector: StorageConnector; dest: DestinationRef; f: FolderRow }
+
+async function syncLocked(deps: StorageDeps, folderId: string, opts: SyncOptions): Promise<void> {
   const f = await loadFolder(deps.pool, folderId);
-  if (!f || !SHARED_LEVELS.has(f.level)) return;
-  const { connector, dest } = await deps.connectors.forDestination(f.destination_id);
+  if (!f || !SHARED_LEVELS.has(f.level) || !(await isOutputsDestination(deps.pool, f.destination_id))) return;
   const desired = await desiredFolderGrants(deps.pool, folderId, deps.clock());
   const live = await liveGrants(deps.pool, folderId);
-  let failure: unknown;
 
+  // Removals that need no provider call are settled at once: nobody was shared with (not found), a permission that was
+  // never Kainow's (external, left as it is), or a grant the provider definitely refused. Every other removal is
+  // marked revoking before anything can fail, so it is listed to repair until the provider confirms it.
+  const leaving: GrantRow[] = [];
   for (const g of live.filter((x) => !desired.has(x.user_id))) {
+    if (g.state === 'not_found' || g.state === 'external' || (g.state === 'failed' && g.none_created)) {
+      await setGrant(deps, g.id, 'revoked', g.permission_id);
+      continue;
+    }
+    if (g.state !== 'revoking') await setGrant(deps, g.id, 'revoking', g.permission_id);
+    leaving.push({ ...g, state: 'revoking' });
+  }
+  const byUser = new Map(live.map((g) => [g.user_id, g]));
+  const joining = opts.revokeOnly
+    ? []
+    : [...desired].filter(([userId]) => {
+        const g = byUser.get(userId);
+        if (!g) return true;
+        if (g.state === 'granted') return false;
+        if (g.state === 'not_found' || g.state === 'external') return !!opts.retryNotFound;
+        return true;
+      });
+  if (leaving.length === 0 && joining.length === 0) return;
+
+  const { connector, dest } = await deps.connectors.forDestination(f.destination_id);
+  const ctx: SyncCtx = { deps, connector, dest, f };
+  let failure: unknown;
+  const emails = await emailsOf(deps.pool, leaving.map((g) => g.user_id));
+  for (const g of leaving) {
     try {
-      await revokeOne(deps, connector, dest, f, g);
+      await revokeOne(ctx, g, emails.get(g.user_id) ?? null);
     } catch (err) {
       failure ??= err;
     }
   }
-
-  const byUser = new Map(live.map((g) => [g.user_id, g]));
-  for (const [userId, email] of desired) {
-    const g = byUser.get(userId);
-    if (g?.state === 'granted') continue;
-    if (g?.state === 'not_found' && !opts.retryNotFound) continue;
-    if (g?.state === 'revoking' && g.permission_id) {
-      // Back before the revocation went through: the permission still stands and is theirs again.
-      await setGrant(deps, g.id, 'granted', g.permission_id);
-      continue;
-    }
+  let perms: PermissionInfo[] | null = null;
+  for (const [userId, email] of joining) {
     try {
-      await grantOne(deps, connector, dest, f, userId, email, g);
+      perms ??= await connector.listPermissions(dest, f.item_id);
+      await grantOne(ctx, perms, userId, email, byUser.get(userId));
     } catch (err) {
       failure ??= err;
     }
@@ -171,108 +230,168 @@ async function syncLocked(deps: StorageDeps, folderId: string, opts: { retryNotF
   if (failure) throw failure;
 }
 
-async function setGrant(deps: StorageDeps, id: string, state: GrantRow['state'] | 'revoked', permissionId: string | null): Promise<void> {
-  await deps.pool.query(`UPDATE storage_grants SET state = $2, permission_id = $3, updated_at = $4 WHERE id = $1`, [id, state, permissionId, deps.clock()]);
+async function emailsOf(db: Db, userIds: string[]): Promise<Map<string, string>> {
+  if (userIds.length === 0) return new Map();
+  const { rows } = await db.query<{ id: string; email: string }>(`SELECT id, email FROM users WHERE id = ANY($1::uuid[])`, [userIds]);
+  return new Map(rows.map((r) => [r.id, r.email]));
+}
+
+async function setGrant(deps: StorageDeps, id: string, state: GrantState | 'revoked', permissionId: string | null, noneCreated = false): Promise<void> {
+  await deps.pool.query(
+    `UPDATE storage_grants SET state = $2, permission_id = $3, none_created = $4, updated_at = $5 WHERE id = $1`,
+    [id, state, permissionId, noneCreated, deps.clock()],
+  );
+}
+
+/** Permission ids Kainow itself created on the folder (its own grants, whatever their state). */
+async function kainowPermissionIds(db: Db, folderId: string): Promise<Set<string>> {
+  const { rows } = await db.query<{ permission_id: string }>(
+    `SELECT permission_id FROM storage_grants WHERE folder_id = $1 AND permission_id IS NOT NULL AND state <> 'external'`,
+    [folderId],
+  );
+  return new Set(rows.map((r) => r.permission_id));
+}
+
+/** Permission ids recorded as someone else's on the folder. */
+async function externalPermissionIds(db: Db, folderId: string): Promise<Set<string>> {
+  const { rows } = await db.query<{ permission_id: string }>(
+    `SELECT permission_id FROM storage_grants WHERE folder_id = $1 AND permission_id IS NOT NULL AND state = 'external'`,
+    [folderId],
+  );
+  return new Set(rows.map((r) => r.permission_id));
 }
 
 /**
- * Grants read on the folder. The row is recorded pending before the provider is asked, so a permission whose answer
- * is lost is still Kainow's to find and remove. Never on the destination's root, never on a file (the connector checks
- * the item is a folder too).
+ * Grants read on the folder to a person who should have it. The folder's permissions (read once per sync) decide:
+ * - a row still holding its permission (back before a revocation went through, or an external one) keeps it;
+ * - a person with a permission Kainow did not create is recorded `external` and nothing is sent, except that a single
+ *   read-only permission is taken as Kainow's own when its last invitation's outcome was unknown (the answer was lost);
+ * - otherwise the row is recorded pending and the invitation sent. A definite refusal (4xx) records that nothing was
+ *   created; any other failure leaves the outcome unknown.
+ * Never on the destination's root, never on a file (the connector checks the item is a folder too).
  */
-async function grantOne(
-  deps: StorageDeps, connector: StorageConnector, dest: DestinationRef, f: FolderRow, userId: string, email: string, existing: GrantRow | undefined,
-): Promise<void> {
+async function grantOne(ctx: SyncCtx, perms: PermissionInfo[], userId: string, email: string, g: GrantRow | undefined): Promise<void> {
+  const { deps, connector, dest, f } = ctx;
   if (f.item_id === dest.rootItemId) throw new StorageError('invalid');
-  let id = existing?.id;
-  if (id) {
-    await setGrant(deps, id, 'pending', existing?.permission_id ?? null);
-  } else {
-    id = uuidv7();
-    await deps.pool.query(
-      `INSERT INTO storage_grants (id, folder_id, user_id, role, state, updated_at) VALUES ($1, $2, $3, 'read', 'pending', $4)`,
-      [id, f.id, userId, deps.clock()],
-    );
+  if (g?.permission_id && (g.state === 'revoking' || g.state === 'external' || g.state === 'granted')) {
+    if (perms.some((p) => p.id === g.permission_id)) {
+      await setGrant(deps, g.id, g.state === 'external' ? 'external' : 'granted', g.permission_id);
+      return;
+    }
+    // Gone: the person is shared with afresh below.
   }
+  const ours = await kainowPermissionIds(deps.pool, f.id);
+  const others = perms.filter((p) => p.kind === 'user' && sameEmail(p.principal, email) && !ours.has(p.id));
+  const unknownOutcome = !!g && !g.permission_id && (g.state === 'pending' || g.state === 'revoking' || (g.state === 'failed' && !g.none_created));
+  if (others.length > 0) {
+    const state = unknownOutcome && others.length === 1 && readOnly(others[0]) ? 'granted' : 'external';
+    await upsertGrant(deps, f.id, userId, g, state, others[0].id);
+    return;
+  }
+  const id = await upsertGrant(deps, f.id, userId, g, 'pending', null);
   let result;
   try {
     result = await connector.grant(dest, f.item_id, email, 'read');
   } catch (err) {
-    await setGrant(deps, id, 'failed', existing?.permission_id ?? null);
+    await setGrant(deps, id, 'failed', null, definite(err));
     throw err;
   }
   if ('notFound' in result) await setGrant(deps, id, 'not_found', null);
   else await setGrant(deps, id, 'granted', result.permissionId);
 }
 
-/**
- * Removes a Kainow grant. A `not_found` row has no permission. A row without a permission id (its grant's answer was
- * lost or failed) may still have created one: the invitation is sent again, which gives back the person's existing
- * permission on the folder, and that is removed. The row stays `revoking` until the provider confirms; a permission
- * already gone counts as removed.
- */
-async function revokeOne(deps: StorageDeps, connector: StorageConnector, dest: DestinationRef, f: FolderRow, g: GrantRow): Promise<void> {
-  if (g.state === 'not_found') {
-    await setGrant(deps, g.id, 'revoked', null);
-    return;
+async function upsertGrant(
+  deps: StorageDeps, folderId: string, userId: string, g: GrantRow | undefined, state: GrantState, permissionId: string | null,
+): Promise<string> {
+  if (g) {
+    await setGrant(deps, g.id, state, permissionId);
+    return g.id;
   }
-  let permissionId = g.permission_id;
-  if (!permissionId) {
-    const email = (await deps.pool.query<{ email: string }>(`SELECT email FROM users WHERE id = $1`, [g.user_id])).rows[0]?.email;
-    const found = email && f.item_id !== dest.rootItemId ? await connector.grant(dest, f.item_id, email, 'read') : { notFound: true as const };
-    if ('notFound' in found) {
-      await setGrant(deps, g.id, 'revoked', null);
-      return;
-    }
-    permissionId = found.permissionId;
-  }
-  await setGrant(deps, g.id, 'revoking', permissionId);
-  try {
-    await connector.revoke(dest, f.item_id, permissionId);
-  } catch (err) {
-    if (!(err instanceof StorageError && err.code === 'not_found')) throw err;
-  }
-  await setGrant(deps, g.id, 'revoked', permissionId);
+  const id = uuidv7();
+  await deps.pool.query(
+    `INSERT INTO storage_grants (id, folder_id, user_id, role, state, permission_id, updated_at) VALUES ($1, $2, $3, 'read', $4, $5, $6)`,
+    [id, folderId, userId, state, permissionId, deps.clock()],
+  );
+  return id;
 }
 
 /**
- * After a folder's sync has used all its attempts: each revocation still not done raises the Administrator notice,
- * once per revocation (spec 5.5). It stays listed under "Sharing to repair" and the daily reconciliation keeps trying.
+ * Removes a Kainow grant (the row is already `revoking`). The folder's permissions are read first, and never is anyone
+ * invited. With a recorded permission id: gone means done; it is deleted only if its roles are exactly read. Without
+ * one (the invitation's outcome was unknown): no permission of the person's that is not someone else's means nothing
+ * landed; exactly one read-only permission is the lost invitation's and is deleted. Anything else is refused and
+ * stays `revoking`, listed to repair.
+ */
+async function revokeOne(ctx: SyncCtx, g: GrantRow, email: string | null): Promise<void> {
+  const { deps, connector, dest, f } = ctx;
+  const perms = await connector.listPermissions(dest, f.item_id);
+  let target: PermissionInfo | undefined;
+  if (g.permission_id) {
+    target = perms.find((p) => p.id === g.permission_id);
+    if (!target) {
+      await setGrant(deps, g.id, 'revoked', g.permission_id);
+      return;
+    }
+  } else {
+    const external = await externalPermissionIds(deps.pool, f.id);
+    const ours = await kainowPermissionIds(deps.pool, f.id);
+    const matches = email ? perms.filter((p) => p.kind === 'user' && sameEmail(p.principal, email) && !external.has(p.id) && !ours.has(p.id)) : [];
+    if (matches.length === 0) {
+      await setGrant(deps, g.id, 'revoked', null);
+      return;
+    }
+    if (matches.length > 1) throw new StorageError('conflict');
+    target = matches[0];
+    await setGrant(deps, g.id, 'revoking', target.id);
+  }
+  if (!readOnly(target)) throw new StorageError('conflict');
+  try {
+    await connector.revoke(dest, f.item_id, target.id);
+  } catch (err) {
+    if (!(err instanceof StorageError && err.code === 'not_found')) throw err;
+  }
+  await setGrant(deps, g.id, 'revoked', target.id);
+}
+
+/**
+ * Raises the Administrator notice for each revocation of the folder still not done, once per revocation (spec 5.5):
+ * after a folder's sync has used all its attempts, and when the daily reconciliation's retry fails too. It stays
+ * listed under "Sharing to repair" and the daily reconciliation keeps trying.
  */
 export async function noticeStuckRevocations(deps: StorageDeps, folderId: string): Promise<void> {
-  const c = await deps.pool.connect();
-  try {
-    await c.query('BEGIN');
+  await withTx(deps, async (c) => {
     const { rows } = await c.query<{ id: string }>(
       `UPDATE storage_grants SET revoke_notice_at = $2 WHERE folder_id = $1 AND state = 'revoking' AND revoke_notice_at IS NULL RETURNING id`,
       [folderId, deps.clock()],
     );
     for (const r of rows.sort((a, b) => a.id.localeCompare(b.id))) await deps.notify(c, { kind: SHARING_REVOKE_FAILED, subjectId: r.id });
-    await c.query('COMMIT');
-  } catch (err) {
-    await c.query('ROLLBACK').catch(() => undefined);
-    throw err;
-  } finally {
-    c.release();
-  }
+  });
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
 // The place-output job
 // ---------------------------------------------------------------------------------------------------------------------
 
-interface PlacedFile { id: string; destination_id: string; item_id: string; drive_id: string; path: string | null; name: string }
+interface PlacedFile {
+  id: string; destination_id: string; item_id: string; drive_id: string; path: string | null; name: string; folder_id: string | null;
+}
 
 /**
  * The `place-output` job (spec 5.5): moves every stored file of the output (same drive, item ids kept) into the place
  * its readers dictate (`isWholeProject`: `Year / Report Type` in the project tree, otherwise its own output folder),
- * records the output's placement, and only then syncs its output folders. A failure before every file is in place
- * marks the output to repair (`place_failed_at`) and is thrown, so the job is tried again; nothing is shared or
- * revoked by that attempt. Registered links are never moved (Kainow did not create them).
+ * records the output's placement, and only then syncs its output folders. If a move fails the output is marked to
+ * repair (`place_failed_at`), nothing is granted, but when its readers narrowed its output folders' revocations still
+ * run; then the failure is thrown so the job is tried again. Registered links are never moved (Kainow did not create
+ * them).
  */
 export async function placeOutput(deps: StorageDeps, outputId: string): Promise<void> {
   await exclusively(deps, 'place-output', outputId, () => placeLocked(deps, outputId));
 }
+
+const outputFolderIds = async (db: Db, outputId: string): Promise<string[]> =>
+  (await db.query<{ id: string }>(`SELECT id FROM storage_folders WHERE level = 'output' AND split_part(key, '/', 4) = $1::text ORDER BY id`, [outputId])).rows.map(
+    (r) => r.id,
+  );
 
 async function placeLocked(deps: StorageDeps, outputId: string): Promise<void> {
   const o = (
@@ -286,26 +405,37 @@ async function placeLocked(deps: StorageDeps, outputId: string): Promise<void> {
   const whole = await isWholeProject(deps.pool, outputId, at);
   const files = (
     await deps.pool.query<PlacedFile>(
-      `SELECT f.id, f.destination_id, f.item_id, f.drive_id, f.path, f.name
+      `SELECT f.id, f.destination_id, f.item_id, f.drive_id, f.path, f.name, f.folder_id
          FROM output_versions v JOIN stored_files f ON f.id = v.stored_file_id
         WHERE v.output_id = $1 AND f.state = 'stored' AND f.destination_id IS NOT NULL AND f.item_id IS NOT NULL
         ORDER BY v.version_no`,
       [outputId],
     )
   ).rows;
+  const destinations = [...new Set(files.map((f) => f.destination_id))];
 
   try {
     let placement: string | null = null;
-    const destinations = [...new Set(files.map((f) => f.destination_id))];
     for (const destinationId of destinations) {
       const { connector, dest } = await deps.connectors.forDestination(destinationId);
       const folder = await ensureOutputFolder(deps, dest, o.project_id, outputId, whole, connector);
       for (const file of files.filter((f) => f.destination_id === destinationId)) await moveInto(deps, connector, dest, folder, file);
       if (!placement || destinationId === o.placement_dest) placement = folder.recordId;
     }
-    await deps.pool.query(`UPDATE outputs SET placement_folder_id = COALESCE($2, placement_folder_id), place_failed_at = NULL WHERE id = $1`, [outputId, placement]);
+    // The output row is locked as filing and audience changes lock it, so neither decides on a placement half made.
+    await withTx(deps, async (c) => {
+      await c.query(`SELECT 1 FROM outputs WHERE id = $1 FOR UPDATE`, [outputId]);
+      await c.query(
+        `UPDATE outputs SET placement_folder_id = COALESCE($2, placement_folder_id), place_failed_at = NULL, place_notice_at = NULL WHERE id = $1`,
+        [outputId, placement],
+      );
+    });
   } catch (err) {
     await deps.pool.query(`UPDATE outputs SET place_failed_at = $2 WHERE id = $1`, [outputId, deps.clock()]);
+    // Narrowed: whoever lost access through the output's own folder loses it now, move or no move.
+    if (!whole) {
+      for (const id of await outputFolderIds(deps.pool, outputId)) await syncFolderGrants(deps, id, { revokeOnly: true }).catch(() => undefined);
+    }
     throw err;
   }
 
@@ -317,10 +447,21 @@ async function placeLocked(deps: StorageDeps, outputId: string): Promise<void> {
         WHERE (level = 'output' AND split_part(key, '/', 4) = $1::text)
            OR ($2 AND level = 'project' AND split_part(key, '/', 2) = $3::text AND destination_id = ANY($4::uuid[]))
         ORDER BY level DESC, id`,
-      [outputId, whole, o.project_id, [...new Set(files.map((f) => f.destination_id))]],
+      [outputId, whole, o.project_id, destinations],
     )
   ).rows;
   for (const f of folders) await syncFolderGrants(deps, f.id);
+}
+
+/** After a placement has used all its attempts: one Administrator notice until a move next completes. */
+export async function noticePlaceFailed(deps: StorageDeps, outputId: string): Promise<void> {
+  await withTx(deps, async (c) => {
+    const r = await c.query(
+      `UPDATE outputs SET place_notice_at = $2 WHERE id = $1 AND place_failed_at IS NOT NULL AND place_notice_at IS NULL RETURNING id`,
+      [outputId, deps.clock()],
+    );
+    if (r.rowCount) await deps.notify(c, { kind: SHARING_PLACE_FAILED, subjectId: outputId });
+  });
 }
 
 /** ` (n)` before the extension, the base cut so the name stays within the limit. */
@@ -348,27 +489,21 @@ async function moveInto(deps: StorageDeps, connector: StorageConnector, dest: De
     ref = await moveFree(connector, dest, file.item_id, folder.itemId, item.name);
   }
   const path = [...folder.path, ref.name].join('/');
-  if (path === file.path && ref.name === file.name) return;
+  if (path === file.path && ref.name === file.name && file.folder_id === folder.recordId) return;
   const at = deps.clock();
-  const c = await deps.pool.connect();
-  try {
-    await c.query('BEGIN');
-    await c.query(`UPDATE stored_files SET path = $2, name = $3, etag = $4, ctag = $5, web_url = $6 WHERE id = $1`, [
-      file.id, path, ref.name, ref.etag, ref.ctag, ref.webUrl,
+  await withTx(deps, async (c) => {
+    await c.query(`UPDATE stored_files SET path = $2, name = $3, etag = $4, ctag = $5, web_url = $6, folder_id = $7 WHERE id = $1`, [
+      file.id, path, ref.name, ref.etag, ref.ctag, ref.webUrl, folder.recordId,
     ]);
-    await c.query(
-      `INSERT INTO stored_file_moves (id, stored_file_id, reason, old_destination_id, old_drive_id, old_item_id, old_path,
-                                      new_destination_id, new_drive_id, new_item_id, new_path, actor_id, at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $4, $5, $6, $8, NULL, $9)`,
-      [uuidv7(at.getTime()), file.id, MOVE_REASON, file.destination_id, file.drive_id, file.item_id, file.path, path, at],
-    );
-    await c.query('COMMIT');
-  } catch (err) {
-    await c.query('ROLLBACK').catch(() => undefined);
-    throw err;
-  } finally {
-    c.release();
-  }
+    if (path !== file.path) {
+      await c.query(
+        `INSERT INTO stored_file_moves (id, stored_file_id, reason, old_destination_id, old_drive_id, old_item_id, old_path,
+                                        new_destination_id, new_drive_id, new_item_id, new_path, actor_id, at)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $4, $5, $6, $8, NULL, $9)`,
+        [uuidv7(at.getTime()), file.id, MOVE_REASON, file.destination_id, file.drive_id, file.item_id, file.path, path, at],
+      );
+    }
+  });
 }
 
 async function moveFree(connector: StorageConnector, dest: DestinationRef, itemId: string, parentId: string, name: string): Promise<StoredRef> {
@@ -387,9 +522,9 @@ async function moveFree(connector: StorageConnector, dest: DestinationRef, itemI
 // ---------------------------------------------------------------------------------------------------------------------
 
 /**
- * In the transaction that records a version filed: shares the folder it went to (the project folder for an output
- * read by the whole project, otherwise its own folder). If the output's readers changed kind while it uploaded, the
- * output is placed again (urgent when it narrowed).
+ * In the transaction that records a version filed (with the output row locked): shares the folder it went to (the
+ * project folder for an output read by the whole project, otherwise its own folder). If the output's readers changed
+ * kind while it uploaded, the output is placed again (urgent when it narrowed).
  */
 export async function sharingAfterFiled(c: PoolClient, outputId: string, at: Date): Promise<void> {
   const p = (
@@ -420,7 +555,7 @@ export async function sharingAfterFiled(c: PoolClient, outputId: string, at: Dat
 // Daily reconciliation
 // ---------------------------------------------------------------------------------------------------------------------
 
-/** Whether a folder's grants differ from what they should be, or any is unfinished, failed or not found (to retry). */
+/** Whether a folder's grants differ from what they should be, or any is unfinished, failed, not found or external (to recheck). */
 async function needsSync(db: Db, folderId: string, at: Date): Promise<boolean> {
   const desired = await desiredFolderGrants(db, folderId, at);
   const live = await liveGrants(db, folderId);
@@ -431,44 +566,57 @@ async function needsSync(db: Db, folderId: string, at: Date): Promise<boolean> {
 
 /**
  * The daily reconciliation (02:30 UTC+8, spec 5.5): memberships and grants that start or end by date have no event, and
- * drift is repaired. Every shared folder whose grants differ from its readers, or with grants unfinished, failed or not
- * found, is synced (not found ones tried again); one that fails is queued urgent to be tried on the job's schedule.
- * Every output whose files are not where its readers need them is queued to be placed. Returns the counts.
+ * drift is repaired.
+ * - Every shared folder of an output destination whose grants differ from its readers, or with grants unfinished,
+ *   failed, not found or external, is synced (not found tried again, external rechecked). One that fails is queued
+ *   urgent, and any revocation in it still not done raises its notice (once).
+ * - Every output with a stored file not in the folder its readers need (its own output folder, or a report type
+ *   folder of its project) is queued to be placed.
+ * Returns the counts.
  */
 export async function reconcileSharing(deps: StorageDeps, at: Date = deps.clock()): Promise<{ synced: number; queued: number; placed: number }> {
   const out = { synced: 0, queued: 0, placed: 0 };
-  const folders = (await deps.pool.query<{ id: string }>(`SELECT id FROM storage_folders WHERE level IN ('project', 'output') ORDER BY id`)).rows;
+  const folders = (
+    await deps.pool.query<{ id: string }>(
+      `SELECT f.id FROM storage_folders f JOIN storage_destinations d ON d.id = f.destination_id
+        WHERE f.level IN ('project', 'output') AND d.purpose = 'outputs' ORDER BY f.id`,
+    )
+  ).rows;
   for (const f of folders) {
     if (!(await needsSync(deps.pool, f.id, at))) continue;
     try {
       await syncFolderGrants(deps, f.id, { retryNotFound: true });
       out.synced += 1;
     } catch {
-      await queueOn(deps, (c) => queueFolderSharing(c, f.id, 'urgent'));
+      await withTx(deps, (c) => queueFolderSharing(c, f.id, 'urgent'));
+      await noticeStuckRevocations(deps, f.id);
       out.queued += 1;
     }
   }
-  const placed = (
-    await deps.pool.query<{ id: string; level: string }>(
-      `SELECT o.id, f.level FROM outputs o JOIN storage_folders f ON f.id = o.placement_folder_id ORDER BY o.id`,
+  const files = (
+    await deps.pool.query<{ output_id: string; project_id: string; level: string | null; key: string | null }>(
+      `SELECT v.output_id, o.project_id, sf.level, sf.key
+         FROM output_versions v JOIN outputs o ON o.id = v.output_id
+         JOIN stored_files f ON f.id = v.stored_file_id AND f.state = 'stored'
+         LEFT JOIN storage_folders sf ON sf.id = f.folder_id
+        ORDER BY v.output_id, v.version_no`,
     )
   ).rows;
-  for (const o of placed) {
-    const whole = await isWholeProject(deps.pool, o.id, at);
-    if (whole === (o.level === 'report_type')) continue;
-    await queueOn(deps, (c) => queueOutputPlacement(c, o.id, whole ? 'widen' : 'narrow'));
+  const outputs = [...new Set(files.map((r) => r.output_id))];
+  for (const id of outputs) {
+    const whole = await isWholeProject(deps.pool, id, at);
+    const misplaced = files
+      .filter((r) => r.output_id === id)
+      .some((r) =>
+        whole
+          ? r.level !== 'report_type' || r.key?.split('/')[1] !== r.project_id
+          : r.level !== 'output' || r.key?.split('/')[3] !== id,
+      );
+    if (!misplaced) continue;
+    await withTx(deps, (c) => queueOutputPlacement(c, id, whole ? 'widen' : 'narrow'));
     out.placed += 1;
   }
   return out;
-}
-
-async function queueOn(deps: StorageDeps, work: (c: PoolClient) => Promise<void>): Promise<void> {
-  const c = await deps.pool.connect();
-  try {
-    await work(c);
-  } finally {
-    c.release();
-  }
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -497,7 +645,7 @@ export async function notSharedFor(db: Db, outputId: string): Promise<Array<{ pe
 }
 
 export interface SharingRepair {
-  /** Grants that failed, and revocations not yet done. */
+  /** Grants that failed, and revocations not yet done (including any refused because the permission is not plainly Kainow's). */
   grants: Array<{ grantId: string; folderId: string; projectId: string; projectName: string; userId: string; displayName: string; state: 'failed' | 'revoking'; since: Date }>;
   /** Outputs whose files could not be moved to where their readers need them (titles are left out: they may be restricted). */
   outputs: Array<{ outputId: string; projectId: string; projectName: string; since: Date }>;
@@ -531,6 +679,7 @@ export async function sharingToRepair(db: Db): Promise<SharingRepair> {
 registerStorageHandler('share-sync', (deps, folderId) => syncFolderGrants(deps, folderId));
 registerStorageFinalFailure('share-sync', (deps, folderId) => noticeStuckRevocations(deps, folderId));
 registerStorageHandler('place-output', (deps, outputId) => placeOutput(deps, outputId));
+registerStorageFinalFailure('place-output', (deps, outputId) => noticePlaceFailed(deps, outputId));
 registerStorageDailyTask('sharing', async (deps) => {
   await reconcileSharing(deps);
 });
