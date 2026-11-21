@@ -42,9 +42,55 @@ export type BackupSummary = {
   };
 };
 
-/** Copies the source area's files into the shared file store (spec 5.4). Task 15 provides it. */
+export type SourceFileEntry = Manifest['sourceFiles'][number];
+
+/** Why a listed source file was not copied: flagged Changed or Missing, being moved, not reached in time, or failed. */
+export type NotCopiedReason = 'flagged' | 'moving' | 'not_reached' | 'failed';
+
+/** One stored source file as the backup sees it (sub-project 9's `stored_files`). */
+export interface SourceFileRow {
+  id: string;
+  sha256: string | null;
+  size: number | null;
+  destinationId: string | null;
+  itemId: string | null;
+  state: string;
+  checkStatus: string;
+}
+
+/** The source area as read inside the backup's snapshot (R26): whether it is in use, and its files. */
+export interface SourceListing {
+  inUse: boolean;
+  files: SourceFileRow[];
+}
+
+export interface SourceCopyOptions {
+  runId: string;
+  now(): Date;
+  /** Files not reached by then are listed not copied (R27); the next run copies them. */
+  deadline: Date;
+  /** Called before each file is written; throws to stop the run (the backup folder is low on space). */
+  beforeWrite?(): void;
+}
+
+export interface SourceCopyResult {
+  files: SourceFileEntry[];
+  /** Files written to the file store by this run, and their encrypted bytes. */
+  newFiles: number;
+  newBytes: number;
+  failed: number;
+  flagged: number;
+  moving: number;
+  notReached: number;
+}
+
+/** Copies the source area's files into the shared file store (spec 5.4); ops/source-files.ts provides it. */
 export interface SourceFileCopier {
-  copyAll(pool: Pool, key: BackupKey, filesDir: string): Promise<Manifest['sourceFiles']>;
+  /** Without the protected key a source area in use cannot be read (protected_key_missing). */
+  readonly protectedKeyPresent: boolean;
+  /** Reads the source files on the snapshot's connection, so the manifest matches the dump (R26). */
+  list(db: Pick<Pool, 'query'>): Promise<SourceListing>;
+  copyAll(listing: SourceListing, key: BackupKey, filesDir: string, opts: SourceCopyOptions): Promise<SourceCopyResult>;
 }
 
 export class SetReadError extends Error {

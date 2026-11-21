@@ -187,11 +187,13 @@ Design: [`docs/superpowers/specs/2026-11-20-v1-operations-10a-design.md`](../doc
 | `GET operations/public-state` | Public, for the sign-in page banner |
 | Administrator analytics panel `operations` (`#/admin/analytics`) | Enterprise Administrator (`analytics.view`); growth follows the chosen period |
 
+**Source area.** Once a source area is approved (or holds files), every backup copies each stored source file once per SHA-256 into `kainow/files/<2>/<sha>.enc`, encrypted with the backup key, and needs the protected key in `ops` (`protected_key_missing` otherwise). Files already flagged Missing or Changed, or being moved, are listed but not copied and do not fail the run; a file that cannot be downloaded fails it (`source_files_failed`); the copy stops 4 hours after the run started and the next run copies what was not reached. The drill decrypts and checks every listed file and opens the storage connection's secret. `storage-check` adds a `source_area` reading (used and quota from the Storage page's last check, or Unavailable). `npm run restore-source-files` puts files missing from storage back from `kainow/files/` into the approved source area and lists those the folder does not hold. After a restore, unsent `storage_outbox` rows are ended ("Not run — restored from backup") and the worker's storage queue pauses in protective mode.
+
 While protective mode is on, the API refuses every request that is not `GET`, `HEAD` or `OPTIONS` (except the allowed list above) with status 503 and `{ code: 'protective_read_only' }`, and the worker's queue handlers and ticks do nothing except sending email.
 
 **Tests.** `npm run build`, then `node --test --test-concurrency=1 dist/ops/<file>.test.js` with `KAINOW_TEST_DATABASE_URL` set to a throwaway database (for example `postgres://postgres:test@127.0.0.1:15432/kainow_test_sp10`). Tool tests need `pg_dump` and `pg_restore` 16, either installed or through `KAINOW_TEST_PG_DOCKER`; without them they skip with a stated reason. Web tests: `npm --prefix web test`.
 
-**Not covered yet.** The low-space check on a real Linux disk (`docs/operations/verify-low-space.md`: written, **not yet run**); a cron-driven week on a Linux VM; backing up protected source files, the `source_area` reading and `restore-source-files`, which arrive when sub-project 9 is joined (until then the drill reports `sealed_storage_secret` as Not tested); the updater and the pre-update hook's caller (sub-project 10b, which uses `backup --kind pre_update` and `freshBackup`).
+**Not covered yet.** The low-space check on a real Linux disk (`docs/operations/verify-low-space.md`: written, **not yet run**); a cron-driven week on a Linux VM; the source-area backup, drill and `restore-source-files` against a real Microsoft 365 tenant (tested against the fake Graph server only); the updater and the pre-update hook's caller (sub-project 10b, which uses `backup --kind pre_update` and `freshBackup`).
 
 ## Milestones
 

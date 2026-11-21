@@ -446,7 +446,10 @@ describe('afterRestore', { skip: SKIP_NO_DB }, () => {
 
     assert.equal(result.emails, 2);
     assert.equal(result.jobs, liveJobs);
-    assert.deepEqual(result.work, { ai_requests: 1, analysis_runs: 1, extraction_runs: 1 });
+    // The note's store-source outbox row (sub-project 9) is ended too, never sent.
+    assert.deepEqual(result.work, { ai_requests: 1, analysis_runs: 1, extraction_runs: 1, storage_outbox: 1 });
+    const outbox = (await t.pool.query(`SELECT sent_at, end_reason FROM storage_outbox ORDER BY created_at, id`)).rows;
+    assert.deepEqual(outbox, [{ sent_at: null, end_reason: 'restored_from_backup' }]);
 
     // Sessions and unused codes gone; the used code kept; the link expired.
     assert.equal(Number((await t.pool.query('SELECT count(*) AS n FROM sessions')).rows[0].n), 0);

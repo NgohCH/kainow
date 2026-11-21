@@ -12,7 +12,6 @@
 import { createHash } from 'node:crypto';
 import { createReadStream, readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
-import { Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { Pool, type PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
@@ -21,12 +20,13 @@ import type { ProtectedKey } from '../quarantine/protected-key';
 import { exitOf, feed } from './backup';
 import { type FailureCode, OPS_FAILURES, TOOL_TIMEOUT_MS, codeMigrationLevel, killAfter, settle, withBackupLock } from './common';
 import type { OpsConfig } from './config';
-import { type BackupKey, BackupCryptoError, decryptStream, loadBackupKey, sha256Stream } from './crypto';
+import { type BackupKey, BackupCryptoError, decryptStream, loadBackupKey } from './crypto';
 import { type BackupSummary, type Manifest, SET_FILES, readSet } from './manifest';
 import { notifyAdmins } from './notify';
 import type { PgTools } from './pg-tools';
 import { type Check, type CheckName, sealedChecks } from './sealed-checks';
 import { loadOpsSettings } from './settings';
+import { checkSourceFiles } from './source-files';
 import { OperationsState } from './state';
 import type { StatFs } from './storage-check';
 
@@ -155,35 +155,8 @@ async function fileSha256(path: string): Promise<string | null> {
   }
 }
 
-/** A sink that discards. */
-const discard = () =>
-  new Writable({
-    write(_c, _e, cb) {
-      cb();
-    },
-  });
-
-/** The default source-file check (step 6): decrypt each copied file from files/ and compare its SHA-256. */
-export const checkSourceFilesDefault: SourceFileCheck = async (manifest, filesDir, key, sample) => {
-  const copied = manifest.sourceFiles.filter((f) => f.copied);
-  let pick = copied;
-  if (sample !== undefined && sample < copied.length) {
-    pick = [...copied].sort(() => Math.random() - 0.5).slice(0, sample);
-  }
-  let bad = 0;
-  for (const f of pick) {
-    const plain = sha256Stream();
-    try {
-      await pipeline(createReadStream(join(filesDir, f.sha256.slice(0, 2), `${f.sha256}.enc`)), decryptStream(key), plain, discard());
-      if (plain.digest() !== f.sha256) bad++;
-    } catch {
-      bad++; // a BackupCryptoError included: the file does not count
-    }
-  }
-  const scope = sample !== undefined ? `Sampled ${pick.length} of ${copied.length} files.` : `${pick.length} files checked.`;
-  if (bad > 0) return { name: 'source_files', result: 'failed', detail: `${scope} ${bad} did not match.` };
-  return { name: 'source_files', result: 'passed', detail: scope };
-};
+/** The default source-file check (step 6): ops/source-files.ts. */
+export const checkSourceFilesDefault: SourceFileCheck = checkSourceFiles;
 
 export type ChosenSet = { name: string; dir: string; summary: BackupSummary; runId: string | null; folderLabel: string | null };
 

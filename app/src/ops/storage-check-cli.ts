@@ -1,5 +1,6 @@
 import { Pool } from 'pg';
 import { loadOpsConfig } from './config';
+import { sourceAreaReading } from './source-files';
 import { runStorageCheck } from './storage-check';
 
 /** Usage: npm run storage-check. Run every few minutes by the server's cron in the ops container (spec 7.1). */
@@ -18,6 +19,8 @@ async function main(): Promise<number> {
       pool,
       config,
       now: () => new Date(),
+      // Database only: used and quota as the Storage page gets them (no call to the provider from here).
+      sourceArea: () => sourceAreaReading(pool),
       out: (line) => console.log(line),
       err: (line) => console.error(line),
     });

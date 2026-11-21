@@ -32,6 +32,7 @@
     "storage-check": "node dist/ops/storage-check-cli.js",
     "restore-drill": "node dist/ops/restore-drill-cli.js",
     "restore": "node dist/ops/restore-cli.js",
+    "restore-source-files": "node dist/ops/restore-source-files-cli.js",
     "recover-admin": "node dist/golive/recover-admin-cli.js",
     "seed-demo": "node dist/users/seed-demo-cli.js",
     "apply-mvp-spend-settings": "node dist/spend/apply-mvp-settings-cli.js",

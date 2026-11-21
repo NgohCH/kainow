@@ -109,7 +109,7 @@ export class StorageSummaryService {
         project: o.projectName, projectId: o.projectId, folder: 'Outputs', person: null, kind: 'output_move', state: 'move_failed', since: new Date(o.since).toISOString(),
       })),
     ];
-    const queuedJobs = (await this.pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM storage_outbox WHERE sent_at IS NULL`)).rows[0].n;
+    const queuedJobs = (await this.pool.query<{ n: number }>(`SELECT count(*)::int AS n FROM storage_outbox WHERE sent_at IS NULL AND ended_at IS NULL`)).rows[0].n;
     const admins = (await this.admins.list()).admins as Array<{ displayName: string; designatedAt: Date | string }>;
     return {
       connection,

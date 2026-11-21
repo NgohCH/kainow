@@ -14,6 +14,7 @@ import type { OpsConfig } from './config';
 import { type StorageLevel, levelFor } from './levels';
 import { notifyAdmins } from './notify';
 import { loadOpsSettings } from './settings';
+import type { SourceAreaReading } from './source-files';
 
 type Db = Pick<Pool | PoolClient, 'query'>;
 export type StatFs = (path: string) => { total: number; free: number } | null;
@@ -23,8 +24,11 @@ export interface StorageCheckDeps {
   config: OpsConfig;
   statfs?: StatFs;
   now(): Date;
-  /** Source-area reading (Task 15). Undefined: no source_area row is written. */
-  sourceArea?: () => Promise<{ used: number; quota: number | null } | null>;
+  /**
+   * The source-area reading (ops/source-files.ts sourceAreaReading). Undefined, or null from it (the source area is not
+   * in use): no source_area row is written.
+   */
+  sourceArea?: () => Promise<SourceAreaReading | null>;
   out?(line: string): void;
   err?(line: string): void;
 }
@@ -197,6 +201,37 @@ async function checkLocation(pool: Pool, loc: (typeof LOCATIONS)[number], stat: 
   });
 }
 
+/**
+ * The source area (spec 7.1): used and quota as sub-project 9's Storage page gets them (its last destination check), and
+ * the total size of the stored source files. No quota is "Unavailable" (never zero) and changes no episode. The level
+ * is the provider's used space against the quota; it never turns on protective mode.
+ */
+async function checkSourceArea(pool: Pool, r: SourceAreaReading, now: Date): Promise<void> {
+  await inTransaction(pool, async (c) => {
+    const settings = await loadOpsSettings(c);
+    const total = r.quotaBytes;
+    const used = total !== null ? (r.usedBytes ?? r.storedBytes) : r.storedBytes;
+    const free = total !== null ? Math.max(0, total - used) : null;
+    const usedPct = total !== null ? (used / total) * 100 : null;
+    await c.query(
+      `INSERT INTO storage_readings (id, at, location, total_bytes, free_bytes, used_bytes, extra, unavailable)
+       VALUES ($1, $2, 'source_area', $3, $4, $5, $6, $7)`,
+      [uuidv7(now.getTime()), now, total, free, used, JSON.stringify({ storedBytes: r.storedBytes, files: r.files }), total === null],
+    );
+    if (total !== null && free !== null) {
+      await c.query(
+        `INSERT INTO storage_daily (day, location, max_used_bytes, min_free_bytes, total_bytes) VALUES ($1, 'source_area', $2, $3, $4)
+         ON CONFLICT (day, location) DO UPDATE SET
+           max_used_bytes = greatest(storage_daily.max_used_bytes, EXCLUDED.max_used_bytes),
+           min_free_bytes = least(storage_daily.min_free_bytes, EXCLUDED.min_free_bytes),
+           total_bytes = EXCLUDED.total_bytes`,
+        [utc8Day(now), used, free, total],
+      );
+    }
+    await recordLevels(c, 'source_area', 'the source area', levelFor(usedPct, settings), usedPct, now);
+  });
+}
+
 /** Exit 0 all locations recorded, 1 a location failed (fixed text, never the cause), 2 usage. */
 export async function runStorageCheck(argv: string[], deps: StorageCheckDeps): Promise<number> {
   const err = deps.err ?? ((l: string) => console.error(l));
@@ -217,6 +252,15 @@ export async function runStorageCheck(argv: string[], deps: StorageCheckDeps): P
     }
     try {
       await checkLocation(deps.pool, loc, stat, now);
+    } catch {
+      err(TEXT.failed);
+      code = 1;
+    }
+  }
+  if (deps.sourceArea) {
+    try {
+      const reading = await deps.sourceArea();
+      if (reading) await checkSourceArea(deps.pool, reading, now);
     } catch {
       err(TEXT.failed);
       code = 1;

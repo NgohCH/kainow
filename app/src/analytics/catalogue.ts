@@ -89,6 +89,7 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
   ]),
   ...audit('Operations', SYSTEM, 'restore', [
     ['ops.restored_from_backup', 'Kainow was restored from a backup set into a new installation (operator command): the set, its time and the reason; queued emails, jobs and AI work were ended, not repeated.'],
+    ['ops.source_files_restored', 'restore-source-files put stored source files that were missing from the source area back from the backup folder (operator command); counts only.'],
   ]),
   ...audit('Projects', PERSON, 'project', [
     ['project.created', 'A project was created as a draft.'],

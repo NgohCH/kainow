@@ -872,6 +872,7 @@ export const NO_USER_TEXT: Readonly<Record<string, string>> = {
   'storage_grants.permission_id': 'a provider permission identifier, not typed text',
   'storage_grants.role': ENUM,
   'storage_grants.state': ENUM,
+  'storage_outbox.end_reason': ENUM,
   'storage_outbox.job': ENUM,
   'storage_settings.approved_input_formats': 'file formats from a fixed list, never typed by a person',
   'storage_settings.approved_output_formats': 'file formats from a fixed list, never typed by a person',

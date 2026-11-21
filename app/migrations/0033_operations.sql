@@ -133,6 +133,15 @@ ALTER TABLE email_outbox ADD CONSTRAINT email_outbox_status_check
   CHECK (status IN ('queued', 'sending', 'retry_wait', 'sent', 'failed', 'cancelled', 'uncertain', 'not_sent_restored'));
 
 -- ---------------------------------------------------------------------------
+-- Sub-project 9's storage outbox: a row queued before a restore is never sent after it (spec 8.2 step 5). The reason
+-- is a fixed code; the screens show "Not run — restored from backup" for it. The outbox tick skips ended rows.
+-- ---------------------------------------------------------------------------
+ALTER TABLE storage_outbox
+  ADD COLUMN ended_at   timestamptz,
+  ADD COLUMN end_reason text CHECK (end_reason IN ('restored_from_backup')),
+  ADD CONSTRAINT storage_outbox_ended_together CHECK ((ended_at IS NULL) = (end_reason IS NULL));
+
+-- ---------------------------------------------------------------------------
 -- Append-only history.
 -- ---------------------------------------------------------------------------
 CREATE TRIGGER operations_settings_changes_append_only BEFORE UPDATE OR DELETE ON operations_settings_changes

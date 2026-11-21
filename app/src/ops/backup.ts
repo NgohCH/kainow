@@ -27,11 +27,21 @@ import {
 } from './common';
 import type { OpsConfig } from './config';
 import { type BackupKey, decryptStream, encryptStream, loadBackupKey, sha256Stream } from './crypto';
-import { type BackupKind, type BackupSummary, type Manifest, SET_FILES, type SourceFileCopier, decryptFile } from './manifest';
+import {
+  type BackupKind,
+  type BackupSummary,
+  type Manifest,
+  SET_FILES,
+  type SourceCopyResult,
+  type SourceFileCopier,
+  type SourceListing,
+  decryptFile,
+} from './manifest';
 import { expireBackups } from './expiry';
 import { notifyAdmins } from './notify';
 import type { PgTools } from './pg-tools';
 import { loadOpsSettings } from './settings';
+import { COPY_BUDGET_MS, SOURCE_TEXT, SourceReadBackError, notCopiedNotes } from './source-files';
 import { type StatFs, defaultStatfs } from './storage-check';
 
 export interface BackupDeps {
@@ -41,8 +51,10 @@ export interface BackupDeps {
   now(): Date;
   out(line: string): void;
   err(line: string): void;
-  /** Source-area copier (Task 15). Undefined: the manifest says the source area is not in use. */
+  /** Source-area copier (spec 5.4, ops/source-files.ts). Undefined: the manifest says the source area is not in use. */
   sourceFiles?: SourceFileCopier;
+  /** R27: the source copy stops this long after the run started (default 4 hours); tests shorten it. */
+  copyBudgetMs?: number;
   /** Test seam: called with each encrypted file's final path once it is in place, before it is read back. */
   afterWrite?(file: string): void | Promise<void>;
   /** Free-space reader for the backup folder's disk (default: the real one). */
@@ -67,26 +79,31 @@ const OPERATIONS_LINK = '#/admin/operations';
 const GB = 1024 ** 3;
 const POLL_MS = 30_000;
 
-/** A failure with a known code, raised by the steps below. */
+/** A failure with a known code, raised by the steps below; `detail` replaces the stored text (fixed text plus counts). */
 class OpsFailure extends Error {
-  constructor(readonly code: FailureCode) {
+  constructor(
+    readonly code: FailureCode,
+    readonly detail?: string,
+    readonly notCopied?: number,
+  ) {
     super(OPS_FAILURES[code]);
   }
 }
 
 /** Where the run is, which decides the code of an unexpected error there. */
-type Stage = 'folder' | 'key' | 'snapshot' | 'dump' | 'manifest' | 'verify' | 'summary' | 'record';
+type Stage = 'folder' | 'key' | 'snapshot' | 'dump' | 'sources' | 'manifest' | 'verify' | 'summary' | 'record';
 const STAGE_DEFAULT: Record<Stage, FailureCode> = {
   folder: 'folder_not_writable',
   key: 'key_invalid',
   snapshot: 'database_unreachable',
   dump: 'dump_failed',
+  sources: 'source_files_failed',
   manifest: 'folder_not_writable',
   verify: 'verify_failed',
   summary: 'folder_not_writable',
   record: 'database_unreachable',
 };
-const WRITING: ReadonlySet<Stage> = new Set(['folder', 'dump', 'manifest', 'summary']);
+const WRITING: ReadonlySet<Stage> = new Set(['folder', 'dump', 'sources', 'manifest', 'summary']);
 
 function folderPresent(dir: string): boolean {
   try {
@@ -370,6 +387,7 @@ async function backupLocked(kind: BackupKind, newKey: boolean, deps: BackupDeps)
     let tables: Manifest['tables'];
     let migrationLevel: string;
     let dump: Written;
+    let sources: SourceListing = { inUse: false, files: [] };
     const snap = await pool.connect();
     let broken = false;
     // The idle-in-transaction backstop ends the session from the server side; unheard, that error would end the process.
@@ -382,6 +400,10 @@ async function backupLocked(kind: BackupKind, newKey: boolean, deps: BackupDeps)
       await snap.query(`SELECT set_config('idle_in_transaction_session_timeout', $1, true)`, [deps.snapshotIdleTimeout ?? SNAPSHOT_IDLE_TIMEOUT]);
       tables = await countTables(snap);
       migrationLevel = await currentMigrationLevel(snap);
+      // R26: the source files are read in the same snapshot, so the manifest lists exactly what the dump refers to.
+      if (deps.sourceFiles) sources = await deps.sourceFiles.list(snap);
+      // The connector's secret is sealed with the protected key: without it no source file can be read (design call).
+      if (sources.inUse && !deps.sourceFiles?.protectedKeyPresent) throw new OpsFailure('protected_key_missing');
       stage = 'dump';
       dump = await writeDump(deps, snapshot, key, dumpTmp, low);
     } finally {
@@ -392,9 +414,31 @@ async function backupLocked(kind: BackupKind, newKey: boolean, deps: BackupDeps)
     await rename(dumpTmp, dumpFile);
     await deps.afterWrite?.(dumpFile);
 
-    // 6. The encrypted manifest. Source files: Task 15 adds the copier; until then the source area is not in use.
+    // 5a. Source files (spec 5.4): each SHA-256 not yet in the store under this key is downloaded, checked, encrypted,
+    // read back and renamed into files/. R27: files not reached within the copy time are listed not copied.
+    stage = 'sources';
+    let copy: SourceCopyResult = { files: [], newFiles: 0, newBytes: 0, failed: 0, flagged: 0, moving: 0, notReached: 0 };
+    if (sources.inUse && deps.sourceFiles) {
+      try {
+        copy = await deps.sourceFiles.copyAll(sources, key, join(config.backupDir, 'kainow', 'files'), {
+          runId,
+          now: deps.now,
+          deadline: new Date(startedAt.getTime() + (deps.copyBudgetMs ?? COPY_BUDGET_MS)),
+          beforeWrite: () => {
+            if (low?.()) throw new OpsFailure('no_space');
+          },
+        });
+      } catch (err) {
+        if (err instanceof SourceReadBackError) throw new OpsFailure('verify_failed');
+        throw err;
+      }
+    }
+    const notCopied = copy.files.filter((f) => !f.copied).length;
+    if (copy.failed > 0) throw new OpsFailure('source_files_failed', SOURCE_TEXT.failed(copy.failed), notCopied);
+
+    // 6. The encrypted manifest.
     stage = 'manifest';
-    const manifest: Manifest = { formatVersion: 1, runId, tables, sourceFiles: [], sourceArea: 'not_in_use' };
+    const manifest: Manifest = { formatVersion: 1, runId, tables, sourceFiles: copy.files, sourceArea: sources.inUse ? 'included' : 'not_in_use' };
     const manifestPlain = Buffer.from(JSON.stringify(manifest), 'utf8');
     const manifestTmp = join(setDir, `${SET_FILES.manifest}.tmp`);
     const manifestFile = join(setDir, SET_FILES.manifest);
@@ -439,17 +483,23 @@ async function backupLocked(kind: BackupKind, newKey: boolean, deps: BackupDeps)
     await inTransaction(pool, async (c) => {
       await c.query(
         `UPDATE backup_runs SET outcome = 'succeeded', finished_at = $2, key_id = $3, kainow_version = $4,
-           migration_level = $5, database_bytes = $6, files_total = 0, files_new = 0, files_new_bytes = 0,
-           files_not_copied = 0, source_area = $7, manifest_sha256 = $8
+           migration_level = $5, database_bytes = $6, files_total = $9, files_new = $10, files_new_bytes = $11,
+           files_not_copied = $12, source_area = $7, manifest_sha256 = $8
          WHERE id = $1`,
-        [runId, finishedAt, key.id, summary.kainowVersion, migrationLevel, dump.bytes, manifest.sourceArea, man.sha256],
+        [
+          runId, finishedAt, key.id, summary.kainowVersion, migrationLevel, dump.bytes, manifest.sourceArea, man.sha256,
+          manifest.sourceFiles.length, copy.newFiles, copy.newBytes, notCopied,
+        ],
       );
       await writeAudit(c, {
         at: finishedAt,
         action: 'ops.backup_succeeded',
         subjectType: 'backup_run',
         subjectId: runId,
-        detail: { kind, setName, keyId: key.id, databaseBytes: dump.bytes },
+        detail: {
+          kind, setName, keyId: key.id, databaseBytes: dump.bytes, sourceArea: manifest.sourceArea,
+          filesTotal: manifest.sourceFiles.length, filesNew: copy.newFiles, filesNotCopied: notCopied,
+        },
       });
       if (keyChanged) {
         await writeAudit(c, {
@@ -463,6 +513,8 @@ async function backupLocked(kind: BackupKind, newKey: boolean, deps: BackupDeps)
     });
 
     deps.out(`Backup set ${setName} written.`);
+    if (sources.inUse) deps.out(`Source files: ${manifest.sourceFiles.length} listed, ${copy.newFiles} copied this time.`);
+    for (const line of notCopiedNotes(copy)) deps.out(line);
     // Expiry runs here, after a success only: a run of failures can never remove the last good copy. It never turns
     // a good backup into a failed one.
     try {
@@ -477,7 +529,10 @@ async function backupLocked(kind: BackupKind, newKey: boolean, deps: BackupDeps)
     return 0;
   } catch (err) {
     const code = classify(err, stage, config.backupDir);
-    await recordFailure(deps, { runId, kind, code, setDir: setCreated ? setDir : null, setName });
+    const failure = err instanceof OpsFailure ? err : null;
+    await recordFailure(deps, {
+      runId, kind, code, setDir: setCreated ? setDir : null, setName, detail: failure?.detail, notCopied: failure?.notCopied,
+    });
     return 1;
   }
 }
@@ -506,7 +561,7 @@ async function inTransaction(pool: Pool, fn: (c: PoolClient) => Promise<void>): 
  */
 async function recordFailure(
   deps: BackupDeps,
-  f: { runId: string; kind: BackupKind; code: FailureCode; setDir: string | null; setName: string },
+  f: { runId: string; kind: BackupKind; code: FailureCode; setDir: string | null; setName: string; detail?: string; notCopied?: number },
 ): Promise<void> {
   let setName = f.setName;
   if (f.setDir && existsSync(f.setDir)) {
@@ -522,15 +577,16 @@ async function recordFailure(
       // Left under its own name; it has no backup.json, so it is still incomplete.
     }
   }
-  const text = OPS_FAILURES[f.code];
+  const text = f.detail ?? OPS_FAILURES[f.code];
   const at = deps.now();
   try {
     await inTransaction(deps.pool, async (c) => {
       // Only a run still `running` is failed here; if the sweep already marked it interrupted (and notified), stop.
       const done = await c.query(
-        `UPDATE backup_runs SET outcome = 'failed', finished_at = $2, failure_code = $3, failure_detail = $4, set_name = $5
+        `UPDATE backup_runs SET outcome = 'failed', finished_at = $2, failure_code = $3, failure_detail = $4, set_name = $5,
+                files_not_copied = $6
          WHERE id = $1 AND outcome = 'running'`,
-        [f.runId, at, f.code, text, setName],
+        [f.runId, at, f.code, text, setName, f.notCopied ?? null],
       );
       if ((done.rowCount ?? 0) === 0) return;
       await writeAudit(c, {
@@ -538,7 +594,7 @@ async function recordFailure(
         action: 'ops.backup_failed',
         subjectType: 'backup_run',
         subjectId: f.runId,
-        detail: { kind: f.kind, code: f.code },
+        detail: { kind: f.kind, code: f.code, ...(f.notCopied !== undefined ? { filesNotCopied: f.notCopied } : {}) },
       });
       await notifyAdmins(c, { kind: 'backup_failed', summary: `Backup failed. ${text}`, link: OPERATIONS_LINK, now: at, urgent: true });
     });

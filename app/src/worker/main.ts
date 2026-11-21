@@ -98,7 +98,8 @@ async function main(): Promise<void> {
     notify: makeStorageNotify(pool, clock),
     log: (m) => storageLog.warn(m),
   };
-  await registerStorageWorker(boss, storageDeps);
+  // Paused in protective mode like the other external work (spec 7.3): a fetched job waits a minute and is tried again.
+  await registerStorageWorker(boss, storageDeps, (m) => storageLog.warn(m), operations);
   const storage = {
     sendOutbox: () => sendStorageOutbox(pool, boss),
     daily: () => runStorageDaily(storageDeps, (m) => storageLog.warn(m)),

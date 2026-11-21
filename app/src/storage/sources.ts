@@ -285,7 +285,7 @@ export async function versionFolder(
  * attempt whose answer was lost) is adopted only when it matches; otherwise the attempt fails `conflict`. A fresh
  * upload the provider reports differently is removed (best effort) and the attempt fails, to be tried again.
  */
-async function put(connector: StorageConnector, dest: DestinationRef, folderId: string, name: string, bytes: Buffer): Promise<StoredRef> {
+export async function put(connector: StorageConnector, dest: DestinationRef, folderId: string, name: string, bytes: Buffer): Promise<StoredRef> {
   const hash = quickXorHash(bytes);
   const matches = (r: StoredRef) => r.size === bytes.length && r.providerHash === hash;
   let ref: StoredRef;

@@ -72,6 +72,8 @@ export const RESTORE_TEXT = {
   unexpected: `The restore stopped unexpectedly. Do not start Kainow on the target database: drop and recreate it empty, then run restore again.`,
   noProtectedKey:
     'No protected key is mounted: sealed AI keys and the storage secret cannot be opened until it is mounted from its recovery copy.',
+  sourceFiles:
+    'Source files stay where they are in storage. If the source area itself was lost, run restore-source-files once Kainow has started to put them back from the backup folder.',
   next: 'Next: start Kainow with docker compose up -d --build. It starts read-only; an Administrator signs in, checks, and chooses Resume normal use.',
   done: restoredText,
 } as const;
@@ -247,6 +249,7 @@ async function restoreLocked(args: Args, deps: RestoreDeps): Promise<number> {
   deps.out(`Emails not sent: ${result.emails}. Jobs cancelled: ${result.jobs}. Work ended: ${ended}.`);
   deps.out(RESTORE_TEXT.done(setTime));
   if (!deps.protectedKeyPresent) deps.out(RESTORE_TEXT.noProtectedKey);
+  if (chosen.summary.sourceArea === 'included') deps.out(RESTORE_TEXT.sourceFiles);
   deps.out(RESTORE_TEXT.next);
   deps.out(`set ${chosen.name} restored`);
   return 0;

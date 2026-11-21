@@ -21,7 +21,8 @@
  *   backup_runs            the run that made this set -> succeeded from its backup.json; any other running -> failed interrupted
  *   restore_drills         running -> failed interrupted
  *   pgboss.job             created, retry, active -> cancelled (the worker re-creates its schedules when it starts)
- *   storage_outbox         Task 15 (sub-project 9's storage queue)
+ *   storage_outbox         unsent rows -> ended (ended_at, end_reason restored_from_backup: "Not run — restored from
+ *                          backup"); the outbox tick never sends an ended row
  * Not ended, with the reason in the task report: quarantine_cases waiting for the key (local and idempotent; ending it would
  * leave the secret uncleaned), digest_runs and sweep_runs (records of finished work, no queued state), project invitations.
  */
@@ -139,7 +140,11 @@ export async function afterRestore(c: PoolClient, input: AfterRestoreInput): Pro
         )
       ).rowCount ?? 0;
   }
-  // Task 15: end sub-project 9's storage_outbox rows here, with the same reason.
+  // Sub-project 9's storage work: an outbox row not yet sent is ended, never sent (its pg-boss jobs are cancelled below).
+  work.storage_outbox =
+    (
+      await c.query(`UPDATE storage_outbox SET ended_at = $1, end_reason = $2 WHERE sent_at IS NULL AND ended_at IS NULL`, [now, RESTORED_CODE])
+    ).rowCount ?? 0;
 
   // AI spend: an open reservation may have reached the provider, so it stays counted as uncertain (D43), never released.
   await c.query(`UPDATE ai_spend_entries SET status = 'uncertain', note = $1, updated_at = $2 WHERE status = 'reserved'`, [SPEND_NOTE, now]);

@@ -367,4 +367,48 @@ describe('storage jobs', { skip: SKIP_NO_DB }, () => {
     assert.ok(logs.includes('Recording a storage file-output job attempt failed; the job will be tried again.'));
     assert.ok(!logs.join(' ').includes('Kp9vault'));
   });
+
+  test('an outbox row ended by a restore is never sent', async () => {
+    const ended = uuidv7();
+    const live = uuidv7();
+    await queue('check', ended);
+    await queue('check', live);
+    await pool.query(`UPDATE storage_outbox SET ended_at = now(), end_reason = 'restored_from_backup' WHERE subject_id = $1`, [ended]);
+    assert.equal(await sendStorageOutbox(pool, boss), 1);
+    assert.equal((await jobsFor('check', ended)).length, 0);
+    assert.equal((await jobsFor('check', live)).length, 1);
+    const row = (await pool.query(`SELECT sent_at FROM storage_outbox WHERE subject_id = $1`, [ended])).rows[0];
+    assert.equal(row.sent_at, null);
+  });
+
+  test('R28: protective mode holds every fetched storage job (no attempt counted); it runs once the mode is off', async () => {
+    const subject = uuidv7();
+    let protective = true;
+    let fetched = 0;
+    const seen: number[] = [];
+    registerStorageHandler('check', async (_d, _s, attempt) => {
+      seen.push(attempt);
+    });
+    await registerStorageWorker(boss, deps(), () => undefined, {
+      isProtective: async () => {
+        fetched++;
+        return protective;
+      },
+    });
+    await queue('check', subject);
+    await sendStorageOutbox(pool, boss);
+    await until(async () => (await jobsFor('check', subject)).length === 2);
+    assert.deepEqual(seen, [], 'not run while the mode is on');
+    assert.deepEqual(await attempts(subject), [], 'no attempt recorded');
+    const [first, held] = await jobsFor('check', subject);
+    assert.equal(first.state, 'completed');
+    assert.deepEqual(held.data, { job: 'check', subjectId: subject }, 'sent again unchanged');
+    assert.ok(held.startAfter.getTime() >= Date.now() + 30_000, 'a minute later');
+    assert.ok(fetched >= 1);
+    // Off again: the held job is due now and runs as attempt 1.
+    protective = false;
+    await pool.query(`UPDATE ${SCHEMA}.job SET start_after = now() WHERE id = $1`, [held.id]);
+    await until(() => seen.length === 1);
+    assert.deepEqual(seen, [1]);
+  });
 });

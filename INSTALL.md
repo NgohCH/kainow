@@ -146,6 +146,8 @@ It refuses to overwrite an existing file and prints only the path and a short ke
 
 Then, in `compose.yaml`, uncomment the backup key line under the `ops` service (`./secrets/kainow-backup.key:/run/secrets/kainow-backup.key:ro`). The key is mounted into `ops` only, never into `api` or `worker`. If the protected key is in use (the protected source area, AI keys or quarantined originals), uncomment **both** protected-key lines under `ops` in `compose.yaml`, exactly as they appear there: in `environment`, `KAINOW_PROTECTED_KEY_FILE: /run/secrets/kainow-protected.key`, and in `volumes`, `./secrets/kainow-protected.key:/run/secrets/kainow-protected.key:ro`. With only the mount, `ops` does not know where the key is: the drill reports sealed values as Not tested and `restore` thinks the key is missing.
 
+**Once the protected source area is in use, the protected key is required in `ops`.** The source area is in use as soon as one is approved on **System Settings › Storage** (or files are stored in one). Every backup then also copies the source files: it downloads them through the storage connection, whose client secret is sealed with the protected key, so without the key in `ops` a backup fails with `protected_key_missing`. For the same reason `ops` then needs outbound HTTPS access to Microsoft Graph and its sign-in service, as `worker` has: the provided Compose network allows it; if the server's firewall limits outbound traffic, allow it for `ops` too.
+
 **Keep a recovery copy of the backup key apart from the backups and apart from the protected key's copy**: with the recovery custodian, for example, on a locked USB drive or in a password manager's secure files. A backup without its key is useless, and the key alone gives nothing. Never email the key or put it in the repository. Losing the key means every backup made with it can never be read.
 
 ### 3. Make the first backup by hand
@@ -178,10 +180,10 @@ The three commands, with their other options:
 | Command | Runs | Options |
 | --- | --- | --- |
 | `backup-cli.js` | A backup, then expiry of old backup copies | `--kind daily\|manual\|pre_update` (`manual` when omitted); `--new-key` (see "Changing the backup key") |
-| `storage-check-cli.js` | One storage reading for the database disk and the backup disk | none |
+| `storage-check-cli.js` | One storage reading for the database disk, the backup disk and (once in use) the source area | none |
 | `restore-drill-cli.js` | A restore drill (below) | `--set <name>\|latest`, `--keep`, `--sample <n>`, `--drop <kainow_drill_name>` |
 
-Failures say which of these happened, never a raw error: `folder_missing` (the folder is not mounted), `folder_not_writable` (check the `chown` above), `key_missing`, `key_invalid` (the key file is not exactly 32 bytes), `key_changed`, `no_space` (the backup folder's disk is full, or the folder is on the database disk and free space there fell to the safe floor plus 2 GB), `dump_failed` (also when the database copy is still running after 6 hours: it is stopped then), `verify_failed` (the files written did not read back correctly), `protected_key_missing`, `database_unreachable`, `interrupted` (set by Kainow when a run is still unfinished after 6 hours). A restore drill whose restore is still running after 6 hours is stopped and fails with `drill_database_failed`.
+Failures say which of these happened, never a raw error: `folder_missing` (the folder is not mounted), `folder_not_writable` (check the `chown` above), `key_missing`, `key_invalid` (the key file is not exactly 32 bytes), `key_changed`, `no_space` (the backup folder's disk is full, or the folder is on the database disk and free space there fell to the safe floor plus 2 GB), `dump_failed` (also when the database copy is still running after 6 hours: it is stopped then), `verify_failed` (the files written did not read back correctly), `source_files_failed` (some source files could not be downloaded from the source area: missing, changed, access refused or the provider unreachable; the message gives how many, and the next run tries them again), `protected_key_missing` (the source area is in use and no protected key is mounted in `ops`), `database_unreachable`, `interrupted` (set by Kainow when a run is still unfinished after 6 hours). A restore drill whose restore is still running after 6 hours is stopped and fails with `drill_database_failed`.
 
 ### 5. See the status in Kainow
 
@@ -196,7 +198,7 @@ A backup you have never restored is a guess. The drill restores a backup into a 
 - every file decrypts and matches its recorded checksum;
 - every table's row count matches the count recorded when the backup was taken;
 - every protected source file's checksum matches (once the source area is in use);
-- the protected key still opens one sealed value of each kind present (AI connection keys and quarantined originals; a kind with none is "Not tested", and so is every kind when no protected key is mounted);
+- the protected key still opens one sealed value of each kind present (AI connection keys, quarantined originals and the storage connection's secret; a kind with none is "Not tested"; a kind present with no protected key mounted fails);
 - the restore took under 4 hours.
 
 It then removes the temporary database and records the result in Kainow. A full drill that passed completes go-live step 8, **Configure daily encrypted backups and complete a test restore**, which Kainow ticks for you. It asks for a new drill ("Drill again") when the backup key changes, when the backup folder changes, and when the source area comes into use after the last drill; the step is unticked until a new drill passes. A sampled drill (`--sample <n>`) is a quick check and does not count. Run one by hand before go-live:
@@ -213,9 +215,11 @@ The drill needs free space on the database disk for its temporary database: abou
 
 A backup run refuses with `key_changed` when the key differs from the last successful backup's. To change deliberately, run once with `--new-key`: earlier backups can then be read only with the earlier key, so keep both recovery copies until those backups have expired. Kainow records the change and asks for a new drill.
 
+Source files are kept once in the backup folder (`kainow/files/`), shared by every backup. After a key change each backup copies them again under the new key, replacing the copies made with the earlier key, so a backup never refers to a file its key cannot open. The earlier backups keep their database copy, but their source files can no longer be checked or put back with the earlier key: drill and keep the new backups. (Until every earlier-key backup has expired, Kainow cannot read their lists, so it does not remove unused source files from `kainow/files/` in that time; nothing is lost, it only takes space.)
+
 ### Disk space and protective read-only mode
 
-`storage-check` records free space for the database disk and the backup disk every five minutes. An Enterprise Administrator sets, with a reason, the warning level (default 80%, 50 to 95), the critical level (default 90%, above the warning level, up to 99) and the safe floor (default 5 GB free on the database disk, 1 to 1,000 GB). Reaching a level sends one urgent notice per episode, and no reading for 30 minutes shows as a warning.
+`storage-check` records free space for the database disk and the backup disk every five minutes, and, once the source area is in use, its size and the provider's quota as the Storage page shows them ("Unavailable" when the provider reports none). An Enterprise Administrator sets, with a reason, the warning level (default 80%, 50 to 95), the critical level (default 90%, above the warning level, up to 99) and the safe floor (default 5 GB free on the database disk, 1 to 1,000 GB). Reaching a level sends one urgent notice per episode, and no reading for 30 minutes shows as a warning.
 
 When free space on the database disk falls below the safe floor, Kainow enters **protective read-only mode** at once: people can still sign in and read everything, every change is refused with "Kainow is read-only for now to protect your data. Nothing you have saved is affected.", background work waits with its queue kept, and backups still run. Nothing is ever deleted to free space. The mode never ends by itself: after you free space, an Enterprise Administrator chooses **Resume normal use** on the Operations page, with a reason, and Kainow accepts it only when a reading from the last 10 minutes shows free space at or above the floor and the health checks pass. **The safe floor has not yet been verified on a real disk**: the check is in `docs/operations/verify-low-space.md` and needs a Linux VM. Until it has been run, treat 5 GB as a proposal, and leave plenty of headroom on the database disk.
 
@@ -284,7 +288,7 @@ A plain dump holds everything (notes, original files, proposals, decisions, the 
 
 ## Restore from a backup
 
-For a real disaster: the server or the database is lost and you need Kainow back from the backup folder. A restore goes into a **new, empty installation only**; it never overwrites a database, and a failed live database is replaced by a new installation. You need the backup folder, the backup key's recovery copy and (if AI keys or quarantined originals were in use) the protected key's recovery copy. Try the steps on a spare machine before you need them.
+For a real disaster: the server or the database is lost and you need Kainow back from the backup folder. A restore goes into a **new, empty installation only**; it never overwrites a database, and a failed live database is replaced by a new installation. You need the backup folder, the backup key's recovery copy and (if AI keys, quarantined originals or the source area were in use) the protected key's recovery copy. Try the steps on a spare machine before you need them.
 
 1. **Start the new installation's settings.** Make a new Compose project as in "Going live" (steps 1 and 2: stop the old installation, name a new project in `.env`). In `.env` set `KAINOW_BACKUP_DIR` to the backup folder. Put the recovery copies of the backup key (and the protected key) in `secrets/`, and uncomment their mounts under `ops` in `compose.yaml` (`./secrets/kainow-backup.key:/run/secrets/kainow-backup.key:ro`, and `./secrets/kainow-protected.key:/run/secrets/kainow-protected.key:ro`). For the protected key, also uncomment the `environment` line `KAINOW_PROTECTED_KEY_FILE: /run/secrets/kainow-protected.key` under `ops`; without it `restore` reports that no protected key is mounted.
 2. **Start only the database:**
@@ -313,7 +317,13 @@ For a real disaster: the server or the database is lost and you need Kainow back
 
 **Protected key.** Without the protected key's recovery copy, sealed AI keys and the storage secret cannot be opened: the restore prints a reminder, and Kainow shows the same warning. Mount it and restart `api` and `worker`.
 
-**Source files.** Files in the managed source area stay where they are. If that area was lost as well, the source-file restore command comes with the managed source area (sub-project 9) and is not yet in this installation.
+**Source files.** Files in the managed source area stay where they are; the restore does not touch them. If that area was lost as well (the library deleted, or files removed from it), approve the source area to use on **System Settings › Storage** (the same one once it is back, or a new one), then, with Kainow started and the protected key mounted in `ops`, run:
+
+```
+docker compose --profile ops run --rm ops node dist/ops/restore-source-files-cli.js
+```
+
+It looks up every stored source file at its recorded place. Each one that is missing there is put back from the backup folder (`kainow/files/`) into the approved source area, in its project, source and version folder; its content is checked against the SHA-256 Kainow recorded, and its reference is updated (the old place is kept in the file's move history). Files the backup folder does not hold (stored after the last backup, or never copied) are listed by stored-file id: their working text is still in Kainow, but their original must come from elsewhere. Exit code 0 means every missing file was put back (or none was missing), 1 that some were not, or that the command was refused. You can run it again; it only acts on files still missing. It works while Kainow is read-only after the restore.
 
 **If the restore is interrupted or fails** once it has started (power loss, a full disk, a message beginning "The restore ... " or "Row counts differ"), the target database may be half-restored and **must not be used**. Do not start Kainow on it. Drop it and recreate it empty, then run step 3 again:
 

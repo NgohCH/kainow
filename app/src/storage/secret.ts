@@ -36,3 +36,17 @@ export function openStorageSecret(key: ProtectedKey, sealed: Sealed & { keyId: s
     throw new StorageSecretUnreadable();
   }
 }
+
+/**
+ * Whether the protected key opens a sealed storage secret, with its binding as additional data; the plain value is
+ * dropped at once and never returned (the restore drill's sealed-value check, ops spec 8.1 step 7).
+ */
+export function storageSecretReadable(key: ProtectedKey, sealed: Sealed & { keyId: string }, connectionId: string = STORAGE_CONNECTION_ID): boolean {
+  if (sealed.keyId !== key.id) return false;
+  try {
+    key.decrypt(sealed, aadFor(connectionId)).fill(0);
+    return true;
+  } catch {
+    return false;
+  }
+}
