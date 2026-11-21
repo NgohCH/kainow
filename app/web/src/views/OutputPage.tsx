@@ -5,6 +5,7 @@ import { OUTPUT_EVENT_TEXT } from '../history.ts';
 import {
   type AffectedPerson, APPROVAL_NOTICE, FILE_ACTION_LABEL, type FileAction, type OpenRefusal, type OutputDetail, type OutputSummary, type OutputVersion, audiencePreviewText,
   checkLabel, fileAccess, filingLabel, formatLabel, mayAskApproval, mayFile, openRefusal, originLabel, outputStatusLabel, versionStatusLabel,
+  SHARING_DONE, SHARING_POLL_MS, SHARING_UPDATING, sharingRetryingLabel,
 } from '../outputs.ts';
 import type { ProjectRole, ProjectStatus } from '../projects.ts';
 import { sizeLabel } from '../storage.ts';
@@ -55,6 +56,22 @@ export function OutputPage({ projectId, outputId, roles, status, people }: {
     reloadRequests();
   }, [projectId, outputId, reloadRequests]);
   useEffect(() => void load(), [load]);
+  // While sharing in SharePoint is being updated, look again every few seconds (less often while it waits to try again),
+  // so the page shows the work running and then finished rather than appearing stuck.
+  const sharingUpdate = output?.sharingUpdate;
+  const [sharingDone, setSharingDone] = useState(false);
+  const sharingWasPending = useRef(false);
+  useEffect(() => {
+    if (!sharingUpdate) {
+      if (sharingWasPending.current) setSharingDone(true);
+      sharingWasPending.current = false;
+      return undefined;
+    }
+    sharingWasPending.current = true;
+    setSharingDone(false);
+    const timer = window.setTimeout(() => void load(), sharingUpdate.state === 'updating' ? SHARING_POLL_MS : SHARING_POLL_MS * 6);
+    return () => window.clearTimeout(timer);
+  }, [sharingUpdate, load]);
   const arrived = output !== null;
   useEffect(() => {
     if (arrived) heading.current?.focus();
@@ -189,7 +206,7 @@ export function OutputPage({ projectId, outputId, roles, status, people }: {
         </ul>
       )}
 
-      <AudienceSection output={output} base={base} people={people} act={act} />
+      <AudienceSection output={output} base={base} people={people} act={act} sharingDone={sharingDone} />
 
       <h3>History</h3>
       <ol className="plain">
@@ -579,7 +596,7 @@ function AcceptIntoForm({ projectId, outputId, act, onCancel }: { projectId: str
 }
 
 /** Who may read the output, people Kainow could not share with, and (for the PM, Owner or a Sponsor) changing it. */
-function AudienceSection({ output, base, people, act }: { output: OutputDetail; base: string; people: ProjectPeople; act: Act }) {
+function AudienceSection({ output, base, people, act, sharingDone }: { output: OutputDetail; base: string; people: ProjectPeople; act: Act; sharingDone: boolean }) {
   const [editing, setEditing] = useState(false);
   const [mode, setMode] = useState<'project' | 'restricted'>(output.audience.mode);
   const [chosen, setChosen] = useState<string[]>(output.audience.people.map((p) => p.id));
@@ -643,6 +660,14 @@ function AudienceSection({ output, base, people, act }: { output: OutputDetail; 
           ? 'Project-wide: everyone who may read the project.'
           : `Restricted: ${output.audience.people.map((p) => p.displayName).join(', ') || 'nobody named'}.`}
       </p>
+      {/* One live region that keeps its place, so screen readers hear the work start, wait and finish. */}
+      <div role="status">
+        {output.sharingUpdate ? (
+          <p className={output.sharingUpdate.state === 'updating' ? 'meta working' : 'meta'}>
+            {output.sharingUpdate.state === 'updating' ? SHARING_UPDATING : sharingRetryingLabel(formatWhen(output.sharingUpdate.at))}
+          </p>
+        ) : sharingDone && <p className="meta">{SHARING_DONE}</p>}
+      </div>
       {output.notShared && output.notShared.length > 0 && (
         <ul className="plain">
           {output.notShared.map((n) => <li key={n.person.id}><span className="warn inline">{n.message}</span> <span className="meta">({n.person.displayName}, who can still read it in Kainow)</span></li>)}

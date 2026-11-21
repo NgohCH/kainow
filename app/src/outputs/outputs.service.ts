@@ -34,7 +34,7 @@ import { renderDocx } from './render/docx';
 import { loadDocumentHeader } from './render/header';
 import { renderMarkdown } from './render/markdown';
 import { renderPdf } from './render/pdf';
-import { notSharedFor } from './sharing';
+import { notSharedFor, sharingProgress } from './sharing';
 import { queueOutputPlacement } from './sharing-queue';
 import { MOVING_LABEL, keptLabel, notMovedLabel, oldPlaces } from '../projects/department-transfer';
 
@@ -913,9 +913,12 @@ export class OutputsService {
       (await readsRemainingMaterial(this.pool, ctx, row));
     // People Kainow could not share the files with, for the PM, Deputies, Owner and Sponsors (spec 5.5).
     const notShared = ctx.roles.some((r) => OUTPUT_MANAGER_ROLES.includes(r)) ? await notSharedFor(this.pool, outputId) : undefined;
+    // Whether sharing in SharePoint is still being brought in line, so a slow share shows as running, not stuck.
+    const sharing = await sharingProgress(this.pool, outputId, this.clock());
     return {
       ...s,
       ...(notShared ? { notShared } : {}),
+      ...(sharing ? { sharingUpdate: sharing } : {}),
       projectId,
       registeredBy: o.registeredById ? { id: o.registeredById, displayName: o.registeredByName } : null,
       audience: { mode: o.audienceMode === 'restricted' ? 'restricted' : 'project', people: o.audienceMode === 'restricted' ? audiencePeople : [] },
@@ -1005,7 +1008,7 @@ export class OutputsService {
       )
     ).rows[0];
     /** For files the latest transfer chose to move: "Moving files", or after a failure where they still are. */
-    const pendingMove = transfer?.choice === 'move' && transfer.state !== 'done'
+    const pendingMove = transfer?.choice === 'move' && (transfer.state === 'moving' || transfer.state === 'move_failed')
       ? transfer.state === 'moving' ? MOVING_LABEL : notMovedLabel(await oldPlaces(this.pool, ctx.project.id, transfer.from))
       : null;
     const mayFile = decide({ action: 'output.manage', roles: ctx.roles, status: ctx.project.status }).allowed;

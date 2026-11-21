@@ -832,6 +832,7 @@ export const NO_USER_TEXT: Readonly<Record<string, string>> = {
   'outputs.review_state': ENUM,
   'outputs.status': ENUM,
   'project_department_transfers.folder_choice': ENUM,
+  'project_department_transfers.rejected_reason': ENUM,
   'project_department_transfers.state': ENUM,
   'project_output_settings.export_roles': 'roles from a fixed list (CHECK in code), never typed by a person',
   'project_output_settings.input_formats': 'file formats from the approved format list, never typed by a person',

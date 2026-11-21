@@ -553,3 +553,21 @@ details > summary { cursor: pointer; font-weight: 600; }
   .report .warn { background: none; color: inherit; border: 1px solid currentColor; }
   .report ul.plain > li { break-inside: avoid; }
 }
+
+/* Work Kainow is still doing (sharing in SharePoint): a small turning ring before the text; still with reduced motion. */
+.working::before {
+  content: '';
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  margin-right: 0.45em;
+  vertical-align: -0.05em;
+  border: 2px solid var(--muted-wash);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: working-turn 0.9s linear infinite;
+}
+@keyframes working-turn { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .working::before { animation: none; }
+}

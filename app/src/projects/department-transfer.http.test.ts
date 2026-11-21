@@ -286,11 +286,11 @@ describe('owning department transfer', { skip: SKIP_NO_DB }, () => {
     const r = await transfer(c.admin, { departmentId: newDept, reason: 'Reorganised', folderChoice: 'move' });
     assert.equal(r.body.state, 'moving');
 
-    // The project folder moves, then the (restricted) folder is refused: the project folder is put back.
-    fake.fault({ method: 'PATCH', pathIncludes: rr.item_id }, '403');
+    // The project folder moves, then the (restricted) folder's move meets a server error: the project folder is put back.
+    fake.fault({ method: 'PATCH', pathIncludes: rr.item_id }, '500');
     const ran = await drain();
-    assert.deepEqual(ran.map((x) => [x.job, x.failed]), [['transfer-folders', 'forbidden']]);
-    await onFinalFailure(deps(), 'transfer-folders', r.body.transferId, 'forbidden');
+    assert.deepEqual(ran.map((x) => [x.job, x.failed]), [['transfer-folders', 'server']]);
+    await onFinalFailure(deps(), 'transfer-folders', r.body.transferId, 'server');
     assert.equal((await rows(`SELECT state FROM project_department_transfers WHERE id = $1`, [r.body.transferId]))[0].state, 'move_failed');
     assert.equal((await item(pf.item_id)).parentId, od.item_id);
     assert.equal((await item(rr.item_id)).parentId, od.item_id);
@@ -328,6 +328,102 @@ describe('owning department transfer', { skip: SKIP_NO_DB }, () => {
     assert.equal((await fileRow(later)).path, `${NEW}/${PROJECT}/2026/Status reports/Monthly status v1.md`);
     assert.equal((await fileRow(narrow)).path, `${NEW}/${PROJECT} (restricted)/Board briefing/Board briefing v1.md`);
     assert.equal((await rows(`SELECT count(*)::int AS n FROM stored_file_moves`))[0].n, 3);
+  });
+
+  test('a move refused for good is rejected: the project goes back, with the reason, and the Administrators are told', async () => {
+    const wide = await registered('Weekly status');
+    const narrow = await registered('Board briefing', [ids.pm, ids.ada]);
+    const fw = await filed(wide);
+    const fn = await filed(narrow);
+    const od = (await folder('department', dept))!;
+    const pf = (await folder('project', `${dept}/${project}`))!;
+    const rr = (await folder('restricted_root', `${dept}/${project}/restricted`))!;
+    const r = await transfer(c.admin, { departmentId: newDept, reason: 'Reorganised', folderChoice: 'move' });
+    assert.equal(r.body.state, 'moving');
+    // Made a contributing department while the move runs: it cannot both own and contribute once the project is back.
+    await t.pool.query(`INSERT INTO project_departments (project_id, department_id) VALUES ($1, $2)`, [project, dept]);
+
+    fake.fault({ method: 'PATCH', pathIncludes: rr.item_id }, '403');
+    assert.deepEqual((await drain()).map((x) => [x.job, x.failed]), [['transfer-folders', 'forbidden']]);
+    await onFinalFailure(deps(), 'transfer-folders', r.body.transferId, 'forbidden');
+
+    assert.deepEqual(await rows(`SELECT state, rejected_reason FROM project_department_transfers WHERE id = $1`, [r.body.transferId]), [
+      { state: 'rejected', rejected_reason: 'forbidden' },
+    ]);
+    assert.equal((await rows(`SELECT owning_department_id FROM projects WHERE id = $1`, [project]))[0].owning_department_id, dept);
+    assert.equal((await rows(`SELECT count(*)::int AS n FROM project_departments WHERE project_id = $1`, [project]))[0].n, 0);
+    // Nothing moved: the folders, the records and the paths are where they were.
+    assert.equal((await item(pf.item_id)).parentId, od.item_id);
+    assert.equal((await item(rr.item_id)).parentId, od.item_id);
+    assert.ok(await folder('project', `${dept}/${project}`));
+    assert.deepEqual([(await fileRow(wide)).path, (await fileRow(narrow)).path], [fw.path, fn.path]);
+    assert.equal((await rows(`SELECT count(*)::int AS n FROM stored_file_moves`))[0].n, 0);
+
+    const view = (await c.admin.request('GET', transferUrl())).body;
+    assert.equal(view.department.id, dept);
+    assert.equal(view.transfer.state, 'rejected');
+    assert.equal(
+      view.transfer.label,
+      `Move rejected: Kainow does not have permission to move its folder in storage. The project stays in ${OLD} and its files stay where they are.`,
+    );
+    assert.equal(view.transfer.tryAgain, undefined);
+    assert.equal((await versionFiling(wide)).location, undefined, 'no pending-move label on the output');
+    assert.equal((await c.admin.request('POST', `${transferUrl()}/retry`)).status, 409, 'nothing to try again');
+
+    const audit = await rows(`SELECT actor_user_id, subject_id, detail FROM audit_events WHERE action = 'project.department_transfer_rejected'`);
+    assert.deepEqual(audit.map((a) => [a.actor_user_id, a.subject_id, a.detail]), [
+      [null, project, { transferId: r.body.transferId, from: dept, to: newDept, reason: 'forbidden', stoppedContributing: true }],
+    ]);
+    const notices = await rows(`SELECT user_id, summary, link FROM notifications WHERE kind = 'department_move_rejected'`);
+    assert.deepEqual(notices.map((n) => [n.user_id, n.link]), [[ids.admin, `#/projects/${project}`]]);
+    assert.match(notices[0].summary, /^The move of .+ from .+ to .+ was rejected: Kainow does not have permission to move its folder in storage\. The project stays in .+\.$/);
+
+    // A new change is allowed at once, and filing goes on under the department the project is back in.
+    t.clock.advanceSeconds(60);
+    const again = await transfer(c.admin, { departmentId: newDept, reason: 'Reorganised, keeping the files', folderChoice: 'keep' });
+    assert.equal(again.status, 200, JSON.stringify(again.body));
+  });
+
+  test('a move into a storage location no longer approved is rejected before anything is touched', async () => {
+    const wide = await registered('Weekly status');
+    const fw = await filed(wide);
+    const r = await transfer(c.admin, { departmentId: newDept, reason: 'Reorganised', folderChoice: 'move' });
+    await t.pool.query(`UPDATE storage_destinations SET status = 'withdrawn' WHERE id = $1`, [destId]);
+    const od = (await folder('department', dept))!;
+    const pf = (await folder('project', `${dept}/${project}`))!;
+    assert.deepEqual((await drain()).map((x) => [x.job, x.failed]), [['transfer-folders', undefined]]);
+    assert.equal((await item(pf.item_id)).parentId, od.item_id, 'no folder was moved');
+    assert.equal(await folder('department', newDept), undefined, 'no folder was made for the new department');
+    assert.deepEqual(await rows(`SELECT state, rejected_reason FROM project_department_transfers WHERE id = $1`, [r.body.transferId]), [
+      { state: 'rejected', rejected_reason: 'destination_withdrawn' },
+    ]);
+    assert.equal((await rows(`SELECT owning_department_id FROM projects WHERE id = $1`, [project]))[0].owning_department_id, dept);
+    assert.equal((await fileRow(wide)).path, fw.path);
+    assert.equal(
+      (await c.admin.request('GET', transferUrl())).body.transfer.label,
+      `Move rejected: a storage location that holds its files is no longer approved. The project stays in ${OLD} and its files stay where they are.`,
+    );
+  });
+
+  test('a failure that may pass is not rejected: Try again after a server error, and a later refusal then rejects', async () => {
+    await filed(await registered('Weekly status'));
+    const rr = (await folder('project', `${dept}/${project}`))!;
+    const r = await transfer(c.admin, { departmentId: newDept, reason: 'Reorganised', folderChoice: 'move' });
+    for (const code of ['unreachable', 'timeout', 'throttled', 'server', 'unauthorised', 'invalid', 'quota', 'internal'] as const) {
+      await t.pool.query(`UPDATE project_department_transfers SET state = 'moving' WHERE id = $1`, [r.body.transferId]);
+      await onFinalFailure(deps(), 'transfer-folders', r.body.transferId, code);
+      assert.equal((await rows(`SELECT state FROM project_department_transfers WHERE id = $1`, [r.body.transferId]))[0].state, 'move_failed', code);
+    }
+    assert.equal((await rows(`SELECT owning_department_id FROM projects WHERE id = $1`, [project]))[0].owning_department_id, newDept);
+    assert.equal((await c.admin.request('POST', `${transferUrl()}/retry`)).status, 200);
+    // Two jobs are queued (the first transfer's and Try again's): every move is refused.
+    fake.fault({ method: 'PATCH', pathIncludes: rr.item_id }, '404', 10);
+    await drain();
+    await onFinalFailure(deps(), 'transfer-folders', r.body.transferId, 'not_found');
+    assert.deepEqual(await rows(`SELECT state, rejected_reason FROM project_department_transfers WHERE id = $1`, [r.body.transferId]), [
+      { state: 'rejected', rejected_reason: 'not_found' },
+    ]);
+    assert.equal((await rows(`SELECT owning_department_id FROM projects WHERE id = $1`, [project]))[0].owning_department_id, dept);
   });
 
   test('keep labels filed outputs and files new ones under the new department', async () => {

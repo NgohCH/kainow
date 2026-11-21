@@ -7,7 +7,7 @@ import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { queueStorageJob } from '../storage/outbox';
 import { ProjectAccess, type ProjectContext } from './access.service';
-import { MOVING_LABEL, keptLabel, moveClashes, notMovedLabel, oldPlaces } from './department-transfer';
+import { MOVING_LABEL, type RejectedReason, keptLabel, moveClashes, notMovedLabel, oldPlaces, rejectedLabel } from './department-transfer';
 
 export const ADMIN_ONLY = 'Only an Enterprise Administrator can change a project’s owning department.';
 export const CHOOSE_FOLDER = 'This project has filed outputs. Choose whether to move the project’s folder or keep it where it is.';
@@ -20,7 +20,7 @@ const FOLDER_THERE = 'Kainow already keeps a folder for this project under that 
 const NOTHING_TO_RETRY = 'There is no failed move of this project’s files to try again.';
 
 export type FolderChoice = 'move' | 'keep';
-export type TransferState = 'done' | 'moving' | 'move_failed';
+export type TransferState = 'done' | 'moving' | 'move_failed' | 'rejected';
 
 export interface TransferView {
   id: string;
@@ -31,7 +31,10 @@ export interface TransferView {
   state: TransferState;
   actor: string;
   at: Date;
-  /** "Moving files", "Files not moved — still at <old path>", "Kept at its existing location (filed under <old department>)", or null. */
+  /**
+   * "Moving files", "Files not moved — still at <old path>", "Kept at its existing location (filed under <old department>)",
+   * "Move rejected: <reason>. …", or null.
+   */
   label: string | null;
   /** On a failed move: the Enterprise Administrator may try again. */
   tryAgain?: true;
@@ -131,7 +134,7 @@ export class DepartmentTransferService {
     const r = (
       await this.pool.query(
         `SELECT t.id, t.from_department_id AS "fromId", f.name AS "fromName", t.to_department_id AS "toId", d.name AS "toName", t.reason,
-                t.folder_choice AS "folderChoice", t.state, u.display_name AS actor, t.at
+                t.folder_choice AS "folderChoice", t.state, t.rejected_reason AS "rejectedReason", u.display_name AS actor, t.at
            FROM project_department_transfers t JOIN departments f ON f.id = t.from_department_id JOIN departments d ON d.id = t.to_department_id
            JOIN users u ON u.id = t.actor_id
           WHERE t.project_id = $1 ORDER BY t.at DESC, t.id DESC LIMIT 1`,
@@ -143,6 +146,7 @@ export class DepartmentTransferService {
       const label =
         r.state === 'moving' ? MOVING_LABEL
         : r.state === 'move_failed' ? notMovedLabel(await oldPlaces(this.pool, projectId, r.fromId))
+        : r.state === 'rejected' ? rejectedLabel(r.rejectedReason as RejectedReason, r.fromName)
         : r.folderChoice === 'keep' ? keptLabel(r.fromName)
         : null;
       transfer = {

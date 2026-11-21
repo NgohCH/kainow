@@ -50,6 +50,13 @@ export class OrganisationController {
     return { department: await this.org.retireDepartment(id(d), actor(req)) };
   }
 
+  @Post('departments/:id/restore')
+  @RequireAction('organisation.manage')
+  @HttpCode(200)
+  async restoreDepartment(@Param('id') d: string, @Req() req: HttpRequest) {
+    return { department: await this.org.restoreDepartment(id(d), actor(req)) };
+  }
+
   @Get('domains')
   @RequireAction('organisation.manage')
   async domains() {
