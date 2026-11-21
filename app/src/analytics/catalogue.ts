@@ -64,6 +64,7 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['department.added', 'A department was added.'],
     ['department.renamed', 'A department was renamed.'],
     ['department.retired', 'A department was retired.'],
+    ['department.restored', 'A retired department was brought back.'],
     ['access_settings.changed', 'Access and records settings were changed, with a reason (D90).'],
   ]),
   ...audit('Projects', PERSON, 'project', [
