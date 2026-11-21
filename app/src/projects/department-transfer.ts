@@ -4,7 +4,9 @@ import { checkFile } from '../outputs/checks';
 import { recordedFolderPath, withOutputFolderLock } from '../outputs/filing';
 import { MAX_NAME, RESTRICTED_SUFFIX, safeName } from '../outputs/naming';
 import type { StorageConnector } from '../storage/connector';
-import { type StorageDeps, registerStorageFinalFailure, registerStorageHandler } from '../storage/jobs';
+import { writeAudit } from '../audit/audit';
+import { loadAdmins } from '../notifications/recipients';
+import { type StorageDeps, type StorageFailureCode, registerStorageFinalFailure, registerStorageHandler } from '../storage/jobs';
 import { type DestinationRef, StorageError } from '../storage/types';
 
 /**
@@ -18,6 +20,12 @@ import { type DestinationRef, StorageError } from '../storage/types';
  * row). A failure puts back whatever it finds moved, so the records and the files stay at the old place, and the
  * transfer shows "Files not moved — still at <old path>" with Try again once the attempts run out.
  *
+ * A move that can never succeed is rejected instead (Product Owner, 21 November 2026): a storage location holding the
+ * folders is no longer approved, or the provider answers with a code that trying again cannot change (REJECTING_CODES).
+ * The project goes back to the department it was moved from, the transfer keeps the reason, and the Enterprise
+ * Administrators are told in the app. A failure that may pass (the service unreachable, slow or busy, or the connection
+ * to be renewed) still ends at "Files not moved" with Try again.
+ *
  * Folder keys start with the department id (filing.ts): the project's folders are found under `<dept>/<project>` and
  * everything below it (`<dept>/<project>/…`), and all of them are re-keyed together, so every reader of the keys
  * (filing, sharing, renames, withholding, the quarantine registry) keeps finding them.
@@ -27,6 +35,30 @@ export const TRANSFER_MOVE_REASON = 'Department transfer';
 export const MOVING_LABEL = 'Moving files';
 export const notMovedLabel = (oldPath: string): string => `Files not moved — still at ${oldPath}`;
 export const keptLabel = (department: string): string => `Kept at its existing location (filed under ${department})`;
+
+/** Why a move was rejected: a fixed code, kept on the transfer. */
+export type RejectedReason = 'destination_withdrawn' | 'forbidden' | 'not_found' | 'conflict' | 'unsupported';
+
+/** The provider codes that end a move for good: trying again cannot change the answer. */
+const REJECTING_CODES: ReadonlySet<StorageFailureCode> = new Set(['forbidden', 'not_found', 'conflict', 'unsupported']);
+
+const REJECTED_REASONS: Record<RejectedReason, string> = {
+  destination_withdrawn: 'a storage location that holds its files is no longer approved',
+  forbidden: 'Kainow does not have permission to move its folder in storage',
+  not_found: 'its folder could not be found in storage',
+  conflict: 'the new department’s folder in storage already holds folders with its name',
+  unsupported: 'the storage service cannot move its folder',
+};
+
+/** The panel's label for a rejected move: the reason, and where the project and its files stay. */
+export const rejectedLabel = (reason: RejectedReason, department: string): string =>
+  `Move rejected: ${REJECTED_REASONS[reason]}. The project stays in ${department} and its files stay where they are.`;
+
+/** The in-app notice to the Enterprise Administrators. Names the project and the departments only. */
+export const rejectedNotice = (projectName: string, reason: RejectedReason, from: string, to: string): string =>
+  `The move of ${projectName} from ${from} to ${to} was rejected: ${REJECTED_REASONS[reason]}. The project stays in ${from}.`;
+
+export const DEPARTMENT_MOVE_REJECTED = 'department_move_rejected';
 
 /** Same names as filing's other folder clashes: ` (2)`, ` (3)` … before the attempt fails `conflict`. */
 const MAX_SUFFIX = 20;
@@ -45,7 +77,7 @@ export async function pendingMoveFrom(db: Db, projectId: string): Promise<string
       [projectId],
     )
   ).rows[0];
-  return r && r.folder_choice === 'move' && r.state !== 'done' ? r.from_department_id : null;
+  return r && r.folder_choice === 'move' && (r.state === 'moving' || r.state === 'move_failed') ? r.from_department_id : null;
 }
 
 /**
@@ -125,13 +157,82 @@ export async function transferFolders(deps: StorageDeps, transferId: string): Pr
   ).rows[0];
   if (!t || t.state !== 'moving') return;
   const destinations = [...new Set((await rootsUnder(deps.pool, t.project_id, t.from_department_id)).map((r) => r.destination_id))];
+  // A location no longer approved is never moved in again: the move is rejected before anything is touched.
+  const gone = await deps.pool.query(
+    "SELECT 1 FROM storage_destinations WHERE id = ANY($1::uuid[]) AND status NOT IN ('approved', 'retiring')", [destinations],
+  );
+  if (gone.rowCount) {
+    await rejectTransfer(deps, transferId, 'destination_withdrawn');
+    return;
+  }
   for (const d of destinations) await moveInDestination(deps, t, d);
   await deps.pool.query(`UPDATE project_department_transfers SET state = 'done' WHERE id = $1 AND state = 'moving'`, [transferId]);
 }
 
-/** After the last attempt (or a code never retried): the files stay where they are and the transfer offers Try again. */
-export async function markTransferFailed(deps: StorageDeps, transferId: string): Promise<void> {
+/**
+ * After the last attempt (or a code never retried): a code that trying again cannot change rejects the move; any other
+ * leaves the files where they are and the transfer offers Try again.
+ */
+export async function markTransferFailed(deps: StorageDeps, transferId: string, code: StorageFailureCode): Promise<void> {
+  if (REJECTING_CODES.has(code)) {
+    await rejectTransfer(deps, transferId, code as RejectedReason);
+    return;
+  }
   await deps.pool.query(`UPDATE project_department_transfers SET state = 'move_failed' WHERE id = $1 AND state = 'moving'`, [transferId]);
+}
+
+/**
+ * Rejects a move that can never succeed, in one transaction: the transfer is marked rejected with its reason, the
+ * project goes back to the department it was moved from (its folders never left it; a failed attempt puts back anything
+ * it moved), and the Enterprise Administrators are told in the app. If that department was made a contributing
+ * department while the move ran, it stops contributing, since a department cannot both own and contribute. Nothing
+ * happens unless the transfer is the project's latest and is still moving or failed.
+ */
+export async function rejectTransfer(deps: StorageDeps, transferId: string, reason: RejectedReason): Promise<void> {
+  const c = await deps.pool.connect();
+  try {
+    await c.query('BEGIN');
+    const t = (
+      await c.query<TransferRow & { project_name: string; from_name: string; to_name: string; owning: string; latest: string }>(
+        `SELECT t.id, t.project_id, t.from_department_id, t.to_department_id, t.state, t.actor_id, p.name AS project_name,
+                f.name AS from_name, d.name AS to_name, p.owning_department_id AS owning,
+                (SELECT l.id FROM project_department_transfers l WHERE l.project_id = t.project_id ORDER BY l.at DESC, l.id DESC LIMIT 1) AS latest
+           FROM project_department_transfers t JOIN projects p ON p.id = t.project_id
+           JOIN departments f ON f.id = t.from_department_id JOIN departments d ON d.id = t.to_department_id
+          WHERE t.id = $1 FOR UPDATE OF t, p`,
+        [transferId],
+      )
+    ).rows[0];
+    if (!t || (t.state !== 'moving' && t.state !== 'move_failed') || t.latest !== t.id) {
+      await c.query('ROLLBACK');
+      return;
+    }
+    const at = deps.clock();
+    await c.query(`UPDATE project_department_transfers SET state = 'rejected', rejected_reason = $2 WHERE id = $1`, [t.id, reason]);
+    const stoppedContributing =
+      (await c.query(`DELETE FROM project_departments WHERE project_id = $1 AND department_id = $2`, [t.project_id, t.from_department_id])).rowCount === 1;
+    if (t.owning === t.to_department_id) {
+      await c.query(`UPDATE projects SET owning_department_id = $2 WHERE id = $1`, [t.project_id, t.from_department_id]);
+    }
+    await writeAudit(c, {
+      at, action: 'project.department_transfer_rejected', actorUserId: null, subjectType: 'project', subjectId: t.project_id,
+      detail: { transferId: t.id, from: t.from_department_id, to: t.to_department_id, reason, ...(stoppedContributing ? { stoppedContributing } : {}) },
+    });
+    const text = rejectedNotice(t.project_name, reason, t.from_name, t.to_name);
+    for (const userId of await loadAdmins(c)) {
+      await c.query(
+        `INSERT INTO notifications (id, user_id, project_id, kind, urgent, summary, link, created_at, email_off)
+         VALUES ($1, $2, $3, $4, false, $5, $6, $7, true)`,
+        [uuidv7(at.getTime()), userId, t.project_id, DEPARTMENT_MOVE_REJECTED, text, `#/projects/${t.project_id}`, at],
+      );
+    }
+    await c.query('COMMIT');
+  } catch (err) {
+    await c.query('ROLLBACK').catch(() => undefined);
+    throw err;
+  } finally {
+    c.release();
+  }
 }
 
 interface Moved { root: Root; name: string }
@@ -315,4 +416,4 @@ async function switchRecords(deps: StorageDeps, t: TransferRow, destinationId: s
 }
 
 registerStorageHandler('transfer-folders', (deps, transferId) => transferFolders(deps, transferId));
-registerStorageFinalFailure('transfer-folders', (deps, transferId) => markTransferFailed(deps, transferId));
+registerStorageFinalFailure('transfer-folders', (deps, transferId, code) => markTransferFailed(deps, transferId, code));

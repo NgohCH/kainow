@@ -12,7 +12,10 @@ import { type FakeGraph, startFakeGraph } from '../testing/fake-graph';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedDepartment, seedProject, seedUser } from '../testing/projects';
 import { fileOutputVersion } from './filing';
-import { placeOutput, queueOutputPlacement, reconcileSharing, sharingToRepair, syncFolderGrants } from './sharing';
+import { placeOutput, queueOutputPlacement, reconcileSharing, sharingProgress, sharingToRepair, syncFolderGrants } from './sharing';
+import { testDatabaseUrl } from '../testing/db';
+import { QUEUES, startQueues } from '../worker/queues';
+import { storageSingletonKey } from '../storage/outbox';
 
 const GRAPH_SCOPE = 'https://graph.microsoft.com/.default';
 const APP_ID = '11111111-2222-4333-8444-555555555555';
@@ -300,6 +303,53 @@ describe('folder sharing kept in step with readers', { skip: SKIP_NO_DB }, () =>
     assert.equal((await c.pm.request('POST', `/memberships/${hal}/restore`, { reason: 'Cleared' })).status, 200);
     await drain();
     assert.ok((await sharedWith(pf.item_id)).includes('hal@example.org'));
+  });
+
+  test('the output shows sharing in SharePoint as updating until the work is done', async () => {
+    const out = await registered('Weekly status');
+    await filed(out);
+    await drain();
+    assert.equal((await c.pm.request('GET', url(`/${out}`))).body.sharingUpdate, undefined, 'nothing pending');
+    assert.equal((await c.pm.request('POST', `/projects/${project}/members`, { userId: ids.kim, role: 'member', startsOn: '2026-11-09' })).status, 201);
+    // The share-sync is waiting to be sent: shown to everyone who reads the output.
+    assert.deepEqual((await c.pm.request('GET', url(`/${out}`))).body.sharingUpdate, { state: 'updating' });
+    assert.deepEqual((await c.ada.request('GET', url(`/${out}`))).body.sharingUpdate, { state: 'updating' });
+    await drain();
+    assert.equal((await c.pm.request('GET', url(`/${out}`))).body.sharingUpdate, undefined);
+    // Narrowing queues the move of its files first: updating too.
+    await setAudience(out, [ids.pm, ids.deputy], 'narrow');
+    assert.deepEqual((await c.pm.request('GET', url(`/${out}`))).body.sharingUpdate, { state: 'updating' });
+    await drain();
+    assert.equal((await c.pm.request('GET', url(`/${out}`))).body.sharingUpdate, undefined);
+  });
+
+  test('a queued or running job is updating; one waiting for its next attempt is retrying, with the time', async () => {
+    const SCHEMA = 'pgboss_sharing_progress';
+    const out = await registered('Weekly status');
+    await filed(out);
+    await drain();
+    const pf = await projectFolder();
+    await t.pool.query(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
+    const boss = await startQueues(testDatabaseUrl() as string, SCHEMA, { supervise: false, schedule: false });
+    try {
+      const now = t.clock.now();
+      assert.equal(await sharingProgress(t.pool, out, now, SCHEMA), null);
+      const later = new Date(now.getTime() + 5 * 60_000);
+      await boss.send(QUEUES.storage, { job: 'share-sync', subjectId: pf.id, attempt: 2 }, { singletonKey: storageSingletonKey('share-sync', pf.id), startAfter: later });
+      assert.deepEqual(await sharingProgress(t.pool, out, now, SCHEMA), { state: 'retrying', at: later });
+      // Once its time has come it is under way again.
+      assert.deepEqual(await sharingProgress(t.pool, out, new Date(later.getTime() + 1000), SCHEMA), { state: 'updating' });
+      // A first attempt for the output's files (a move) is under way now, whatever else waits.
+      await boss.send(QUEUES.storage, { job: 'place-output', subjectId: out }, { singletonKey: storageSingletonKey('place-output', out) });
+      assert.deepEqual(await sharingProgress(t.pool, out, now, SCHEMA), { state: 'updating' });
+      // Another project's or output's work is not this output's.
+      await t.pool.query(`DELETE FROM ${SCHEMA}.job`);
+      await boss.send(QUEUES.storage, { job: 'share-sync', subjectId: uuidv7() }, { singletonKey: storageSingletonKey('share-sync', uuidv7()) });
+      assert.equal(await sharingProgress(t.pool, out, now, SCHEMA), null);
+    } finally {
+      await boss.stop({ graceful: true, timeout: 5000 });
+      await t.pool.query(`DROP SCHEMA IF EXISTS ${SCHEMA} CASCADE`);
+    }
   });
 
   test('narrowing an audience moves the files out of the project folder before revoking or granting anything', async () => {

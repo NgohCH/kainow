@@ -78,6 +78,8 @@ export interface OutputDetail extends Omit<OutputSummary, 'audience'> {
   history: Array<{ kind: string; at: string; actor: Person | null; reason: string | null; versionNo: number | null }>;
   may: { register: boolean; decline: boolean; update: boolean; addVersion: boolean; changeAudience: boolean; review: boolean };
   notShared?: Array<{ person: Person; message: string }>;
+  /** Kainow is still bringing sharing in SharePoint in line: under way now, or waiting to try again at `at`. */
+  sharingUpdate?: { state: 'updating' } | { state: 'retrying'; at: string };
 }
 
 export interface DeletedOutput {
@@ -126,6 +128,12 @@ export const NOT_KEPT = 'Not filed — file no longer kept; generate or upload i
 
 export const notMovedLabel = (oldPath: string): string => `Files not moved — still at ${oldPath}`;
 export const notSharedLabel = (email: string): string => `Not shared in SharePoint — no Microsoft account found for ${email}`;
+
+/** How often the output page looks again while sharing in SharePoint is being updated. */
+export const SHARING_POLL_MS = 5000;
+export const SHARING_UPDATING = 'Updating sharing in SharePoint…';
+export const sharingRetryingLabel = (time: string): string => `Sharing in SharePoint did not finish yet. Kainow tries again at ${time}.`;
+export const SHARING_DONE = 'Sharing in SharePoint is up to date.';
 
 // ---------------------------------------------------------------------------------------------------------------
 // States in words
@@ -363,7 +371,7 @@ export interface TransferView {
   to: { id: string; name: string };
   reason: string;
   folderChoice: FolderChoice | null;
-  state: 'done' | 'moving' | 'move_failed';
+  state: 'done' | 'moving' | 'move_failed' | 'rejected';
   actor: string;
   at: string;
   label: string | null;

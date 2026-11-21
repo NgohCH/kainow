@@ -3,6 +3,7 @@ import { uuidv7 } from '../common/uuid7';
 import type { StorageConnector } from '../storage/connector';
 import { type StorageDeps, registerStorageDailyTask, registerStorageFinalFailure, registerStorageHandler } from '../storage/jobs';
 import { type DestinationRef, type PermissionInfo, StorageError, type StoredRef } from '../storage/types';
+import { BOSS_SCHEMA, QUEUES } from '../worker/queues';
 import { type OutputFolder, ensureOutputFolder, moveNamed } from './filing';
 import { contentReaderContexts, isWholeProject, outputReaders } from './readers';
 import { queueFolderSharing, queueOutputPlacement } from './sharing-queue';
@@ -670,6 +671,51 @@ export async function notSharedFor(db: Db, outputId: string): Promise<Array<{ pe
     [outputId],
   );
   return rows.map((r) => ({ person: { id: r.id, displayName: r.displayName }, message: notSharedLabel(r.email) }));
+}
+
+/**
+ * Whether Kainow is still bringing an output's sharing in SharePoint in line (Product Owner, 21 November 2026: a slow
+ * share is accepted as long as people can see it is running). Updating: a share-sync of the folder its files are in, or
+ * a move of its files to where its readers need them, is waiting to be sent, queued or running. Retrying: every such job
+ * failed for now and waits for its next attempt, at `at`. Null when nothing is pending; failures that will not be
+ * tried again show under "Sharing to repair" instead.
+ */
+export type SharingProgress = { state: 'updating' } | { state: 'retrying'; at: Date } | null;
+
+/** `schema` is pg-boss's schema; tests pass their own. */
+export async function sharingProgress(db: Db, outputId: string, now: Date, schema: string = BOSS_SCHEMA): Promise<SharingProgress> {
+  const folders = (
+    await db.query<{ id: string }>(
+      `SELECT sf.id
+         FROM outputs o
+         JOIN storage_folders pf ON pf.id = o.placement_folder_id
+         JOIN storage_folders sf ON sf.destination_id = pf.destination_id
+          AND ((pf.level = 'output' AND sf.id = pf.id)
+            OR (pf.level = 'report_type' AND sf.level = 'project' AND sf.key = split_part(pf.key, '/', 1) || '/' || split_part(pf.key, '/', 2)))
+        WHERE o.id = $1`,
+      [outputId],
+    )
+  ).rows.map((r) => r.id);
+  const subjects = [...folders.map((id) => ({ job: 'share-sync', id })), { job: 'place-output', id: outputId }];
+  const unsent = await db.query(
+    `SELECT 1 FROM storage_outbox WHERE sent_at IS NULL AND ((job = 'share-sync' AND subject_id = ANY($1::uuid[])) OR (job = 'place-output' AND subject_id = $2))`,
+    [folders, outputId],
+  );
+  if (unsent.rowCount) return { state: 'updating' };
+  // Without a pg-boss schema (no queue has ever started) there is no job to find.
+  if (!(await db.query(`SELECT to_regclass('${schema}.job') IS NOT NULL AS ok`)).rows[0].ok) return null;
+  const live = (
+    await db.query<{ state: string; start_after: Date; attempt: number }>(
+      `SELECT state, start_after, COALESCE((data->>'attempt')::int, 1) AS attempt FROM ${schema}.job
+        WHERE name = $1 AND singleton_key = ANY($2::text[]) AND state IN ('created', 'retry', 'active')`,
+      [QUEUES.storage, subjects.map((x) => `${x.job}:${x.id}`)],
+    )
+  ).rows;
+  if (live.length === 0) return null;
+  // A job sent again after a failure starts later, on the retry schedule; anything else is under way now.
+  const waiting = live.filter((j) => j.attempt > 1 && j.state === 'created' && j.start_after.getTime() > now.getTime());
+  if (waiting.length < live.length) return { state: 'updating' };
+  return { state: 'retrying', at: new Date(Math.min(...waiting.map((j) => j.start_after.getTime()))) };
 }
 
 export interface SharingRepair {

@@ -183,6 +183,7 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['project.exported', 'A project’s records were exported as a CSV file (the kind, filters and row count are recorded, never the data).'],
     ['project.department_transferred', 'An Enterprise Administrator changed a project’s owning department, with a reason and, when it had filed outputs, the choice to move their folder or keep it where it is.'],
     ['project.department_transfer_retried', 'An Enterprise Administrator tried a failed move of a project’s folders to its new owning department again.'],
+    ['project.department_transfer_rejected', 'A move of a project’s folders to its new owning department could never succeed, so the change was rejected and the project went back to its earlier department.'],
     ['output.submitted', 'An output was submitted for the register.'],
     ['output.registered', 'An output was registered by the PM or a Deputy.'],
     ['output.declined', 'A submitted output was declined, with a reason.'],

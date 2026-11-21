@@ -124,7 +124,7 @@ export function DepartmentMove({ project, act }: { project: Project; act: Act })
         {filed > 0 && <span className="meta"> · {filed === 1 ? '1 filed output file' : `${filed} filed output files`}</span>}
       </p>
       {transfer && transfer.label && (
-        <p className={transfer.state === 'move_failed' ? 'warn' : 'meta'} role="status">
+        <p className={transfer.state === 'move_failed' || transfer.state === 'rejected' ? 'warn' : 'meta'} role="status">
           {transfer.label}
           <span className="hint">Changed from {transfer.from.name} to {transfer.to.name} by {transfer.actor}, {formatWhen(transfer.at)}.</span>
         </p>
