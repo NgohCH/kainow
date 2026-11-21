@@ -3,11 +3,12 @@
  *
  * Sets older than the retention period go, except the newest succeeded set and the newest succeeded pre_update set;
  * `-incomplete` sets (and row-less folders without backup.json) go after a day. A row-less folder WITH backup.json is a
- * complete set (for example after a restore) and follows normal retention. Then files in `files/` that no remaining
- * set's manifest lists go, but only once every remaining manifest has been decrypted and read.
+ * complete set (for example after a restore) and follows normal retention. Then files in `files/<key id>/` that no
+ * remaining set's manifest lists go: for the mounted key only once every remaining manifest of that key has been
+ * decrypted and read; an earlier key's folder as a whole once no remaining set was made with that key.
  */
 import { existsSync, readFileSync, readdirSync } from 'node:fs';
-import { readdir, rm, unlink } from 'node:fs/promises';
+import { readdir, rm, rmdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Pool } from 'pg';
 import { writeAudit } from '../audit/audit';
@@ -17,6 +18,37 @@ import { type BackupKind, SET_FILES, readSet } from './manifest';
 import { loadOpsSettings } from './settings';
 
 const DAY_MS = 86_400_000;
+/** A key folder of the file store: the key id, 16 hex characters. */
+const KEY_DIR = /^[0-9a-f]{16}$/;
+
+/** Removes the store files under one key folder that `keep` does not list; empty shard folders go too. */
+async function removeUnlisted(kdir: string, keep: Set<string>): Promise<number> {
+  let n = 0;
+  for (const shard of await readdir(kdir)) {
+    if (!/^[0-9a-f]{2}$/.test(shard)) continue;
+    for (const f of await readdir(join(kdir, shard))) {
+      const m = /^([0-9a-f]{64})\.enc$/.exec(f);
+      if (!m || m[1].slice(0, 2) !== shard || keep.has(m[1])) continue;
+      try {
+        await unlink(join(kdir, shard, f));
+        n++;
+      } catch {
+        // Left for the next run.
+      }
+    }
+    await removeIfEmpty(join(kdir, shard));
+  }
+  return n;
+}
+
+/** Removes a folder only when it is empty (a leftover temporary file keeps it). */
+async function removeIfEmpty(dir: string): Promise<void> {
+  try {
+    if ((await readdir(dir)).length === 0) await rmdir(dir);
+  } catch {
+    // Left for the next run.
+  }
+}
 
 export type ExpirySet = {
   name: string;
@@ -60,14 +92,15 @@ export function parseSetName(name: string): { at: Date; kind: BackupKind; runId:
 }
 
 /** backup.json's kind and finish time, or null when it is missing. Present but unreadable still counts as a set. */
-function readSummary(dir: string): { kind?: BackupKind; finishedAt?: Date } | null {
+function readSummary(dir: string): { kind?: BackupKind; finishedAt?: Date; keyId?: string } | null {
   const file = join(dir, SET_FILES.summary);
   if (!existsSync(file)) return null;
   try {
-    const j = JSON.parse(readFileSync(file, 'utf8')) as { kind?: unknown; finishedAt?: unknown };
+    const j = JSON.parse(readFileSync(file, 'utf8')) as { kind?: unknown; finishedAt?: unknown; keyId?: unknown };
     const kind = j.kind === 'daily' || j.kind === 'manual' || j.kind === 'pre_update' ? j.kind : undefined;
     const t = typeof j.finishedAt === 'string' ? new Date(j.finishedAt) : undefined;
-    return { kind, finishedAt: t && !Number.isNaN(t.getTime()) ? t : undefined };
+    const keyId = typeof j.keyId === 'string' && KEY_DIR.test(j.keyId) ? j.keyId : undefined;
+    return { kind, finishedAt: t && !Number.isNaN(t.getTime()) ? t : undefined, keyId };
   } catch {
     return {};
   }
@@ -119,35 +152,39 @@ export async function expireBackups(pool: Pool, config: OpsConfig, key: BackupKe
   }
   const removedNames = new Set(removed.map((s) => s.name));
 
-  // 2. Files: read every remaining manifest first; one that cannot be read means no file is removed this run.
+  // 2. Files. The store is kept per backup key (files/<key id>/<2>/<sha>.enc, R30); a set's key id is in its plain
+  // backup.json. For the mounted key: every remaining manifest of that key is read first; one that cannot be read means
+  // none of that key's files is removed this run. For an earlier key whose manifests cannot be read here: its folder goes
+  // as a whole once no remaining set was made with it, and is left alone while one still is.
+  const keysInUse = new Set<string>();
   const referenced = new Set<string>();
   let filesSkipped = false;
   for (const s of sets) {
     if (removedNames.has(s.name)) continue;
     const dir = join(setsDir, s.name);
     if (!existsSync(join(dir, SET_FILES.summary)) && !s.succeeded) continue; // never finished: no manifest to list
+    const setKey = readSummary(dir)?.keyId ?? key.id;
+    keysInUse.add(setKey);
+    if (setKey !== key.id || filesSkipped) continue;
     try {
       const { manifest } = await readSet(dir, key);
       for (const f of manifest.sourceFiles) referenced.add(f.sha256);
     } catch {
       filesSkipped = true;
-      break;
     }
   }
   let files = 0;
-  if (!filesSkipped && existsSync(filesDir)) {
-    for (const shard of await readdir(filesDir)) {
-      if (!/^[0-9a-f]{2}$/.test(shard)) continue;
-      for (const f of await readdir(join(filesDir, shard))) {
-        const m = /^([0-9a-f]{64})\.enc$/.exec(f);
-        if (!m || m[1].slice(0, 2) !== shard || referenced.has(m[1])) continue;
-        try {
-          await unlink(join(filesDir, shard, f));
-          files++;
-        } catch {
-          // Left for the next run.
-        }
-      }
+  if (existsSync(filesDir)) {
+    for (const keyDir of await readdir(filesDir)) {
+      if (!KEY_DIR.test(keyDir)) continue;
+      const kdir = join(filesDir, keyDir);
+      if (keyDir === key.id) {
+        if (filesSkipped) continue;
+        files += await removeUnlisted(kdir, referenced);
+      } else if (!keysInUse.has(keyDir)) {
+        files += await removeUnlisted(kdir, new Set());
+      } else continue;
+      await removeIfEmpty(kdir);
     }
   }
 

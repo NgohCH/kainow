@@ -417,7 +417,7 @@ async function backupLocked(kind: BackupKind, newKey: boolean, deps: BackupDeps)
     // 5a. Source files (spec 5.4): each SHA-256 not yet in the store under this key is downloaded, checked, encrypted,
     // read back and renamed into files/. R27: files not reached within the copy time are listed not copied.
     stage = 'sources';
-    let copy: SourceCopyResult = { files: [], newFiles: 0, newBytes: 0, failed: 0, flagged: 0, moving: 0, notReached: 0 };
+    let copy: SourceCopyResult = { files: [], newFiles: 0, newBytes: 0, failed: 0, failedIds: [], flagged: 0, moving: 0, notReached: 0 };
     if (sources.inUse && deps.sourceFiles) {
       try {
         copy = await deps.sourceFiles.copyAll(sources, key, join(config.backupDir, 'kainow', 'files'), {
@@ -434,7 +434,12 @@ async function backupLocked(kind: BackupKind, newKey: boolean, deps: BackupDeps)
       }
     }
     const notCopied = copy.files.filter((f) => !f.copied).length;
-    if (copy.failed > 0) throw new OpsFailure('source_files_failed', SOURCE_TEXT.failed(copy.failed), notCopied);
+    if (copy.failed > 0) {
+      // R29: the stored files that failed are named by id (never a name, path or content), so the operator can act.
+      for (const id of copy.failedIds) deps.err(SOURCE_TEXT.failedFile(id));
+      // The failed run counts only the files that failed it, the same number as its text.
+      throw new OpsFailure('source_files_failed', SOURCE_TEXT.failed(copy.failedIds), copy.failed);
+    }
 
     // 6. The encrypted manifest.
     stage = 'manifest';

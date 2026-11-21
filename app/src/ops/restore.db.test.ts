@@ -446,8 +446,9 @@ describe('afterRestore', { skip: SKIP_NO_DB }, () => {
 
     assert.equal(result.emails, 2);
     assert.equal(result.jobs, liveJobs);
-    // The note's store-source outbox row (sub-project 9) is ended too, never sent.
-    assert.deepEqual(result.work, { ai_requests: 1, analysis_runs: 1, extraction_runs: 1, storage_outbox: 1 });
+    // The note's store-source outbox row (sub-project 9) is ended too, never sent, and its waiting text file is failed
+    // restored_from_backup (sub-project 9's daily task stores it again after Resume).
+    assert.deepEqual(result.work, { ai_requests: 1, analysis_runs: 1, extraction_runs: 1, storage_outbox: 1, stored_files: 1 });
     const outbox = (await t.pool.query(`SELECT sent_at, end_reason FROM storage_outbox ORDER BY created_at, id`)).rows;
     assert.deepEqual(outbox, [{ sent_at: null, end_reason: 'restored_from_backup' }]);
 

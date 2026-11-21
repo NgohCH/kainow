@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { createHash, randomBytes } from 'node:crypto';
-import { existsSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, afterEach, before, beforeEach, describe, test, type TestContext } from 'node:test';
@@ -11,6 +11,9 @@ import { M365TokenSource } from '../email/m365-token';
 import type { StorageConnectorFactory } from '../storage/connector-factory';
 import { GraphConnector } from '../storage/connectors/graph';
 import { makeStorageNotify } from '../storage/notices';
+import { flagStoredFile } from '../storage/source-files';
+import { dailySourceTask } from '../storage/sources';
+import { filingFailedLabel } from '../outputs/filing';
 import { quickXorHash } from '../storage/quickxor';
 import { STORAGE_CONNECTION_ID, sealStorageSecret } from '../storage/secret';
 import type { DestinationRef } from '../storage/types';
@@ -35,6 +38,7 @@ import {
   storePath,
 } from './source-files';
 import { runStorageCheck } from './storage-check';
+import { expireBackups } from './expiry';
 
 const migrationsDir = loadDatabaseConfig({ DATABASE_URL: 'x' }).migrationsDir;
 const GRAPH_SCOPE = 'https://graph.microsoft.com/.default';
@@ -63,7 +67,11 @@ describe('the protected source area: backup, drill, reading, restore', { skip: S
     forNew: async () => connector,
   };
   const dest = (): DestinationRef => ({ id: areaId as string, connector: 'graph', driveId: drive.driveId, rootItemId: drive.rootItemId });
-  const copier = (protectedKeyPresent = true) => new StoredSourceFiles(factory, protectedKeyPresent);
+  /** As backup-cli builds it: R29 flags a gone file Missing through sub-project 9's own routine. */
+  const copier = (protectedKeyPresent = true) =>
+    new StoredSourceFiles(factory, protectedKeyPresent, (id) =>
+      flagStoredFile({ pool, connectors: factory, clock: () => new Date(clock), notify: makeStorageNotify(pool, () => new Date(clock)) }, id, 'missing', new Date(clock)),
+    );
 
   const needTools = (t: TestContext): boolean => {
     if (toolsReady) return true;
@@ -84,18 +92,18 @@ describe('the protected source area: backup, drill, reading, restore', { skip: S
   const filesDir = () => join(folder, 'kainow', 'files');
   const storeFiles = (): string[] => {
     if (!existsSync(filesDir())) return [];
-    return readdirSync(filesDir()).flatMap((d) => readdirSync(join(filesDir(), d)).map((f) => `${d}/${f}`)).sort();
+    return readdirSync(filesDir()).flatMap((k) => readdirSync(join(filesDir(), k)).flatMap((d) => readdirSync(join(filesDir(), k, d)).map((f) => `${k}/${d}/${f}`))).sort();
   };
   const downloads = () => fake.calls.filter((c) => c.method === 'GET' && c.path.endsWith('/content')).length;
   const row = async (id: string) => (await pool.query('SELECT * FROM backup_runs WHERE id = $1', [id])).rows[0];
 
-  async function backup(opts: { protectedKey?: boolean; copyBudgetMs?: number; list?: StoredSourceFiles['list'] } = {}) {
+  async function backup(opts: { protectedKey?: boolean; copyBudgetMs?: number; list?: StoredSourceFiles['list']; argv?: string[] } = {}) {
     const out: string[] = [];
     const err: string[] = [];
     const at = new Date((clock += 60_000));
     const c = copier(opts.protectedKey ?? true);
     if (opts.list) c.list = opts.list;
-    const code = await runBackup([], {
+    const code = await runBackup(opts.argv ?? [], {
       pool, config: config(), tools, now: () => at, out: (l) => out.push(l), err: (l) => err.push(l), sourceFiles: c, copyBudgetMs: opts.copyBudgetMs,
     });
     const runId = /^run (\S+) /.exec(out[out.length - 1] ?? '')?.[1] as string;
@@ -106,11 +114,11 @@ describe('the protected source area: backup, drill, reading, restore', { skip: S
     const name = readdirSync(join(folder, 'kainow', 'sets')).find((n) => n.includes(runId)) as string;
     return (await readSet(join(folder, 'kainow', 'sets', name), key())).manifest;
   }
-  async function drill(over: Partial<DrillDeps> = {}) {
+  async function drill(over: Partial<DrillDeps> = {}, argv: string[] = []) {
     const out: string[] = [];
     const err: string[] = [];
     const at = new Date((clock += 60_000));
-    const code = await runRestoreDrill([], {
+    const code = await runRestoreDrill(argv, {
       pool, config: config(), tools, statfs: () => ({ total: 10 * TB, free: 5 * TB }), now: () => at,
       out: (l) => out.push(l), err: (l) => err.push(l), protectedKey: testProtectedKey(), ...over,
     });
@@ -209,7 +217,7 @@ describe('the protected source area: backup, drill, reading, restore', { skip: S
     assert.deepEqual([first.row.files_total, first.row.files_new, first.row.files_not_copied], [3, 2, 0]);
     assert.ok(Number(first.row.files_new_bytes) > 0);
     assert.equal(downloads(), 2);
-    assert.deepEqual(storeFiles(), [a.bytes, b.bytes].map((x) => `${sha(x).slice(0, 2)}/${sha(x)}.enc`).sort());
+    assert.deepEqual(storeFiles(), [a.bytes, b.bytes].map((x) => `${key().id}/${sha(x).slice(0, 2)}/${sha(x)}.enc`).sort());
     const m1 = await manifestOf(first.runId);
     assert.equal(m1.sourceArea, 'included');
     assert.deepEqual(
@@ -217,7 +225,7 @@ describe('the protected source area: backup, drill, reading, restore', { skip: S
       [a, b, c].map((f) => [f.id, sha(f.bytes), f.bytes.length, true]),
     );
     // Encrypted with the backup key: the content is never in the store in plain.
-    assert.ok(!readFileSync(storePath(filesDir(), sha(a.bytes))).includes(a.bytes));
+    assert.ok(!readFileSync(storePath(filesDir(), key().id, sha(a.bytes))).includes(a.bytes));
 
     const second = await backup();
     assert.equal(second.code, 0, second.err.join('\n'));
@@ -246,20 +254,42 @@ describe('the protected source area: backup, drill, reading, restore', { skip: S
     assert.ok(late);
   });
 
-  test('a file that fails to download fails the run source_files_failed with the count', async (t) => {
+  test('R29: a file whose item is gone is flagged Missing through sub-project 9 (with its notice) and the run succeeds', async (t) => {
     if (!needTools(t)) return;
     await approveArea();
     await storedFile('Kept in storage.');
     const gone = await storedFile('Deleted from the library.');
     fake.deleteItem(drive.driveId, gone.itemId);
     const r = await backup();
+    assert.equal(r.code, 0, r.err.join('\n'));
+    assert.ok(r.out.includes(SOURCE_TEXT.flagged(1)), r.out.join('\n'));
+    assert.deepEqual([r.row.files_total, r.row.files_new, r.row.files_not_copied], [2, 1, 1]);
+    assert.equal((await pool.query(`SELECT check_status FROM stored_files WHERE id = $1`, [gone.id])).rows[0].check_status, 'missing');
+    assert.equal((await pool.query(`SELECT count(*)::int AS n FROM notifications WHERE kind = 'source_file_missing' AND user_id = $1`, [admin])).rows[0].n, 1);
+    // The next run counts it as already flagged, with no second notice.
+    const next = await backup();
+    assert.equal(next.code, 0);
+    assert.equal((await pool.query(`SELECT count(*)::int AS n FROM notifications WHERE kind = 'source_file_missing'`)).rows[0].n, 1);
+  });
+
+  test('R29: any other download failure fails the run source_files_failed, naming the stored-file ids', async (t) => {
+    if (!needTools(t)) return;
+    await approveArea();
+    await storedFile('Kept in storage.');
+    const edited = await storedFile('Edited in the library.');
+    fake.changeContent(drive.driveId, edited.itemId, Buffer.from('Somebody changed this file.'));
+    const denied = await storedFile('Access refused.');
+    fake.fault({ method: 'GET', pathIncludes: `${denied.itemId}/content` }, '403', 10);
+    const r = await backup();
     assert.equal(r.code, 1);
     assert.match(r.out[r.out.length - 1], /^run \S+ failed source_files_failed$/);
-    assert.equal(r.row.outcome, 'failed');
     assert.equal(r.row.failure_code, 'source_files_failed');
-    assert.equal(r.row.failure_detail, 'Some source files could not be copied. Not copied: 1.');
-    assert.equal(r.row.files_not_copied, 1);
-    assert.ok(r.err.includes(SOURCE_TEXT.failed(1)));
+    const text = SOURCE_TEXT.failed([edited.id, denied.id]);
+    assert.equal(text, `Some source files could not be copied. Not copied (2): stored file ${edited.id}, ${denied.id}.`);
+    assert.equal(r.row.failure_detail, text);
+    assert.equal(r.row.files_not_copied, 2, 'the same count as its text');
+    assert.ok(r.err.includes(SOURCE_TEXT.failedFile(edited.id)) && r.err.includes(SOURCE_TEXT.failedFile(denied.id)), r.err.join('\n'));
+    assert.ok(!r.err.join('\n').includes('Edited in the library'));
     assert.match(r.row.set_name, /-incomplete$/);
   });
 
@@ -308,22 +338,54 @@ describe('the protected source area: backup, drill, reading, restore', { skip: S
     assert.ok(r.err.includes('Source files are in use, but no protected key is available.'));
   });
 
-  test('a new backup key copies the store files again under it, so a new set never lists an old-key file', async () => {
+  test('R30: a new key copies into its own store; a key-A set still drills its files after a key-B backup; expiry removes key A files only', async (t) => {
+    if (!needTools(t)) return;
     await approveArea();
-    const a = await storedFile('Copied under the first key.');
+    const a = await storedFile('Copied under both keys.');
+    const keyA = keyFile;
+    const idA = key().id;
+    const setA = await backup();
+    assert.equal(setA.code, 0, setA.err.join('\n'));
+    const fileA = storePath(filesDir(), idA, sha(a.bytes));
+    const bytesA = readFileSync(fileA);
+
+    const keyBFile = join(root, `kb-${randomBytes(4).toString('hex')}`);
+    writeFileSync(keyBFile, randomBytes(32));
+    keyFile = keyBFile;
+    const idB = key().id;
+    const setB = await backup({ argv: ['--new-key'] });
+    assert.equal(setB.code, 0, setB.err.join('\n'));
+    assert.equal(setB.row.files_new, 1, 'copied again into key B\'s store');
+    assert.deepEqual(readFileSync(fileA), bytesA, 'key A\'s copy is untouched');
+    assert.ok(existsSync(storePath(filesDir(), idB, sha(a.bytes))));
+
+    // The key-A set drills with key A, source files included.
+    const nameA = readdirSync(join(folder, 'kainow', 'sets')).find((n) => n.includes(setA.runId)) as string;
+    keyFile = keyA;
+    const withA = await drill({}, ['--set', nameA]);
+    assert.equal(withA.row.outcome, 'passed', [...withA.out, ...withA.err].join('\n'));
+    assert.deepEqual(check(withA.row, 'source_files'), { name: 'source_files', result: 'passed', detail: '1 files checked.' });
+
+    // Expiry after the key-A set is past retention: key A's store goes, key B's stays.
+    const later = new Date(clock + 40 * 86_400_000);
+    keyFile = keyBFile;
+    const r = await expireBackups(pool, config(), key(), later);
+    assert.equal(r.sets, 1);
+    assert.equal(r.files, 1);
+    assert.equal(existsSync(join(filesDir(), idA)), false, 'the emptied key folder is removed');
+    assert.ok(existsSync(storePath(filesDir(), idB, sha(a.bytes))));
+  });
+
+  test('leftover temporary files from a killed run are removed when the next copy starts', async () => {
+    await approveArea();
+    await storedFile('Copied once.');
+    const dir = join(filesDir(), key().id, 'ab');
+    mkdirSync(dir, { recursive: true });
+    const tmp = join(dir, `${'ab'.padEnd(64, '0')}.enc.tmp-0195f3c2-0000-7000-8000-000000000000`);
+    writeFileSync(tmp, 'partial');
     const listing = await listSourceFiles(pool);
-    const opts = { runId: 'r1', now: () => new Date(clock), deadline: new Date(clock + 3_600_000) };
-    const k1 = key();
-    assert.equal((await copier().copyAll(listing, k1, filesDir(), opts)).newFiles, 1);
-    const firstBytes = readFileSync(storePath(filesDir(), sha(a.bytes)));
-    writeFileSync(keyFile, randomBytes(32));
-    const k2 = key();
-    const again = await copier().copyAll(listing, k2, filesDir(), { ...opts, runId: 'r2' });
-    assert.equal(again.newFiles, 1);
-    const header = readFileSync(storePath(filesDir(), sha(a.bytes))).subarray(5, 21).toString('latin1');
-    assert.equal(header, k2.id);
-    assert.notDeepEqual(readFileSync(storePath(filesDir(), sha(a.bytes))), firstBytes);
-    assert.equal((await copier().copyAll(listing, k2, filesDir(), { ...opts, runId: 'r3' })).newFiles, 0);
+    await copier().copyAll(listing, key(), filesDir(), { runId: 'r1', now: () => new Date(clock), deadline: new Date(clock + 3_600_000) });
+    assert.equal(existsSync(tmp), false);
   });
 
   test('drill: every listed file is decrypted and checked; a damaged store file fails source_files; the storage secret opens with the key', async (t) => {
@@ -346,7 +408,7 @@ describe('the protected source area: backup, drill, reading, restore', { skip: S
     const noKey = await drill({ protectedKey: null });
     assert.equal(check(noKey.row, 'sealed_storage_secret')?.result, 'failed');
 
-    const file = storePath(filesDir(), sha(a.bytes));
+    const file = storePath(filesDir(), key().id, sha(a.bytes));
     const bytes = readFileSync(file);
     bytes[bytes.length - 20] ^= 0x01;
     writeFileSync(file, bytes);
@@ -415,6 +477,32 @@ describe('the protected source area: backup, drill, reading, restore', { skip: S
     assert.equal(new Date(byId.get(queued).ended_at).getTime(), now.getTime());
     assert.equal(byId.get(sent).ended_at, null);
     assert.equal(byId.get(sent).end_reason, null);
+  });
+
+  test('after restore: a waiting source file is failed restored_from_backup, and the sub-project 9 daily task queues it again', async () => {
+    await approveArea();
+    const waiting = await storedFile('Waiting to be stored at backup time.', { state: 'storing' });
+    const moving = await storedFile('Being moved at backup time.', { state: 'relocating' });
+    const c: PoolClient = await pool.connect();
+    let result;
+    try {
+      await c.query('BEGIN');
+      result = await afterRestore(c, { setTime: new Date(clock - 3_600_000), setName: 'x', reason: 'Server lost', now: new Date(clock) });
+      await c.query('COMMIT');
+    } finally {
+      c.release();
+    }
+    assert.equal(result.work.stored_files, 1);
+    const state = async (id: string) => (await pool.query(`SELECT state, failure_code FROM stored_files WHERE id = $1`, [id])).rows[0];
+    assert.deepEqual(await state(waiting.id), { state: 'failed', failure_code: RESTORED_CODE });
+    assert.deepEqual(await state(moving.id), { state: 'stored', failure_code: null });
+    assert.equal(filingFailedLabel(RESTORED_CODE), 'Filing failed — Not run — restored from backup');
+
+    // After Resume, the daily source task stores it again (as any failed version); nothing is queued by the restore.
+    const version = (await pool.query(`SELECT id FROM source_versions WHERE text_stored_file_id = $1`, [waiting.id])).rows[0].id;
+    await dailySourceTask({ pool, connectors: factory, key: null, clock: () => new Date(clock), notify: makeStorageNotify(pool, () => new Date(clock)) });
+    const queued = (await pool.query(`SELECT job FROM storage_outbox WHERE subject_id = $1 AND sent_at IS NULL AND ended_at IS NULL`, [version])).rows;
+    assert.deepEqual(queued, [{ job: 'store-source' }]);
   });
 
   test('restore-source-files re-uploads a file deleted from the drive and updates its reference; a file not in the store is listed', async () => {

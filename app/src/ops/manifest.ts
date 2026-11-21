@@ -79,6 +79,8 @@ export interface SourceCopyResult {
   newFiles: number;
   newBytes: number;
   failed: number;
+  /** The stored files that failed (ids only), for the output and the failure detail. */
+  failedIds: string[];
   flagged: number;
   moving: number;
   notReached: number;

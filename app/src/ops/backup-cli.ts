@@ -1,6 +1,8 @@
 import { Pool } from 'pg';
 import { loadProtectedKey } from '../quarantine/protected-key';
 import { DbStorageConnectorFactory } from '../storage/connector-factory';
+import { makeStorageNotify } from '../storage/notices';
+import { flagStoredFile } from '../storage/source-files';
 import { runBackup } from './backup';
 import { loadOpsConfig } from './config';
 import { PgTools } from './pg-tools';
@@ -26,13 +28,19 @@ async function main(): Promise<number> {
   const pool = new Pool({ connectionString: config.databaseUrl });
   pool.on('error', () => undefined); // an idle client dropping must not crash the run; the next query reports it
   const clock = () => new Date();
+  const connectors = new DbStorageConnectorFactory(pool, clock, protectedKey);
   try {
     return await runBackup(process.argv.slice(2), {
       pool,
       config,
       tools: new PgTools(config.databaseUrl),
       // Used only once a source area is in use (an approved one, or files stored in it); otherwise nothing is read.
-      sourceFiles: new StoredSourceFiles(new DbStorageConnectorFactory(pool, clock, protectedKey), protectedKey !== null),
+      sourceFiles: new StoredSourceFiles(connectors, protectedKey !== null, (id) =>
+        // R29: sub-project 9's own flagging, with its notice to the Administrators and storage Administrators.
+        flagStoredFile({ pool, connectors, clock, notify: makeStorageNotify(pool, clock) }, id, 'missing', clock()).then(async (changed) =>
+          changed || (await pool.query(`SELECT 1 FROM stored_files WHERE id = $1 AND (check_status = 'missing' OR state = 'missing')`, [id])).rowCount === 1,
+        ),
+      ),
       now: clock,
       out: (line) => console.log(line),
       err: (line) => console.error(line),

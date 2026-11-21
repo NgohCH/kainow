@@ -134,7 +134,8 @@ ALTER TABLE email_outbox ADD CONSTRAINT email_outbox_status_check
 
 -- ---------------------------------------------------------------------------
 -- Sub-project 9's storage outbox: a row queued before a restore is never sent after it (spec 8.2 step 5). The reason
--- is a fixed code; the screens show "Not run — restored from backup" for it. The outbox tick skips ended rows.
+-- is a fixed code (no screen lists outbox rows; ended rows leave the Storage page's queued count). The outbox tick
+-- skips ended rows. The stored files they were for are marked failed by the restore, which the screens word.
 -- ---------------------------------------------------------------------------
 ALTER TABLE storage_outbox
   ADD COLUMN ended_at   timestamptz,

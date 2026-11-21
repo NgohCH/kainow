@@ -21,8 +21,12 @@
  *   backup_runs            the run that made this set -> succeeded from its backup.json; any other running -> failed interrupted
  *   restore_drills         running -> failed interrupted
  *   pgboss.job             created, retry, active -> cancelled (the worker re-creates its schedules when it starts)
- *   storage_outbox         unsent rows -> ended (ended_at, end_reason restored_from_backup: "Not run — restored from
- *                          backup"); the outbox tick never sends an ended row
+ *   storage_outbox         unsent rows -> ended (ended_at, end_reason restored_from_backup); the outbox tick never sends
+ *                          an ended row, and the Storage page no longer counts it as queued
+ *   stored_files           pending, storing -> failed restored_from_backup (an output shows "Filing failed — Not run —
+ *                          restored from backup" with Try again; sub-project 9's daily source task stores a failed source
+ *                          version again, as for any failed one); relocating -> stored at its old place (the daily
+ *                          relocation task moves it again)
  * Not ended, with the reason in the task report: quarantine_cases waiting for the key (local and idempotent; ending it would
  * leave the secret uncleaned), digest_runs and sweep_runs (records of finished work, no queued state), project invitations.
  */
@@ -145,6 +149,14 @@ export async function afterRestore(c: PoolClient, input: AfterRestoreInput): Pro
     (
       await c.query(`UPDATE storage_outbox SET ended_at = $1, end_reason = $2 WHERE sent_at IS NULL AND ended_at IS NULL`, [now, RESTORED_CODE])
     ).rowCount ?? 0;
+  // The files that work was for. Without this a waiting file would have no job after Resume (its job was cancelled and
+  // its outbox row ended): failed is the state sub-project 9's daily tasks pick up again (sources) or a person retries
+  // (outputs, "Try again"). A relocation in flight stays at its old, confirmed place.
+  work.stored_files =
+    (
+      await c.query(`UPDATE stored_files SET state = 'failed', failure_code = $1 WHERE state IN ('pending', 'storing')`, [RESTORED_CODE])
+    ).rowCount ?? 0;
+  await c.query(`UPDATE stored_files SET state = 'stored' WHERE state = 'relocating'`);
 
   // AI spend: an open reservation may have reached the provider, so it stays counted as uncertain (D43), never released.
   await c.query(`UPDATE ai_spend_entries SET status = 'uncertain', note = $1, updated_at = $2 WHERE status = 'reserved'`, [SPEND_NOTE, now]);

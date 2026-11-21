@@ -49,9 +49,10 @@ describe('backup expiry', { skip: SKIP_NO_DB }, () => {
   });
   const sha = (s: string) => createHash('sha256').update(s).digest('hex');
   const setsDir = () => join(folder, 'kainow', 'sets');
-  const filePath = (h: string) => join(folder, 'kainow', 'files', h.slice(0, 2), `${h}.enc`);
+  // The store is kept per backup key (R30): files/<key id>/<2>/<sha>.enc.
+  const filePath = (h: string) => join(folder, 'kainow', 'files', key.id, h.slice(0, 2), `${h}.enc`);
   const putFile = (h: string) => {
-    mkdirSync(join(folder, 'kainow', 'files', h.slice(0, 2)), { recursive: true });
+    mkdirSync(join(folder, 'kainow', 'files', key.id, h.slice(0, 2)), { recursive: true });
     writeFileSync(filePath(h), 'x');
   };
 

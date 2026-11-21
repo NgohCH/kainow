@@ -2,8 +2,8 @@
  * The protected source area in operations (sub-project 9's managed source files):
  *
  *   - the backup's source part (spec 5.4): every source file in sub-project 9's settled `stored` state is copied once per
- *     SHA-256 into the shared file store `files/<2>/<sha>.enc`, encrypted with the backup key; the manifest lists every
- *     stored source file the database refers to, copied or not;
+ *     SHA-256 into the shared file store `files/<key id>/<2>/<sha>.enc`, encrypted with the backup key; the manifest
+ *     lists every stored source file the database refers to, copied or not;
  *   - the drill's source-file check (spec 8.1 step 6);
  *   - the `source_area` storage reading (spec 7.1);
  *   - `restore-source-files` (spec 8.2 step 6): re-uploads stored source files that are Missing at their recorded place
@@ -11,13 +11,13 @@
  *
  * Output and stored text are fixed: counts and ids only, never a path, a name, file content, a key or provider text.
  *
- * Key changes: a file in the store is used only when its KNBK1 header carries the current backup key's id; one made with
- * an earlier key is copied again (and replaced) by the next backup, so a set never lists a file it cannot decrypt.
- * Sets made with the earlier key then lose that file (it now needs the new key): see INSTALL.md, "Changing the backup key".
+ * Key changes (R30): the store is kept per backup key, so a new key copies every file into its own folder and nothing
+ * made with an earlier key is overwritten: a set made with the earlier key still drills and restores its source files
+ * with that key. Expiry removes a key's folder once no remaining set was made with it.
  */
 import { createHash } from 'node:crypto';
 import { closeSync, createReadStream, createWriteStream, existsSync, openSync, readSync, statSync } from 'node:fs';
-import { mkdir, rename, rm } from 'node:fs/promises';
+import { mkdir, readdir, rename, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -54,14 +54,36 @@ export const SOURCE_TEXT = {
   flagged: (n: number) => `${n} source files already flagged in storage were not copied.`,
   moving: (n: number) => `${n} source files being moved in storage were not copied; the next backup copies them.`,
   notReached: (n: number) => `${n} source files were not reached within the 4-hour copy time; the next backup copies them.`,
-  failed: (n: number) => `${OPS_FAILURES.source_files_failed} Not copied: ${n}.`,
+  /** Stored-file ids only (never a name, path or content); at most ten, then how many more. */
+  failed: (ids: string[]) =>
+    `${OPS_FAILURES.source_files_failed} Not copied (${ids.length}): stored file ${ids.slice(0, 10).join(', ')}${ids.length > 10 ? ` and ${ids.length - 10} more` : ''}.`,
+  failedFile: (id: string) => `Not copied: stored file ${id}`,
 } as const;
 
 const sha256 = (b: Buffer): string => createHash('sha256').update(b).digest('hex');
 
-/** `files/ab/abcd…ef.enc`. */
-export function storePath(filesDir: string, sha: string): string {
-  return join(filesDir, sha.slice(0, 2), `${sha}.enc`);
+/** `files/<key id>/ab/abcd…ef.enc`. */
+export function storePath(filesDir: string, keyId: string, sha: string): string {
+  return join(filesDir, keyId, sha.slice(0, 2), `${sha}.enc`);
+}
+
+const TMP = /\.enc\.tmp-[0-9a-z-]+$/;
+
+/** Removes temporary files a killed run left in the store (any key folder); best effort. */
+export async function removeLeftoverTemporaries(filesDir: string): Promise<number> {
+  let n = 0;
+  if (!existsSync(filesDir)) return 0;
+  for (const keyDir of await readdir(filesDir).catch(() => [] as string[])) {
+    if (!/^[0-9a-f]{16}$/.test(keyDir)) continue;
+    for (const shard of await readdir(join(filesDir, keyDir)).catch(() => [] as string[])) {
+      if (!/^[0-9a-f]{2}$/.test(shard)) continue;
+      for (const f of await readdir(join(filesDir, keyDir, shard)).catch(() => [] as string[])) {
+        if (!TMP.test(f)) continue;
+        await rm(join(filesDir, keyDir, shard, f), { force: true }).then(() => n++, () => undefined);
+      }
+    }
+  }
+  return n;
 }
 
 const MAGIC = 'KNBK1';
@@ -125,8 +147,8 @@ const isFlagged = (f: SourceFileRow): boolean => f.state === 'missing' || f.chec
 
 /** Encrypts `plain` into the store under its SHA-256: a temporary name, read back and checked, then renamed. */
 async function writeStoreFile(filesDir: string, sha: string, plain: Buffer, key: BackupKey, runId: string): Promise<number> {
-  const final = storePath(filesDir, sha);
-  await mkdir(join(filesDir, sha.slice(0, 2)), { recursive: true });
+  const final = storePath(filesDir, key.id, sha);
+  await mkdir(join(filesDir, key.id, sha.slice(0, 2)), { recursive: true });
   const tmp = `${final}.tmp-${runId}`;
   try {
     const enc = sha256Stream();
@@ -158,11 +180,16 @@ const discard = (): Writable =>
     },
   });
 
-/** The backup's source copier: sub-project 9's connectors (built with the protected key) read each file. */
+/**
+ * The backup's source copier: sub-project 9's connectors (built with the protected key) read each file. `flagMissing`
+ * (R29) is sub-project 9's own flagging routine (flagStoredFile, with its notice): a file whose item is gone is flagged
+ * Missing there and then counts as already flagged; it returns whether the file is flagged now.
+ */
 export class StoredSourceFiles implements SourceFileCopier {
   constructor(
     private readonly connectors: StorageConnectorFactory,
     readonly protectedKeyPresent: boolean,
+    private readonly flagMissing?: (storedFileId: string) => Promise<boolean>,
   ) {}
 
   list(db: Db): Promise<SourceListing> {
@@ -170,7 +197,8 @@ export class StoredSourceFiles implements SourceFileCopier {
   }
 
   async copyAll(listing: SourceListing, key: BackupKey, filesDir: string, opts: SourceCopyOptions): Promise<SourceCopyResult> {
-    const result: SourceCopyResult = { files: [], newFiles: 0, newBytes: 0, failed: 0, flagged: 0, moving: 0, notReached: 0 };
+    const result: SourceCopyResult = { files: [], newFiles: 0, newBytes: 0, failed: 0, failedIds: [], flagged: 0, moving: 0, notReached: 0 };
+    await removeLeftoverTemporaries(filesDir);
     /** Per SHA-256, whether the store now holds it under the current key (true) or this run failed to copy it (false). */
     const held = new Map<string, boolean>();
     const connectors = new Map<string, Promise<{ connector: StorageConnector; dest: DestinationRef }>>();
@@ -193,7 +221,7 @@ export class StoredSourceFiles implements SourceFileCopier {
 
     for (const f of listing.files) {
       const sha = f.sha256 as string;
-      if (!held.has(sha) && storeFileKeyId(storePath(filesDir, sha)) === key.id) held.set(sha, true);
+      if (!held.has(sha) && storeFileKeyId(storePath(filesDir, key.id, sha)) === key.id) held.set(sha, true);
       if (held.get(sha) === true) {
         result.files.push(entry(f, true));
         continue;
@@ -210,6 +238,7 @@ export class StoredSourceFiles implements SourceFileCopier {
       }
       if (held.get(sha) === false) {
         result.failed++;
+        result.failedIds.push(f.id);
         result.files.push(entry(f, false, 'failed'));
         continue;
       }
@@ -220,17 +249,27 @@ export class StoredSourceFiles implements SourceFileCopier {
       }
       // Download through sub-project 9's connector and check the content against the record.
       let plain: Buffer | null = null;
+      let gone = false;
       try {
         if (!f.destinationId || !f.itemId) throw new StorageError('invalid');
         const { connector, dest } = await connectorFor(f.destinationId);
         const bytes = await connector.download(dest, f.itemId);
         if (sha256(bytes) === sha && (f.size === null || bytes.length === f.size)) plain = bytes;
-      } catch {
-        plain = null; // Missing, changed, access denied, unreachable, or the connection cannot be opened
+      } catch (err) {
+        plain = null; // changed, access denied, unreachable, or the connection cannot be opened
+        gone = err instanceof StorageError && err.code === 'not_found';
+      }
+      // R29: the item is gone. Flagged Missing through sub-project 9 (its notice follows), it is then one of the files
+      // "already flagged in storage" and does not fail the run.
+      if (gone && this.flagMissing && (await this.flagMissing(f.id).catch(() => false))) {
+        result.flagged++;
+        result.files.push(entry(f, false, 'flagged'));
+        continue;
       }
       if (!plain) {
         held.set(sha, false);
         result.failed++;
+        result.failedIds.push(f.id);
         result.files.push(entry(f, false, 'failed'));
         continue;
       }
@@ -286,7 +325,7 @@ export async function checkSourceFiles(manifest: Manifest, filesDir: string, key
   for (const sha of pick) {
     const plain = sha256Stream();
     try {
-      await pipeline(createReadStream(storePath(filesDir, sha)), decryptStream(key), plain, discard());
+      await pipeline(createReadStream(storePath(filesDir, key.id, sha)), decryptStream(key), plain, discard());
       if (plain.digest() !== sha) bad++;
     } catch {
       bad++; // missing, damaged, or made with another key: the file does not count
@@ -485,7 +524,7 @@ async function restoreLocked(deps: RestoreSourceFilesDeps, key: BackupKey): Prom
 
 /** The decrypted store file, only when it is there under this key and its content has the recorded SHA-256. */
 async function readStoreFile(filesDir: string, sha: string, key: BackupKey): Promise<Buffer | null> {
-  const path = storePath(filesDir, sha);
+  const path = storePath(filesDir, key.id, sha);
   if (!existsSync(path) || storeFileKeyId(path) !== key.id) return null;
   const parts: Buffer[] = [];
   try {
@@ -523,6 +562,29 @@ async function putBack(
   ).rows[0] as { source_id: string; version_no: number } | undefined;
   if (!v) throw new StorageError('invalid');
   const folderId = await versionFolder(deps.storage, target.connector, target.dest, { project_id: f.project_id, source_id: v.source_id, version_no: v.version_no });
+  // One relocation at a time per file: the same advisory lock as sub-project 9's relocation routine.
+  const lock = await deps.pool.connect();
+  let broken: Error | undefined;
+  try {
+    const got = (await lock.query(`SELECT pg_try_advisory_lock(hashtext('relocate-file'), hashtext($1)) AS ok`, [f.id])).rows[0].ok as boolean;
+    if (!got) throw new StorageError('throttled');
+    try {
+      await putBackLocked(deps, f, plain, target, folderId);
+    } finally {
+      try {
+        await lock.query(`SELECT pg_advisory_unlock(hashtext('relocate-file'), hashtext($1))`, [f.id]);
+      } catch (err) {
+        broken = err instanceof Error ? err : new Error('unlock failed');
+      }
+    }
+  } finally {
+    lock.release(broken);
+  }
+}
+
+async function putBackLocked(
+  deps: RestoreSourceFilesDeps, f: RestoreRow, plain: Buffer, target: { connector: StorageConnector; dest: DestinationRef }, folderId: string,
+): Promise<void> {
   const ref: StoredRef = await put(target.connector, target.dest, folderId, f.name, plain);
   const at = deps.now();
   const c = await deps.pool.connect();
@@ -542,14 +604,19 @@ async function putBack(
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, NULL, $12)`,
       [moveId, f.id, RESTORED_REASON, f.destination_id, f.drive_id, f.item_id, f.path, target.dest.id, target.dest.driveId, ref.itemId, ref.path, at],
     );
+    // As the relocation routine's switch (storage/relocate.ts): the Kainow folder row of the target, if one is recorded.
+    const folder = (
+      await c.query(`SELECT id FROM storage_folders WHERE destination_id = $1 AND item_id = $2 ORDER BY created_at, id LIMIT 1`, [target.dest.id, folderId])
+    ).rows[0] as { id: string } | undefined;
     // check_status 'ok': the new item was verified against the bytes just now (size and QuickXorHash), whose SHA-256 is
-    // the recorded one. The old copy is gone, so there is nothing to remove (old_copy_move_id stays empty).
+    // the recorded one. The old copy is gone, so there is nothing left to remove: old_copy_move_id is cleared (relocation
+    // sets it only while an old copy still exists).
     await c.query(
       `UPDATE stored_files SET state = 'stored', destination_id = $2, connector = $3, drive_id = $4, item_id = $5, path = $6, name = $7,
               provider_hash = $8, etag = $9, ctag = $10, web_url = $11, check_status = 'ok', last_checked_at = $12, failure_code = NULL,
-              folder_id = NULL, upload_destination_id = $2, upload_folder_id = $13, upload_name = $7, size_bytes = $14
+              folder_id = $15, upload_destination_id = $2, upload_folder_id = $13, upload_name = $7, size_bytes = $14, old_copy_move_id = NULL
         WHERE id = $1`,
-      [f.id, target.dest.id, target.dest.connector, target.dest.driveId, ref.itemId, ref.path, ref.name, ref.providerHash, ref.etag, ref.ctag, ref.webUrl, at, folderId, ref.size],
+      [f.id, target.dest.id, target.dest.connector, target.dest.driveId, ref.itemId, ref.path, ref.name, ref.providerHash, ref.etag, ref.ctag, ref.webUrl, at, folderId, ref.size, folder?.id ?? null],
     );
     await c.query('COMMIT');
   } catch (err) {
