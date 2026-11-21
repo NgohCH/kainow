@@ -2,7 +2,7 @@
 import { DECISION_STATUS_LABEL, QUESTION_STATUS_LABEL, REVIEW_STATUS_LABEL, RISK_STATUS_LABEL, TASK_STATUS_LABEL } from './records.ts';
 import { STATUS_LABEL as PROJECT_STATUS_LABEL } from './projects.ts';
 
-export type SearchKind = 'project' | 'person' | 'note' | 'message' | 'ai_proposal' | 'human_proposal' | 'task' | 'decision' | 'question' | 'risk';
+export type SearchKind = 'project' | 'person' | 'note' | 'message' | 'ai_proposal' | 'human_proposal' | 'task' | 'decision' | 'question' | 'risk' | 'output';
 
 export interface SearchResult {
   kind: SearchKind;
@@ -40,6 +40,7 @@ export const KIND_LABELS: Record<SearchKind, string> = {
   decision: 'Decision',
   question: 'Question',
   risk: 'Risk',
+  output: 'Output',
 };
 
 export const SEARCH_KINDS = Object.keys(KIND_LABELS) as SearchKind[];
@@ -50,6 +51,7 @@ const STATUS_LABELS: Partial<Record<SearchKind, Record<string, string>>> = {
   decision: DECISION_STATUS_LABEL,
   question: QUESTION_STATUS_LABEL,
   risk: RISK_STATUS_LABEL,
+  output: { submitted: 'Submitted', registered: 'Registered', declined: 'Declined', withdrawn: 'Withdrawn' },
   ai_proposal: REVIEW_STATUS_LABEL,
   human_proposal: REVIEW_STATUS_LABEL,
 };

@@ -24,6 +24,11 @@
  *    it is derived when shown from an unrestored quarantine_originals row for extraction_items.quote
  *    (quoteChangedItems).
  *  - JSON keys are never rewritten (they are fixed by code); only string leaves are cleaned.
+ *  - Stored files (external outputs spec 8.5): a cleaned version's original and text file already in the managed source
+ *    area are withheld (the `withhold` job keeps their content encrypted here as table `stored_files`, column
+ *    `content`, then removes them permanently); the version shows its original withheld while that file is. An output held by the
+ *    case has its unfiled bytes withheld like an upload. Restoring hands encrypted files back to `restore-withheld`;
+ *    those rows are never written back by restoreOriginals itself nor shown by readOriginals.
  */
 import { createHash } from 'node:crypto';
 import type { Pool, PoolClient } from 'pg';
@@ -31,6 +36,8 @@ import { uuidv7 } from '../common/uuid7';
 import { type Edit, cleanEdges, cleanJson, cleanText, mapOffset, removedSpans, searchForms } from './clean-text';
 import type { ProtectedKey } from './protected-key';
 import { locateQuote } from '../notes/text';
+import { queueStorageJob } from '../storage/outbox';
+import { FILE_CONTENT_COLUMN, FILE_CONTENT_TABLE, IS_FILE_CONTENT, queueWithhold, releaseWithheld, withheldBy } from '../storage/withhold';
 import { TEXT_COLUMNS, type ItemKind, type TextColumn } from './registry';
 
 export const QUOTE_CHANGED_TEXT = 'Quote changed: credential removed — review';
@@ -64,6 +71,7 @@ const VERSION_TEXTS: Array<{ table: 'source_versions' | 'message_versions'; colu
 ];
 
 function codecOf(table: string, column: string): Codec {
+  if (table === FILE_CONTENT_TABLE && column === FILE_CONTENT_COLUMN) return 'bytes';
   const reg = REGISTERED.get(`${table}.${column}`);
   if (reg) return reg.binary ? 'bytes' : reg.json || reg.array ? 'json' : 'text';
   if (OFFSET_COLUMNS[table]?.includes(column)) return 'json';
@@ -229,6 +237,8 @@ interface Change {
 /** The changes planned for one item, row by row. */
 class Plan {
   readonly rows = new Map<string, { table: string; key: Row; newKey: Row; cols: Map<string, Change> }>();
+  /** Stored files (sub-project 9) holding a cleaned version's original or text: withheld (spec 8.5). */
+  readonly files = new Set<string>();
 
   has(table: string, key: Row, column: string): boolean {
     return this.rows.get(rowId(table, key))?.cols.has(column) ?? false;
@@ -329,6 +339,24 @@ async function planDerived(
 
   const uploads = await c.query(`SELECT id, original_bytes FROM source_versions WHERE id = ANY($1::uuid[]) AND original_bytes IS NOT NULL`, [ids]);
   for (const u of uploads.rows) plan.set('source_versions', { id: u.id }, 'original_bytes', u.original_bytes, null);
+
+  // Files already in the managed source area hold the secret too (the original, and text.txt): they are withheld. A
+  // file still being stored is not: its upload is discarded when it finds the version cleaned (store-source).
+  const stored = await c.query<{ id: string; original_id: string | null; original_state: string | null; text_id: string | null; text_state: string | null }>(
+    `SELECT v.id, o.id AS original_id, o.state AS original_state, t.id AS text_id, t.state AS text_state
+       FROM source_versions v LEFT JOIN stored_files o ON o.id = v.original_stored_file_id LEFT JOIN stored_files t ON t.id = v.text_stored_file_id
+      WHERE v.id = ANY($1::uuid[]) AND v.original_bytes IS NULL`,
+    [ids],
+  );
+  // A file another case already withholds is held by this case too, so it comes back only once neither holds it.
+  // A file being relocated is in storage too (its copy is abandoned when the relocation finds it withheld).
+  const inStorage = (state: string | null) => state === 'stored' || state === 'relocating' || state === 'withheld';
+  for (const r of stored.rows) {
+    if (r.original_id && inStorage(r.original_state)) {
+      plan.files.add(r.original_id);
+    }
+    if (r.text_id && inStorage(r.text_state)) plan.files.add(r.text_id);
+  }
 }
 
 /**
@@ -437,9 +465,26 @@ export async function cleanItem(
       plan.set(col.table, rowKey, col.column, r.value, after);
     }
   }
+
+  // 3. An output (the reported one, or a place): its files cannot be cleaned or masked, so they are withheld, held by
+  // this case until it decides them (a place dismissed gets them back); bytes kept in the database until filing are
+  // withheld like an upload (external outputs spec 4.7, 8.5).
+  if (kind === 'output') {
+    const bytes = await c.query<{ output_version_id: string; bytes: Buffer }>(
+      `SELECT b.output_version_id, b.bytes FROM output_version_bytes b JOIN output_versions v ON v.id = b.output_version_id
+        WHERE v.output_id = $1 AND b.bytes IS NOT NULL ORDER BY b.output_version_id`,
+      [itemId],
+    );
+    for (const b of bytes.rows) plan.set('output_version_bytes', { output_version_id: b.output_version_id }, 'bytes', b.bytes, null);
+    const files = await c.query<{ id: string }>(
+      `SELECT f.id FROM output_versions v JOIN stored_files f ON f.id = v.stored_file_id WHERE v.output_id = $1 AND f.state IN ('stored', 'relocating', 'withheld') ORDER BY f.id`,
+      [itemId],
+    );
+    for (const f of files.rows) plan.files.add(f.id);
+  }
   if (plan.rows.size === 0) return { rows: 0 };
 
-  // 3. Originals first (encrypted, keyed by the cleaned row key), then the cleaned values.
+  // 4. Originals first (encrypted, keyed by the cleaned row key), then the cleaned values.
   try {
     await openWrite(c, caseId);
     return await writePlan(c, key, caseId, kind, itemId, plan);
@@ -448,7 +493,7 @@ export async function cleanItem(
   }
 }
 
-async function writePlan(c: Db, key: ProtectedKey, caseId: string, kind: ItemKind, itemId: string, plan: Plan): Promise<{ rows: number }> {
+async function writePlan(c: PoolClient, key: ProtectedKey, caseId: string, kind: ItemKind, itemId: string, plan: Plan): Promise<{ rows: number }> {
   const originals: unknown[] = [];
   const writes: RowWrite[] = [];
   for (const row of plan.rows.values()) {
@@ -482,6 +527,8 @@ async function writePlan(c: Db, key: ProtectedKey, caseId: string, kind: ItemKin
     throw quiet(err, 'quarantine_originals');
   }
   await writeRows(c, writes);
+  await queueWithhold(c, [...plan.files], caseId);
+  await queueRenames(c, writes);
   return { rows: writes.length };
 }
 
@@ -565,10 +612,52 @@ export async function restoreOriginals(
   caseId: string,
   scope?: { kind: ItemKind; id: string },
 ): Promise<{ restored: number; changed: Array<{ table: string; rowKey: unknown }> }> {
+  const out = await restoreRows(c, key, caseId, scope);
+  await releaseWithheldFiles(c, caseId, scope);
+  // An upload withheld before it was ever stored (no file in storage) has its bytes back: it is stored now.
+  const pending = await c.query<{ id: string }>(
+    `UPDATE stored_files f SET state = 'pending', failure_code = NULL
+       FROM source_versions v
+      WHERE v.original_stored_file_id = f.id AND f.state = 'withheld' AND f.item_id IS NULL AND v.original_bytes IS NOT NULL
+      RETURNING v.id`,
+  );
+  for (const v of pending.rows) await queueStorageJob(c, 'store-source', v.id);
+  return out;
+}
+
+/**
+ * The case asks for its withheld stored files back (in scope: a dismissed place; all of them: a false-alarm release).
+ * Each comes back once no other case still holds it (storage/withhold.ts). Exported for a place dismissed before it
+ * was masked (held for want of the key), whose files may already be withheld.
+ */
+export async function releaseWithheldFiles(c: PoolClient, caseId: string, scope?: { kind: ItemKind; id: string }): Promise<void> {
+  const inScope = scope ? REGISTERED.get('stored_files.name')?.itemSql?.[scope.kind] : undefined;
+  if (scope && !inScope) return;
+  const ids = scope
+    ? (await c.query<{ id: string }>(`SELECT s.id FROM (${inScope}) s ORDER BY s.id`, [scope.id])).rows.map((r) => r.id)
+    : null;
+  await releaseWithheld(c, caseId, await withheldBy(c, caseId, ids));
+}
+
+/**
+ * Names in storage follow an output's title (spec 5.4): when the engine writes a title (cleaned, or restored by a
+ * release), the output's folder and files are renamed in storage (`rename-output`), urgently.
+ */
+async function queueRenames(c: PoolClient, writes: RowWrite[]): Promise<void> {
+  const outputs = [...new Set(writes.filter((w) => w.table === 'outputs' && 'title' in w.set).map((w) => w.key.id as string))].sort();
+  for (const id of outputs) await queueStorageJob(c, 'rename-output', id, { priority: 'urgent' });
+}
+
+async function restoreRows(
+  c: PoolClient,
+  key: ProtectedKey,
+  caseId: string,
+  scope?: { kind: ItemKind; id: string },
+): Promise<{ restored: number; changed: Array<{ table: string; rowKey: unknown }> }> {
   const { rows } = await c.query<Original>(
     `SELECT id, table_name, row_key, column_name, sweep, ciphertext, nonce, tag, key_id, cleaned_sha256
        FROM quarantine_originals
-      WHERE case_id = $1 AND restored_at IS NULL ${scope ? 'AND item_kind = $2 AND item_id = $3' : ''}
+      WHERE case_id = $1 AND restored_at IS NULL AND NOT ${IS_FILE_CONTENT('quarantine_originals')} ${scope ? 'AND item_kind = $2 AND item_id = $3' : ''}
       ORDER BY sweep DESC`,
     scope ? [caseId, scope.kind, scope.id] : [caseId],
   );
@@ -635,6 +724,7 @@ export async function restoreOriginals(
   } finally {
     await closeWrite(c);
   }
+  await queueRenames(c, writes.map((w) => ({ table: w.table, key: w.loadKey, set: w.set })));
   if (restored.length > 0) await c.query(`UPDATE quarantine_originals SET restored_at = now() WHERE id = ANY($1::uuid[])`, [restored]);
   return { restored: restored.length, changed: [...changed.values()] };
 }
@@ -674,7 +764,7 @@ export async function readOriginals(c: Db, key: ProtectedKey, caseId: string, sc
   const { rows } = await c.query<Original>(
     `SELECT id, table_name, row_key, column_name, sweep, ciphertext, nonce, tag, key_id, cleaned_sha256
        FROM quarantine_originals
-      WHERE case_id = $1 AND item_kind = $2 AND item_id = $3
+      WHERE case_id = $1 AND item_kind = $2 AND item_id = $3 AND NOT ${IS_FILE_CONTENT('quarantine_originals')}
       ORDER BY sweep, table_name, column_name, id`,
     [caseId, scope.kind, scope.id],
   );

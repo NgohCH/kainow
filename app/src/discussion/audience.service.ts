@@ -10,6 +10,7 @@ import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/
 import { grantGivesAccess } from '../projects/grants';
 import { effectiveRoles } from '../projects/membership';
 import { type AudienceChange, type AudienceRow, type Person, RESTRICTED_ROLES, inAudience } from './audience';
+import { queueProjectSharing } from '../outputs/sharing-queue';
 
 type Db = Pool | PoolClient;
 
@@ -264,6 +265,8 @@ export class AudienceService {
       // Narrowing (Project-wide to Restricted, or a named person removed) sends AI answers and drafts built on material
       // with this audience through the removal hook (4b spec 5.5), in this transaction. Widening never does.
       if (narrows(locked, change)) await onMaterialRemoved(client, { audienceId }, 'audience_tightened', at);
+      // Readers of outputs built on this material may change with it (D101): their folders are synced.
+      await queueProjectSharing(client, current.projectId, narrows(locked, change) ? 'urgent' : 'normal');
       await client.query('COMMIT');
       return { ...locked, mode: change.mode, namedUserIds: [...change.namedUserIds] };
     } catch (err) {

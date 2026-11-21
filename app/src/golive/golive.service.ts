@@ -73,12 +73,12 @@ export class GoLiveService {
     return t === '' ? null : t;
   }
 
-  /** action: tick | untick | skip (skip is for the logos step only). */
+  /** action: tick | untick | skip (skip is for the steps that can be skipped: logos and storage). */
   async change(user: AuthUser, key: string, action: 'tick' | 'untick' | 'skip', body: Record<string, unknown>) {
     await this.admin(user);
     const def = STEPS.find((s) => s.key === key);
     if (!def) throw new NotFoundException();
-    if (action === 'skip' && key !== 'logos') throw new NotFoundException();
+    if (action === 'skip' && def.mode !== 'auto_or_skip') throw new NotFoundException();
     // The logos step can be done by the Administrator only as "skipped"; other automatic steps are Kainow's alone.
     if (def.mode === 'auto' || (def.mode === 'auto_or_skip' && action === 'tick')) throw new ConflictException(MSG.autoStep);
     const note = action === 'untick' ? null : this.noteOf(body);
@@ -89,7 +89,7 @@ export class GoLiveService {
       const closed = (await c.query(`SELECT closed_at FROM golive_checklist WHERE id = 1 FOR UPDATE`)).rows[0].closed_at;
       if (closed) throw new ConflictException(MSG.closed);
       const row = (await c.query(`SELECT ticked_by, ticked_at FROM golive_steps WHERE key = $1 FOR UPDATE`, [key])).rows[0];
-      if (key === 'logos' && row.ticked_at !== null && row.ticked_by === null) throw new ConflictException(MSG.autoStep);
+      if (def.mode === 'auto_or_skip' && row.ticked_at !== null && row.ticked_by === null) throw new ConflictException(MSG.autoStep);
       // A tick never overwrites who and when; an untick of a step that is not done records nothing.
       if (action === 'untick' && row.ticked_at === null) throw new ConflictException(MSG.notDone);
       if (action !== 'untick' && row.ticked_at !== null) throw new ConflictException(MSG.alreadyDone);

@@ -81,12 +81,12 @@ describe('archive and department transfer', { skip: SKIP_NO_DB }, () => {
     const pm = await t.signIn('pm@example.org');
     const refused = await pm.request('POST', `/projects/${projectId}/department`, { departmentId: finance, reason: 'Reorganised' });
     assert.equal(refused.status, 403);
-    assert.equal(refused.body.message, 'Only an Enterprise Administrator can move a project to another owning department.');
+    assert.equal(refused.body.message, 'Only an Enterprise Administrator can change a project’s owning department.');
     assert.equal((await admin.request('POST', `/projects/${projectId}/department`, { departmentId: finance })).body.message, 'A reason is required.');
     assert.equal((await admin.request('POST', `/projects/${projectId}/department`, { departmentId: finance, reason: 'Reorganised' })).status, 200);
     assert.equal((await project(owner)).owningDepartment.name, 'Finance');
-    const change = (await t.pool.query(`SELECT files_decision, reason FROM project_department_changes WHERE project_id = $1`, [projectId])).rows;
-    assert.deepEqual(change, [{ files_decision: 'kept_in_place', reason: 'Reorganised' }]);
+    const change = (await t.pool.query(`SELECT folder_choice, reason, state FROM project_department_transfers WHERE project_id = $1`, [projectId])).rows;
+    assert.deepEqual(change, [{ folder_choice: null, reason: 'Reorganised', state: 'done' }]);
     const same = await admin.request('POST', `/projects/${projectId}/department`, { departmentId: finance, reason: 'x' });
     assert.equal(same.status, 409);
     assert.equal(same.body.message, 'The project already belongs to that department.');

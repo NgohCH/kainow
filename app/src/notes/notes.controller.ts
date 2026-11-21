@@ -41,6 +41,9 @@ function who(req: HttpRequest): AuthUser {
   return user;
 }
 
+/** The PM, a Deputy, the Owner or a Sponsor today: offered new versions and shown each version's storage state. */
+const isManager = (roles: readonly string[]): boolean => roles.some((r) => ['pm', 'deputy_pm', 'owner', 'sponsor'].includes(r));
+
 /** Notes live in projects; every route is checked against the note's project (ProjectAccess). */
 @Controller()
 export class NotesController {
@@ -119,16 +122,17 @@ export class NotesController {
     await this.access.authorize(who(req), 'note.view', row.projectId);
     // Whether the viewer is offered "Add a new version": the same rule forVersionAdd and the service apply.
     const open = ['draft', 'planned', 'active'].includes(ctx.project.status);
-    const manager = ctx.roles.some((r) => ['pm', 'deputy_pm', 'owner', 'sponsor'].includes(r));
+    const manager = isManager(ctx.roles);
     const mayAddVersion = row.kind === 'notes' && open && ((row.publication === 'published' && manager) || (row.publication === 'returned' && row.submittedBy === who(req).id && ctx.roles.length > 0));
-    return { ...(await this.notes.get(sourceId)), mayAddVersion };
+    return { ...(await this.notes.get(sourceId, manager)), mayAddVersion };
   }
 
   @Get('notes/:id/versions/:n')
   @AnySignedInUser()
   async getVersion(@Param('id') sourceId: string, @Param('n') n: string, @Req() req: HttpRequest) {
-    await this.forSource(req, sourceId, 'note.view');
-    return { version: await this.notes.getVersion(sourceId, versionNumber(n)) };
+    const { row, ctx } = await this.audiences.assertSourceReadable(who(req), id(sourceId));
+    await this.access.authorize(who(req), 'note.view', row.projectId);
+    return { version: await this.notes.getVersion(sourceId, versionNumber(n), isManager(ctx.roles)) };
   }
 
   /** The uploaded file exactly as received. Always a download, never rendered by the browser. */

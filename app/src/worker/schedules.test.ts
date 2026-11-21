@@ -131,3 +131,44 @@ test('with the protected key, the quarantine.clean-waiting job runs at start and
     await boss.stop({ graceful: true, timeout: 5000 });
   }
 });
+
+test('the storage outbox is sent every minute and the daily storage tick runs at 02:30 UTC+8; failures are logged with fixed messages', { skip: SKIP_NO_DB }, async () => {
+  const logs: string[] = [];
+  let sends = 0;
+  let dailies = 0;
+  const storage = {
+    sendOutbox: async () => {
+      sends++;
+      throw new Error('postgres://user:hunter2@db.example.org refused');
+    },
+    daily: async () => {
+      dailies++;
+      throw new Error('Bearer hunter2');
+    },
+  };
+  const boss = await startQueues(testDatabaseUrl() as string, SCHEMA, { schedule: true });
+  await registerSchedules(boss, { sweep: { runIfDue: async () => true } as unknown as Sweep, dispatcher: { dispatchDue: async () => ({}) } as unknown as EmailDispatcher, storage, log: (m) => logs.push(m) });
+  try {
+    const schedules = await boss.getSchedules();
+    const outbox = schedules.find((x) => x.name === QUEUES.storageOutbox);
+    const daily = schedules.find((x) => x.name === QUEUES.storageDaily);
+    assert.equal(outbox?.cron, '* * * * *');
+    assert.equal(daily?.cron, '30 2 * * *');
+    assert.equal(daily?.timezone, 'Asia/Kuala_Lumpur');
+    // The daily run may take hours at real provider latency, and is never re-run the same day (its tasks isolate failures).
+    const opts = (daily as { options?: { expireInSeconds?: number; retryLimit?: number } } | undefined)?.options;
+    assert.deepEqual([opts?.expireInSeconds, opts?.retryLimit], [4 * 60 * 60, 0]);
+    await boss.unschedule(QUEUES.storageOutbox, 'tick');
+    await boss.unschedule(QUEUES.storageDaily, 'tick');
+    await boss.send(QUEUES.storageOutbox, {});
+    await boss.send(QUEUES.storageDaily, {});
+    await until(() => sends >= 1 && dailies >= 1 && logs.length >= 2);
+    assert.deepEqual([...logs].sort(), [
+      'Sending the storage outbox failed; it will run again on the next tick.',
+      'The daily storage tick failed; it will run again tomorrow.',
+    ]);
+    assert.ok(!logs.join(' ').includes('hunter2'));
+  } finally {
+    await boss.stop({ graceful: true, timeout: 5000 });
+  }
+});

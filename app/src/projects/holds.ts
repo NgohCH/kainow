@@ -5,6 +5,7 @@
 import type { PoolClient } from 'pg';
 import { uuidv7 } from '../common/uuid7';
 import { type MembershipRow, type ProjectRole, membershipState } from './membership';
+import { queueProjectSharing } from '../outputs/sharing-queue';
 
 export const HOLD_REASON_DISABLED = 'Account disabled';
 
@@ -41,6 +42,8 @@ export async function holdMembershipsOf(
     );
     if (!affected.has(r.projectId)) affected.set(r.projectId, { projectId: r.projectId, projectName: r.projectName, heldRole: r.role });
   }
+  // On Hold ends SharePoint access at once (spec 5.5).
+  for (const projectId of affected.keys()) await queueProjectSharing(c, projectId, 'urgent');
   return [...affected.values()];
 }
 

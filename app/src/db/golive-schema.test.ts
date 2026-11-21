@@ -34,7 +34,7 @@ describe('go-live schema', { skip: SKIP_NO_DB }, () => {
     userId = await seedUser(pool, 'a@example.org');
   });
 
-  test('the 11 steps are seeded in order, untouched', async () => {
+  test('the 12 steps are seeded in order, untouched', async () => {
     const { rows } = await pool.query(
       `SELECT key, position, ticked_by, ticked_at, note, skipped FROM golive_steps ORDER BY position`,
     );
@@ -42,7 +42,7 @@ describe('go-live schema', { skip: SKIP_NO_DB }, () => {
       rows.map((r) => [r.position, r.key]),
       [
         [1, 'organisation'], [2, 'logos'], [3, 'second_admin'], [4, 'recovery'], [5, 'mailbox'], [6, 'test_email'],
-        [7, 'calendar'], [8, 'backups'], [9, 'department'], [10, 'users'], [11, 'project'],
+        [7, 'calendar'], [8, 'backups'], [9, 'department'], [10, 'users'], [11, 'project'], [12, 'storage'],
       ],
     );
     for (const r of rows) {
