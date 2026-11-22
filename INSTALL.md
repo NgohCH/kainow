@@ -43,7 +43,7 @@ A real installation runs a **release**: a tag `vX.Y.Z` signed with the Product O
    git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=release-signers verify-tag vX.Y.Z
    ```
 
-Then continue with step 1 below. **An installation made before the first release** keeps working. To let the updater take it over, put it on a release tag once, from the Kainow folder: `git fetch --tags origin`, then steps 2 and 3 above, then `git -c advice.detachedHead=false checkout --detach vX.Y.Z` and `docker compose up -d --build`. Move any change you made to `compose.yaml` into `compose.override.yaml` first (see "Local changes" below), because the checkout needs a clean folder.
+Then continue with step 1 below. **An installation made before the first release** keeps working. To let the updater take it over, put it on a release tag once, from the Kainow folder: `git fetch --tags origin` and `git -c advice.detachedHead=false checkout --detach vX.Y.Z` (as in step 1, so that `release/release-signers` is the release's own file), then steps 2 and 3 above, then `docker compose up -d --build`. Move any change you made to `compose.yaml` into `compose.override.yaml` first (see "Local changes" below), because the checkout needs a clean folder.
 
 1. **Make your settings file.** In this folder (the one with `compose.yaml`):
 
@@ -434,6 +434,38 @@ Once a tick on a release tag has been recorded in the last 24 hours, Kainow tick
 
 Every step, and why an update stopped, is shown on the Operations page, as fixed text and never raw command output (that goes to the log only, with the database password masked). The two refusals you can fix on the server: `local_changes` (a tracked file in the folder was changed: move the change into `compose.override.yaml` or `.env` and undo it with `git checkout -- <file>`) and `not_on_release` (the folder is not at the running release's tag: see "Install", "An installation made before the first release").
 
+### If the release key was lost or replaced
+
+Normally the key changes through releases: a release signed with the old key adds the new one, and the updater copies the release's `release/release-signers` over the trusted file only after that release verified against it. If the Product Owner lost the key, or this installation fell behind a rotation, releases signed with the new key are refused (`signature_invalid`) until you replace the trusted `release-signers` file by hand. In the Kainow folder, with `vX.Y.Z` the first release signed with the new key:
+
+1. Take the new file from that release, without checking it out:
+
+   ```
+   git fetch --tags origin
+   git show vX.Y.Z:release/release-signers > release-signers.tmp
+   ```
+
+2. Show its keys' fingerprints and compare each with the key published in this guide ("Install", "Get the code at a signed release", as the guide reads in that release) **and** on that release's GitHub page. Both must match; if either differs, stop and delete `release-signers.tmp`:
+
+   ```
+   grep -v '^#' release-signers.tmp | awk '{print $3, $4}' | ssh-keygen -lf -
+   ```
+
+3. Keep a copy of the old file outside the folder, then replace it:
+
+   ```
+   cp release-signers ~/release-signers.old
+   mv release-signers.tmp release-signers
+   ```
+
+4. Verify the release against the new file. The output must say `Good "git" signature for kainow-release`; if it does not, put the old file back (`cp ~/release-signers.old release-signers`):
+
+   ```
+   git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=release-signers verify-tag vX.Y.Z
+   ```
+
+The Operations page shows the new key's fingerprint after the next updater tick. An update already refused for the signature must be approved again.
+
 ### Turning the updater off
 
 Remove its crontab line. Nothing else ever starts the updater, so it then has no access to anything. An approved update is then never installed: cancel it on the Operations page. Go-live step 13 unticks itself after 24 hours.
@@ -490,7 +522,7 @@ It shows what it will do and asks you to type `yes` (`recover --yes` skips the q
 
 When no migration ran, `recover` skips the rename and the restore: it starts the previous version, waits for its health checks, ends the update's read-only mode and prints `Kainow is back on vA.B.C.`
 
-**If `recover` stops with a message**, nothing more was changed, and the message says what to do; you can run it again, and it carries on from where it stopped (for example from the restore, once the failed database is already set aside). The common ones: "An updater tick is running; try again in a minute."; "The Kainow folder is not at vA.B.C. Check it out (…) and run recover again."; "The restore did not finish …": fix what the restore's messages name (the backup folder, a key, free space), and recreate the empty database first if it says so. **Never drop a `kainow_failed_…` database to make `recover` go on**: it is the failed database, kept for investigation.
+**If `recover` stops with a message**, it changes nothing further, and the message says what to do; you can run it again, and it carries on from where it stopped (for example from the restore, once the failed database is already set aside). The common ones: "An updater tick is running; try again in a minute."; "The Kainow folder is not at vA.B.C. Check it out (…) and run recover again."; "The restore did not finish …": fix what the restore's messages name (the backup folder, a key, free space), and recreate the empty database first if it says so. **Never drop a `kainow_failed_…` database to make `recover` go on**: it is the failed database, kept for investigation.
 
 **If Kainow is still unhealthy after `recover`** ("Kainow vA.B.C did not start or did not pass its health checks within 10 minutes; the notice page is shown again."):
 
