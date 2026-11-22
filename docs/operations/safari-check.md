@@ -53,7 +53,15 @@ You start a separate, throwaway copy of Kainow on the PC that the Apple device c
 
    The last line should end with `Seeded in … s: 200 people, 40 projects …`. A warning about "No protected key" is expected.
 
-6. Let the Apple device in through the Windows firewall. This needs an administrator: open a **second** PowerShell window **as administrator** (Start menu, type `PowerShell`, right-click, **Run as administrator**) and run:
+   Then add a finished AI reading of one note, with three decisions waiting for review (no AI is used; one decision per device):
+
+   ```
+   node ..\tests\browsers\review-run.mjs 3
+   ```
+
+   It should say `A finished AI run with 3 decisions to review is on "Meeting notes 6.1" in Load Project 06`.
+
+6. **Do this only on your home or office network, never on public Wi-Fi** (a café, hotel or airport): the rule lets in every device on the same network. Let the Apple device in through the Windows firewall. This needs an administrator: open a **second** PowerShell window **as administrator** (Start menu, type `PowerShell`, right-click, **Run as administrator**) and run:
 
    ```
    New-NetFirewallRule -DisplayName "Kainow Safari check" -Direction Inbound -Protocol TCP -LocalPort 3312 -RemoteAddress LocalSubnet -Action Allow -Profile Any
@@ -67,9 +75,9 @@ You start a separate, throwaway copy of Kainow on the PC that the Apple device c
    node dist/main.js
    ```
 
-   It is ready when it shows `kainow api listening on 3312`. (If Windows shows a "Windows Security Alert" about Node.js, do not choose anything: ask the builder.) The sign-in codes will appear in this window as lines like `load-001@example.org: 123456`.
+   It is ready when it shows `kainow api listening on 3312`. (If Windows shows a "Windows Security Alert" about Node.js, choose **Cancel**: the rule from step 6 already lets the Apple device in.) The sign-in codes will appear in this window as lines like `load-001@example.org: 123456`.
 
-Kainow now listens on all of the PC's network addresses on port 3312, including its local network address; the firewall rule lets in the local network only.
+Kainow now listens on all of the PC's network addresses on port 3312, including its local network address; the firewall rule lets in the local network only. Again: only on your home or office network, never on public Wi-Fi.
 
 *(If the builder has instead set up the test installation on a cloud machine, skip Part A and Part E: open the address the builder gives you.)*
 
@@ -96,13 +104,14 @@ On an iPhone the menu at the top of every page is long: scroll up to see it.
 | 6 | Find a task that has a **Block** button (an "In Progress" task). Tap **Block**, type `Waiting for the Safari check` in **Why is it blocked?**, and tap the **Block** button under it. | "Block: done." at the top of the list, and that task now shows **Blocked**. | |
 | 7 | Tap **Notes & discussion**, then the first discussion (for example "The survey plan, part 3"). Type `Safari check comment` in **Write a message** and tap **Post**. | Your comment appears at the end of the messages, with your name (Load Person 001). | |
 | 8 | Tap **Notes & discussion** again (or go back), then tap the first note (for example "Meeting notes 1.8"). | The note's title as the page heading and the text of the notes. | |
-| 9 | Tap **My Projects** (top menu), **All projects and new project**, then **Load Project 06**, then **Notes & discussion**. Scroll down to **Proposals from people**. | A list of proposals; some say "Proposed: change the …" and have **Authorise** and **Reject** buttons. | |
-| 10 | On one "Proposed: change the …" proposal, tap **Authorise**. A form opens; tap the **Authorise** button at its foot. | "Authorised: it is now on the Work tab.", and that proposal now says "authorised (see the Work tab)". | |
-| 11 | Tap **My Projects** in the top menu. | Your dashboard: **Needs you** and **My tasks**, with tasks grouped by Overdue, Due in the next 7 days and Later. | |
-| 12 | Tap **All projects and new project**, then **Load Project 01**. | The project page with **Figures** (numbers of tasks, decisions, questions, risks). | |
-| 13 | Tap **Analytics** in the top menu. | **Analytics**, with **Saved views** and charts or figures under it. | |
-| 14 | Tap **Operations** in the top menu. | **Operations**, with **Backups** ("No backup yet" is expected on this test copy). | |
-| 15 | Tap **Sign out** (top right; on an iPhone, at the end of the top menu). | The sign-in page again ("Sign in to Kainow"). | |
+| 9 | Tap **My Projects** (top menu), **All projects and new project**, then **Load Project 06**, then **Notes & discussion**, then the note **Meeting notes 6.1**. Under **Proposals from this version**, tap **Review**. | **Review proposals**: the notes on one side, and on the other three decisions found in them (for example "Review the … figures before the next meeting"), each with the passage it quotes. Tapping a decision highlights its passage in the notes. A red box asking for the meeting date is expected; leave it. | |
+| 10 | On a decision that still has an **Authorise** button, tap **Authorise**. A form opens; tap the **Authorise** button at its foot. | That decision now shows **Authorised: see the Work tab**, and the count at the top says one more approved. | |
+| 11 | Tap **My Projects** (top menu), **All projects and new project**, then **Load Project 06**, then **Notes & discussion**. Scroll down to **Proposals from people**. On one "Proposed: change the …" proposal, tap **Authorise**, then the **Authorise** button at the foot of the form. | "Authorised: it is now on the Work tab.", and that proposal now says "authorised (see the Work tab)". | |
+| 12 | Tap **My Projects** in the top menu. | Your dashboard: **Needs you** and **My tasks**, with tasks grouped by Overdue, Due in the next 7 days and Later. | |
+| 13 | Tap **All projects and new project**, then **Load Project 01**. | The project page with **Figures** (numbers of tasks, decisions, questions, risks). | |
+| 14 | Tap **Analytics** in the top menu. | **Analytics**, with **Saved views** and charts or figures under it. | |
+| 15 | Tap **Operations** in the top menu. | **Operations**, with **Backups** ("No backup yet" is expected on this test copy). | |
+| 16 | Tap **Sign out** (top right; on an iPhone, at the end of the top menu). | The sign-in page again ("Sign in to Kainow"). | |
 
 Also try, on the iPhone or iPad: turn the device sideways on one or two pages, and pinch to zoom. Note anything that does not fit or cannot be reached.
 

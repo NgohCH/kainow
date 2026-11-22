@@ -5,6 +5,7 @@ import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { REVIEW_NOTE, REVIEW_NOTE_PROJECT, createReviewRun } from './review-run.mjs';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const require = createRequire(import.meta.url);
@@ -18,6 +19,8 @@ const WANTED = (process.env.BROWSERS ?? 'chrome,msedge,firefox,webkit,chrome-pre
 const WORK_PROJECT = process.env.KAINOW_PROJECT ?? 'Load Project 01';
 // Comma list; the first with a decision waiting is used. The Administrator is the Owner of each (the seed's Owners review proposals).
 const REVIEW_PROJECTS = (process.env.KAINOW_REVIEW_PROJECTS ?? 'Load Project 06,Load Project 16,Load Project 26,Load Project 36').split(',').map((p) => p.trim());
+// Optional: the test installation's database, to insert a finished AI run for the review screen (review-run.mjs).
+const DATABASE_URL = process.env.DATABASE_URL;
 const STEP_TIMEOUT = 15_000;
 const RESEND_GAP_MS = 61_000; // the API sends at most one code a minute per person
 
@@ -56,6 +59,8 @@ const BROWSERS = {
   },
 };
 class NotObtainable extends Error {}
+/** A step that cannot be checked in this setup (recorded as "not checked", not as a failure). */
+class NotChecked extends Error {}
 
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const escape = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
@@ -150,29 +155,49 @@ const STEPS = [
     await note.click();
     await page.getByRole('heading', { name, level: 1 }).waitFor();
   }],
-  ['Review screen with a proposal', async (page) => {
-    // Each journey authorises one decision; when a project has none left waiting, the next project in the list is used.
+  ['Review screen with a proposal', async (page, run) => {
+    // The AI review screen (#/runs/:id) needs a finished run; with DATABASE_URL the run inserts one (review-run.mjs) on
+    // "Meeting notes 6.1" in Load Project 06, where the Administrator is the Owner.
+    if (!DATABASE_URL) throw new NotChecked('DATABASE_URL not set, so no AI run to review');
+    const { runId, decisions } = await createReviewRun(DATABASE_URL, 1);
+    run.decision = decisions[0];
+    await openProject(page, REVIEW_NOTE_PROJECT);
+    await page.getByRole('link', { name: 'Notes & discussion' }).click();
+    await page.getByRole('heading', { name: 'Notes & discussion', level: 2 }).waitFor();
+    await page.locator('a[href^="#/notes/"]').filter({ hasText: new RegExp('^' + escape(REVIEW_NOTE) + '(?!\d)') }).first().click();
+    await page.getByRole('heading', { name: REVIEW_NOTE, level: 1 }).waitFor();
+    await page.locator(`a[href="#/runs/${runId}"]`).click();
+    await page.getByRole('heading', { name: 'Review proposals', level: 1 }).waitFor();
+    await page.getByRole('region', { name: 'Source text' }).waitFor();
+    await reviewCard(page, run.decision).getByRole('button', { name: 'Authorise', exact: true }).waitFor();
+  }],
+  ['Approve a proposal', async (page, run) => {
+    if (!run.decision) throw new NotChecked('the review screen step was not checked');
+    const card = reviewCard(page, run.decision);
+    await card.scrollIntoViewIfNeeded();
+    await card.getByRole('button', { name: 'Authorise', exact: true }).click();
+    await page.getByRole('form', { name: 'Authorise this proposal' }).getByRole('button', { name: 'Authorise', exact: true }).click();
+    await card.getByRole('link', { name: 'Authorised: see the Work tab' }).waitFor();
+  }],
+  ["Authorise a person's proposal", async (page) => {
+    // People's proposals (Notes & discussion › Proposals from people). Each journey authorises one decision; when a project
+    // has none left waiting, the next project in the list is used.
+    let item = null;
     for (const project of REVIEW_PROJECTS) {
-      await page.getByRole('link', { name: 'My Projects', exact: true }).first().click();
-      await page.getByRole('heading', { name: 'My Projects', level: 1 }).waitFor();
-      await page.getByRole('link', { name: 'All projects and new project' }).click();
-      await page.getByRole('heading', { name: 'Project list', level: 1 }).waitFor();
-      await page.getByRole('link', { name: new RegExp('^' + escape(project)) }).first().click();
-      await page.getByRole('heading', { name: project, level: 1 }).waitFor();
+      await openProject(page, project);
       await page.getByRole('link', { name: 'Notes & discussion' }).click();
       await page.getByRole('heading', { name: 'Proposals from people', level: 2 }).waitFor();
       await page.locator('section[aria-labelledby="human-proposals-heading"] li.work-item').first().waitFor();
-      if ((await pendingDecision(page).count()) > 0) return;
+      if ((await pendingDecision(page).count()) > 0) {
+        item = pendingDecision(page);
+        break;
+      }
     }
-    throw new Error(`no decision proposal is waiting in ${REVIEW_PROJECTS.join(', ')}`);
-  }],
-  ['Approve a proposal', async (page) => {
-    const item = pendingDecision(page);
+    if (!item) throw new Error(`no decision proposal is waiting in ${REVIEW_PROJECTS.join(', ')}`);
     const text = (await item.locator('strong').first().textContent()).trim();
     await item.scrollIntoViewIfNeeded();
     await item.getByRole('button', { name: 'Authorise', exact: true }).click();
-    const form = page.getByRole('form', { name: 'Authorise this proposal' });
-    await form.getByRole('button', { name: 'Authorise', exact: true }).click();
+    await page.getByRole('form', { name: 'Authorise this proposal' }).getByRole('button', { name: 'Authorise', exact: true }).click();
     await page.getByText('Authorised: it is now on the Work tab.').waitFor();
     await page.locator('li.work-item').filter({ has: page.locator('strong', { hasText: exactly(text) }) }).getByText('authorised (see the Work tab)').waitFor();
   }],
@@ -205,6 +230,20 @@ const STEPS = [
   }],
 ];
 
+/** From any page: My Projects, the project list, then the project. Each click waits for the page it opens. */
+async function openProject(page, project) {
+  await page.getByRole('link', { name: 'My Projects', exact: true }).first().click();
+  await page.getByRole('heading', { name: 'My Projects', level: 1 }).waitFor();
+  await page.getByRole('link', { name: 'All projects and new project' }).click();
+  await page.getByRole('heading', { name: 'Project list', level: 1 }).waitFor();
+  await page.getByRole('link', { name: new RegExp('^' + escape(project)) }).first().click();
+  await page.getByRole('heading', { name: project, level: 1 }).waitFor();
+}
+
+/** The proposal card on the review screen with this text. */
+const reviewCard = (page, text) =>
+  page.getByRole('region', { name: 'Proposals' }).locator('article').filter({ has: page.locator('.proposal-text', { hasText: exactly(text) }) });
+
 /** The first decision proposal still waiting, with its Authorise button. */
 const pendingDecision = (page) =>
   page.locator('li.work-item').filter({ hasText: 'Proposed: change the' }).filter({ has: page.getByRole('button', { name: 'Authorise', exact: true }) }).first();
@@ -226,6 +265,7 @@ async function runJourney(browser, key, sizeKey, shotDir) {
   });
   page.on('pageerror', (e) => errors.push(`page error: ${e.message}`));
   const steps = [];
+  const state = { browser: key, size: sizeKey };
   let failed = false;
   let signedIn = false;
   for (const [i, [name, step]] of STEPS.entries()) {
@@ -237,9 +277,14 @@ async function runJourney(browser, key, sizeKey, shotDir) {
     errors = [];
     let detail = '';
     try {
-      await step(page, { browser: key, size: sizeKey });
+      await step(page, state);
       await wait(400); // let late requests (and their console errors) land
     } catch (e) {
+      if (e instanceof NotChecked) {
+        steps.push({ n, name, result: 'not checked', detail: e.message });
+        console.log(`  --   ${n} ${name} — not checked: ${e.message}`);
+        continue;
+      }
       // The first line, plus what Playwright was waiting for (which link or heading), when it says.
       const lines = e.message.split('\n');
       detail = [lines[0], lines.find((l) => /waiting for/.test(l))?.trim()].filter(Boolean).join(' — ');
@@ -287,8 +332,10 @@ for (const key of WANTED) {
     const shotDir = join(shotsRoot, `${key}-${sizeKey}`);
     mkdirSync(shotDir, { recursive: true });
     const steps = await runJourney(browser, key, sizeKey, shotDir);
-    const failedSteps = steps.filter((s) => s.result !== 'passed');
-    runs.push({ key, label: def.label, version, size: SIZES[sizeKey].label, status: failedSteps.length ? 'failed' : 'passed', steps, shotDir });
+    const failedSteps = steps.filter((s) => s.result === 'failed' || s.result === 'skipped');
+    const unchecked = steps.filter((s) => s.result === 'not checked').length;
+    const status = failedSteps.length ? 'failed' : unchecked ? `passed, ${unchecked} step${unchecked > 1 ? 's' : ''} not checked` : 'passed';
+    runs.push({ key, label: def.label, version, size: SIZES[sizeKey].label, status, steps, shotDir });
   }
   await browser.close();
 }
@@ -318,5 +365,5 @@ const failedRuns = runs.filter((r) => r.status === 'failed');
 lines.push('## Failures', '', failedRuns.length ? failedRuns.map((r) => `- ${r.label} ${r.version}, ${r.size}: ${r.steps.filter((s) => s.result === 'failed').map((s) => `${s.n} ${s.name}: ${s.detail}`).join('; ')}`).join('\n') : 'None.', '');
 mkdirSync(resultsDir, { recursive: true });
 writeFileSync(join(resultsDir, `${date}.md`), lines.join('\n'));
-console.log(`\nWrote results/${date}.md: ${runs.filter((r) => r.status === 'passed').length} passed, ${failedRuns.length} failed, ${runs.filter((r) => r.status === 'not checked').length} not checked.`);
+console.log(`\nWrote results/${date}.md: ${runs.filter((r) => r.status.startsWith('passed')).length} passed, ${failedRuns.length} failed, ${runs.filter((r) => r.status === 'not checked').length} not checked.`);
 process.exit(failedRuns.length ? 1 : 0);

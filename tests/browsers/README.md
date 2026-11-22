@@ -12,13 +12,14 @@
 | 6 | Open a task and save a progress change | blocks an In progress task with a reason ("Block: done.", the task shows Blocked); when none is left, unblocks a Blocked one ("Unblock: done.", In Progress) |
 | 7 | Post a discussion comment | the comment appears under Messages |
 | 8 | Open a note | the note's heading |
-| 9 | Review screen with a proposal | Load Project 06, or the next project the Administrator owns once 06 has none waiting: Proposals from people, with a decision waiting |
-| 10 | Approve a proposal | Authorise: "Authorised: it is now on the Work tab." |
-| 11 | Personal dashboard | My Projects: Needs you and My tasks |
-| 12 | Project dashboard | the project's Figures |
-| 13 | Analytics as Administrator | Analytics and Saved views |
-| 14 | Operations page | Operations and Backups |
-| 15 | Sign out | the sign-in page again |
+| 9 | Review screen with a proposal | the run inserts a finished AI run (`review-run.mjs`) on Meeting notes 6.1 in Load Project 06 (the Administrator is its Owner); the note, its Review button, then Review proposals with the source text and the decision waiting |
+| 10 | Approve a proposal | Authorise on that decision: it shows "Authorised: see the Work tab" |
+| 11 | Authorise a person's proposal | Load Project 06 (or the next project the Administrator owns once 06 has none waiting): Proposals from people, Authorise a decision: "Authorised: it is now on the Work tab." |
+| 12 | Personal dashboard | My Projects: Needs you and My tasks |
+| 13 | Project dashboard | the project's Figures |
+| 14 | Analytics as Administrator | Analytics and Saved views |
+| 15 | Operations page | Operations and Backups |
+| 16 | Sign out | the sign-in page again |
 
 **Browsers** (`BROWSERS`, a comma list; the default is all of them):
 
@@ -46,10 +47,10 @@ AUTH_SECRET=<32+ random characters> PORT=3312 APP_URL=http://localhost:3312 LOG_
   KAINOW_RELEASE_API=http://127.0.0.1:9 node dist/main.js > /tmp/browsers/api.log 2>&1 &     # keep this running
 cd ../tests/browsers && npm install && npx playwright install firefox webkit
 node node_modules/playwright-previous/cli.js install firefox                                 # the previous Firefox
-KAINOW_API_LOG=/tmp/browsers/api.log node smoke.mjs
+DATABASE_URL=postgres://.../kainow_browsers KAINOW_API_LOG=/tmp/browsers/api.log node smoke.mjs
 ```
 
-Settings: `KAINOW_URL` (default `http://localhost:3312`), `KAINOW_EMAIL` (default `load-001@example.org`), `KAINOW_API_LOG`, `BROWSERS`, `KAINOW_PROJECT` (default Load Project 01), `KAINOW_REVIEW_PROJECTS` (default Load Project 06, 16, 26, 36: the first with a decision waiting; each journey authorises one, and each project has 20), `CHROME_PREVIOUS`, `MSEDGE_PREVIOUS`.
+Settings: `DATABASE_URL` (the same scratch database: steps 9 and 10 insert a finished AI run there to review; without it they are recorded "not checked"), `KAINOW_URL` (default `http://localhost:3312`), `KAINOW_EMAIL` (default `load-001@example.org`), `KAINOW_API_LOG`, `BROWSERS`, `KAINOW_PROJECT` (default Load Project 01), `KAINOW_REVIEW_PROJECTS` (default Load Project 06, 16, 26, 36: the first with a decision waiting; each journey authorises one, and each project has 20), `CHROME_PREVIOUS`, `MSEDGE_PREVIOUS`.
 
 Afterwards stop the API and drop the database. A run changes the data (it blocks one task, posts a comment and authorises one proposal per browser and size); the seed has enough for many runs.
 
@@ -60,6 +61,7 @@ Notes:
 - No Playwright release ships every Firefox major: `firefox-previous` runs whatever the previous Playwright release ships (on 23 November 2026, Firefox 157, two majors behind 159), so the matrix records the previous major (158) as not checked and 157 as an older version checked.
 - If Firefox fails with `spawn UNKNOWN` and Windows logs "side-by-side configuration is incorrect … mozglue", the browsers were installed from an app whose `%LOCALAPPDATA%` is redirected (a packaged app). Install and run with `PLAYWRIGHT_BROWSERS_PATH` set to an ordinary folder (the same value for `npx playwright install`, the `playwright-previous` install and `node smoke.mjs`).
 - Each step's console errors are collected before its screenshot: in WebKit, Playwright's screenshot inserts a style of its own, which Kainow's Content Security Policy (`style-src 'self'`) refuses and WebKit logs ("Refused to apply a stylesheet …"). It happens only while Playwright takes the screenshot, so it is not counted.
+- `review-run.mjs` writes the AI run straight to the database (as `tests/a11y/audit.mjs` does), because the review screen needs a finished run and the test installation has no AI. It refuses a database that is not the seeded "Example Organisation". Run by hand (`DATABASE_URL=… node review-run.mjs 3`) it makes one run with three decisions, for the Safari check.
 - After a failed step the rest of that journey is skipped (and Sign out still runs when the sign-in worked).
 
 ## Output
