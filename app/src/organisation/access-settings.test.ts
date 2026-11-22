@@ -5,7 +5,7 @@ import { ACCESS_BOUNDS, ACCESS_DEFAULTS, validateAccessSettings } from './access
 const with_ = (over: object) => validateAccessSettings({ ...ACCESS_DEFAULTS, ...over });
 
 test('the defaults are valid and have the D90 values', () => {
-  assert.deepEqual(ACCESS_DEFAULTS, { archiveAfterMonths: 12, grantDefaultDays: 30, grantMaxDays: 90, invitationValidDays: 7, analyticsExportAllowed: true });
+  assert.deepEqual(ACCESS_DEFAULTS, { archiveAfterMonths: 12, grantDefaultDays: 30, grantMaxDays: 90, invitationValidDays: 7, analyticsExportAllowed: true, projectExportsAllowed: false });
   assert.deepEqual(validateAccessSettings(ACCESS_DEFAULTS), { ok: true, value: ACCESS_DEFAULTS });
   assert.deepEqual(ACCESS_BOUNDS, {
     archiveAfterMonths: { min: 1, max: 60 }, grantDefaultDays: { min: 1, max: 90 }, grantMaxDays: { min: 1, max: 365 }, invitationValidDays: { min: 1, max: 30 },
@@ -25,6 +25,7 @@ test('each bound is refused with a message naming the field and range', () => {
     [{ archiveAfterMonths: 1.5 }, 'archiveAfterMonths', 'Archive delay must be 1–60 months.'],
     [{ invitationValidDays: '7' }, 'invitationValidDays', 'Invitation validity must be 1–30 days.'],
     [{ analyticsExportAllowed: 'yes' }, 'analyticsExportAllowed', 'Analytics export must be on or off.'],
+    [{ projectExportsAllowed: 'yes' }, 'projectExportsAllowed', 'Project exports must be on or off.'],
   ];
   for (const [over, field, message] of cases) assert.deepEqual(with_(over), { ok: false, field, message }, JSON.stringify(over));
   assert.equal(with_({ archiveAfterMonths: 1 }).ok, true);

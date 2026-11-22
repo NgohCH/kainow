@@ -8,6 +8,7 @@ import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { APP_CONFIG, type AppConfig } from '../config';
 import { EMAIL_NUDGE, type EmailNudge } from '../email/nudge';
 import { disableAccount, lockProjectsOf } from './disable';
+import { queueUserSharing } from '../outputs/sharing-queue';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
@@ -131,6 +132,8 @@ export class UsersService {
           [id, now],
         );
         await writeAudit(client, { at: now, action: 'user.enabled', actorUserId, subjectType: 'user', subjectId: id });
+        // Access in SharePoint follows once their memberships are restored; any Audit/Oversight grant counts again now.
+        await queueUserSharing(client, id, 'normal');
       }
       await client.query('COMMIT');
     } catch (err) {

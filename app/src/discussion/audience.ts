@@ -51,9 +51,9 @@ export function audienceVisibleSql(audienceAlias: string, userParam: string, tod
     OR ${activeManagerSql(`${a}.project_id`, userParam, todayParam)})`;
 }
 
-/** SQL: the person holds an Active PM, Deputy, Owner or Sponsor role on the project `projectExpr` today. */
-export function activeManagerSql(projectExpr: string, userParam: string, todayParam: string): string {
-  return holdsActiveRoleSql(projectExpr, userParam, todayParam, RESTRICTED_ROLES, 'rm');
+/** SQL: the person holds an Active role among `roleList` (default: PM, Deputy, Owner or Sponsor) on the project `projectExpr` today. */
+export function activeManagerSql(projectExpr: string, userParam: string, todayParam: string, roleList: readonly ProjectRole[] = RESTRICTED_ROLES): string {
+  return holdsActiveRoleSql(projectExpr, userParam, todayParam, roleList, 'rm');
 }
 
 const BAD_CHANGE = 'Choose Project-wide or Restricted, and name people only for a Restricted audience.';

@@ -25,6 +25,7 @@ import { formatWhen } from '../format.ts';
 import { FeedbackButton } from './Feedback.tsx';
 import { Markdown } from './Markdown.tsx';
 import { QuarantineNote, ReportSecret } from './ReportSecret.tsx';
+import { SubmitDraftAsOutput } from './ProjectOutputs.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
 
@@ -261,6 +262,7 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
           {shownVersion && <FeedbackButton projectId={projectId} targetKind="report_version" targetId={shownVersion.id} label="Give feedback on this draft" />}
         </div>
       )}
+      {!editing && shownVersion && !active && <SubmitDraftAsOutput projectId={projectId} draftVersionId={shownVersion.id} versionNo={shownNo} title={draft.title} />}
 
       {draft.canEdit && !isNewest && !editing && <p id="edit-old" className="meta">Editing starts from the newest version. Choose it in the version list to edit.</p>}
 

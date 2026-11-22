@@ -5,6 +5,7 @@ import { UUID } from '../common/uuid7';
 import { activeManagerSql, audienceVisibleSql } from '../discussion/audience';
 import { PG_POOL } from '../db/database.module';
 import { summaryShownSql } from '../assist/material';
+import { loadOutputAccessRow, outputListedSql, readsOutput } from '../outputs/readers';
 import { liveSourceSql, unheldRecordRefSql } from '../history/deleted-sql';
 import { type ProjectContext, ProjectAccess } from '../projects/access.service';
 import { loadArchiveState } from '../projects/archive';
@@ -21,6 +22,9 @@ export interface SearchResult {
   matchNote: string | null;
   status: string | null;
   href: string;
+  /** Only on an output: where it lives, and which. */
+  projectId?: string;
+  outputId?: string;
 }
 
 export interface SearchProject {
@@ -73,7 +77,7 @@ export function buildSearchStatement(input: SearchStatementInput): { text: strin
   const user = `$${7 + input.patterns.length}`;
   const text = `
 WITH hits AS (
-  SELECT d.* FROM search_documents d
+  SELECT d.* FROM (SELECT * FROM search_documents UNION ALL SELECT * FROM search_output_documents) d
    WHERE d.project_id = ANY($1::uuid[])
      AND d.kind = ANY($2::text[])
      AND ${match}
@@ -99,6 +103,9 @@ WITH hits AS (
      AND (d.kind <> 'message' OR EXISTS (SELECT 1 FROM discussion_messages hm JOIN discussion_threads ht ON ht.id = hm.thread_id
                                           WHERE hm.id = d.item_id AND hm.held_case_id IS NULL AND ht.held_case_id IS NULL))
      AND (d.kind <> 'ai_proposal' OR EXISTS (SELECT 1 FROM extraction_items hx WHERE hx.id = d.item_id AND hx.held_case_id IS NULL))
+     -- A register entry (title, report type, categories; never file content) is found by those who may read it (spec 4.7):
+     -- not Deleted, held or Withdrawn, and within its audience. An output in access review is confirmed again below.
+     AND (d.kind <> 'output' OR EXISTS (SELECT 1 FROM outputs ho WHERE ho.id = d.item_id AND ${outputListedSql('ho', user, '$3')}))
      AND (d.kind <> 'human_proposal' OR EXISTS (SELECT 1 FROM human_proposals hh WHERE hh.id = d.item_id AND hh.held_case_id IS NULL))
 ), best AS (
   SELECT DISTINCT ON (project_id, kind, item_id) * FROM hits
@@ -191,7 +198,29 @@ export class SearchService {
 
     const today = this.access.today();
     const rows = await this.run(buildSearchStatement({ ids, kinds, patterns, today, first: words.find((w) => [...w].length >= 3) as string, scoped: project !== null, offset, userId: user.id }));
-    return { searched, projects: this.build(rows, readable) };
+    return { searched, projects: this.build(rows, readable, await this.unreadableOutputs(rows, readable)) };
+  }
+
+  /**
+   * The outputs among the hits the person may not read after all (spec 4.6). The SQL settled audience, status, deletion
+   * and holds, and every searched project is one the viewer reads the content of; what is left is the remaining-material
+   * rule of an output in access review.
+   */
+  private async unreadableOutputs(rows: Row[], readable: Map<string, Readable>): Promise<Set<string>> {
+    const out = new Set<string>();
+    const outputs = rows.filter((r) => r.kind === 'output');
+    if (outputs.length === 0) return out;
+    const inReview = new Set(
+      (await this.pool.query(`SELECT id FROM outputs WHERE id = ANY($1::uuid[]) AND review_state = 'review_required'`, [outputs.map((r) => r.itemId)])).rows.map((r) => r.id as string),
+    );
+    for (const r of outputs) {
+      const { ctx } = readable.get(r.projectId) as Readable;
+      if (inReview.has(r.itemId)) {
+        const access = await loadOutputAccessRow(this.pool, r.itemId);
+        if (!access || !(await readsOutput(this.pool, ctx, access))) out.add(r.itemId);
+      }
+    }
+    return out;
   }
 
   /** Projects where the person holds a role Active today or a grant giving access today, archived ones on request. */
@@ -229,7 +258,7 @@ export class SearchService {
     }
   }
 
-  private build(rows: Row[], readable: Map<string, Readable>): SearchProject[] {
+  private build(rows: Row[], readable: Map<string, Readable>, unreadable: Set<string>): SearchProject[] {
     const projects: SearchProject[] = [];
     const byId = new Map<string, SearchProject>();
     for (const row of rows) {
@@ -249,7 +278,7 @@ export class SearchService {
         byId.set(row.projectId, p);
         projects.push(p);
       }
-      const result = this.result(row, (readable.get(row.projectId) as Readable).ctx);
+      const result = row.kind === 'output' && unreadable.has(row.itemId) ? null : this.result(row, (readable.get(row.projectId) as Readable).ctx);
       if (result) p.results.push(result);
       else p.total -= 1;
     }
@@ -267,7 +296,9 @@ export class SearchService {
     if (row.kind === 'note' && !row.isCurrent && row.versionNo !== null) {
       matchNote = `Matched version ${row.versionNo} of ${row.versionCount}`;
     }
+    const output = row.kind === 'output' ? { projectId: row.projectId, outputId: row.itemId } : {};
     return {
+      ...output,
       kind: row.kind,
       id: row.itemId,
       title: row.title,

@@ -55,7 +55,7 @@ test('parseOffset', () => {
 });
 
 test('KIND_ORDER', () => {
-  assert.deepEqual(KIND_ORDER, { project: 0, person: 1, task: 2, decision: 3, question: 4, risk: 5, ai_proposal: 6, human_proposal: 6, note: 7, message: 8 });
+  assert.deepEqual(KIND_ORDER, { project: 0, person: 1, task: 2, decision: 3, question: 4, risk: 5, ai_proposal: 6, human_proposal: 6, note: 7, message: 8, output: 9 });
 });
 
 test('hrefFor', () => {

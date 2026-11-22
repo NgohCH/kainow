@@ -1,6 +1,6 @@
 import { possibleCopyLabelSql } from '../quarantine/labels';
 import { maskedVersionText } from '../discussion/masking';
-import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -14,6 +14,11 @@ import { ProjectAccess } from '../projects/access.service';
 import { summaryShownSql } from '../assist/material';
 import { liveSourceSql } from '../history/deleted-sql';
 import { indexVersion } from '../assist/passage-index';
+import { STORAGE_CONNECTORS, type StorageConnectorFactory } from '../storage/connector-factory';
+import { type StorageNotify, makeStorageNotify } from '../storage/notices';
+import { CHANGED_IN_STORAGE, MISSING_FROM_STORAGE, STORE_UNREACHABLE, openOriginal } from '../storage/source-files';
+import { type VersionStorage, addSourceVersionFiles, versionStorage } from '../storage/sources';
+import { assertInputFormatAllowed } from '../outputs/input-check';
 import { UploadRejected, readUpload } from './readers';
 import { NoteTextError, normaliseText, sha256Hex } from './text';
 
@@ -85,10 +90,22 @@ export interface VersionSummary {
   createdAt: Date;
   /** WITHHELD_TEXT when the uploaded original is withheld because a credential was removed from the text (history spec 7.4). */
   originalWithheld: string | null;
+  /**
+   * Stored, Waiting to store or Storage failed in the managed source area (external outputs spec 9.1). Only on reads
+   * for the PM, Deputies, Owner and Sponsors; null for anyone else and for notes outside projects.
+   */
+  storage?: VersionStorage | null;
 }
 
-const VERSION_COLUMNS = `id, source_id AS "sourceId", version_no AS "versionNo", origin, filename, media_type AS "mediaType",
-  char_count AS "charCount", text_sha256 AS "textSha256", original_sha256 AS "originalSha256", created_at AS "createdAt", quarantined_at AS "originalWithheld"`;
+const VERSION_BASE = `id, source_id AS "sourceId", version_no AS "versionNo", origin, filename, media_type AS "mediaType",
+  char_count AS "charCount", text_sha256 AS "textSha256", original_sha256 AS "originalSha256", created_at AS "createdAt"`;
+/**
+ * Whether the uploaded original is withheld: its bytes were withheld by a quarantine case (quarantined_at), or the file
+ * in the managed source area that holds it is withheld (external outputs spec 8.5) until it is put back.
+ */
+export const withheldSql = (a: string) =>
+  `(${a}quarantined_at IS NOT NULL OR EXISTS (SELECT 1 FROM stored_files wf WHERE wf.id = ${a}original_stored_file_id AND wf.state = 'withheld')) AS "originalWithheld"`;
+const VERSION_COLUMNS = `${VERSION_BASE}, ${withheldSql('')}`;
 
 /** A version as shown: the withheld label in place of the time it was withheld. */
 const shownVersion = <T extends VersionSummary>(v: T): T => ({ ...v, originalWithheld: v.originalWithheld ? WITHHELD_TEXT : null });
@@ -109,9 +126,14 @@ export class NotesService {
     @Inject(PG_POOL) private readonly pool: Pool,
     @Inject(CLOCK) private readonly now: Clock,
     private readonly access: ProjectAccess,
-  ) {}
+    @Inject(STORAGE_CONNECTORS) private readonly connectors: StorageConnectorFactory,
+  ) {
+    this.notify = makeStorageNotify(pool, now);
+  }
 
-  private async prepare(content: NewContent): Promise<Prepared> {
+  private readonly notify: StorageNotify;
+
+  private async prepare(content: NewContent, projectId: string): Promise<Prepared> {
     const hasText = content.text !== undefined;
     if (hasText === Boolean(content.file)) {
       throw new BadRequestException('Send either pasted text or one file, not both and not neither');
@@ -119,6 +141,7 @@ export class NotesService {
     try {
       if (content.file) {
         const filename = cleanFilename(content.file.originalname);
+        await assertInputFormatAllowed(this.pool, projectId, filename);
         const read = await readUpload(filename, content.file.buffer);
         return { origin: 'upload', text: read.text, filename, mediaType: read.mediaType, original: content.file.buffer };
       }
@@ -148,7 +171,7 @@ export class NotesService {
     actorUserId: string;
     submission?: SubmissionInput;
   }): Promise<{ source: SourceSummary; version: VersionSummary }> {
-    const prepared = await this.prepare(input.content);
+    const prepared = await this.prepare(input.content, input.projectId);
     // Every import is checked for credentials (D79), an upload on its text after extraction; only the kind is named.
     refuseSecrets(prepared.text);
     input.submission?.refuse(prepared.text);
@@ -185,7 +208,9 @@ export class NotesService {
   }
 
   async addVersion(sourceId: string, content: NewContent, actorUserId: string): Promise<VersionSummary> {
-    const prepared = await this.prepare(content);
+    const owner = await this.pool.query<{ project_id: string }>(`SELECT project_id FROM sources s WHERE id = $1 AND ${liveSourceSql('s')}`, [sourceId]);
+    if (owner.rowCount === 0) throw new NotFoundException();
+    const prepared = await this.prepare(content, owner.rows[0].project_id);
     const at = this.now();
     const client = await this.pool.connect();
     try {
@@ -293,7 +318,7 @@ export class NotesService {
   }
 
   private async insertVersion(
-    client: { query: Pool['query'] },
+    client: PoolClient,
     sourceId: string,
     versionNo: number,
     p: Prepared,
@@ -317,6 +342,8 @@ export class NotesService {
     // The passage index is written in the same transaction as the version (spec 4.1); notes from before projects have none.
     const projectId = (await client.query(`SELECT project_id AS "projectId" FROM sources WHERE id = $1`, [sourceId])).rows[0]?.projectId;
     if (projectId) await indexVersion(client, 'source_version', id, projectId, p.text);
+    // The original (uploads only) and the text are preserved in the managed source area (external outputs spec 9.1).
+    if (projectId) await addSourceVersionFiles(client, id, projectId, p.original !== null);
     return rows[0];
   }
 
@@ -339,8 +366,11 @@ export class NotesService {
     return rows;
   }
 
-  /** The note and its versions. The caller has already checked the viewer may see this source (AudienceService.assertSourceReadable). */
-  async get(sourceId: string): Promise<{
+  /**
+   * The note and its versions. The caller has already checked the viewer may see this source (AudienceService.assertSourceReadable).
+   * `showStorage` (the PM, Deputies, Owner and Sponsors) adds each version's storage state; otherwise it is null.
+   */
+  async get(sourceId: string, showStorage = false): Promise<{
     source: Pick<SourceSummary, 'id' | 'title' | 'createdAt'> & {
       projectId: string;
       kind: string;
@@ -387,8 +417,14 @@ export class NotesService {
         summary: s.kind === 'summary' ? await this.summaryLabels(sourceId) : null,
         mayExtract: s.kind !== 'summary',
       },
-      versions: rows.map(shownVersion),
+      versions: await this.withStorage(rows.map(shownVersion), showStorage),
     };
+  }
+
+  /** Adds `storage` to each version: its state when shown, else null. */
+  private async withStorage<T extends VersionSummary>(versions: T[], show: boolean): Promise<T[]> {
+    const states = show ? await versionStorage(this.pool, versions.map((v) => v.id)) : new Map<string, VersionStorage>();
+    return versions.map((v) => ({ ...v, storage: states.get(v.id) ?? null }));
   }
 
   /** "Summary approved for sharing", "Approved by <name> on <date>" (the latest approval) and "From a restricted source". */
@@ -446,27 +482,42 @@ export class NotesService {
     return parts.join('; ');
   }
 
-  async getVersion(sourceId: string, versionNo: number): Promise<VersionSummary & { text: string; provenance: string | null }> {
+  async getVersion(sourceId: string, versionNo: number, showStorage = false): Promise<VersionSummary & { text: string; provenance: string | null }> {
     const { rows } = await this.pool.query<VersionSummary & { text: string }>(
-      `SELECT ${VERSION_COLUMNS.split(',').map((c) => 'v.' + c.trim()).join(', ')}, v.text_content AS text
+      `SELECT ${VERSION_BASE.split(',').map((c) => 'v.' + c.trim()).join(', ')}, ${withheldSql('v.')}, v.text_content AS text
          FROM source_versions v JOIN sources s ON s.id = v.source_id
         WHERE v.source_id = $1 AND v.version_no = $2 AND ${liveSourceSql('s')}`,
       [sourceId, versionNo],
     );
     if (!rows[0]) throw new NotFoundException();
     // A discussion transcript keeps its stored text, but messages hidden or deleted since are masked when shown.
-    return { ...shownVersion(rows[0]), text: await maskedVersionText(this.pool, rows[0].id, rows[0].text), provenance: await this.provenance(rows[0].id) };
+    const [shown] = await this.withStorage([shownVersion(rows[0])], showStorage);
+    return { ...shown, text: await maskedVersionText(this.pool, rows[0].id, rows[0].text), provenance: await this.provenance(rows[0].id) };
   }
 
+  /**
+   * The uploaded file exactly as received: from the database while its bytes are still there, otherwise downloaded from
+   * the managed source area and checked against the recorded SHA-256 first (spec 9.2).
+   */
   async getOriginal(sourceId: string, versionNo: number): Promise<{ filename: string; mediaType: string; bytes: Buffer }> {
-    const { rows } = await this.pool.query<{ filename: string; media_type: string; original_bytes: Buffer }>(
-      `SELECT v.filename, v.media_type, v.original_bytes
+    const { rows } = await this.pool.query<{ id: string; filename: string; media_type: string; original_bytes: Buffer | null; stored: boolean }>(
+      `SELECT v.id, v.filename, v.media_type, v.original_bytes,
+              EXISTS (SELECT 1 FROM stored_files f WHERE f.id = v.original_stored_file_id AND f.state IN ('stored', 'relocating')) AS stored
          FROM source_versions v JOIN sources s ON s.id = v.source_id
-        WHERE v.source_id = $1 AND v.version_no = $2 AND ${liveSourceSql('s')} AND v.origin = 'upload' AND v.original_bytes IS NOT NULL`,
+        WHERE v.source_id = $1 AND v.version_no = $2 AND ${liveSourceSql('s')} AND v.origin = 'upload'`,
       [sourceId, versionNo],
     );
-    if (!rows[0]) throw new NotFoundException();
-    return { filename: rows[0].filename, mediaType: rows[0].media_type, bytes: rows[0].original_bytes };
+    const v = rows[0];
+    if (!v) throw new NotFoundException();
+    if (v.original_bytes) return { filename: v.filename, mediaType: v.media_type, bytes: v.original_bytes };
+    if (!v.stored) throw new NotFoundException();
+    const opened = await openOriginal({ pool: this.pool, connectors: this.connectors, clock: this.now, notify: this.notify }, v.id);
+    if (!opened) throw new NotFoundException();
+    if ('refused' in opened) {
+      if (opened.refused === 'unreachable') throw new ServiceUnavailableException(STORE_UNREACHABLE);
+      throw new ConflictException(opened.refused === 'changed' ? CHANGED_IN_STORAGE : MISSING_FROM_STORAGE);
+    }
+    return opened;
   }
 }
 

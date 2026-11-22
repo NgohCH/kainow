@@ -155,6 +155,10 @@ export interface SystemPanel {
   ai: { blockedByReason: Record<string, number>; keyRejected: number };
   jobs: { failedByQueue: Record<string, number>; waitingOver15m: number };
   security: { casesAwaitingReview: number; protectedKeyInstalled: boolean };
+  storageFailures: number;
+  storageWaiting: number;
+  withholdFailures: number;
+  sharingToRepair: number;
   links: { emails: string; ai: string; jobs: string | null; security: string };
   computedAt: string;
 }

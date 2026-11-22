@@ -24,8 +24,9 @@ export const RECOVERY = {
 } as const;
 
 const utc = (d: Date): string => d.toISOString().slice(0, 16).replace('T', ' ');
+// Listed by email, the same order the dry run uses; the disabling itself locks by id.
 const named = (admins: Array<Pick<DisabledAdministrator, 'displayName' | 'email'>>): string =>
-  admins.map((a) => `${a.displayName} ${a.email}`).join(', ');
+  [...admins].sort((a, b) => (a.email < b.email ? -1 : a.email > b.email ? 1 : 0)).map((a) => `${a.displayName} ${a.email}`).join(', ');
 
 export interface RecoverOptions {
   email: string;
@@ -138,9 +139,7 @@ export async function recoverAdmin(
       now,
       { adminActive: RECOVERY.adminActive, recipientBeingDisabled: RECOVERY.recipientBeingDisabled },
       async (committed) => {
-        // Listed by email like the dry run; the disable itself keeps its lock order (by id).
-        const byEmail = [...committed.disabled].sort((a, b) => (a.email < b.email ? -1 : a.email > b.email ? 1 : 0));
-        if (byEmail.length > 0) disabledLine = [`These Administrators were disabled first: ${named(byEmail)}`];
+        if (committed.disabled.length > 0) disabledLine = [`These Administrators were disabled first: ${named(committed.disabled)}`];
         // The notices and hold alerts are committed; the scheduled email tick still sends them if this is lost.
         if (committed.queued > 0 && nudge) await nudge.nudge();
       },

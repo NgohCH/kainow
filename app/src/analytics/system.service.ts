@@ -3,6 +3,7 @@ import type { Pool } from 'pg';
 import { readinessMany } from '../analysis/tick';
 import { CLOCK, type Clock } from '../auth/tokens';
 import { PG_POOL } from '../db/database.module';
+import { sharingToRepair } from '../outputs/sharing';
 import { PROTECTED_KEY, type ProtectedKey } from '../quarantine/protected-key';
 import { BOSS_SCHEMA } from '../worker/queues';
 import { type AnalyticsFilters, addDays } from './filters';
@@ -15,6 +16,11 @@ export interface SystemPanel {
   ai: { blockedByReason: Record<string, number>; keyRejected: number };
   jobs: { failedByQueue: Record<string, number>; waitingOver15m: number };
   security: { casesAwaitingReview: number; protectedKeyInstalled: boolean };
+  /** External outputs (spec 12): counts only. */
+  storageFailures: number;
+  storageWaiting: number;
+  withholdFailures: number;
+  sharingToRepair: number;
   /** Existing hash routes where an Administrator can act on each line (null where no screen exists). */
   links: { emails: string; ai: string; jobs: string | null; security: string };
   computedAt: string;
@@ -41,6 +47,7 @@ export class SystemService {
       ai: await this.ai(now),
       jobs: await this.jobs(start, end, now),
       security: await this.security(),
+      ...(await this.storage()),
       links: { emails: '#/deliveries', ai: '#/ai', jobs: null, security: '#/security/cases' },
       computedAt: now.toISOString(),
     };
@@ -85,6 +92,24 @@ export class SystemService {
       [now, JOB_WAIT_MINUTES],
     );
     return { failedByQueue: Object.fromEntries(failed.rows.map((r) => [r.name as string, r.n as number])), waitingOver15m: waiting.rows[0].n as number };
+  }
+
+  /**
+   * Stored files that failed, files waiting to be stored, held files whose removal from storage keeps failing (the
+   * Administrators were told; "Still in storage"), and the sharing to repair on the Storage page (a grant that failed or
+   * is not yet revoked, or an output whose files could not be moved): counts only, no names, paths or titles.
+   */
+  private async storage() {
+    const r = (
+      await this.pool.query(
+        `SELECT count(*) FILTER (WHERE state = 'failed')::int AS "storageFailures",
+                count(*) FILTER (WHERE state IN ('pending', 'storing'))::int AS "storageWaiting",
+                count(*) FILTER (WHERE state = 'withheld' AND withhold_case_id IS NOT NULL AND removed_at IS NULL AND remove_notice_at IS NOT NULL)::int AS "withholdFailures"
+           FROM stored_files WHERE state IN ('failed', 'pending', 'storing', 'withheld')`,
+      )
+    ).rows[0];
+    const repair = await sharingToRepair(this.pool);
+    return { storageFailures: r.storageFailures as number, storageWaiting: r.storageWaiting as number, withholdFailures: r.withholdFailures as number, sharingToRepair: repair.grants.length + repair.outputs.length };
   }
 
   /** A count only: open cases (held, or cleaned and still under review). No project, record or reason text. */

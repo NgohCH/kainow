@@ -11,6 +11,8 @@ export function Departments({ embedded = false }: { embedded?: boolean } = {}) {
   const [name, setName] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [renaming, setRenaming] = useState<{ id: string; name: string } | null>(null);
+  /** A name refused because a retired department has it: offered back instead of a second department. */
+  const [retired, setRetired] = useState<{ id: string; name: string } | null>(null);
 
   const load = useCallback(() => {
     api.get<{ departments: Department[] }>('/departments?all=1').then((r) => setList(r.departments), (e) => setError(errText(e)));
@@ -19,13 +21,22 @@ export function Departments({ embedded = false }: { embedded?: boolean } = {}) {
 
   const run = async (work: () => Promise<unknown>) => {
     setError(null);
+    setRetired(null);
     try {
       await work();
       load();
       return true;
     } catch (e) {
       setError(errText(e));
+      const found = e instanceof ApiError ? (e.data as { retiredDepartment?: { id: string; name: string } } | undefined)?.retiredDepartment : undefined;
+      if (found) setRetired(found);
       return false;
+    }
+  };
+  const restore = async (d: { id: string; name: string }) => {
+    if (await run(() => api.post(`/departments/${d.id}/restore`))) {
+      setName('');
+      setRenaming(null);
     }
   };
 
@@ -37,14 +48,19 @@ export function Departments({ embedded = false }: { embedded?: boolean } = {}) {
   return (
     <Wrapper className={embedded ? 'panel' : 'page narrow'} aria-labelledby={embedded ? 'departments-heading' : undefined}>
       <Heading id="departments-heading">Departments</Heading>
-      <p className="meta">Every project has one owning department and may have contributing ones. A retired department stays on existing projects but cannot be chosen for new ones.</p>
+      <p className="meta">Every project has one owning department and may have contributing ones. A retired department stays on existing projects but cannot be chosen for new ones; bring it back to use it again. A name is used once only.</p>
       <form className="row" onSubmit={add}>
         <label>
           New department <input required maxLength={200} value={name} onChange={(e) => setName(e.target.value)} />
         </label>
         <button className="primary">Add</button>
       </form>
-      {error && <p role="alert" className="error">{error}</p>}
+      {error && (
+        <p role="alert" className="error">
+          {error}
+          {retired && <> <button type="button" className="link-button" onClick={() => void restore(retired)}>Bring back {retired.name}</button></>}
+        </p>
+      )}
       {list && list.length === 0 && <p className="empty">No departments yet.</p>}
       {list && list.length > 0 && (
         <ul className="list">
@@ -70,6 +86,11 @@ export function Departments({ embedded = false }: { embedded?: boolean } = {}) {
                     {d.name}
                     {d.status === 'retired' && <span className="meta"> (retired)</span>}
                   </span>
+                  {d.status === 'retired' && (
+                    <span>
+                      <button className="link-button" onClick={() => void restore(d)} aria-label={`Bring back ${d.name}`}>Bring back</button>
+                    </span>
+                  )}
                   {d.status === 'active' && (
                     <span>
                       <button className="link-button" onClick={() => setRenaming({ id: d.id, name: d.name })}>Rename</button>{' '}

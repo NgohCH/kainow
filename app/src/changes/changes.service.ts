@@ -11,6 +11,8 @@ import { FINANCE_KINDS, financeRequestVisibleSql, loadProjectFinanceSettings, ma
 import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { GRANT_READ_ONLY, type ProjectStatus } from '../projects/matrix';
 import { membershipState } from '../projects/membership';
+import { DOES_NOT_APPROVE_COMMITMENTS } from '../outputs/approval-handler';
+import { loadOutputAccessRow, readsOutput } from '../outputs/readers';
 import type { Created } from '../records/records.service';
 import { type ChangeHandler, HANDLERS, type RequestRow, type Row, type TargetKind } from './handlers';
 import { PolicyService } from './policy.service';
@@ -25,13 +27,13 @@ export const HANDOVER_WITHDRAW = 'Only the person who offered this risk can with
 export const notEnough = (need: number, have: number) => `Not enough approvers: needs ${need}, the project has ${have}.`;
 
 const KINDS: readonly ChangeKind[] = [
-  'authorise_proposal', 'amend_task', 'cancel_task', 'supersede_decision', 'withdraw_decision', 'deadline_review', 'reconcile_completion', 'risk_handover',
+  'authorise_proposal', 'amend_task', 'cancel_task', 'supersede_decision', 'withdraw_decision', 'deadline_review', 'reconcile_completion', 'risk_handover', 'approve_output',
   'set_budget', 'finance_adjustment',
 ];
 const STATUSES: readonly RequestRow['status'][] = ['pending', 'authorised', 'rejected', 'withdrawn', 'superseded'];
-const TARGET_KINDS: readonly TargetKind[] = ['extraction_item', 'human_proposal', 'task', 'decision', 'risk', 'project_budget', 'expenditure'];
+const TARGET_KINDS: readonly TargetKind[] = ['extraction_item', 'human_proposal', 'task', 'decision', 'risk', 'output_version', 'project_budget', 'expenditure'];
 const NOUN: Record<TargetKind, string> = {
-  extraction_item: 'proposal', human_proposal: 'proposal', task: 'task', decision: 'decision', risk: 'risk', project_budget: 'budget', expenditure: 'spending entry',
+  extraction_item: 'proposal', human_proposal: 'proposal', task: 'task', decision: 'decision', risk: 'risk', output_version: 'output', project_budget: 'budget', expenditure: 'spending entry',
 };
 const STATUS_LABEL: Record<ProjectStatus, string> = { draft: 'Draft', planned: 'Planned', active: 'Active', deferred: 'Deferred', closed: 'Closed' };
 
@@ -47,6 +49,11 @@ export const TARGET_SQL: Record<TargetKind, string> = {
   task: `SELECT x.*, x.project_id AS "projectId", to_char(x.due_on, 'YYYY-MM-DD') AS "dueOn" FROM tasks x WHERE x.id = $1 AND ${liveRecordSql('x')} FOR UPDATE`,
   decision: `SELECT x.*, x.project_id AS "projectId" FROM decisions x WHERE x.id = $1 AND ${liveRecordSql('x')} FOR UPDATE`,
   risk: `SELECT x.*, x.project_id AS "projectId", to_char(x.review_on, 'YYYY-MM-DD') AS "reviewOn" FROM risks x WHERE x.id = $1 AND ${liveRecordSql('x')} FOR UPDATE`,
+  // An output version: its project is the output's. A held version (history spec 7.2) is not a target. The output is
+  // locked before its version (outputs, then versions, then stored files).
+  output_version: `SELECT v.id, v.output_id AS "outputId", v.version_no AS "versionNo", v.status, v.stored_file_id AS "storedFileId", o.project_id AS "projectId"
+                     FROM outputs o JOIN output_versions v ON v.output_id = o.id
+                    WHERE v.id = $1 AND ${notHeldSql('v')} AND o.deleted_at IS NULL FOR UPDATE OF o, v`,
   // A budget's target is its project (target id = project id).
   project_budget: `SELECT p.id, p.id AS "projectId" FROM projects p WHERE p.id = $1 FOR UPDATE`,
   expenditure: `SELECT x.id, x.project_id AS "projectId", x.amount::text AS amount, x.currency FROM expenditures x WHERE x.id = $1 FOR UPDATE`,
@@ -79,6 +86,9 @@ export interface RequestView {
   submittedAt: Date;
   /** For a risk hand-over: where the risk comes from and what it says. */
   offer?: { fromProject: { id: string; name: string }; risk: { id: string; description: string; severity: string } };
+  /** For an output approval: which output version, and that approving it does not approve what the text mentions. */
+  output?: { id: string; title: string; versionNo: number };
+  notice?: string;
   mayApprove: boolean;
   mayRevise: boolean;
   mayWithdraw: boolean;
@@ -155,6 +165,15 @@ export function listedRequestSql(readable: boolean, userParam: string, todayPara
                   WHERE xi.id = change_requests.target_id AND ${notHeldSql('xi')}
                     AND CASE WHEN xs.publication = 'published' THEN COALESCE(${audienceVisibleSql('xa', userParam, todayParam)}, false)
                              ELSE xs.submitted_by = ${userParam}::uuid OR ${activeManagerSql('xs.project_id', userParam, todayParam)} END)))
+          -- An output approval is listed only for someone who may read the output: not a Deleted or held one, nor one
+          -- whose Restricted audience leaves the viewer out, nor one in access review (the person-by-person rule,
+          -- readsOutput, is applied again where requests are listed to one person).
+          AND (target_kind <> 'output_version' OR (${readable ? 'true' : 'false'} AND EXISTS (
+                 SELECT 1 FROM output_versions ov JOIN outputs oo ON oo.id = ov.output_id
+                  WHERE ov.id = change_requests.target_id AND ov.held_case_id IS NULL AND oo.deleted_at IS NULL AND oo.held_case_id IS NULL
+                    AND (oo.review_state <> 'review_required' OR change_requests.status <> 'pending')
+                    AND (NOT EXISTS (SELECT 1 FROM audiences oa WHERE oa.id = oo.audience_id AND oa.mode = 'restricted')
+                         OR EXISTS (SELECT 1 FROM audience_members om WHERE om.audience_id = oo.audience_id AND om.user_id = ${userParam}::uuid)))))
           -- A finance request is financial detail: only its project's finance readers see it, or a count of it (spec 3.6).
           AND ${financeRequestVisibleSql('change_requests', userParam, todayParam)}`;
 }
@@ -334,6 +353,7 @@ export class ChangesService {
     ]);
     const request = await this.lockRequest(c, id);
     await this.audit(c, at, 'submitted', user.id, request, { kind: input.kind, targetKind: input.targetKind, targetId: target.id, required });
+    if (handler.afterSubmit) await handler.afterSubmit(c, ctx, target, request, at);
     let applied: AppliedResult | undefined;
     if (approving) applied = await this.recordApproval(c, ctx, request, target, handler, user, at, later);
     return { request: await this.view(c, ctx, user, await this.lockRequest(c, id)), ...(applied ? { applied } : {}) };
@@ -529,7 +549,25 @@ export class ChangesService {
         ORDER BY submitted_at DESC, id DESC`,
       [projectId, status ?? null, user.id, ctx.today],
     );
-    return this.views(this.pool, ctx, user, rows as RequestRow[]);
+    // An output approval is listed to someone who may read that output (readsOutput, person by person).
+    const readable = await this.readableOutputs(this.pool, ctx, (rows as RequestRow[]).filter((r) => r.kind === 'approve_output').map((r) => r.targetId));
+    return this.views(this.pool, ctx, user, (rows as RequestRow[]).filter((r) => r.kind !== 'approve_output' || readable.has(r.targetId)));
+  }
+
+  /** The output versions (by id) whose output the viewer may read now, with what an approval request shows of them. */
+  private async readableOutputs(db: Pool | PoolClient, ctx: ProjectContext, versionIds: string[]): Promise<Map<string, NonNullable<RequestView['output']>>> {
+    const out = new Map<string, NonNullable<RequestView['output']>>();
+    if (versionIds.length === 0) return out;
+    const { rows } = await db.query(
+      `SELECT v.id AS "versionId", o.id, o.title, v.version_no AS "versionNo" FROM output_versions v JOIN outputs o ON o.id = v.output_id
+        WHERE v.id = ANY($1::uuid[]) AND v.held_case_id IS NULL`,
+      [[...new Set(versionIds)]],
+    );
+    for (const o of rows) {
+      const access = await loadOutputAccessRow(db, o.id);
+      if (access && (await readsOutput(db, ctx, access))) out.set(o.versionId, { id: o.id, title: o.title, versionNo: o.versionNo });
+    }
+    return out;
   }
 
   /** One request as the viewer sees it. */
@@ -575,6 +613,7 @@ export class ChangesService {
         )
       ).rows) offers.set(o.riskId, { fromProject: { id: o.projectId, name: o.name }, risk: { id: o.riskId, description: o.description, severity: o.severity } });
     }
+    const outputs = await this.readableOutputs(db, ctx, rows.filter((r) => r.kind === 'approve_output').map((r) => r.targetId));
     // What each pending kind's handler says about the project, asked once per kind.
     const handlerBlocks = new Map<ChangeKind, string | null>();
     for (const kind of new Set(rows.filter((r) => r.status === 'pending').map((r) => r.kind))) {
@@ -601,6 +640,7 @@ export class ChangesService {
         submittedBy: names.get(r.submittedBy) as string,
         submittedAt: r.submittedAt,
         ...(offer ? { offer } : {}),
+        ...(r.kind === 'approve_output' ? { ...(outputs.get(r.targetId) ? { output: outputs.get(r.targetId) } : {}), notice: DOES_NOT_APPROVE_COMMITMENTS } : {}),
         mayApprove: changeMayApprove(ctx, r, given.map((a) => a.userId), user.id, handlerBlock),
         mayRevise: pending && r.submittedBy === user.id,
         // The receiving project declines a hand-over (an Owner or Sponsor rejects it); only the offerer withdraws it.

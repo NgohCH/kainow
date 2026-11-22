@@ -38,10 +38,13 @@ import { findCredentialMatches, findCredentials } from '../extraction/credential
 import { HELD, liveRecordSql } from '../history/deleted-sql';
 import { requeueDigest } from '../digests/digest';
 import { HELD_EMAIL_REASON, cancelQueuedHolding, sentHolding } from '../notifications/mailing';
+import { outputHeld, outputReleased } from '../outputs/holds';
+import { stillInStorage } from '../storage/withhold';
+import { loadOutputAccessRow, readsOutput } from '../outputs/readers';
 import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { grantGivesAccess } from '../projects/grants';
 import { effectiveRoles } from '../projects/membership';
-import { cleanItem, findPlaces, restoreOriginals } from './clean';
+import { cleanItem, findPlaces, releaseWithheldFiles, restoreOriginals } from './clean';
 import { MARKER, searchForms } from './clean-text';
 import { POSSIBLE_COPY_TEXT } from './labels';
 import { MAX_MARK_CHARS, MIN_MARK } from './mark-limits';
@@ -122,6 +125,8 @@ export interface HeldCase {
   reason: string | null;
   reportedAt: string;
   cleanedAt: string | null;
+  /** "Still in storage" while a withheld file of the case is not yet removed, or a held output has linked documents (spec 4.7, 8.5). */
+  stillInStorage: { label: string; files: number; links: number } | null;
 }
 
 /** The only AI provider Kainow sends to (spec 7.7: "provider" in the known disclosures). */
@@ -159,6 +164,10 @@ const HOLD: Record<ItemKind, string[]> = {
   ],
   feedback: [`UPDATE ai_feedback SET held_case_id = $2 WHERE id = $1 AND held_case_id IS NULL`],
   thread: [`UPDATE discussion_threads SET held_case_id = $2 WHERE id = $1 AND held_case_id IS NULL`],
+  output: [
+    `UPDATE outputs SET held_case_id = $2 WHERE id = $1 AND held_case_id IS NULL`,
+    `UPDATE output_versions SET held_case_id = $2 WHERE output_id = $1 AND held_case_id IS NULL`,
+  ],
 };
 
 /** The same rows, released from case $2. */
@@ -184,6 +193,7 @@ const CURRENT_TEXT: Record<ItemKind, string> = {
   minutes_draft: `SELECT d.body AS text FROM minutes_drafts d WHERE d.id = $1 OR d.thread_id = $1 ORDER BY (d.id = $1) DESC, d.version_no DESC LIMIT 1`,
   feedback: `SELECT concat_ws(E'\\n', note, escalation_note) AS text FROM ai_feedback WHERE id = $1`,
   thread: `SELECT title AS text FROM discussion_threads WHERE id = $1`,
+  output: `SELECT concat_ws(E'\\n', title, delete_reason) AS text FROM outputs WHERE id = $1`,
 };
 
 /** The item's author when a person (spec 7.7: message author, source creator, record's proposer or AI requester). */
@@ -202,6 +212,7 @@ const AUTHOR: Record<ItemKind, string> = {
   minutes_draft: `SELECT created_by AS id FROM minutes_drafts WHERE id = $1 OR thread_id = $1 ORDER BY (id = $1) DESC, version_no DESC LIMIT 1`,
   feedback: `SELECT reporter_id AS id FROM ai_feedback WHERE id = $1`,
   thread: `SELECT created_by AS id FROM discussion_threads WHERE id = $1`,
+  output: `SELECT author_id AS id FROM outputs WHERE id = $1`,
 };
 
 /** A short reference for the Possible copies list (spec 7.4: "title or reference"), read only once the place is masked. */
@@ -220,6 +231,7 @@ const REFERENCE: Record<ItemKind, string> = {
   minutes_draft: `SELECT 'Minutes of ' || th.title AS ref FROM discussion_threads th WHERE th.id = ${MINUTES_THREAD}`,
   feedback: `SELECT 'Feedback note' AS ref`,
   thread: `SELECT title AS ref FROM discussion_threads WHERE id = $1`,
+  output: `SELECT title AS ref FROM outputs WHERE id = $1`,
 };
 
 /** "in a note" (spec 7.4 alert). Sources by their own kind. */
@@ -227,6 +239,7 @@ const KIND_WORDS: Record<ItemKind, string> = {
   message: 'a message', source: 'a note', task: 'a task', decision: 'a decision', question: 'a question', risk: 'a risk',
   proposal: 'a proposal', human_proposal: 'a proposal', answer: 'an AI answer', report_draft: 'a report draft',
   summary: 'a shareable summary', minutes_draft: 'a minutes draft', feedback: 'a feedback note', thread: 'a thread title',
+  output: 'an output',
 };
 const SOURCE_WORDS: Record<string, string> = { notes: 'a note', minutes: 'meeting minutes', summary: 'a shareable summary', discussion: 'a discussion transcript' };
 
@@ -241,18 +254,25 @@ const columnOf = (table: string, column: string) => TEXT_COLUMNS.find((c) => c.t
  * Holds the item's rows. Returns false when the item's own row was already held (by another case, e.g. a second
  * report racing this one: the UPDATE waits for the other transaction and then finds the row held).
  */
-async function hold(db: Db, kind: ItemKind, id: string, caseId: string): Promise<boolean> {
+async function hold(db: PoolClient, kind: ItemKind, id: string, caseId: string, actorId: string | null, at: Date): Promise<boolean> {
   let own = true;
   for (const [i, sql] of HOLD[kind].entries()) {
     const r = await db.query(sql, [id, caseId]);
     if (i === 0 && !r.rowCount) own = false;
   }
+  // An output's stored files are withheld and its links reported (external outputs spec 4.7, 8.5).
+  if (kind === 'output' && own) await outputHeld(db, id, caseId, actorId, at);
   return own;
 }
 
 /** Releases the item's rows from case `caseId` (the reverse of holding them). */
-export async function unhold(db: Db, kind: ItemKind, id: string, caseId: string): Promise<void> {
-  for (const sql of UNHOLD[kind]) await db.query(sql, [id, caseId]);
+export async function unhold(db: PoolClient, kind: ItemKind, id: string, caseId: string, at: Date): Promise<void> {
+  let released = false;
+  for (const [i, sql] of UNHOLD[kind].entries()) {
+    const r = await db.query(sql, [id, caseId]);
+    if (i === 0 && r.rowCount) released = true;
+  }
+  if (kind === 'output' && released) await outputReleased(db, id, caseId, at);
 }
 
 async function currentText(db: Db, kind: ItemKind, id: string): Promise<string | null> {
@@ -418,7 +438,7 @@ export async function cleanWaitingCases(pool: Pool, key: ProtectedKey, now: Date
         let rows = item.rows;
         for (const p of places) {
           rows += (await cleanItem(db, key, id, p.kind, p.id, marks)).rows;
-          await unhold(db, p.kind, p.id, id);
+          await unhold(db, p.kind, p.id, id, at);
           await db.query(`UPDATE quarantine_possible_copies SET masked = true WHERE case_id = $1 AND item_kind = $2 AND item_id = $3`, [id, p.kind, p.id]);
         }
         await markCleaned(db, id, c.projectId, at, { rows, places: places.length });
@@ -561,7 +581,7 @@ export class CasesService {
 
     // Held at once: hidden everywhere; outputs built on it withdrawn or sent to review; summaries of it hidden.
     // Already held (a double submit): no second case, no second round of notices.
-    if (!(await hold(db, kind, id, caseId))) throw new ConflictException(HELD);
+    if (!(await hold(db, kind, id, caseId, reporterId, at))) throw new ConflictException(HELD);
     const removed = await this.removedMaterial(db, kind, id);
     if (removed) await onMaterialRemoved(db, removed, 'quarantined', at);
     // Without the key the marks are kept only as offsets into the held text (numbers, no text).
@@ -581,7 +601,7 @@ export class CasesService {
     if (reporterId !== null && places.length > MAX_PLACES) throw new BadRequestException(TOO_COMMON(places.length));
     for (const p of places) {
       if (key) cleanedRows += (await cleanItem(db, key, caseId, p.kind, p.id, marks)).rows;
-      else await hold(db, p.kind, p.id, caseId);
+      else await hold(db, p.kind, p.id, caseId, reporterId, at);
       await db.query(
         `INSERT INTO quarantine_possible_copies (case_id, item_kind, item_id, found_at, masked) VALUES ($1, $2, $3, $4, $5)`,
         [caseId, p.kind, p.id, at, key !== null],
@@ -779,6 +799,11 @@ export class CasesService {
         const f = await one(`SELECT reporter_id, held_case_id FROM ai_feedback WHERE id = $1`);
         return !!f && !held(f.held_case_id) && (f.reporter_id === user.id || ctx.roles.some((r) => RESTRICTED_ROLES.includes(r)));
       }
+      case 'output': {
+        // The output register's own rule (spec 4.6): audience, submission and review state, hold and deletion.
+        const row = await loadOutputAccessRow(db, id);
+        return !!row && (await readsOutput(db, ctx, row, { lookThroughCase: reviewing }));
+      }
     }
   }
 
@@ -883,7 +908,9 @@ export class CasesService {
           changed = r.changed.length;
           restored = r.restored;
         } else {
-          await unhold(db, d.kind, d.id, c.id);
+          await unhold(db, d.kind, d.id, c.id, at);
+          // An output place held for want of the key may already have its files withheld: they come back.
+          await releaseWithheldFiles(db, c.id, { kind: d.kind, id: d.id });
         }
         await db.query(
           `UPDATE quarantine_possible_copies SET decision = $4, decided_by = $5, decided_at = $6 WHERE case_id = $1 AND item_kind = $2 AND item_id = $3`,
@@ -959,6 +986,7 @@ export class CasesService {
       reason: c.reason,
       reportedAt: c.reportedAt.toISOString(),
       cleanedAt: c.cleanedAt ? c.cleanedAt.toISOString() : null,
+      stillInStorage: await stillInStorage(db, c.id),
     };
   }
 
@@ -1051,7 +1079,7 @@ export class CasesService {
       const reason = readReason(body.reason);
       const at = this.now();
       await db.query(`UPDATE quarantine_cases SET state = 'released', closed_at = $2, closed_by = $3, close_reason = $4 WHERE id = $1`, [c.id, at, user.id, reason]);
-      await unhold(db, c.kind, c.itemId, c.id);
+      await unhold(db, c.kind, c.itemId, c.id, at);
       // Places still undecided are confirmed by the release (their masking stays; nothing is left undecidable once closed).
       const undecided = (
         await db.query<{ kind: ItemKind; id: string }>(
@@ -1068,7 +1096,7 @@ export class CasesService {
         await event(db, { caseId: c.id, projectId: c.projectId, actorId: user.id, action: 'copy_confirmed', kind: p.kind, itemId: p.id, detail: { auto: true }, at });
       }
       const copies =(await db.query<{ kind: ItemKind; id: string }>(`SELECT item_kind AS kind, item_id AS id FROM quarantine_items WHERE case_id = $1 AND role = 'copy' ORDER BY item_kind, item_id`, [c.id])).rows;
-      for (const p of copies) await unhold(db, p.kind, p.id, c.id);
+      for (const p of copies) await unhold(db, p.kind, p.id, c.id, at);
       await event(db, { caseId: c.id, projectId: c.projectId, actorId: user.id, action: 'released', kind: c.kind, itemId: c.itemId, reason, detail: { copies: copies.length }, at });
       const told = await this.notifyReleased(db, c, at);
       await event(db, { caseId: c.id, projectId: c.projectId, actorId: null, action: 'notified', detail: { released: told }, at });

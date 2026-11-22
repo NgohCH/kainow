@@ -9,6 +9,8 @@ import { SearchService, applySearchSettings, buildSearchStatement } from './sear
 
 /** The kinds seeded by `seedAllKinds` and so checked by every access test below. */
 const ACCESS_COVERED: SearchKind[] = ['project', 'person', 'note', 'ai_proposal', 'human_proposal', 'task', 'decision', 'question', 'risk', 'message'];
+/** Outputs have their own access tests (outputs/search.http.test.ts), against search_output_documents. */
+const OWN_ACCESS_TESTS: SearchKind[] = ['output'];
 
 const NEEDS_WORD = 'Type at least one word of 3 or more letters.';
 const TOO_LONG = 'Search took too long. Try more specific words.';
@@ -831,7 +833,9 @@ describe('cross-project search', { skip: SKIP_NO_DB }, () => {
 
   test('every kind the view returns has access coverage', async () => {
     const { rows } = await t.pool.query(`SELECT DISTINCT kind FROM search_documents ORDER BY kind`);
-    assert.deepEqual(rows.map((r) => r.kind), [...SEARCH_KINDS].sort());
-    assert.deepEqual([...ACCESS_COVERED].sort(), [...SEARCH_KINDS].sort());
+    const outputs = (await t.pool.query(`SELECT DISTINCT kind FROM search_output_documents`)).rows.map((r) => r.kind);
+    assert.deepEqual([...rows.map((r) => r.kind), ...OWN_ACCESS_TESTS].sort(), [...SEARCH_KINDS].sort());
+    assert.deepEqual(outputs.length === 0 ? OWN_ACCESS_TESTS : outputs, OWN_ACCESS_TESTS);
+    assert.deepEqual([...ACCESS_COVERED, ...OWN_ACCESS_TESTS].sort(), [...SEARCH_KINDS].sort());
   });
 });

@@ -13,14 +13,21 @@ export type SourceKind = 'note' | 'minutes' | 'summary';
 
 export interface HistoryLine {
   at: string;
-  kind: DeletedKind | 'credential_report' | 'ai_connection';
-  action: 'deleted' | 'restored' | 'reported' | 'key_rejected';
+  kind: DeletedKind | 'credential_report' | 'ai_connection' | 'department_transfer' | 'output';
+  /** For an output line, the output event's kind (see OUTPUT_EVENT_TEXT). */
+  action: 'deleted' | 'restored' | 'reported' | 'key_rejected' | 'transferred' | string;
   actor: string | null;
   reason: string | null;
   /** For a credential report, the kind of item it was reported in. */
   itemKind?: string;
   /** For an AI connection line: the connection's label (never its key). */
   label?: string;
+  /** For a department transfer: the department it left, the one it went to, and the folder choice (null with no filed outputs). */
+  fromDepartment?: string;
+  toDepartment?: string;
+  folderChoice?: 'move' | 'keep' | null;
+  /** For an output line: which output; the title is null once it is Deleted. */
+  output?: { id: string; title: string | null };
   /** Only for a holder of Inspect Deleted Content. */
   title?: string;
   href?: string;
@@ -71,6 +78,36 @@ export const KIND_NOUN: Record<DeletedKind, string> = {
 const ITEM_KIND_NOUN: Record<string, string> = { ...KIND_NOUN, notes: 'note', discussion: 'discussion', thread: 'discussion' };
 const itemKindNoun = (k: string | undefined): string => (k ? (ITEM_KIND_NOUN[k] ?? k.replace(/_/g, ' ')) : 'item');
 
+/** What each output event says, after "An output" or the output's title. */
+export const OUTPUT_EVENT_TEXT: Record<string, string> = {
+  submitted: 'was submitted',
+  registered: 'was registered',
+  declined: 'was declined',
+  updated: 'was updated',
+  version_added: 'had a version added',
+  filed: 'was filed in storage',
+  filing_failed: 'could not be filed in storage',
+  approval_requested: 'had approval requested',
+  approved: 'had a version approved',
+  superseded: 'had a version superseded',
+  audience_changed: 'had its audience changed',
+  review_required: 'needs an access review',
+  review_cleared: 'had its access review cleared',
+  withdrawn: 'was withdrawn',
+  deleted: 'was deleted',
+  restored: 'was restored',
+  held: 'was held in a security review',
+  released: 'was released from a security review',
+  checked: 'was checked against storage and is fine again',
+  changed_found: 'was found changed in storage',
+  moved_found: 'was found moved in storage',
+  missing_found: 'was found missing from storage',
+  relinked: 'was linked to its file again',
+  changed_registered: 'had a changed file registered',
+  change_register_requested: 'had registering a changed file requested',
+  change_register_failed: 'could not register a changed file',
+};
+
 /** `3 Dec 2026 — A task was deleted by Aisyah Rahman — "Duplicate"`. Never carries the item's title or text. */
 export function historyLineText(l: HistoryLine): string {
   const day = formatDay(l.at);
@@ -81,7 +118,16 @@ export function historyLineText(l: HistoryLine): string {
     // A null actor is Kainow itself, which marked the key rejected after the provider refused it.
     return `${day} — The key for AI connection "${l.label ?? ''}" was refused; AI requests skip this connection until the key is replaced (recorded by ${l.actor ?? 'Kainow'})`;
   }
-  const noun = KIND_NOUN[l.kind];
+  if (l.kind === 'department_transfer') {
+    const choice = l.folderChoice === 'move' ? '; its filed outputs were moved to the new department' : l.folderChoice === 'keep' ? '; its filed outputs stayed where they were' : '';
+    return `${day} — The owning department changed from ${l.fromDepartment ?? 'a department'} to ${l.toDepartment ?? 'another department'}${l.actor ? ` by ${l.actor}` : ''}${choice}${l.reason ? ` — "${l.reason}"` : ''}`;
+  }
+  if (l.kind === 'output') {
+    const what = OUTPUT_EVENT_TEXT[l.action] ?? `had an event (${l.action.replace(/_/g, ' ')})`;
+    const subject = l.output?.title ? `The output "${l.output.title}"` : 'An output';
+    return `${day} — ${subject} ${what}${l.actor ? ` by ${l.actor}` : ''}${l.reason ? ` — "${l.reason}"` : ''}`;
+  }
+  const noun = KIND_NOUN[l.kind as DeletedKind];
   return `${day} — A ${noun} was ${l.action}${l.actor ? ` by ${l.actor}` : ''}${l.reason ? ` — "${l.reason}"` : ''}`;
 }
 

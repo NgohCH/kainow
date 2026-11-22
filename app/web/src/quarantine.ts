@@ -10,7 +10,7 @@ import { formatDay } from './format.ts';
 
 export type ItemKind =
   | 'message' | 'source' | 'task' | 'decision' | 'question' | 'risk' | 'proposal' | 'human_proposal'
-  | 'answer' | 'report_draft' | 'summary' | 'minutes_draft' | 'feedback' | 'thread';
+  | 'answer' | 'report_draft' | 'summary' | 'minutes_draft' | 'feedback' | 'thread' | 'output';
 
 // Exact labels (spec 7.2, 7.4, 7.5, 7.7).
 export const HELD_LABEL = 'Held — suspected credential, under review';
@@ -48,6 +48,7 @@ const KIND_NOUN: Record<ItemKind, string> = {
   minutes_draft: 'minutes draft',
   feedback: 'feedback note',
   thread: 'discussion',
+  output: 'output',
 };
 export const kindNoun = (k: string): string => KIND_NOUN[k as ItemKind] ?? k.replace(/_/g, ' ');
 

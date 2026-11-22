@@ -446,12 +446,16 @@ async function loadRecords(db: Db, hits: RecordHit[]): Promise<Map<string, { row
  * visible (not deleted, hidden, returned or withdrawn) and in an audience the viewer is in; a record's project is
  * readable by the viewer; a proposal's audience (recordAudienceId) still includes the viewer. Thread scope: the
  * owner is visible and Project-wide or in the thread's own audience; authorised records only. A version superseded
- * by an edit stays readable: the material was current when it was sent.
+ * by an edit stays readable: the material was current when it was sent. Existing scope: whether the item is still
+ * there for anyone in its project at all (not deleted, hidden, returned, withdrawn or held), whatever its audience;
+ * used to tell material that was removed from material some people merely cannot read (outputs, D101).
  */
-export async function readableMaterial(db: Db, scope: MaterialScope, items: MaterialRef[]): Promise<boolean[]> {
+export async function readableMaterial(db: Db, scope: MaterialScope | { kind: 'existing'; ctx: ProjectContext }, items: MaterialRef[]): Promise<boolean[]> {
   if (items.length === 0) return [];
   if (scope.kind === 'personal' && !canReadContent(scope.ctx)) return items.map(() => false);
   const p = new Params();
+  // Existing scope: any audience will do (the item only has to be there).
+  const aud = (a: string): string => (scope.kind === 'existing' ? 'true' : audienceSql(scope, p, a));
   const proj = p.add(scope.ctx.project.id);
   const a = p.add(items.map((i) => i.passageId));
   const b = p.add(items.map((i) => i.recordKind));
@@ -461,18 +465,18 @@ export async function readableMaterial(db: Db, scope: MaterialScope, items: Mate
   const record = (table: string) =>
     `EXISTS (SELECT 1 FROM ${table} r WHERE r.id = i.record_id AND r.project_id = ${proj}::uuid${table === 'human_proposals' ? ` AND ${notHeldSql('r')}` : ` AND ${unheldRecordSql('r')}`})`;
   const proposals =
-    scope.kind === 'personal'
+    scope.kind !== 'thread'
       ? `WHEN i.record_kind = 'ai_proposal' THEN
            -- The source's current audience as well as the stored one: publishing a returned note may give it a new row.
            EXISTS (SELECT 1 FROM extraction_items x JOIN source_versions v ON v.id = x.source_version_id JOIN sources s ON s.id = v.source_id
                      JOIN audiences sa ON sa.id = s.audience_id
                     WHERE x.id = i.record_id AND ${notHeldSql('x')} AND s.project_id = ${proj}::uuid AND ${liveSourceSql('s')} AND s.publication = 'published'
-                      AND ${audienceSql(scope, p, 'sa')})
-           AND EXISTS (SELECT 1 FROM audiences au WHERE au.id = i.record_audience_id AND au.project_id = ${proj}::uuid AND ${audienceSql(scope, p, 'au')})
+                      AND ${aud('sa')})
+           AND EXISTS (SELECT 1 FROM audiences au WHERE au.id = i.record_audience_id AND au.project_id = ${proj}::uuid AND ${aud('au')})
          WHEN i.record_kind = 'human_proposal' THEN
            ${record('human_proposals')}
            AND (i.record_audience_id IS NULL
-                OR EXISTS (SELECT 1 FROM audiences au WHERE au.id = i.record_audience_id AND au.project_id = ${proj}::uuid AND ${audienceSql(scope, p, 'au')}))`
+                OR EXISTS (SELECT 1 FROM audiences au WHERE au.id = i.record_audience_id AND au.project_id = ${proj}::uuid AND ${aud('au')}))`
       : '';
   const text = `
 SELECT CASE
@@ -483,7 +487,7 @@ SELECT CASE
                      JOIN audiences au ON au.id = s.audience_id
                     WHERE p.id = i.passage_id AND p.owner_kind = 'source_version'
                       AND p.project_id = ${proj}::uuid AND s.project_id = ${proj}::uuid
-                      AND ${sourceOkSql('s')} AND ${audienceSql(scope, p, 'au')})
+                      AND ${sourceOkSql('s')} AND ${aud('au')})
            OR EXISTS (SELECT 1 FROM passages p
                         JOIN message_versions mv ON mv.id = p.owner_id
                         JOIN discussion_messages m ON m.id = mv.message_id
@@ -491,7 +495,7 @@ SELECT CASE
                         JOIN audiences au ON au.id = th.audience_id
                        WHERE p.id = i.passage_id AND p.owner_kind = 'message_version'
                          AND p.project_id = ${proj}::uuid AND th.project_id = ${proj}::uuid
-                         AND ${liveMessageSql('m')} AND ${notHeldSql('th')} AND ${audienceSql(scope, p, 'au')})
+                         AND ${liveMessageSql('m')} AND ${notHeldSql('th')} AND ${aud('au')})
          WHEN i.record_kind = 'task' THEN ${record('tasks')}
          WHEN i.record_kind = 'decision' THEN ${record('decisions')}
          WHEN i.record_kind = 'question' THEN ${record('questions')}
