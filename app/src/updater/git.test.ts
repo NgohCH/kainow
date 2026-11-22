@@ -48,6 +48,16 @@ t('a signed annotated tag verifies and returns its commit and notes', async () =
   assert.deepEqual(v, { ok: true, commit, notes: 'Kainow 1.0.2\n\n- Fixed a thing' });
 });
 
+t('notes quoting a signature marker line are kept whole; the signature is the last block (final review #4)', async () => {
+  const commit = await r.release('1.0.10');
+  const notes = 'Kainow 1.0.10\n\n- Release tags now refuse:\n-----BEGIN PGP SIGNATURE-----\n- and other old forms';
+  await r.tag('v1.0.10', { key: oldKey, message: notes });
+  await r.pushTag('v1.0.10');
+  const obj = await fetched('v1.0.10');
+  const v = await verifyCandidate(r.install, 'v1.0.10', obj, trusted, { commit, runningVersion: '1.0.1' });
+  assert.deepEqual(v, { ok: true, commit, notes });
+});
+
 t('an unsigned annotated tag is signature_invalid', async () => {
   const commit = await r.release('1.0.3');
   await r.tag('v1.0.3', { key: null });

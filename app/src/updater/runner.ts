@@ -36,7 +36,7 @@ export class RealRunner implements Runner {
     if (cmd === 'git') return git(cwd, args, opts.env, opts.timeoutMs);
     return runProcess(this.binaries.docker ?? 'docker', args, {
       cwd,
-      env: { ...process.env, ...opts.env },
+      env: { ...dockerEnv(process.env), ...opts.env },
       timeoutMs: opts.timeoutMs ?? DEFAULT_DOCKER_TIMEOUT_MS,
       maxBuffer: 256 * 1024 * 1024,
     });
@@ -44,12 +44,26 @@ export class RealRunner implements Runner {
 }
 
 /**
+ * What the updater passes on to docker (final review #19): the shell environment overrides the Kainow folder's .env in
+ * Compose's interpolation, so only what docker itself needs goes through: PATH, HOME, the locale, temp folders and
+ * DOCKER_*. Nothing else of the updater's own environment (DATABASE_URL, POSTGRES_*, COMPOSE_*) reaches Compose.
+ */
+export function dockerEnv(env: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return Object.fromEntries(
+    Object.entries(env).filter(([k]) => /^(PATH|HOME|USER|LANG|LC_ALL|TMPDIR|TEMP|TMP|SYSTEMROOT|DOCKER_[A-Z0-9_]+)$/i.test(k)),
+  );
+}
+
+/**
  * Hides passwords before command output reaches the log: the password of any
- * `postgres://user:password@` (or postgresql://) URL, and the value after any
- * `password=` (any case, so PGPASSWORD= too).
+ * `postgres://user:password@` (or postgresql://) URL, the value after any
+ * `password=` (any case, so PGPASSWORD= too), and the YAML and JSON forms Compose
+ * prints (`POSTGRES_PASSWORD: x`, `"password": "x"`; final review #18).
  */
 export function maskSecrets(text: string): string {
   return text
     .replace(/(postgres(?:ql)?:\/\/[^:@\s/]*:)[^@\s]*@/gi, '$1***@')
-    .replace(/(password=)("[^"]*"|'[^']*'|[^\s&;"']+)/gi, '$1***');
+    .replace(/(password=)("[^"]*"|'[^']*'|[^\s&;"']+)/gi, '$1***')
+    .replace(/("[A-Za-z0-9_]*password"\s*:\s*)("(?:[^"\\]|\\.)*"|[^\s,}]+)/gi, '$1"***"')
+    .replace(/^(\s*-?\s*[A-Za-z0-9_]*password[ \t]*:[ \t]*)(\S.*)$/gim, '$1***');
 }

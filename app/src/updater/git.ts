@@ -39,7 +39,18 @@ export type GitResult = { code: number; stdout: string; stderr: string };
  * the whole process tree is killed, helpers included), output over 64 MB code 125.
  */
 export function git(dir: string, args: string[], env?: NodeJS.ProcessEnv, timeoutMs: number = GIT_TIMEOUT_MS): Promise<GitResult> {
-  return runProcess('git', args, { cwd: dir, env: { ...process.env, ...GIT_ENV, ...env }, timeoutMs, maxBuffer: 64 * 1024 * 1024 });
+  return runProcess('git', args, { cwd: dir, env: gitEnv(env), timeoutMs, maxBuffer: 64 * 1024 * 1024 });
+}
+
+const withoutGitVars = (env: NodeJS.ProcessEnv | undefined): NodeJS.ProcessEnv =>
+  Object.fromEntries(Object.entries(env ?? {}).filter(([k]) => !/^GIT_/i.test(k)));
+
+/**
+ * The environment of a git call (final review #5): no GIT_* variable from the updater's own environment or the caller
+ * (they could point git at another config, object store or signature program), and GIT_ENV last, so it always wins.
+ */
+export function gitEnv(env?: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  return { ...withoutGitVars(process.env), ...withoutGitVars(env), ...GIT_ENV };
 }
 
 const OBJECT_ID = /^[0-9a-f]{40}([0-9a-f]{24})?$/; // SHA-1 or SHA-256
@@ -70,7 +81,7 @@ export type VerifyCode = 'not_annotated' | 'tag_name_mismatch' | 'signature_inva
 type TagObject = { object: string; type: string; tag: string; message: string; signature: string | null };
 
 const SSH_SIG_BEGIN = '-----BEGIN SSH SIGNATURE-----';
-const SIG_BEGIN = /^-----BEGIN (SSH|PGP) SIGNATURE-----$/m;
+const SIG_BEGIN_ALL = /^-----BEGIN (SSH|PGP) SIGNATURE-----$/gm;
 
 function parseTagObject(raw: string): TagObject | null {
   const split = raw.indexOf('\n\n');
@@ -87,7 +98,9 @@ function parseTagObject(raw: string): TagObject | null {
   const type = headers.get('type');
   const tag = headers.get('tag');
   if (!object || !type || tag === undefined) return null;
-  const m = SIG_BEGIN.exec(body);
+  // The signature is the last block (final review #4): a marker line quoted inside the notes must not cut them short.
+  let m: RegExpMatchArray | null = null;
+  for (const x of body.matchAll(SIG_BEGIN_ALL)) m = x;
   const message = (m ? body.slice(0, m.index) : body).replace(/\s+$/, '');
   const signature = m ? body.slice(m.index) : null;
   return { object, type, tag, message, signature };

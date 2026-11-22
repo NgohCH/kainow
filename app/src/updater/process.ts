@@ -46,10 +46,13 @@ function killTree(pid: number, graceMs: number): void {
 export function runProcess(file: string, args: string[], opts: ProcessOptions): Promise<ProcessResult> {
   return new Promise((resolve) => {
     let settled = false;
+    let timer: NodeJS.Timeout | undefined;
+    let hard: NodeJS.Timeout | undefined;
     const finish = (r: ProcessResult) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
+      clearTimeout(hard);
       resolve(r);
     };
     let outcome: 'timeout' | 'overflow' | null = null;
@@ -57,19 +60,40 @@ export function runProcess(file: string, args: string[], opts: ProcessOptions): 
     const err: Buffer[] = [];
     let size = 0;
 
-    const child = spawn(file, args, {
-      cwd: opts.cwd,
-      env: opts.env,
-      detached: process.platform !== 'win32',
-      stdio: ['ignore', 'pipe', 'pipe'],
-      windowsHide: true,
-    });
+    let child: ReturnType<typeof spawn>;
+    try {
+      child = spawn(file, args, {
+        cwd: opts.cwd,
+        env: opts.env,
+        detached: process.platform !== 'win32',
+        stdio: ['ignore', 'pipe', 'pipe'],
+        windowsHide: true,
+      });
+    } catch {
+      // A synchronous spawn error (a bad argument or environment value): still never throws (final review #21).
+      finish({ code: CODE_NOT_STARTED, stdout: '', stderr: '' });
+      return;
+    }
+    const result = (): ProcessResult => {
+      const stdout = Buffer.concat(out).toString();
+      const stderr = Buffer.concat(err).toString();
+      return { code: outcome === 'timeout' ? CODE_TIMEOUT : CODE_OUTPUT_TOO_LARGE, stdout, stderr };
+    };
     const stopTree = (why: 'timeout' | 'overflow') => {
       if (outcome) return;
       outcome = why;
-      if (child.pid !== undefined) killTree(child.pid, opts.killGraceMs ?? 5_000);
+      const grace = opts.killGraceMs ?? 5_000;
+      if (child.pid !== undefined) killTree(child.pid, grace);
+      // A descendant that escaped the kill can hold the pipes open, so 'close' may never come: settle anyway shortly
+      // after the grace (final review #20), so a hung tick never keeps the updater's lock.
+      hard = setTimeout(() => {
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        finish(result());
+      }, grace + 2_000);
+      hard.unref();
     };
-    const timer = setTimeout(() => stopTree('timeout'), opts.timeoutMs);
+    timer = setTimeout(() => stopTree('timeout'), opts.timeoutMs);
     const collect = (into: Buffer[]) => (chunk: Buffer) => {
       if (outcome === 'overflow') return;
       size += chunk.length;
@@ -79,8 +103,8 @@ export function runProcess(file: string, args: string[], opts: ProcessOptions): 
       }
       into.push(chunk);
     };
-    child.stdout.on('data', collect(out));
-    child.stderr.on('data', collect(err));
+    child.stdout?.on('data', collect(out));
+    child.stderr?.on('data', collect(err));
 
     child.on('error', (e: NodeJS.ErrnoException) => {
       if (e.code === 'ENOENT' || child.pid === undefined) {
@@ -88,11 +112,8 @@ export function runProcess(file: string, args: string[], opts: ProcessOptions): 
       }
     });
     child.on('close', (code) => {
-      const stdout = Buffer.concat(out).toString();
-      const stderr = Buffer.concat(err).toString();
-      if (outcome === 'timeout') return finish({ code: CODE_TIMEOUT, stdout, stderr });
-      if (outcome === 'overflow') return finish({ code: CODE_OUTPUT_TOO_LARGE, stdout, stderr });
-      finish({ code: code ?? 1, stdout, stderr });
+      if (outcome) return finish(result());
+      finish({ code: code ?? 1, stdout: Buffer.concat(out).toString(), stderr: Buffer.concat(err).toString() });
     });
   });
 }

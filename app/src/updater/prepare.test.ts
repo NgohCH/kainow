@@ -142,7 +142,7 @@ describe('preparing an update', () => {
     noRequirements();
   }
   /** The release has no release/requirements.json. */
-  const noRequirements = () => runner.on('git', ['cat-file', '-e'], { code: 128, stdout: '', stderr: 'path does not exist' });
+  const noRequirements = () => runner.on('git', ['ls-tree'], { code: 0, stdout: '', stderr: '' });
 
   const run = (u = update(), d = deps()) => prepareWithStore(d, store, u);
   const added = () => runner.lines('git').filter((l) => l.includes('worktree add'));
@@ -279,7 +279,7 @@ describe('preparing an update', () => {
     const withRequirements = (json: string) => {
       store = new MemoryStore();
       runner = new FakeRunner();
-      runner.on('git', ['cat-file', '-e', `${COMMIT}:release/requirements.json`], { code: 0, stdout: '', stderr: '' });
+      runner.on('git', ['ls-tree', '--name-only', COMMIT, '--', 'release/requirements.json'], { code: 0, stdout: 'release/requirements.json\n', stderr: '' });
       runner.on('git', ['show', `${COMMIT}:release/requirements.json`], { code: 0, stdout: json, stderr: '' });
       docker();
     };
@@ -307,6 +307,17 @@ describe('preparing an update', () => {
     runner = new FakeRunner();
     docker();
     assert.equal(await run(), 'ready', 'no requirements file');
+
+    // git failing to answer (timeout, not started) is never read as "no requirements file" (final review #27).
+    for (const code of [124, 125, 127, 128]) {
+      store = new MemoryStore();
+      runner = new FakeRunner();
+      runner.on('git', ['ls-tree'], { code, stdout: '', stderr: '' });
+      docker();
+      assert.equal(await run(), 'failed_before_install', String(code));
+      assert.equal((store.ends[0] as { code: string }).code, 'build_failed');
+      assert.ok(!runner.calls.some((c) => c.args.at(-1) === 'build'));
+    }
   });
 
   test('build_failed removes the staging worktree', async () => {
@@ -401,6 +412,20 @@ describe('preparing an update', () => {
     assert.equal(await run(), 'cancelled');
     assert.deepEqual(store.steps, []);
     assert.ok(!runner.calls.some((c) => c.cmd === 'docker'));
+  });
+
+  test('a cancel found inside a step closes that step skipped, not failed (final review #26)', async () => {
+    docker();
+    git.verifyCandidate = async () => {
+      store.state = 'cancelled'; // cancelled while the signature was checked
+      return { ok: true, commit: COMMIT, notes: 'n' };
+    };
+    assert.equal(await run(), 'cancelled');
+    assert.deepEqual(
+      store.steps.map((s) => `${s.step}:${s.outcome}`),
+      ['space:passed', 'working_tree:passed', 'verify:skipped'],
+    );
+    assert.deepEqual(store.ends, []);
   });
 
   test('re-entry: a staging checkout left by a dead tick is removed and preparation starts over', async () => {

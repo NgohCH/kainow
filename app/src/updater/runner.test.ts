@@ -8,7 +8,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { FakeRunner } from '../testing/fake-runner';
 import { gitToolsMissing } from '../testing/git-releases';
 import { CODE_OUTPUT_TOO_LARGE, runProcess } from './process';
-import { RealRunner, maskSecrets } from './runner';
+import { GIT_ENV, git, gitEnv } from './git';
+import { RealRunner, dockerEnv, maskSecrets } from './runner';
 
 describe('maskSecrets', () => {
   test('maskSecrets hides the password in a postgres URL', () => {
@@ -26,6 +27,17 @@ describe('maskSecrets', () => {
     assert.match(out, /password=\*\*\*/);
     assert.match(out, /PGPASSWORD=\*\*\*/);
     assert.ok(out.includes('user=x'));
+  });
+
+  test('maskSecrets hides YAML and JSON password values as Compose prints them (final review #18)', () => {
+    const yaml = 'services:\n  db:\n    environment:\n      POSTGRES_PASSWORD: hunter2\n      POSTGRES_USER: kainow\n    password:   "q w e"\n';
+    const out = maskSecrets(yaml);
+    assert.ok(!out.includes('hunter2') && !out.includes('q w e'), out);
+    assert.match(out, /POSTGRES_PASSWORD: \*\*\*/);
+    assert.ok(out.includes('POSTGRES_USER: kainow'));
+    const json = maskSecrets('{"POSTGRES_PASSWORD":"hun\\"ter2","password": 1234,"user":"x"}');
+    assert.ok(!json.includes('hun') && !json.includes('1234'), json);
+    assert.ok(json.includes('"user":"x"'));
   });
 
   test('text without secrets is unchanged', () => {
@@ -110,6 +122,48 @@ describe('RealRunner', () => {
       assert.equal(alive(gpid), false, 'the grandchild is gone');
     } finally {
       await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('a synchronous spawn error is code 127, never a throw (final review #21)', async () => {
+    const res = await runProcess(process.execPath, ['-e', 'x\0y'], { cwd: tmpdir(), env: process.env, timeoutMs: 5_000, maxBuffer: 1024 });
+    assert.equal(res.code, 127);
+  });
+
+  test('docker gets only PATH, HOME, the locale, temp folders and DOCKER_* of the updater environment (final review #19)', async () => {
+    assert.deepEqual(
+      dockerEnv({ PATH: '/bin', HOME: '/h', DOCKER_HOST: 'unix:///x', DATABASE_URL: 'postgres://k:s@db/k', POSTGRES_PASSWORD: 's', COMPOSE_PROJECT_NAME: 'p', KAINOW_INSTALL_DIR: '/k' }),
+      { PATH: '/bin', HOME: '/h', DOCKER_HOST: 'unix:///x' },
+    );
+    // node stands in for docker and prints what it was given.
+    const saved = process.env.POSTGRES_PASSWORD;
+    process.env.POSTGRES_PASSWORD = 'from-the-updater';
+    try {
+      const r = new RealRunner(tmpdir(), { docker: process.execPath });
+      const res = await r.run('docker', ['-e', 'process.stdout.write(String(process.env.POSTGRES_PASSWORD))']);
+      assert.equal(res.stdout, 'undefined');
+    } finally {
+      if (saved === undefined) delete process.env.POSTGRES_PASSWORD;
+      else process.env.POSTGRES_PASSWORD = saved;
+    }
+  });
+
+  test('git never takes GIT_* from the updater environment or the caller; GIT_ENV wins (final review #5)', async (t) => {
+    const env = gitEnv({ GIT_CONFIG_GLOBAL: '/tmp/evil', GIT_DIR: '/x', GIT_CONFIG_VALUE_0: 'openpgp', OTHER: '1' });
+    assert.equal(env.GIT_CONFIG_GLOBAL, GIT_ENV.GIT_CONFIG_GLOBAL);
+    assert.equal(env.GIT_CONFIG_VALUE_0, 'ssh');
+    assert.equal(env.GIT_DIR, undefined);
+    assert.equal(env.OTHER, '1');
+    const missing = await gitToolsMissing();
+    if (missing) return t.skip(missing);
+    const saved = process.env.GIT_CONFIG_VALUE_0;
+    process.env.GIT_CONFIG_VALUE_0 = 'openpgp';
+    try {
+      const r = await git(tmpdir(), ['config', '--get', 'gpg.format'], { GIT_CONFIG_VALUE_0: 'x509' });
+      assert.equal(r.stdout.trim(), 'ssh');
+    } finally {
+      if (saved === undefined) delete process.env.GIT_CONFIG_VALUE_0;
+      else process.env.GIT_CONFIG_VALUE_0 = saved;
     }
   });
 

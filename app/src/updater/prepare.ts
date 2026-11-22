@@ -79,7 +79,7 @@ export interface PrepareStore {
   /** Still preparing (not cancelled meanwhile). */
   stillPreparing(id: string): Promise<boolean>;
   startStep(id: string, step: PrepareStep, now: Date): Promise<string>;
-  endStep(stepId: string, outcome: 'passed' | 'failed', code: FailureCode | null, now: Date): Promise<void>;
+  endStep(stepId: string, outcome: 'passed' | 'failed' | 'skipped', code: FailureCode | null, now: Date): Promise<void>;
   /** The verified tag object and release notes; false when no longer preparing. */
   saveVerified(id: string, tagObject: string, notes: string): Promise<boolean>;
   /** Under the updates lock, only while still preparing; false when it was cancelled meanwhile (nothing written). */
@@ -131,7 +131,14 @@ export async function resolveProjectName(runner: Runner, installDir: string, env
   return fallback;
 }
 
-export const stagingDir = (installDir: string, tag: string): string => join(installDir, '.kainow-staging', tag);
+/**
+ * The staging checkout's folder. Throws unless `tag` is a release tag (final review #23): the path is removed with
+ * `rm -rf`, so a value read from the database never names anything else. The schema refuses such a tag too (0034).
+ */
+export function stagingDir(installDir: string, tag: string): string {
+  if (!parseTag(tag)) throw new Error('not a release tag');
+  return join(installDir, '.kainow-staging', tag);
+}
 
 /** `docker compose` flags for a project directory with the installation's project name, .env and override file. */
 export function composeFlags(installDir: string, projectName: string, projectDir: string): string[] {
@@ -262,7 +269,8 @@ export async function prepareWithStore(deps: Omit<PrepareDeps, 'pool'>, store: P
     try {
       await body();
     } catch (err) {
-      await store.endStep(id, 'failed', err instanceof Stop ? err.code : null, deps.now());
+      // A cancel found during the step is not a failure of the step (final review #26).
+      await store.endStep(id, err instanceof Cancelled ? 'skipped' : 'failed', err instanceof Stop ? err.code : null, deps.now());
       throw err;
     }
     await store.endStep(id, 'passed', null, deps.now());
@@ -365,8 +373,14 @@ export async function prepareWithStore(deps: Omit<PrepareDeps, 'pool'>, store: P
       }
       apiImage = apiImageOf(next.stdout);
 
-      const has = await runner.run('git', ['cat-file', '-e', `${u.commit}:${REQUIREMENTS}`], { cwd: installDir });
-      if (has.code === 0) {
+      // `ls-tree` answers 0 with or without the file; any other answer (git missing, a timeout) is a failure, never read
+      // as "no requirements file" (final review #27).
+      const has = await runner.run('git', ['ls-tree', '--name-only', u.commit, '--', REQUIREMENTS], { cwd: installDir });
+      if (has.code !== 0) {
+        log(`Looking for the release's ${REQUIREMENTS} failed (${has.code}).`);
+        throw new Stop('failed_before_install', 'build_failed');
+      }
+      if (has.stdout.trim() === REQUIREMENTS) {
         const show = await runner.run('git', ['show', `${u.commit}:${REQUIREMENTS}`], { cwd: installDir });
         let req: Requirements | null = null;
         try {
