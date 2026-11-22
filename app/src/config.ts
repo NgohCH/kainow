@@ -32,6 +32,8 @@ export interface AppConfig extends DatabaseConfig {
   appUrl: string;
   /** File holding the protected key (32 bytes); null means quarantine cleaning waits for it. */
   protectedKeyFile: string | null;
+  /** Where the release check looks for new releases (10b spec 6.2). */
+  release: ReleaseSource;
 }
 
 export const DEFAULT_AUTH_SETTINGS: AuthSettings = {
@@ -102,6 +104,21 @@ function appUrlFrom(env: NodeJS.ProcessEnv): string {
   return (env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
 }
 
+/** Where the release check reads the tags list. Both default in code; installations leave them unset. */
+export interface ReleaseSource {
+  repo: string;
+  api: string;
+}
+export const DEFAULT_RELEASE_REPO = 'NgohCH/kainow';
+export const DEFAULT_RELEASE_API = 'https://api.github.com';
+
+export function releaseSourceFrom(env: NodeJS.ProcessEnv): ReleaseSource {
+  return {
+    repo: env.KAINOW_RELEASE_REPO?.trim() || DEFAULT_RELEASE_REPO,
+    api: (env.KAINOW_RELEASE_API?.trim() || DEFAULT_RELEASE_API).replace(/\/+$/, ''),
+  };
+}
+
 function protectedKeyFileFrom(env: NodeJS.ProcessEnv): string | null {
   return env.KAINOW_PROTECTED_KEY_FILE?.trim() || null;
 }
@@ -133,6 +150,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     appUrl: appUrlFrom(env),
     email,
     protectedKeyFile: protectedKeyFileFrom(env),
+    release: releaseSourceFrom(env),
   };
 }
 
@@ -147,8 +165,9 @@ export interface WorkerConfig extends DatabaseConfig {
   /** Where people open Kainow; used for links in notification emails. */
   appUrl: string;
   protectedKeyFile: string | null;
+  release: ReleaseSource;
 }
 
 export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
-  return { ...loadDatabaseConfig(env), email: loadEmailConfig(env), appUrl: appUrlFrom(env), protectedKeyFile: protectedKeyFileFrom(env) };
+  return { ...loadDatabaseConfig(env), email: loadEmailConfig(env), appUrl: appUrlFrom(env), protectedKeyFile: protectedKeyFileFrom(env), release: releaseSourceFrom(env) };
 }

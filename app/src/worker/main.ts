@@ -21,6 +21,8 @@ import type { PgBoss } from 'pg-boss';
 import { loadProtectedKey } from '../quarantine/protected-key';
 import { OperationsState } from '../ops/state';
 import { runOpsSweep } from '../ops/sweep-ops';
+import { runningVersion } from '../common/version';
+import { checkReleases } from '../updater/release-check';
 import { QUEUES, startQueues } from './queues';
 import { registerSchedules } from './schedules';
 import { DbStorageConnectorFactory } from '../storage/connector-factory';
@@ -104,7 +106,18 @@ async function main(): Promise<void> {
     sendOutbox: () => sendStorageOutbox(pool, boss),
     daily: () => runStorageDaily(storageDeps, (m) => storageLog.warn(m)),
   };
-  await registerSchedules(boss, { sweep, dispatcher, analysis, quarantine: quarantineJob, storage, operations, opsSweep: () => runOpsSweep(pool, clock()) });
+  // The daily release check runs at a minute fixed per installation (from the organisation name), so installations do
+  // not all call GitHub together. Before onboarding the minute is 0; it moves once a name is saved and the worker restarts.
+  const minuteRow = (await pool.query(`SELECT abs(hashtext(name)) % 60 AS minute FROM organisation WHERE id = 1`)).rows[0] as
+    | { minute: number }
+    | undefined;
+  const releaseCheck = {
+    minute: minuteRow?.minute ?? 0,
+    run: async () => {
+      await checkReleases({ pool, fetch, repo: config.release.repo, api: config.release.api, runningVersion: runningVersion(), now: clock() }, 'daily');
+    },
+  };
+  await registerSchedules(boss, { sweep, dispatcher, analysis, quarantine: quarantineJob, storage, operations, opsSweep: () => runOpsSweep(pool, clock()), releaseCheck });
   console.log(`kainow worker started (at most ${AI_CONCURRENCY} AI jobs at once in this process; the AI places setting is the real limit)`);
 
   const stop = async (): Promise<void> => {

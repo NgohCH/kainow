@@ -15,6 +15,8 @@ export const QUEUES = {
   storageOutbox: 'storage.outbox',
   /** The daily storage tick at 02:30 UTC+8 (checks and sharing reconciliation). */
   storageDaily: 'storage.daily',
+  /** The daily release check (10b spec 6.2), at a minute fixed per installation. */
+  releaseCheck: 'release_check',
 } as const;
 
 export const BOSS_SCHEMA = 'pgboss';
@@ -39,7 +41,7 @@ export async function startQueues(
     // The storage queue is 'stately' too: one queued and one running job per kind and subject, never two at once.
     if (
       name === QUEUES.sweep || name === QUEUES.email || name === QUEUES.quarantine ||
-      name === QUEUES.storage || name === QUEUES.storageOutbox || name === QUEUES.storageDaily
+      name === QUEUES.storage || name === QUEUES.storageOutbox || name === QUEUES.storageDaily || name === QUEUES.releaseCheck
     ) await boss.createQueue(name, { policy: 'stately' });
     else await boss.createQueue(name);
   }
