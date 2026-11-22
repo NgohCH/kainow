@@ -1,7 +1,7 @@
 # V1.0 sub-project 10b: operations part 2 — updater, release signing, load test and supported browsers — design
 
 **Date:** 22 November 2026
-**Status:** Draft for the Product Owner's approval.
+**Status:** Approved by the Product Owner on 22 November 2026, including the calls listed at hand-over (updater runs as the folder owner, compatibility checks before stopping, D111 backup rule at approval, 30-minute backup retry, recovery on the previous version, configurable release API, load-test aims, go-live step `updates`, restart message).
 **Builds on:** sub-project 10a, branch `TheLord/vigilant-hawking-7ee526` (PR #24, open). This branch (`TheLord/nice-goldberg-5d2b2b`) is cut from 10a's head 2b270e3 and is rebased onto `main` once #24 merges.
 **Reserved numbers:** migration `0034_updates.sql`; Decision Register D119–D126 (D125–D126 kept for decisions found while building); Configuration Catalogue C105–C112 (C111–C112 kept likewise). 10a holds 0033, D109–D118 and C93–C104. Checked on `main` at 94b592f (highest: migration 0032, D108, C92).
 **Authority:**
