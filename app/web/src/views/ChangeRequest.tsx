@@ -2,6 +2,7 @@ import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import { type CurrentView, type RequestView, approvalsLine, kindLabel, termsRows, waitingLine } from '../changes.ts';
 import { formatWhen } from '../format.ts';
+import { approvalNoticeFor } from '../outputs.ts';
 import { AddSubtaskForm, AmendForm, CancelForm, SupersedeForm, type WorkContext, WithdrawForm } from './ChangeForms.tsx';
 
 /** A project's waiting change requests (newest first), reloaded on demand. Failing to load them leaves the list empty. */
@@ -42,7 +43,7 @@ const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did n
  * One change request: current and proposed terms side by side, the approvals so far, the reason, and the actions
  * the server says this viewer may take (or why there are none). `onChanged` gets a short message to show.
  */
-export function ChangeRequestPanel({ request, work, onChanged }: { request: RequestView; work?: WorkContext; onChanged: (message: string) => void }) {
+export function ChangeRequestPanel({ request, work, onChanged, projectId }: { request: RequestView; work?: WorkContext; onChanged: (message: string) => void; projectId?: string }) {
   const [mode, setMode] = useState<'reject' | 'withdraw' | 'revise' | 'accept' | null>(null);
   const [reason, setReason] = useState('');
   const [responsible, setResponsible] = useState('');
@@ -112,6 +113,20 @@ export function ChangeRequestPanel({ request, work, onChanged }: { request: Requ
         <p>
           From {request.offer.fromProject.name}: <strong>{request.offer.risk.description}</strong> <span className="meta">(severity: {request.offer.risk.severity})</span>
         </p>
+      )}
+      {request.kind === 'approve_output' && (
+        <>
+          <p>
+            {request.output ? (
+              <>
+                {projectId ? <a href={`#/projects/${projectId}/outputs/${request.output.id}`}>{request.output.title}</a> : <strong>{request.output.title}</strong>}, version {request.output.versionNo}
+              </>
+            ) : (
+              'An output version you cannot read'
+            )}
+          </p>
+          <p className="warn" role="note">{approvalNoticeFor(request)}</p>
+        </>
       )}
       {rows.length > 0 && (
         <table className="table terms">

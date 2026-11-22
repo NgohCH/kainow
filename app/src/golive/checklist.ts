@@ -1,4 +1,4 @@
-// The go-live checklist (spec §4): the 11 steps, the automatic checks and the closing rule (tightened by review G01).
+// The go-live checklist (spec §4): the 12 steps, the automatic checks and the closing rule (tightened by review G01).
 import type { Pool, PoolClient } from 'pg';
 import { uuidv7 } from '../common/uuid7';
 
@@ -12,7 +12,7 @@ export interface StepDef {
   mode: StepMode;
 }
 
-/** Order and keys are fixed; positions 1 to 11 follow this order. */
+/** Order and keys are fixed; positions 1 to 12 follow this order. */
 export const STEPS: readonly StepDef[] = [
   { key: 'organisation', mode: 'auto', link: '#/organisation', text: 'Register your organisation: its name and email domains', explanation: "Kainow needs the organisation's name and email domains before anyone can be invited." },
   { key: 'logos', mode: 'auto_or_skip', link: '#/organisation', text: "Upload your organisation's logos (optional)", explanation: 'Logos appear on sign-in and on exported documents. Upload one, or confirm that you are skipping it.' },
@@ -24,7 +24,8 @@ export const STEPS: readonly StepDef[] = [
   { key: 'backups', mode: 'confirm', link: 'INSTALL.md, the section on Back up', text: 'Configure daily encrypted backups and complete a test restore', explanation: 'A backup is only real once a restore from it has worked.' },
   { key: 'department', mode: 'auto', link: '#/departments', text: 'Create a real department', explanation: 'Projects and people belong to a department.' },
   { key: 'users', mode: 'auto', link: '#/', text: 'Admit real users', explanation: 'At least one person who is not an Enterprise Administrator has accepted their invitation and is Active.' },
-  { key: 'project', mode: 'auto', link: '#/', text: 'Launch the first real project', explanation: 'A real project has reached Active. The checklist closes once every step except the optional logos is done.' },
+  { key: 'project', mode: 'auto', link: '#/', text: 'Launch the first real project', explanation: 'A real project has reached Active. The checklist closes once every step except the optional ones (logos, storage) is done.' },
+  { key: 'storage', mode: 'auto_or_skip', link: '#/storage', text: 'Connect storage and approve the source area', explanation: 'Kainow keeps source files and filed outputs in your own SharePoint or OneDrive. Connect it and approve the source area, or skip this step.' },
 ];
 
 export const TOTAL = STEPS.length;
@@ -42,11 +43,12 @@ export const INFORMATION: ReadonlyArray<{ key: string; text: string; explanation
   },
 ];
 /**
- * The checklist closes only when every step except the optional logos is done (review G01). A launched project alone
- * does not close it: the safeguards (second Administrator, recovery, mailbox, test email, calendar, backups) must be
- * done first, because once closed no step can be ticked and the record would show go-live without them.
+ * The checklist closes only when every step except the optional ones (mode auto_or_skip: logos, storage) is done
+ * (review G01). A launched project alone does not close it: the safeguards (second Administrator, recovery, mailbox,
+ * test email, calendar, backups) must be done first, because once closed no step can be ticked and the record would
+ * show go-live without them.
  */
-export const CLOSING_KEYS: readonly string[] = STEPS.filter((s) => s.key !== 'logos').map((s) => s.key);
+export const CLOSING_KEYS: readonly string[] = STEPS.filter((s) => s.mode !== 'auto_or_skip').map((s) => s.key);
 export const MSG = {
   autoStep: 'Kainow ticks this step itself.',
   testEmailFirst: 'Send a test email first, then check it arrived.',
@@ -78,7 +80,10 @@ export async function conditions(db: Db): Promise<Record<string, boolean>> {
       EXISTS (SELECT 1 FROM departments) AS department,
       EXISTS (SELECT 1 FROM users WHERE status = 'active' AND role <> 'enterprise_administrator') AS users,
       (EXISTS (SELECT 1 FROM projects WHERE status = 'active')
-        OR EXISTS (SELECT 1 FROM project_transitions WHERE to_status = 'active')) AS project`);
+        OR EXISTS (SELECT 1 FROM project_transitions WHERE to_status = 'active')) AS project,
+      -- Connection checked (the Administrator's last "Check connection" succeeded) and a source area approved.
+      (EXISTS (SELECT 1 FROM storage_settings WHERE last_check_state = 'connected')
+        AND EXISTS (SELECT 1 FROM storage_destinations WHERE purpose = 'source_area' AND status = 'approved')) AS storage`);
   return rows[0] as Record<string, boolean>;
 }
 

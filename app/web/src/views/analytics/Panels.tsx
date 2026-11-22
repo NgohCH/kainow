@@ -388,6 +388,15 @@ export function SystemView({ data, csv }: { data: SystemPanel; csv: ReactNode })
           </ul>
           {act(data.links.security, 'Open security review')}
         </section>
+        <section aria-labelledby="sys-storage">
+          <h3 id="sys-storage">Storage</h3>
+          <ul className="plain">
+            <li>Files that failed to store: {data.storageFailures}</li>
+            <li>Files waiting to be stored: {data.storageWaiting}</li>
+            <li>Held files still in storage after removal failed: {data.withholdFailures}</li>
+            <li>Sharing to repair: {data.sharingToRepair}</li>
+          </ul>
+        </section>
       </div>
       {csv}
       <About>

@@ -39,7 +39,7 @@ describe('access and records settings (D90)', { skip: SKIP_NO_DB }, () => {
   test('get shows the settings, defaults and bounds', async () => {
     const r = await admin.request('GET', URL);
     assert.equal(r.status, 200);
-    const base = { archiveAfterMonths: 12, grantDefaultDays: 30, grantMaxDays: 90, invitationValidDays: 7, analyticsExportAllowed: true };
+    const base = { archiveAfterMonths: 12, grantDefaultDays: 30, grantMaxDays: 90, invitationValidDays: 7, analyticsExportAllowed: true, projectExportsAllowed: false };
     assert.deepEqual(r.body.settings, base);
     assert.deepEqual(r.body.defaults, base);
     assert.deepEqual(r.body.bounds.grantMaxDays, { min: 1, max: 365 });
@@ -65,8 +65,8 @@ describe('access and records settings (D90)', { skip: SKIP_NO_DB }, () => {
     assert.equal(rows.length, 1);
     assert.equal(rows[0].actor_id, adminId);
     assert.equal(rows[0].reason, 'Longer retention');
-    assert.deepEqual(rows[0].previous, { archiveAfterMonths: 12, grantDefaultDays: 30, grantMaxDays: 90, invitationValidDays: 7, analyticsExportAllowed: true });
-    assert.deepEqual(rows[0].next, { archiveAfterMonths: 24, grantDefaultDays: 30, grantMaxDays: 90, invitationValidDays: 14, analyticsExportAllowed: true });
+    assert.deepEqual(rows[0].previous, { archiveAfterMonths: 12, grantDefaultDays: 30, grantMaxDays: 90, invitationValidDays: 7, analyticsExportAllowed: true, projectExportsAllowed: false });
+    assert.deepEqual(rows[0].next, { archiveAfterMonths: 24, grantDefaultDays: 30, grantMaxDays: 90, invitationValidDays: 14, analyticsExportAllowed: true, projectExportsAllowed: false });
     assert.equal(r.body.changes.length, 1);
     assert.equal(r.body.changes[0].reason, 'Longer retention');
     const audit = await t.pool.query(`SELECT detail FROM audit_events WHERE action = 'access_settings.changed'`);

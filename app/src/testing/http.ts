@@ -6,6 +6,7 @@ import type { AutomaticAnalysis } from '../discussion/automatic-analysis';
 import type { AnalysisQueue } from '../analysis/queue';
 import type { AssistQueue } from '../assist/queue';
 import { NO_MEETING_END_HOOK, type MeetingEndHook } from '../discussion/meetings.service';
+import type { StorageConnectorFactory } from '../storage/connector-factory';
 import { loadConfig } from '../config';
 import { runMigrations } from '../db/migrate';
 import { resetPublicSchema, testDatabaseUrl } from './db';
@@ -23,8 +24,10 @@ export interface Client {
   request(method: string, path: string, body?: unknown): Promise<Reply>;
   /** Sends raw bytes (a file upload) with the given type. */
   upload(method: string, path: string, body: Buffer, contentType: string): Promise<Reply>;
-  /** A request whose answer is read as sent (a download, or headers to check): status, headers and the text. A body is sent as JSON. */
+  /** A request whose answer is read as sent (a download, a redirect, or headers to check): status, headers and the text. A body is sent as JSON. */
   raw(method: string, path: string, body?: unknown): Promise<{ status: number; headers: Headers; text: string }>;
+  /** Like raw, but sends the given text as the JSON body exactly as written (for malformed bodies). */
+  rawText(method: string, path: string, text: string): Promise<{ status: number; headers: Headers; text: string }>;
 }
 
 /** A queued email as the tests see it. */
@@ -70,7 +73,7 @@ async function send(base: string, method: string, path: string, body: unknown, h
  * The organisation is already set up unless `organisation: false` (for onboarding tests).
  */
 /** Ending a meeting does nothing unless a test gives a hook, or an analysis queue (then the real hook requests the final draft). */
-export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opts: { organisation?: boolean; emailNudge?: { nudge(): Promise<void> }; meetingEndHook?: MeetingEndHook; automaticAnalysis?: AutomaticAnalysis; analysisQueue?: AnalysisQueue; assistQueue?: AssistQueue; protectedKeyFile?: string } = {}): Promise<TestApp> {
+export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opts: { organisation?: boolean; emailNudge?: { nudge(): Promise<void> }; meetingEndHook?: MeetingEndHook; automaticAnalysis?: AutomaticAnalysis; analysisQueue?: AnalysisQueue; assistQueue?: AssistQueue; protectedKeyFile?: string; storageConnectors?: StorageConnectorFactory } = {}): Promise<TestApp> {
   const sender = new CaptureSender();
   const clock = new FakeClock(startAt);
   const config = loadConfig({ ...testEnv(testDatabaseUrl() as string), ...(opts.protectedKeyFile ? { KAINOW_PROTECTED_KEY_FILE: opts.protectedKeyFile } : {}) });
@@ -78,7 +81,7 @@ export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opt
   await resetPublicSchema(pool);
   await runMigrations(pool, config.migrationsDir);
   if (opts.organisation !== false) await seedOrganisation(pool);
-  const app = await createApp(config, { codeSender: sender, clock: clock.now, logger: false, extractionQueue: { enqueue: async () => undefined }, emailNudge: opts.emailNudge ?? { nudge: async () => undefined }, meetingEndHook: opts.meetingEndHook ?? (opts.analysisQueue ? undefined : NO_MEETING_END_HOOK), automaticAnalysis: opts.automaticAnalysis, analysisQueue: opts.analysisQueue ?? { enqueue: async () => undefined }, assistQueue: opts.assistQueue ?? { enqueue: async () => undefined } });
+  const app = await createApp(config, { codeSender: sender, clock: clock.now, logger: false, extractionQueue: { enqueue: async () => undefined }, emailNudge: opts.emailNudge ?? { nudge: async () => undefined }, meetingEndHook: opts.meetingEndHook ?? (opts.analysisQueue ? undefined : NO_MEETING_END_HOOK), automaticAnalysis: opts.automaticAnalysis, analysisQueue: opts.analysisQueue ?? { enqueue: async () => undefined }, assistQueue: opts.assistQueue ?? { enqueue: async () => undefined }, storageConnectors: opts.storageConnectors });
   await app.listen(0);
   const base = await app.getUrl();
 
@@ -107,7 +110,13 @@ export async function startTestApp(startAt = Date.UTC(2026, 10, 9, 2, 0, 0), opt
           method,
           headers: { Cookie: cookie, 'X-CSRF-Token': csrfToken, ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}) },
           body: body !== undefined ? JSON.stringify(body) : undefined,
+          // A redirect is the answer under test, not something to follow.
+          redirect: 'manual',
         });
+        return { status: res.status, headers: res.headers, text: await res.text() };
+      },
+      rawText: async (method, path, text) => {
+        const res = await fetch(`${base}${path}`, { method, headers: { Cookie: cookie, 'X-CSRF-Token': csrfToken, 'Content-Type': 'application/json' }, body: text });
         return { status: res.status, headers: res.headers, text: await res.text() };
       },
     };

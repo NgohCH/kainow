@@ -15,6 +15,7 @@ import { ROLE_LABEL, canManageRole } from './matrix';
 import { type ProjectRole, membershipState } from './membership';
 import { MembershipsService, checkMembershipsAfter, checkNewAppointment, cleanDates, cleanRole } from './memberships.service';
 import { OrganisationService } from './organisation.service';
+import { queueProjectSharing } from '../outputs/sharing-queue';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const NO_LONGER_VALID = 'This invitation link is no longer valid.';
@@ -355,6 +356,7 @@ export class InvitationsService {
        VALUES ($1, $2, 'revoked', $3, $4, $5, 'Handed over', $6)`,
       [uuidv7(at.getTime()), outgoing.id, outgoing.startsOn, outgoing.expiresOn, user.id, at],
     );
+    await queueProjectSharing(c, r.project_id, 'urgent');
     const ctxAfter = { ...ctx, rows: ctx.rows.map((m) => (m.id === outgoing.id ? { ...m, revokedAt: at } : m)) };
     const membershipId = await this.memberships.insertAppointment(c, ctxAfter, incoming, user.id, 'Accepted a handover', at);
     if (disposition) await this.memberships.insertAppointment(c, ctxAfter, disposition, r.invited_by, 'Role after handing over', at);

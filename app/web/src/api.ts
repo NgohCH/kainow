@@ -89,6 +89,8 @@ export interface VersionSummary {
   createdAt: string;
   /** Set (with the words to show) when the uploaded file is withheld because a credential was removed from its text. */
   originalWithheld?: string | null;
+  /** Where the version's files stand in the source area (spec 9.1): shown to the PM, Deputies, Owner and Sponsors; null for others. */
+  storage?: 'stored' | 'waiting' | 'failed' | null;
 }
 
 export type RunStatus = 'queued' | 'running' | 'succeeded' | 'failed' | 'blocked';

@@ -20,7 +20,7 @@ function Step({ s, closed, onAction, busy }: { s: GoLiveStep; closed: boolean; o
   }
 
   const showTick = s.canTick && s.mode === 'confirm' && !s.done;
-  const showSkip = s.canTick && s.key === 'logos' && !s.done;
+  const showSkip = s.canTick && (s.key === 'logos' || s.key === 'storage') && !s.done;
   // The test-email and recovery steps' Mark done stays visible but disabled until what it waits for is done.
   const waiting = tickWaitText(s, closed);
   const waitId = `wait-${s.key}`;
@@ -106,7 +106,7 @@ export function GoLive() {
     setBusy(true);
     setActionError(null);
     try {
-      const path = action === 'skip' ? '/go-live/steps/logos/skip' : `/go-live/steps/${key}/${action}`;
+      const path = `/go-live/steps/${key}/${action}`;
       const next = await api.post<GoLiveData>(path, action === 'untick' ? undefined : note ? { note } : {});
       setData(next);
       window.dispatchEvent(new Event('golive-changed'));

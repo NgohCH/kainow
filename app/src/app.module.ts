@@ -32,6 +32,9 @@ import { SpendModule } from './spend/spend.module';
 import { DashboardsModule } from './dashboards/dashboards.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { LeadershipModule } from './leadership/leadership.module';
+import type { StorageConnectorFactory } from './storage/connector-factory';
+import { OutputsModule } from './outputs/outputs.module';
+import { StorageModule } from './storage/storage.module';
 
 @Global()
 @Module({})
@@ -60,6 +63,8 @@ export interface AppOptions extends AuthOptions {
   automaticAnalysis?: AutomaticAnalysis;
   /** Tests only: replaces the pg-boss queue that carries AI assist requests to the worker. */
   assistQueue?: AssistQueue;
+  /** Tests only: replaces the storage connector factory. */
+  storageConnectors?: StorageConnectorFactory;
 }
 
 @Module({})
@@ -76,6 +81,7 @@ export class AppModule {
         AuthModule.register({ codeSender: options.codeSender }),
         SpendModule,
         AiModule,
+        OutputsModule,
         OrganisationModule,
         ResourcesModule,
         FinanceModule,
@@ -95,6 +101,7 @@ export class AppModule {
         DashboardsModule,
         LeadershipModule,
         AnalyticsModule,
+        StorageModule.register(options.storageConnectors),
       ],
       controllers: [HealthController],
     };

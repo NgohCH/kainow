@@ -10,6 +10,7 @@ import { canManageRole } from './matrix';
 import { membershipState } from './membership';
 import { checkMembershipsAfter } from './memberships.service';
 import { OrganisationService } from './organisation.service';
+import { queueProjectSharing } from '../outputs/sharing-queue';
 
 const text = (v: unknown) => (typeof v === 'string' ? v.trim() : '');
 
@@ -113,6 +114,7 @@ export class HoldsService {
         uuidv7(at.getTime()), row.id, user.id, reason, at,
       ]);
       await writeAudit(c, { at, action: 'membership.restored', actorUserId: user.id, subjectType: 'project', subjectId: ctx.project.id, detail: { membershipId: row.id } });
+      await queueProjectSharing(c, ctx.project.id, 'normal');
       const restored = { ...row, restoredAt: at };
       return { membership: { id: row.id, state: membershipState(restored, ctx.today) } };
     });

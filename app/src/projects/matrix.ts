@@ -47,8 +47,15 @@ export type ProjectAction =
   | 'quarantine.copies'
   | 'ai.limits.manage'
   | 'ai.connections.manage'
+  | 'outputs.settings'
   | 'ai.connections.view'
   | 'ai.usage.view'
+  | 'output.submit'
+  | 'output.manage'
+  | 'output.approve_request'
+  | 'output.audience'
+  | 'output.delete'
+  | 'output.restore'
   | 'resource.view'
   | 'resource.edit'
   | 'finance.record'
@@ -227,6 +234,11 @@ export const PROJECT_MATRIX: Readonly<Record<ProjectAction, MatrixRow>> = {
     states: OPEN,
     refusal: "Only the Project Manager, the Owner or a Sponsor can manage the project's AI connections, and only when the Administrator allows it.",
   },
+  'outputs.settings': {
+    roles: ['pm', 'owner', 'sponsor'],
+    states: OPEN,
+    refusal: "Only the Project Manager, the Owner or a Sponsor can change the project's output settings, and not while the project is Deferred or Closed.",
+  },
   'ai.connections.view': {
     roles: ['pm', 'deputy_pm', 'owner', 'sponsor'],
     states: ALL,
@@ -270,6 +282,37 @@ export const PROJECT_MATRIX: Readonly<Record<ProjectAction, MatrixRow>> = {
     roles: ['owner', 'sponsor'],
     states: ['planned', 'active'],
     refusal: 'Only the Owner or a Sponsor can approve or reject proposals, and only while the project is Planned or Active.',
+  },
+  'output.submit': {
+    roles: ['pm', 'deputy_pm', 'owner', 'sponsor', 'member'],
+    states: OPEN,
+    refusal: 'Only people in the project can submit an output, and not while the project is Deferred or Closed.',
+  },
+  'output.manage': {
+    roles: ['pm', 'deputy_pm'],
+    states: OPEN,
+    refusal: 'Only the Project Manager or a Deputy can register, decline or change outputs, and not while the project is Deferred or Closed.',
+  },
+  'output.approve_request': {
+    roles: ['pm', 'deputy_pm'],
+    states: ['planned', 'active'],
+    refusal: 'Only the Project Manager or a Deputy can ask for an output to be approved, and only while the project is Planned or Active.',
+  },
+  'output.audience': {
+    roles: ['pm', 'owner', 'sponsor'],
+    states: ALL,
+    refusal: 'Only the Project Manager, the Owner or a Sponsor can change who may read an output.',
+  },
+  // Deleting a register entry follows sub-project 5: open projects only; restoring is protective, so in every state.
+  'output.delete': {
+    roles: ['pm', 'deputy_pm'],
+    states: OPEN,
+    refusal: 'Only the Project Manager or a Deputy can delete an output, and not while the project is Deferred or Closed.',
+  },
+  'output.restore': {
+    roles: ['pm', 'deputy_pm'],
+    states: ALL,
+    refusal: 'Only the Project Manager or a Deputy can restore an output.',
   },
 };
 

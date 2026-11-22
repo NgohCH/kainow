@@ -13,6 +13,7 @@ export type ChangeKind =
   | 'deadline_review'
   | 'reconcile_completion'
   | 'risk_handover'
+  | 'approve_output'
   | 'set_budget'
   | 'finance_adjustment';
 
@@ -31,6 +32,9 @@ export interface RequestView {
   submittedBy: string;
   submittedAt: string;
   offer?: { fromProject: { id: string; name: string }; risk: { id: string; description: string; severity: string } };
+  /** An output approval: which output and version (when the viewer may read it), and what approving it does not approve. */
+  output?: { id: string; title: string; versionNo: number };
+  notice?: string;
   mayApprove: boolean;
   mayRevise: boolean;
   mayWithdraw: boolean;
@@ -47,6 +51,7 @@ const LABELS: Record<ChangeKind, string> = {
   deadline_review: 'Review a deadline',
   reconcile_completion: 'Confirm work finished during a pause',
   risk_handover: 'Take over a risk',
+  approve_output: 'Approve an output version',
   set_budget: 'Set the budget',
   finance_adjustment: 'Adjust a spending entry',
 };

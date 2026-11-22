@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
+import { sourceStorageLabel } from '../outputs.ts';
 import { ApiError, api, type Project, type Run, type VersionSummary } from '../api.ts';
 import { go } from '../App.tsx';
 import { type AudienceView, returnedNotice, versionOriginText } from '../discussion.ts';
@@ -192,6 +193,12 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
             Version {version.versionNo}, {versionOriginText(version)}, {version.charCount.toLocaleString()} characters, added {formatWhen(version.createdAt)}.{' '}
             {version.origin === 'upload' && (version.originalWithheld ? <span className="warn" role="note">{version.originalWithheld}</span> : <a href={api.originalUrl(sourceId, version.versionNo)}>Download the original file</a>)}
           </p>
+          {sourceStorageLabel(version.storage) && (
+            <p className="meta">
+              Storage: <span className={version.storage === 'failed' ? 'warn inline' : undefined}>{sourceStorageLabel(version.storage)}</span>
+              {version.storage !== 'stored' && <span className="hint">The notes work as usual in Kainow while the files wait to be stored.</span>}
+            </p>
+          )}
           <div className="source" tabIndex={0}>{text ?? 'Loading'}</div>
         </section>
         {published && src.kind !== 'discussion' && src.mayExtract !== false && (

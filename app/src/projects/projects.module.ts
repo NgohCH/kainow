@@ -3,6 +3,7 @@ import { ProjectAccess } from './access.service';
 import { InvitationsController } from './invitations.controller';
 import { InvitationsService } from './invitations.service';
 import { HoldsService } from './holds.service';
+import { DepartmentTransferService } from './department-transfer.service';
 import { GrantsController } from './grants.controller';
 import { GrantsService } from './grants.service';
 import { MembersController } from './members.controller';
@@ -14,7 +15,7 @@ import { ProjectsService } from './projects.service';
 
 @Module({
   controllers: [OrganisationController, ProjectsController, MembersController, InvitationsController, GrantsController],
-  providers: [ProjectAccess, OrganisationService, ProjectsService, MembershipsService, InvitationsService, HoldsService, GrantsService],
+  providers: [ProjectAccess, OrganisationService, ProjectsService, MembershipsService, InvitationsService, HoldsService, GrantsService, DepartmentTransferService],
   exports: [ProjectAccess, OrganisationService, InvitationsService],
 })
 export class ProjectsModule {}

@@ -37,6 +37,9 @@ function changedText(c: Change): string {
   if (c.previous.analyticsExportAllowed !== c.next.analyticsExportAllowed) {
     parts.push(`Analytics export allowed: ${onOff(c.previous.analyticsExportAllowed)} to ${onOff(c.next.analyticsExportAllowed)}`);
   }
+  if (c.previous.projectExportsAllowed !== c.next.projectExportsAllowed) {
+    parts.push(`Project exports allowed: ${onOff(!!c.previous.projectExportsAllowed)} to ${onOff(!!c.next.projectExportsAllowed)}`);
+  }
   return parts.join('; ');
 }
 
@@ -83,7 +86,7 @@ export function AccessSettings() {
   }, [archiveChanged, months]);
 
   const previewReady = !archiveChanged || (preview !== null && preview.months === months);
-  const unchanged = data !== null && form !== null && ACCESS_ROWS.every((r) => form[r.key] === data.settings[r.key]) && form.analyticsExportAllowed === data.settings.analyticsExportAllowed;
+  const unchanged = data !== null && form !== null && ACCESS_ROWS.every((r) => form[r.key] === data.settings[r.key]) && form.analyticsExportAllowed === data.settings.analyticsExportAllowed && form.projectExportsAllowed === data.settings.projectExportsAllowed;
 
   async function save(e: FormEvent) {
     e.preventDefault();
@@ -140,6 +143,14 @@ export function AccessSettings() {
                 Analytics export allowed
               </label>
               <p className="hint">In force: {onOff(data.settings.analyticsExportAllowed)} · Default: {onOff(data.defaults.analyticsExportAllowed)}</p>
+            </div>
+
+            <div className="stack">
+              <label className="check">
+                <input type="checkbox" checked={!!form.projectExportsAllowed} onChange={(e) => set('projectExportsAllowed', e.target.checked)} />
+                Project exports allowed
+              </label>
+              <p className="hint">In force: {onOff(!!data.settings.projectExportsAllowed)} · Default: {onOff(!!data.defaults.projectExportsAllowed)}. When off, nobody can export a project's records or work lists as a file. Even when on, each person must be able to read the project and hold one of the roles the project allows to export.</p>
             </div>
 
             {archiveChanged && (

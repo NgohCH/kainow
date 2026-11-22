@@ -527,9 +527,47 @@ a.meter { text-decoration: underline; }
 .definitions dt { font-weight: 600; margin-top: 0.75rem; }
 .definitions dd { margin: 0.25rem 0 0; overflow-wrap: anywhere; }
 
+/* Storage settings (sub-project 9): states are always in words; the tone only adds emphasis. */
+.facts { display: grid; grid-template-columns: minmax(10rem, max-content) 1fr; gap: 0.35rem 1.25rem; margin: 0; }
+.facts dt { color: var(--muted); }
+.facts dd { margin: 0; }
+@media (max-width: 30rem) { .facts { grid-template-columns: 1fr; gap: 0; } .facts dd { margin-bottom: 0.5rem; } }
+.badge.tone-ok { color: var(--accent-deep); }
+.badge.tone-warn { color: var(--rust); }
+.badge.tone-quiet { color: var(--muted); }
+pre { overflow-x: auto; max-width: 100%; background: var(--surface); border: 1px solid var(--rule); border-radius: 4px; padding: 0.5rem 0.75rem; font-size: 0.85rem; white-space: pre-wrap; overflow-wrap: anywhere; }
+details > summary { cursor: pointer; font-weight: 600; }
+
+/* Sub-project 9: outputs register, output page and project output settings */
+.settings-summary dt { font-weight: 600; margin-top: 0.75rem; }
+.settings-summary dd { margin: 0.25rem 0 0; overflow-wrap: anywhere; }
+.outputs-table .path { overflow-wrap: anywhere; }
+.outputs-table td .actions { margin: 0; }
+@media (max-width: 40rem) {
+  .outputs-table td[data-label]::before { content: attr(data-label) ': '; color: var(--muted); font-weight: 600; font-size: 0.85rem; }
+}
+
 /* The resources report prints on its own: no bar, tabs, buttons or footer. */
 @media print {
   .bar, .foot, .skip, .tabs, .no-print, .ask-panel { display: none !important; }
   .report .warn { background: none; color: inherit; border: 1px solid currentColor; }
   .report ul.plain > li { break-inside: avoid; }
+}
+
+/* Work Kainow is still doing (sharing in SharePoint): a small turning ring before the text; still with reduced motion. */
+.working::before {
+  content: '';
+  display: inline-block;
+  width: 0.8em;
+  height: 0.8em;
+  margin-right: 0.45em;
+  vertical-align: -0.05em;
+  border: 2px solid var(--muted-wash);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: working-turn 0.9s linear infinite;
+}
+@keyframes working-turn { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) {
+  .working::before { animation: none; }
 }

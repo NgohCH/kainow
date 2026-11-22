@@ -9,6 +9,7 @@ export type ChangeKind =
   | 'deadline_review'
   | 'reconcile_completion'
   | 'risk_handover'
+  | 'approve_output'
   | 'set_budget'
   | 'finance_adjustment';
 
@@ -54,6 +55,8 @@ export function kindAllowedIn(
     case 'deadline_review':
     case 'reconcile_completion':
       return projectStatus === 'deferred' || projectStatus === 'closed' || projectStatus === 'active';
+    case 'approve_output':
+      return projectStatus === 'planned' || projectStatus === 'active';
     case 'risk_handover':
       return phase === 'submit'
         ? projectStatus === 'active' || projectStatus === 'deferred'
