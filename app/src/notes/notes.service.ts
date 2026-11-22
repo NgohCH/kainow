@@ -177,8 +177,11 @@ export class NotesService {
     content: NewContent;
     actorUserId: string;
     submission?: SubmissionInput;
-    /** Re-checks the caller's right to write, first thing inside the write transaction (see Reauthorise). */
-    reauthorise?: Reauthorise;
+    /**
+     * Re-checks the caller's right to write, first thing inside the write transaction (see Reauthorise). Required, so a new
+     * caller cannot skip it by accident; one with nothing to re-check (a test) passes a no-op on purpose (second review).
+     */
+    reauthorise: Reauthorise;
   }): Promise<{ source: SourceSummary; version: VersionSummary }> {
     const prepared = await this.prepare(input.content, input.projectId);
     // Every import is checked for credentials (D79), an upload on its text after extraction; only the kind is named.
@@ -190,7 +193,7 @@ export class NotesService {
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
-      await input.reauthorise?.(client);
+      await input.reauthorise(client);
       // The database gives a plain note its own Project-wide audience; a submission gets its real one when published.
       await client.query(
         `INSERT INTO sources (id, title, created_by, created_at, project_id, publication, submitted_by, intended_mode)
@@ -217,7 +220,7 @@ export class NotesService {
     }
   }
 
-  async addVersion(sourceId: string, content: NewContent, actorUserId: string, reauthorise?: Reauthorise): Promise<VersionSummary> {
+  async addVersion(sourceId: string, content: NewContent, actorUserId: string, reauthorise: Reauthorise): Promise<VersionSummary> {
     const owner = await this.pool.query<{ project_id: string }>(`SELECT project_id FROM sources s WHERE id = $1 AND ${liveSourceSql('s')}`, [sourceId]);
     if (owner.rowCount === 0) throw new NotFoundException();
     const prepared = await this.prepare(content, owner.rows[0].project_id);
@@ -226,7 +229,7 @@ export class NotesService {
     try {
       await client.query('BEGIN');
       // Before the source row: the project lock comes first (the order every project write takes).
-      await reauthorise?.(client);
+      await reauthorise(client);
       // The source row is the lock that keeps version numbers gap-free when two people add at once.
       const src = await client.query<{ kind: string; publication: string; submittedBy: string | null; projectId: string; title: string }>(
         `SELECT kind, publication, submitted_by AS "submittedBy", project_id AS "projectId", title FROM sources s WHERE id = $1 AND ${liveSourceSql('s')} FOR UPDATE`,

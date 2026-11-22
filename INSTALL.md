@@ -36,7 +36,7 @@ The PowerShell lines in this guide were run in Windows PowerShell 5.1 on 8 Novem
      ```
      $b = New-Object byte[] 48; [Security.Cryptography.RandomNumberGenerator]::Create().GetBytes($b); [Convert]::ToBase64String($b)
      ```
-   - Email (sign-in codes and reminders): either the four Microsoft 365 variables (see "Microsoft 365 email" below), or `SMTP_URL` and `SMTP_FROM`, or, for a trial on your own computer only, uncomment both `NODE_ENV=development` and `LOG_SIGN_IN_CODES=true` to read codes from the log. Kainow refuses to start with `LOG_SIGN_IN_CODES` when `NODE_ENV=production` (the default), whatever `APP_URL` says: anyone who can read the log could otherwise sign in as anyone. Before real use, set up email and remove both lines.
+   - Email (sign-in codes and reminders): either the four Microsoft 365 variables (see "Microsoft 365 email" below), or `SMTP_URL` and `SMTP_FROM`, or, for a trial on your own computer only, uncomment both `NODE_ENV=development` and `LOG_SIGN_IN_CODES=true` to read codes from the log. Kainow refuses to start with `LOG_SIGN_IN_CODES` when `NODE_ENV=production` (the default), whatever `APP_URL` says, and in any mode when `APP_URL` is not this computer (`localhost` or `127.0.0.1`): anyone who can read the log could otherwise sign in as anyone. Before real use, set up email and remove both lines.
    - No AI key goes in `.env`. The worker does not read `OPENAI_API_KEY` or any provider key from its environment. AI keys are entered later, per project, in Kainow itself (see "Set up AI" below), and are stored encrypted with the protected key.
 
 2. **Build and start.**
@@ -362,6 +362,8 @@ When someone reports a pasted password or key, Kainow removes it from every copy
 
 **In production with AI, require the key.** Add `KAINOW_REQUIRE_PROTECTED_KEY=true` to `.env`. Then `api` and `worker` refuse to start when the key file is not set, missing, unreadable or the wrong length, instead of starting without it. Before go-live, prove the recovery copy works: on a separate, fresh installation, restore the latest database backup, mount the recovery copy of the key, and check that a project's AI connection opens and a quarantined original can be restored.
 
+**Go-live waits for the key.** `api` and `worker` each record, when they start, which protected key they hold (only its short id). The go-live checklist does not close until both hold the same key; until then it lists "Install the protected key on both api and worker" under **Also needed before the checklist closes**. After mounting the key, restart both (`docker compose restart api worker`).
+
 Without the key (and without `KAINOW_REQUIRE_PROTECTED_KEY=true`), nothing breaks: a report still opens its case and hides the item at once, but cleaning waits. The case shows "Waiting for the protected key", and the Administrator organisation view shows the same warning until the file is mounted and the services restart; the worker then cleans the waiting cases in the order they were reported.
 
 **Restart both `api` and `worker` once the key file appears.** Each reads the key only when it starts. Restarting only one leaves the other without it: the Administrator warning reflects the `api` process alone, so it can disappear while the `worker` still cannot clean waiting cases. `docker compose restart api worker` does both.
@@ -421,7 +423,7 @@ Go live on a new, empty database so nothing from development or testing comes wi
 
 6. From now on every `docker compose` command in this folder, the backup commands included, acts on the new `kainow-live` project, because `.env` names it. Removing the line from `.env` would point them back at the old installation.
 7. Development and test databases and old backup dump files are not carried over. Delete them yourself, by hand, outside Kainow.
-8. The first Administrator opens the emailed link and follows the **Go-live checklist**. The checklist closes only once every step except the optional ones (logos, storage) is done: launching the first project does not close it while the second Administrator, recovery, mailbox, test email, calendar or backup step is still open.
+8. The first Administrator opens the emailed link and follows the **Go-live checklist**. The checklist closes only once every step except the optional ones (logos, storage) is done: launching the first project does not close it while the second Administrator, recovery, mailbox, test email, calendar or backup step is still open, nor until `api` and `worker` both hold the protected key (see "Protected key").
 
 ## Recovery custodian
 
@@ -456,7 +458,7 @@ The command refuses, and changes nothing, when the reason is missing, when Kaino
 ## What this does and does not protect
 
 - Only this computer can reach Kainow (the port is bound to 127.0.0.1). Do not publish it to a network without putting HTTPS in front. This Compose file is a single-computer setup, not a production design for staff on a network: that needs HTTPS at a reverse proxy, a firewall, monitoring, backups and a rehearsed restore.
-- Sign-in requests are limited per client address and overall (by default, per minute: 10 code requests per address and 120 in all, 30 code checks per address and 300 in all); over the limit the answer is 429. Requests for unknown addresses are recorded in the audit trail at most 20 a minute, with a count of the rest. Behind a reverse proxy set `TRUST_PROXY` to the number of proxies (usually 1) so the limit sees the real client address, and add a matching limit at the proxy itself: the limits in Kainow are per `api` process and held in memory.
+- Sign-in requests are limited per client address (per /64 for IPv6, which one subscriber usually holds whole) and overall (by default, per minute: 10 code requests per address and 120 in all, 30 code checks per address and 300 in all); over the limit the answer is 429. Requests for unknown addresses are recorded in the audit trail at most 20 a minute, with a count of the rest. Behind a reverse proxy set `TRUST_PROXY` to the number of proxies (usually 1) so the limit sees the real client address, and add a matching limit at the proxy itself: the limits in Kainow are per `api` process and held in memory.
 - The database has no published port and is reachable only by the other containers.
 - The server and worker run as a non-root user, on a read-only filesystem, with no extra Linux capabilities.
 - Before real use, appoint a second Enterprise Administrator and record the recovery custodian (see "Recovery custodian"). If every Administrator is locked out, the custodian restores access from the command line with `recover-admin`; this does not restore project roles.

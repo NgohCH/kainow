@@ -102,7 +102,7 @@ describe('relocation, moving the source area and the manifest', { skip: SKIP_NO_
   /** An uploaded note stored in the approved source area. */
   async function storedUpload(name: string, text: string): Promise<{ sourceId: string; versionId: string; original: string; textFile: string; bytes: Buffer }> {
     const bytes = Buffer.from(text);
-    const { source, version } = await notes().createSource({ projectId: project, content: { file: { originalname: name, buffer: bytes } }, actorUserId: ids.pm });
+    const { source, version } = await notes().createSource({ projectId: project, content: { file: { originalname: name, buffer: bytes } }, actorUserId: ids.pm, reauthorise: async () => undefined });
     await storeSourceVersion(deps(), version.id);
     const v = (await rows(`SELECT original_stored_file_id AS o, text_stored_file_id AS t FROM source_versions WHERE id = $1`, [version.id]))[0];
     return { sourceId: source.id, versionId: version.id, original: v.o, textFile: v.t, bytes };

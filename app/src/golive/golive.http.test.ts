@@ -278,11 +278,38 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
       assert.equal((await admin.request('POST', `/go-live/steps/${key}/tick`, {})).status, 200, key);
     }
     await passDrill();
+    await keyOn('api', 'key-1');
+    await keyOn('worker', 'key-1');
+  };
+  /** What a service records when it starts: the id of the protected key it holds, or null (second review, G05). */
+  const keyOn = async (service: 'api' | 'worker', keyId: string | null) => {
+    await t.pool.query(
+      `INSERT INTO service_key_status (service, key_id, reported_at) VALUES ($1, $2, now())
+       ON CONFLICT (service) DO UPDATE SET key_id = EXCLUDED.key_id`,
+      [service, keyId],
+    );
   };
   const reachClose = async () => {
     await completeSafeguards();
     await reachLaunch();
   };
+
+  // Second review, G05 option A: every step done is not enough while api or worker lacks the protected key, or they differ.
+  test('the checklist stays open until api and worker hold the same protected key, and says why', async () => {
+    await completeSafeguards();
+    await keyOn('worker', null);
+    await reachLaunch();
+    let body = await get();
+    assert.equal(body.closedAt, null, 'worker without the key');
+    assert.deepEqual(body.waitingFor.map((w: any) => w.key), ['protected_key']);
+    assert.ok(body.steps.every((s: any) => s.done || s.mode === 'auto_or_skip'), 'every required step is done');
+    await keyOn('worker', 'key-2');
+    assert.equal((await get()).closedAt, null, 'api and worker hold different keys');
+    await keyOn('worker', 'key-1');
+    body = await get();
+    assert.ok(body.closedAt, 'closes once both hold the same key');
+    assert.deepEqual(body.waitingFor, []);
+  });
 
   // Review G01: a launched project does not close the checklist while a safeguard is still open.
   test('department, users and project alone do not close the checklist while safeguards are open', async () => {
@@ -327,6 +354,8 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
       assert.equal((await admin.request('POST', `/go-live/steps/${key}/tick`, {})).status, 200, key);
     }
     await passDrill();
+    await keyOn('api', 'key-1');
+    await keyOn('worker', 'key-1');
     await reachLaunch();
     let body = await get();
     assert.equal(body.closedAt, null, 'only one active Administrator: stays open');
@@ -401,6 +430,8 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     await queueTestEmail('sent');
     for (const key of ['recovery', 'mailbox', 'test_email']) await admin.request('POST', `/go-live/steps/${key}/tick`, {});
     await passDrill();
+    await keyOn('api', 'key-1');
+    await keyOn('worker', 'key-1');
     assert.equal((await get()).closedAt, null, 'step 8 alone does not close it');
     const last = await admin.request('POST', '/go-live/steps/calendar/tick', { note: 'Calendar checked' });
     assert.equal(last.status, 200);

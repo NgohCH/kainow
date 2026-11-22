@@ -591,4 +591,24 @@ describe('opening, checking and reconciling output files', { skip: SKIP_NO_DB },
     assert.equal(changed.body.state, 'changed');
     assert.equal((await fileRow(out)).check_status, 'changed');
   });
+
+  // Second review: access is checked again once the provider has answered, so a reader removed during a slow download
+  // gets nothing.
+  test('a reader whose membership is revoked while the file downloads gets 404 and no bytes', async () => {
+    const bytes = Buffer.from('# Weekly status\n\nThe valve audit is on Friday.\n');
+    const { out } = await filedOutput('Weekly status', { bytes });
+    const real = connector.download.bind(connector);
+    connector.download = async (d, itemId) => {
+      const got = await real(d, itemId);
+      await t.pool.query(`UPDATE memberships SET revoked_at = now(), revoked_by = $2 WHERE project_id = $1 AND user_id = $3`, [project, ids.pm, ids.ada]);
+      return got;
+    };
+    try {
+      const r = await c.ada.raw('GET', vUrl(out, 1, 'download'));
+      assert.equal(r.status, 404);
+      assert.ok(!r.text.includes('valve audit'), 'no file content in the refusal');
+    } finally {
+      connector.download = real;
+    }
+  });
 });
