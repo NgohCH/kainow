@@ -19,6 +19,7 @@ describe('the notice page after a failed update', () => {
         assert.equal(res.status, 503, path);
         assert.match(res.headers.get('content-type') ?? '', /^text\/html; charset=utf-8/);
         assert.equal(res.headers.get('cache-control'), 'no-store');
+        assert.equal(res.headers.get('x-kainow-notice'), '1', 'the web restart watch reloads on this mark');
         const html = await res.text();
         assert.ok(html.includes(NOTICE_TEXT), path);
         assert.match(html, /<html lang="en">/);

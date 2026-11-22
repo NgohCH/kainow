@@ -31,13 +31,17 @@ export const setCsrfToken = (t: string | null | undefined): void => {
 
 // --- While Kainow restarts after an update (10b spec 7.2) ---
 // The web app remembers whether the last word from the server was update maintenance (the banner or the public state with
-// reason 'update', or a save refused with 'update_in_progress'). A network failure after that is the update stopping
-// Kainow: it says so, asks /health every 15 seconds, and reloads the page once anything answers (even a 503).
+// reason 'update', or a save refused with 'update_in_progress'). A network failure after that, or a proxy's 502/503/504
+// (Kainow is published on 127.0.0.1, so a shared installation sits behind one), is the update stopping Kainow: it says
+// so, asks /health every 15 seconds, and reloads the page only when Kainow answers ok or the failed-update notice page
+// answers (it marks every answer with NOTICE_HEADER). Anything else, a proxy's error page included, keeps waiting.
 export const RESTART_MESSAGE = 'Kainow is restarting after an update…';
 export const RESTART_RETRY_MS = 15_000;
+/** Set to '1' on every answer of the notice page (app/src/updater/notice-server.ts). */
+export const NOTICE_HEADER = 'X-Kainow-Notice';
 
 export interface RestartEnv {
-  fetch: (url: string) => Promise<{ ok: boolean }>;
+  fetch: (url: string) => Promise<{ ok: boolean; headers: { get(name: string): string | null } }>;
   setTimeout: (fn: () => void, ms: number) => unknown;
   reload: () => void;
 }
@@ -78,6 +82,8 @@ function noteMaintenance(path: string, data: unknown): void {
   lastWasUpdateMaintenance = d?.protective === true && d?.reason === 'update';
 }
 
+const isJson = (res: Response): boolean => (res.headers.get('Content-Type') ?? '').includes('application/json');
+
 function startRestartWatch(): void {
   if (restarting) return;
   restarting = true;
@@ -85,10 +91,10 @@ function startRestartWatch(): void {
   const env = restartEnv ?? browserRestartEnv();
   const retry = () => {
     env.setTimeout(() => {
-      // Any answer at all means Kainow (or its notice page, which answers 503 for ever after a failed update) is
-      // back: reload so people see it. Only a network error means it is still restarting.
+      // Kainow healthy, or its notice page (503 for ever after a failed update): reload so people see it. A network
+      // error or anything else (a proxy's 502/504 page) means it is still restarting.
       env.fetch(BASE + '/health').then(
-        () => env.reload(),
+        (r) => (r.ok || r.headers.get(NOTICE_HEADER) === '1' ? env.reload() : retry()),
         () => retry(),
       );
     }, RESTART_RETRY_MS);
@@ -116,6 +122,12 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
       throw new ApiError(RESTART_MESSAGE, 0, { code: 'restarting' });
     }
     throw new ApiError('Cannot reach the Kainow server. Check that it is running, then try again.', 0);
+  }
+  // Behind a proxy the stopped Kainow is a 502/503/504 from the proxy, not a network error; the notice page says itself.
+  const kainowDown = res.status === 502 || res.status === 503 || res.status === 504;
+  if (kainowDown && (res.headers.get(NOTICE_HEADER) === '1' || (lastWasUpdateMaintenance && !isJson(res)))) {
+    startRestartWatch();
+    throw new ApiError(RESTART_MESSAGE, 0, { code: 'restarting' });
   }
   const text = await res.text();
   let data: unknown;

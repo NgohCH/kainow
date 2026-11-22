@@ -322,7 +322,11 @@ export type UpdateState =
 export const OPEN_UPDATE_STATES: readonly UpdateState[] = ['approved', 'preparing', 'ready', 'installing'];
 /** Before the window starts an Administrator may still change the time or cancel. */
 export const CHANGEABLE_UPDATE_STATES: readonly UpdateState[] = ['approved', 'preparing', 'ready'];
-const FAILED_UPDATE_STATES: readonly UpdateState[] = ['refused', 'failed_before_install', 'failed_after_migration', 'failed_needs_attention', 'recovered'];
+/**
+ * A latest update in one of these still needs the Administrator (approve again, or recover). `recovered` does not: the
+ * restore put Kainow back on the previous version and Resume ended it (final review #40).
+ */
+const FAILED_UPDATE_STATES: readonly UpdateState[] = ['refused', 'failed_before_install', 'failed_after_migration', 'failed_needs_attention'];
 
 export interface UpdateStep {
   step: string;
@@ -395,14 +399,18 @@ export interface UpdatesSummary {
   stale: boolean;
 }
 
-export type UpdateStatusWord = 'Up to date' | 'Update available' | 'Update scheduled' | 'Update failed' | 'Not checked for 3 days';
+export type UpdateStatusWord = 'Up to date' | 'Update available' | 'Update scheduled' | 'Update failed' | 'Not checked for 3 days' | 'Not checked yet';
 
-/** One word for the strip: an open update, then a failed one, then a stale check, then an available release. */
+/**
+ * One word for the strip: an open update, then a failed one, then a stale check, then an available release; "Up to
+ * date" only once a check has run (final review #39).
+ */
 export function updateStatusWord(u: UpdatesSummary): UpdateStatusWord {
   if (u.latestState && OPEN_UPDATE_STATES.includes(u.latestState)) return 'Update scheduled';
   if (u.latestState && FAILED_UPDATE_STATES.includes(u.latestState)) return 'Update failed';
   if (u.stale) return 'Not checked for 3 days';
   if (u.available) return 'Update available';
+  if (!u.lastCheckAt) return 'Not checked yet';
   return 'Up to date';
 }
 

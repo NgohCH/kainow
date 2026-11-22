@@ -49,6 +49,8 @@ export function startNoticeServer(port: number): Server {
       'Content-Security-Policy': "default-src 'none'; style-src 'unsafe-inline'",
       'X-Content-Type-Options': 'nosniff',
       'Retry-After': '300',
+      // The web app's restart watch reloads on this mark (or an ok /health), never on a proxy's own error page.
+      'X-Kainow-Notice': '1',
     });
     res.end(req.method === 'HEAD' ? undefined : BODY);
   });

@@ -120,9 +120,14 @@ test('updateStatusWord: each status word', () => {
   for (const s of ['approved', 'preparing', 'ready', 'installing'] as const) {
     assert.equal(updateStatusWord(summary({ latestState: s, available: 'v1.3.0', startsAt: '2026-11-23T00:00:00Z' })), 'Update scheduled');
   }
-  for (const s of ['failed_before_install', 'failed_after_migration', 'failed_needs_attention', 'refused', 'recovered'] as const) {
+  for (const s of ['failed_before_install', 'failed_after_migration', 'failed_needs_attention', 'refused'] as const) {
     assert.equal(updateStatusWord(summary({ latestState: s, available: 'v1.3.0' })), 'Update failed');
   }
+  // Recovered is settled: the tile is no longer red after recovery and Resume (final review #40).
+  assert.equal(updateStatusWord(summary({ latestState: 'recovered', available: 'v1.3.0' })), 'Update available');
+  assert.equal(updateStatusWord(summary({ latestState: 'recovered' })), 'Up to date');
+  // Never checked is not "Up to date" (final review #39).
+  assert.equal(updateStatusWord(summary({ lastCheckAt: null })), 'Not checked yet');
   assert.equal(updateStatusWord(summary({ stale: true, available: 'v1.3.0' })), 'Not checked for 3 days');
   // A finished update is not a status of its own: what is available decides.
   assert.equal(updateStatusWord(summary({ latestState: 'succeeded' })), 'Up to date');
