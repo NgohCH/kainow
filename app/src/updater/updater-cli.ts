@@ -1,9 +1,10 @@
 import { isAbsolute } from 'node:path';
 import { Pool } from 'pg';
 import { defaultStatfs } from '../ops/storage-check';
-import { prepareUpdate, projectNameFor } from './prepare';
+import { installUpdate } from './install';
+import { prepareUpdate, resolveProjectName } from './prepare';
 import { RealRunner, maskSecrets } from './runner';
-import { UPDATER_TEXT, runUpdaterCli, type TickUpdate } from './tick';
+import { UPDATER_TEXT, runUpdaterCli } from './tick';
 
 /**
  * Usage: node dist/updater/updater-cli.js tick | recover [--yes]
@@ -22,11 +23,11 @@ async function main(): Promise<number> {
   }
   const pool = new Pool({ connectionString: databaseUrl });
   pool.on('error', () => undefined); // an idle client dropping must not crash the run; the next query reports it
-  // Installing (Task 9) is not in this version yet.
-  const notYet = (what: string) => async (u: TickUpdate) => log(`${what} the update to ${u.tag} is not available in this version yet.`);
   const runner = new RealRunner(installDir);
   const now = () => new Date();
-  const projectName = projectNameFor(process.env, installDir);
+  // The running installation's project name, also when COMPOSE_PROJECT_NAME is set only in the folder's .env (which this
+  // container's environment does not see): read from Compose's resolved configuration, never logged.
+  const projectName = () => resolveProjectName(runner, installDir, process.env, log);
   try {
     return await runUpdaterCli(process.argv.slice(2), {
       pool,
@@ -34,8 +35,10 @@ async function main(): Promise<number> {
       installDir,
       now,
       log,
-      prepare: async (u) => void (await prepareUpdate({ pool, runner, installDir, projectName, now, log, statfs: defaultStatfs }, u)),
-      install: notYet('Installing'),
+      prepare: async (u) => void (await prepareUpdate({ pool, runner, installDir, projectName: await projectName(), now, log, statfs: defaultStatfs }, u)),
+      // The db container is never restarted by an install (only api, worker and migrate), so this pool's connection,
+      // which holds the tick's session lock, stays up throughout.
+      install: async (u) => void (await installUpdate({ pool, runner, installDir, projectName: await projectName(), now, log }, u)),
     });
   } finally {
     await pool.end().catch(() => undefined);

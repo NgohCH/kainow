@@ -29,6 +29,71 @@ export const setCsrfToken = (t: string | null | undefined): void => {
   csrfToken = t ?? null;
 };
 
+// --- While Kainow restarts after an update (10b spec 7.2) ---
+// The web app remembers whether the last word from the server was update maintenance (the banner or the public state with
+// reason 'update', or a save refused with 'update_in_progress'). A network failure after that is the update stopping
+// Kainow: it says so, asks /health every 15 seconds, and reloads the page once Kainow answers.
+export const RESTART_MESSAGE = 'Kainow is restarting after an update…';
+export const RESTART_RETRY_MS = 15_000;
+
+export interface RestartEnv {
+  fetch: (url: string) => Promise<{ ok: boolean }>;
+  setTimeout: (fn: () => void, ms: number) => unknown;
+  reload: () => void;
+}
+const browserRestartEnv = (): RestartEnv => ({
+  fetch: (url) => globalThis.fetch(url, { cache: 'no-store', credentials: 'same-origin' }),
+  setTimeout: (fn, ms) => globalThis.setTimeout(fn, ms),
+  reload: () => globalThis.location?.reload(),
+});
+let restartEnv: RestartEnv | null = null;
+/** Tests replace the timers, /health and the reload. */
+export const setRestartEnv = (env: RestartEnv | null): void => {
+  restartEnv = env;
+};
+
+let lastWasUpdateMaintenance = false;
+let restarting = false;
+const restartListeners = new Set<(on: boolean) => void>();
+
+export const isRestarting = (): boolean => restarting;
+/** Called with true when the restart message should show. Returns the unsubscribe. */
+export function onRestarting(cb: (on: boolean) => void): () => void {
+  restartListeners.add(cb);
+  return () => {
+    restartListeners.delete(cb);
+  };
+}
+export function resetRestartForTests(): void {
+  lastWasUpdateMaintenance = false;
+  restarting = false;
+  restartListeners.clear();
+  restartEnv = null;
+}
+
+/** The banner and the public state say whether update maintenance is on. */
+function noteMaintenance(path: string, data: unknown): void {
+  if (!path.startsWith('/operations/banner') && !path.startsWith('/operations/public-state')) return;
+  const d = data as { protective?: unknown; reason?: unknown } | undefined;
+  lastWasUpdateMaintenance = d?.protective === true && d?.reason === 'update';
+}
+
+function startRestartWatch(): void {
+  if (restarting) return;
+  restarting = true;
+  for (const cb of restartListeners) cb(true);
+  const env = restartEnv ?? browserRestartEnv();
+  const retry = () => {
+    env.setTimeout(() => {
+      env.fetch(BASE + '/health').then(
+        (r) => (r.ok ? env.reload() : retry()),
+        () => retry(),
+      );
+    }, RESTART_RETRY_MS);
+  };
+  retry();
+}
+
 async function request<T>(method: string, path: string, body?: unknown): Promise<T> {
   const isForm = body instanceof FormData;
   const isFile = body instanceof Blob;
@@ -44,6 +109,10 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
       body: body === undefined ? undefined : isForm || isFile ? body : JSON.stringify(body),
     });
   } catch {
+    if (lastWasUpdateMaintenance) {
+      startRestartWatch();
+      throw new ApiError(RESTART_MESSAGE, 0, { code: 'restarting' });
+    }
     throw new ApiError('Cannot reach the Kainow server. Check that it is running, then try again.', 0);
   }
   const text = await res.text();
@@ -53,6 +122,8 @@ async function request<T>(method: string, path: string, body?: unknown): Promise
   } catch {
     data = undefined;
   }
+  if (res.ok) noteMaintenance(path, data);
+  else if (res.status === 503 && (data as { code?: unknown } | undefined)?.code === 'update_in_progress') lastWasUpdateMaintenance = true;
   if (!res.ok) {
     const m = (data as { message?: string | string[] } | undefined)?.message;
     const message = Array.isArray(m) ? m.join(' ') : m;

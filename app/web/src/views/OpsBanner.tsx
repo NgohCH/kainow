@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { api } from '../api.ts';
+import { RESTART_MESSAGE, api, isRestarting, onRestarting } from '../api.ts';
 import { type BannerData, BANNER_EVERYONE, bannerLines } from '../operations.ts';
 
 /**
@@ -8,6 +8,9 @@ import { type BannerData, BANNER_EVERYONE, bannerLines } from '../operations.ts'
  */
 export function OpsBanner({ hash, isAdmin }: { hash: string; isAdmin: boolean }) {
   const [banner, setBanner] = useState<BannerData | null>(null);
+  // Kainow stopped for an update (spec 7.2): api.ts retries /health every 15 s and reloads the page when it answers.
+  const [restarting, setRestarting] = useState(isRestarting());
+  useEffect(() => onRestarting(setRestarting), []);
   useEffect(() => {
     let live = true;
     const refresh = () => {
@@ -26,6 +29,13 @@ export function OpsBanner({ hash, isAdmin }: { hash: string; isAdmin: boolean })
     };
     // A new page (hash) reads it again, so a change is seen when moving about.
   }, [hash]);
+  if (restarting) {
+    return (
+      <div className="ops-banner" role="status" aria-label="Notices about Kainow">
+        <p>{RESTART_MESSAGE}</p>
+      </div>
+    );
+  }
   if (!banner) return null;
   const lines = bannerLines(banner, isAdmin);
   if (lines.length === 0) return null;

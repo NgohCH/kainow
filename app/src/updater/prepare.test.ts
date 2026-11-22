@@ -13,6 +13,7 @@ import {
   missingVariable,
   prepareWithStore,
   projectNameFor,
+  resolveProjectName,
   stagingDir,
   type PrepareDeps,
   type PrepareEnd,
@@ -412,6 +413,47 @@ describe('preparing an update', () => {
     store.state = 'preparing';
     assert.equal(await run(update({ state: 'preparing' })), 'ready');
     assert.equal(runner.lines('git')[0], `git worktree remove --force ${staging()}`);
+  });
+
+  test('a row still preparing more than 60 minutes after its start time ends failed_before_install build_timeout', async () => {
+    docker();
+    store.state = 'preparing';
+    const startsAt = new Date(NOW.getTime() - PREPARE_LIMIT_MS - 60_000);
+    assert.equal(await run(update({ state: 'preparing', startsAt })), 'failed_before_install');
+    assert.equal(store.state, 'failed_before_install');
+    assert.equal((store.ends[0] as { code: string }).code, 'build_timeout');
+    assert.deepEqual(store.steps, [], 'no step is started');
+    assert.ok(!runner.calls.some((c) => c.args.includes('build')));
+
+    // An approved row the updater never saw until well after its start is not prepared either.
+    store = new MemoryStore();
+    runner = new FakeRunner();
+    docker();
+    assert.equal(await run(update({ startsAt })), 'failed_before_install');
+    assert.equal((store.ends[0] as { code: string }).code, 'build_timeout');
+  });
+
+  test('a retry after the start time gets only what is left of 60 minutes past the start', async () => {
+    docker();
+    store.state = 'preparing';
+    const startsAt = new Date(NOW.getTime() - 20 * 60_000);
+    assert.equal(await run(update({ state: 'preparing', startsAt })), 'ready');
+    const build = runner.calls.find((c) => c.args.at(-1) === 'build');
+    assert.equal(build?.opts?.timeoutMs, PREPARE_LIMIT_MS - 20 * 60_000);
+  });
+
+  test('resolveProjectName: the environment, else the name Compose resolves (read, never logged), else the folder', async () => {
+    assert.equal(await resolveProjectName(runner, '/opt/Kainow', { COMPOSE_PROJECT_NAME: 'prod' }, (l) => lines.push(l)), 'prod');
+    assert.equal(runner.calls.length, 0);
+    runner.on('docker', ['compose'], { code: 0, stdout: JSON.stringify({ name: 'fromenvfile', services: { db: { environment: { POSTGRES_PASSWORD: 'hunter2' } } } }), stderr: '' }, { times: 1 });
+    assert.equal(await resolveProjectName(runner, dir, {}, (l) => lines.push(l)), 'fromenvfile');
+    const args = runner.calls[0].args;
+    assert.deepEqual(args.slice(0, 5), ['compose', '--project-directory', dir, '--env-file', join(dir, '.env')]);
+    assert.ok(!args.includes('--project-name'));
+    assert.deepEqual(args.slice(-3), ['config', '--format', 'json']);
+    runner.on('docker', ['compose'], { code: 1, stdout: '', stderr: 'POSTGRES_PASSWORD=hunter2 bad' }, { times: 1 });
+    assert.equal(await resolveProjectName(runner, '/opt/Kainow', {}, (l) => lines.push(l)), 'kainow');
+    assert.ok(!lines.some((l) => l.includes('hunter2')));
   });
 
   test('projectNameFor follows Compose: COMPOSE_PROJECT_NAME, else the folder name lower-cased', () => {

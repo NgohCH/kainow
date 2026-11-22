@@ -100,6 +100,36 @@ export function projectNameFor(env: NodeJS.ProcessEnv, installDir: string): stri
     .replace(/^[^a-z0-9]+/, '');
 }
 
+/**
+ * The running installation's project name, so `stop`, `up` and `ps` act on its containers: COMPOSE_PROJECT_NAME from the
+ * updater's environment, else the `name` Compose itself resolves for the Kainow folder (which reads COMPOSE_PROJECT_NAME
+ * from the folder's .env and the top-level `name`), else projectNameFor. The resolved configuration interpolates .env
+ * secrets: it is parsed in memory and never logged, nor is Compose's error output.
+ */
+export async function resolveProjectName(runner: Runner, installDir: string, env: NodeJS.ProcessEnv, log: (line: string) => void): Promise<string> {
+  const given = env.COMPOSE_PROJECT_NAME?.trim();
+  if (given) return given;
+  const files = ['-f', join(installDir, 'compose.yaml')];
+  const override = join(installDir, 'compose.override.yaml');
+  if (existsSync(override)) files.push('-f', override);
+  const r = await runner.run(
+    'docker',
+    ['compose', '--project-directory', installDir, '--env-file', join(installDir, '.env'), ...files, 'config', '--format', 'json'],
+    { cwd: installDir, timeoutMs: SHORT_DOCKER_MS },
+  );
+  if (r.code === 0) {
+    try {
+      const name = (JSON.parse(r.stdout) as { name?: unknown }).name;
+      if (typeof name === 'string' && /^[a-z0-9][a-z0-9_-]*$/.test(name)) return name;
+    } catch {
+      // fall through
+    }
+  }
+  const fallback = projectNameFor(env, installDir);
+  log(`Compose did not give the project name (${r.code}); using ${fallback}.`);
+  return fallback;
+}
+
 export const stagingDir = (installDir: string, tag: string): string => join(installDir, '.kainow-staging', tag);
 
 /** `docker compose` flags for a project directory with the installation's project name, .env and override file. */
@@ -185,8 +215,10 @@ export async function prepareWithStore(deps: Omit<PrepareDeps, 'pool'>, store: P
   const g = deps.git ?? { fetchCandidate, verifyCandidate, workingTreeState };
   const { runner, installDir, log } = deps;
   const staging = stagingDir(installDir, u.tag);
-  const started = deps.now().getTime();
-  const remaining = () => started + PREPARE_LIMIT_MS - deps.now().getTime();
+  // 60 minutes from the start of preparation, and never beyond 60 minutes past the update's start time: a row a dying
+  // tick left `preparing` (or one the updater first saw long after its start) is not retried for ever.
+  const deadline = Math.min(deps.now().getTime(), u.startsAt.getTime()) + PREPARE_LIMIT_MS;
+  const remaining = () => deadline - deps.now().getTime();
 
   const removeStaging = async () => {
     await runner.run('git', ['worktree', 'remove', '--force', staging], { cwd: installDir });
@@ -220,6 +252,10 @@ export async function prepareWithStore(deps: Omit<PrepareDeps, 'pool'>, store: P
   };
 
   try {
+    if (remaining() <= 0) {
+      log(`The update to ${u.tag} is more than ${PREPARE_LIMIT_MS / 60_000} minutes past its start time and still not prepared.`);
+      throw new Stop('failed_before_install', 'build_timeout');
+    }
     await step('space', async () => {
       const floor = (await store.safeFloorGb()) * GB;
       let s: ReturnType<StatFs> = null;

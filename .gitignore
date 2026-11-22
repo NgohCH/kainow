@@ -11,5 +11,9 @@ secrets/
 compose.override.yaml
 # The installation's trusted release signers file (a copy of release/release-signers, INSTALL.md "Install").
 /release-signers
+# The previous trusted file, kept by the updater while an update is installed (10b spec 5.6).
+/release-signers.previous
+/release-signers.tmp
+/release-signers.previous.tmp
 # The updater's staging checkouts (10b spec 5.4).
 .kainow-staging/
