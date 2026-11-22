@@ -6,6 +6,7 @@ import { uuidv7 } from '../common/uuid7';
 import { APP_CONFIG, type AppConfig } from '../config';
 import { PG_POOL } from '../db/database.module';
 import { RECOVERY_NO_LONGER_USABLE, acceptSetupOnSignIn, setupLapsed } from '../organisation/setup-accept';
+import { AuditSampler } from './request-limit';
 import { CODE_SENDER, CLOCK, type AuthContext, type AuthUser, type Clock, type CodeSender } from './tokens';
 
 interface UserRow {
@@ -261,10 +262,23 @@ export class AuthService {
     return rows[0] ?? null;
   }
 
-  /** Records that a request was not acted on. Never records the submitted address. */
+  /**
+   * Records that a request was not acted on. Never records the submitted address. Requests for unknown or disabled
+   * addresses cost an attacker nothing, so only the first few each minute are written; the next row written carries
+   * the count skipped (review G03). Requests tied to a real account are always written.
+   */
   private async ignored(at: Date, reason: string, userId?: string): Promise<void> {
-    await writeAudit(this.pool, { at, action: 'auth.code_request_ignored', actorUserId: userId ?? null, detail: { reason } });
+    let extra: { suppressed?: number } = {};
+    if (reason === 'unknown_or_disabled') {
+      this.unknownSampler ??= new AuditSampler(this.config.signInLimits.ignoredAuditPerMinute, this.clock);
+      const next = this.unknownSampler.next();
+      if (next === null) return;
+      extra = next;
+    }
+    await writeAudit(this.pool, { at, action: 'auth.code_request_ignored', actorUserId: userId ?? null, detail: { reason, ...extra } });
   }
+
+  private unknownSampler: AuditSampler | undefined;
 
   private async tx<T>(work: (client: PoolClient) => Promise<T>): Promise<T> {
     const client = await this.pool.connect();

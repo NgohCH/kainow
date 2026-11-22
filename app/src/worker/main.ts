@@ -18,7 +18,7 @@ import { AudienceService } from '../discussion/audience.service';
 import { ProjectAccess } from '../projects/access.service';
 import { CasesService, cleanWaitingCases } from '../quarantine/cases.service';
 import type { PgBoss } from 'pg-boss';
-import { loadProtectedKey } from '../quarantine/protected-key';
+import { loadRequiredProtectedKey } from '../quarantine/protected-key';
 import { QUEUES, startQueues } from './queues';
 import { registerSchedules } from './schedules';
 import { DbStorageConnectorFactory } from '../storage/connector-factory';
@@ -36,7 +36,7 @@ async function main(): Promise<void> {
   const spend = new SpendService(pool, clock);
   // The protected key (history spec 7.3): held in memory only; without it, waiting quarantine cases stay waiting.
   const keyLog = new Logger('ProtectedKey');
-  const key = loadProtectedKey(config.protectedKeyFile, (m) => keyLog.warn(m));
+  const key = loadRequiredProtectedKey(config.protectedKeyFile, config.requireProtectedKey, (m) => keyLog.warn(m));
   // The email nudge needs the queue, which starts later; a nudge before then is simply lost and the next tick catches it.
   let boss: PgBoss | undefined;
   const nudge: EmailNudge = {

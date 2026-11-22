@@ -482,7 +482,7 @@ An Enterprise Administrator may change the source-area destination (with a reaso
 - **System Settings › Report types** (new nav item).
 - **Access and records:** "Project exports allowed".
 - **Project organisation panel (Administrator):** "Change owning department".
-- **Go-live checklist:** new step 12 (`storage`, mode `auto_or_skip`): "Connect storage and approve the source area", auto-ticked when a connection checks and a source area is approved; skippable with a note (sources then stay in the database until it is done). The closing keys are unchanged.
+- **Go-live checklist:** new step 12 (`storage`, mode `auto_or_skip`): "Connect storage and approve the source area", auto-ticked when a connection checks and a source area is approved; skippable with a note (sources then stay in the database until it is done). It is optional, so it is not a closing key (review G01 made every non-optional step a closing key).
 - (build ruling, 20–21 November 2026) The go-live skip route is generalised to `POST /go-live/steps/:key/skip` for every `auto_or_skip` step; the storage step ticks itself from the recorded result of the last connection check together with an approved source area (no provider call is made to show it).
 - **Administrator dashboard / analytics system panel:** counts of storage failures, waiting files, withheld-removal failures and sharing to repair (added to the sub-project 7 system panel's problem list).
 
