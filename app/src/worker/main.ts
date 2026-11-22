@@ -18,7 +18,9 @@ import { AudienceService } from '../discussion/audience.service';
 import { ProjectAccess } from '../projects/access.service';
 import { CasesService, cleanWaitingCases } from '../quarantine/cases.service';
 import type { PgBoss } from 'pg-boss';
-import { loadProtectedKey } from '../quarantine/protected-key';
+import { loadRequiredProtectedKey } from '../quarantine/protected-key';
+import { OperationsState } from '../ops/state';
+import { runOpsSweep } from '../ops/sweep-ops';
 import { QUEUES, startQueues } from './queues';
 import { registerSchedules } from './schedules';
 import { DbStorageConnectorFactory } from '../storage/connector-factory';
@@ -36,7 +38,7 @@ async function main(): Promise<void> {
   const spend = new SpendService(pool, clock);
   // The protected key (history spec 7.3): held in memory only; without it, waiting quarantine cases stay waiting.
   const keyLog = new Logger('ProtectedKey');
-  const key = loadProtectedKey(config.protectedKeyFile, (m) => keyLog.warn(m));
+  const key = loadRequiredProtectedKey(config.protectedKeyFile, config.requireProtectedKey, (m) => keyLog.warn(m));
   // The email nudge needs the queue, which starts later; a nudge before then is simply lost and the next tick catches it.
   let boss: PgBoss | undefined;
   const nudge: EmailNudge = {
@@ -66,8 +68,11 @@ async function main(): Promise<void> {
   const analysisRunner = new AnalysisRunner({ pool, clock, extraction, minutes, quarantine, log: (m) => console.error(m) });
   const assist = new AssistRunner({ pool, spend, factory: realClientFactory, key, clock, quarantine, log: (m) => console.error(m) });
 
+  // Protective read-only mode (spec 7.3): every handler asks first; the answer is cached for 5 s, so Resume in the API
+  // is seen here within 5 s.
+  const operations = new OperationsState(pool);
   boss = await startQueues(config.databaseUrl, undefined, { schedule: true });
-  await registerAiWorker(boss, { extraction, analysis: analysisRunner, assist }, pool);
+  await registerAiWorker(boss, { extraction, analysis: analysisRunner, assist }, pool, AI_CONCURRENCY, operations);
 
   // The sweep nudges the dispatcher through the same boss instance; a lost nudge is caught by the next tick.
   const log = { warn: (m: string) => console.warn(m) };
@@ -93,12 +98,13 @@ async function main(): Promise<void> {
     notify: makeStorageNotify(pool, clock),
     log: (m) => storageLog.warn(m),
   };
-  await registerStorageWorker(boss, storageDeps);
+  // Paused in protective mode like the other external work (spec 7.3): a fetched job waits a minute and is tried again.
+  await registerStorageWorker(boss, storageDeps, (m) => storageLog.warn(m), operations);
   const storage = {
     sendOutbox: () => sendStorageOutbox(pool, boss),
     daily: () => runStorageDaily(storageDeps, (m) => storageLog.warn(m)),
   };
-  await registerSchedules(boss, { sweep, dispatcher, analysis, quarantine: quarantineJob, storage });
+  await registerSchedules(boss, { sweep, dispatcher, analysis, quarantine: quarantineJob, storage, operations, opsSweep: () => runOpsSweep(pool, clock()) });
   console.log(`kainow worker started (at most ${AI_CONCURRENCY} AI jobs at once in this process; the AI places setting is the real limit)`);
 
   const stop = async (): Promise<void> => {

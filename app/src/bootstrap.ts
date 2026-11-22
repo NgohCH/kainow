@@ -23,8 +23,6 @@ export async function createApp(
     logger: logger ?? ['error', 'warn', 'log'],
     bodyParser: false,
   });
-  // Who the caller is, for the sign-in limits: the connecting address unless TRUST_PROXY names the proxy in front.
-  if (config.trustProxy !== null) app.set('trust proxy', config.trustProxy);
   app.disable('x-powered-by');
   app.useBodyParser('json', { limit: JSON_BODY_LIMIT });
   // Logo uploads arrive as the image file itself; the service checks its contents and the 512 KB limit.

@@ -6,6 +6,7 @@ import { Reflector } from '@nestjs/core';
 import { AnySignedInUser, Public, RequireAction } from './access';
 import { AuthGuard, type HttpRequest } from './auth.guard';
 import { OrganisationState } from '../organisation/state';
+import type { OperationsState } from '../ops/state';
 import type { AuthService } from './auth.service';
 import { ACTIONS } from './permissions';
 
@@ -29,7 +30,9 @@ const fakeAuth = {
 
 // The organisation is set up: these unit tests cover access, not the setup gate (see onboarding.http.test).
 const registered = { isRegistered: async () => true } as unknown as OrganisationState;
-const guard = new AuthGuard(new Reflector(), fakeAuth, registered);
+// Protective mode is off: it is covered by ops/protective.http.test.
+const normal = { isProtective: async () => false } as unknown as OperationsState;
+const guard = new AuthGuard(new Reflector(), fakeAuth, registered, normal);
 
 function contextFor(handler: () => void, cookie?: string): { ctx: ExecutionContext; req: HttpRequest } {
   const req: HttpRequest = { method: 'GET', headers: cookie ? { cookie: `kainow_session=${cookie}` } : {} };

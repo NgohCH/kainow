@@ -24,29 +24,8 @@ test('defaults the port and keeps the accepted sign-in settings', () => {
     lockoutMinutes: 30,
     sessionHours: 12,
     codeResendSeconds: 60,
-    addressWindowMinutes: 15,
-    maxCodeRequestsPerAddress: 100,
-    maxFailedCodesPerAddress: 10,
   });
   assert.deepEqual(config.auth, DEFAULT_AUTH_SETTINGS);
-});
-
-test('TRUST_PROXY: unset trusts no proxy; a hop count or address list is passed on; "true" is refused', () => {
-  assert.equal(loadConfig(base).trustProxy, null);
-  assert.equal(loadConfig({ ...base, TRUST_PROXY: 'false' }).trustProxy, null);
-  assert.equal(loadConfig({ ...base, TRUST_PROXY: '1' }).trustProxy, 1);
-  assert.equal(loadConfig({ ...base, TRUST_PROXY: 'loopback' }).trustProxy, 'loopback');
-  assert.throws(() => loadConfig({ ...base, TRUST_PROXY: 'true' }), /TRUST_PROXY=true/);
-});
-
-test('in production, sign-in codes go to the log only while Kainow is reached on this computer', () => {
-  const prod = { ...base, NODE_ENV: 'production' };
-  assert.deepEqual(loadConfig(prod).email, { provider: 'log' });
-  assert.deepEqual(loadConfig({ ...prod, APP_URL: 'http://127.0.0.1:3000' }).email, { provider: 'log' });
-  assert.throws(() => loadConfig({ ...prod, APP_URL: 'https://kainow.example.org' }), /cannot be printed to the log in production/);
-  assert.throws(() => loadWorkerConfig({ ...prod, APP_URL: 'https://kainow.example.org' }), /cannot be printed to the log in production/);
-  // Outside production the log stays available, whatever APP_URL says.
-  assert.deepEqual(loadConfig({ ...base, APP_URL: 'https://kainow.example.org' }).email, { provider: 'log' });
 });
 
 test('rejects a port that is not an integer from 1 to 65535', () => {
@@ -159,4 +138,46 @@ test('the protected key file path is optional and trimmed, for the API and the w
   assert.equal(loadConfig({ ...base, KAINOW_PROTECTED_KEY_FILE: '  ' }).protectedKeyFile, null);
   assert.equal(loadConfig({ ...base, KAINOW_PROTECTED_KEY_FILE: ' /run/keys/p.key ' }).protectedKeyFile, '/run/keys/p.key');
   assert.equal(loadWorkerConfig({ ...base, KAINOW_PROTECTED_KEY_FILE: '/run/keys/p.key' }).protectedKeyFile, '/run/keys/p.key');
+});
+
+// G02 (review of PR #19): in production, sign-in codes are never printed to the log, whatever APP_URL says.
+// APP_URL only shapes links; it says nothing about who can reach the server.
+test('in production the log provider is refused at every address, for the API and the worker', () => {
+  const prod = { ...base, NODE_ENV: 'production' };
+  for (const appUrl of [undefined, 'http://localhost:3000', 'http://127.0.0.1:8080', 'http://[::1]:3000', 'https://kainow.example.org']) {
+    assert.throws(() => loadConfig({ ...prod, APP_URL: appUrl }), /LOG_SIGN_IN_CODES/, String(appUrl));
+    assert.throws(() => loadWorkerConfig({ ...prod, APP_URL: appUrl }), /LOG_SIGN_IN_CODES/, String(appUrl));
+    assert.throws(() => loadConfig({ ...prod, APP_URL: appUrl, LOG_SIGN_IN_CODES: undefined, EMAIL_PROVIDER: 'log' }), /LOG_SIGN_IN_CODES/, String(appUrl));
+  }
+});
+
+test('in production a configured SMTP or Microsoft 365 sender starts, even with LOG_SIGN_IN_CODES left set', () => {
+  const prod = { ...base, NODE_ENV: 'production', APP_URL: 'https://kainow.example.org' };
+  assert.equal(loadConfig({ ...prod, SMTP_URL: 'smtp://mail.example.org', SMTP_FROM: 'a@example.org' }).email.provider, 'smtp');
+  assert.equal(loadWorkerConfig({ ...prod, EMAIL_PROVIDER: 'smtp', SMTP_URL: 'smtp://mail.example.org', EMAIL_FROM: 'a@example.org' }).email.provider, 'smtp');
+  assert.equal(loadConfig({ ...prod, EMAIL_PROVIDER: 'm365', M365_TENANT_ID: 't', M365_CLIENT_ID: 'c', M365_CLIENT_SECRET: 's', EMAIL_FROM: 'a@example.org' }).email.provider, 'm365');
+});
+
+test('development and test environments keep logged codes for local trials', () => {
+  for (const nodeEnv of [undefined, 'development', 'test']) {
+    assert.deepEqual(loadConfig({ ...base, NODE_ENV: nodeEnv }).email, { provider: 'log' }, String(nodeEnv));
+    assert.deepEqual(loadWorkerConfig({ ...base, NODE_ENV: nodeEnv, APP_URL: 'http://localhost:3000' }).email, { provider: 'log' }, String(nodeEnv));
+  }
+});
+
+// G05: an AI-enabled production deployment can require the protected key, and then refuses to start without it.
+test('KAINOW_REQUIRE_PROTECTED_KEY=true refuses to start without a protected key file', () => {
+  const req = { ...base, KAINOW_REQUIRE_PROTECTED_KEY: 'true' };
+  assert.throws(() => loadConfig(req), /KAINOW_PROTECTED_KEY_FILE/);
+  assert.throws(() => loadWorkerConfig(req), /KAINOW_PROTECTED_KEY_FILE/);
+  assert.equal(loadConfig({ ...req, KAINOW_PROTECTED_KEY_FILE: '/run/keys/p.key' }).requireProtectedKey, true);
+  assert.equal(loadWorkerConfig({ ...req, KAINOW_PROTECTED_KEY_FILE: '/run/keys/p.key' }).requireProtectedKey, true);
+  assert.equal(loadConfig(base).requireProtectedKey, false);
+  assert.throws(() => loadConfig({ ...base, KAINOW_REQUIRE_PROTECTED_KEY: 'yes' }), /KAINOW_REQUIRE_PROTECTED_KEY/);
+});
+
+test('TRUST_PROXY is a small count of proxies and defaults to none', () => {
+  assert.equal(loadConfig(base).trustProxyHops, 0);
+  assert.equal(loadConfig({ ...base, TRUST_PROXY: '1' }).trustProxyHops, 1);
+  for (const bad of ['-1', 'true', '1.5', '11']) assert.throws(() => loadConfig({ ...base, TRUST_PROXY: bad }), /TRUST_PROXY/, bad);
 });

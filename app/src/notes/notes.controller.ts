@@ -9,7 +9,8 @@ import { AudienceService } from '../discussion/audience.service';
 import { ProjectAccess } from '../projects/access.service';
 import type { ProjectAction } from '../projects/matrix';
 import { MAX_UPLOAD_BYTES } from './text';
-import { NotesService } from './notes.service';
+import type { PoolClient } from 'pg';
+import { NotesService, type Reauthorise } from './notes.service';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -63,11 +64,22 @@ export class NotesController {
     return sourceId;
   }
 
-  /** Adding a version needs the right to import notes, except that a submitter revises their own returned submission (needs the right to submit). */
-  private async forVersionAdd(req: HttpRequest, sourceId: string): Promise<void> {
-    const { row } = await this.audiences.assertSourceReadable(who(req), id(sourceId));
+  /**
+   * Adding a version needs the right to import notes, except that a submitter revises their own returned submission (needs the right to submit).
+   * Inside the write transaction (`db` given) the project row is locked first, then the same checks run again (review F01).
+   */
+  private async forVersionAdd(req: HttpRequest, sourceId: string, db?: PoolClient): Promise<void> {
+    if (db) await this.access.authorize(who(req), 'note.view', await this.access.projectOfSource(id(sourceId), db), db, true);
+    const { row } = await this.audiences.assertSourceReadable(who(req), id(sourceId), db);
     const own = row.kind === 'notes' && row.publication === 'returned' && row.submittedBy === who(req).id;
-    await this.access.authorize(who(req), own ? 'notes.submit' : 'note.import', row.projectId);
+    await this.access.authorize(who(req), own ? 'notes.submit' : 'note.import', row.projectId, db);
+  }
+
+  /** The import check again, inside the write transaction with the project row locked (review F01). */
+  private importAgain(req: HttpRequest, projectId: string): Reauthorise {
+    return async (db) => {
+      await this.access.authorize(who(req), 'note.import', projectId, db, true);
+    };
   }
 
   /** Paste: { title, text }. */
@@ -76,7 +88,7 @@ export class NotesController {
   @HttpCode(201)
   async create(@Param('projectId') projectId: string, @Body() body: unknown, @Req() req: HttpRequest) {
     await this.access.authorize(who(req), 'note.import', projectId);
-    return this.notes.createSource({ projectId, title: field(body, 'title'), content: { text: field(body, 'text') ?? '' }, actorUserId: who(req).id });
+    return this.notes.createSource({ projectId, title: field(body, 'title'), content: { text: field(body, 'text') ?? '' }, actorUserId: who(req).id, reauthorise: this.importAgain(req, projectId) });
   }
 
   /** Upload: multipart with a `file` and an optional `title` (the file name is the default). */
@@ -86,7 +98,7 @@ export class NotesController {
   @UseInterceptors(noteUpload)
   async createFromFile(@Param('projectId') projectId: string, @UploadedFile() file: UploadedBuffer, @Body() body: unknown, @Req() req: HttpRequest) {
     await this.access.authorize(who(req), 'note.import', projectId);
-    return this.notes.createSource({ projectId, title: field(body, 'title'), content: { file }, actorUserId: who(req).id });
+    return this.notes.createSource({ projectId, title: field(body, 'title'), content: { file }, actorUserId: who(req).id, reauthorise: this.importAgain(req, projectId) });
   }
 
   @Get('projects/:projectId/notes')
@@ -102,7 +114,7 @@ export class NotesController {
   @HttpCode(201)
   async addVersion(@Param('id') sourceId: string, @Body() body: unknown, @Req() req: HttpRequest) {
     await this.forVersionAdd(req, sourceId);
-    return { version: await this.notes.addVersion(sourceId, { text: field(body, 'text') ?? '' }, who(req).id) };
+    return { version: await this.notes.addVersion(sourceId, { text: field(body, 'text') ?? '' }, who(req).id, (db) => this.forVersionAdd(req, sourceId, db)) };
   }
 
   /** New version by upload. */
@@ -112,7 +124,7 @@ export class NotesController {
   @UseInterceptors(noteUpload)
   async addVersionFromFile(@Param('id') sourceId: string, @UploadedFile() file: UploadedBuffer, @Req() req: HttpRequest) {
     await this.forVersionAdd(req, sourceId);
-    return { version: await this.notes.addVersion(sourceId, { file }, who(req).id) };
+    return { version: await this.notes.addVersion(sourceId, { file }, who(req).id, (db) => this.forVersionAdd(req, sourceId, db)) };
   }
 
   @Get('notes/:id')

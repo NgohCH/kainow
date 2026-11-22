@@ -20,7 +20,7 @@ interface Delivery {
 interface Page { items: Delivery[]; more: boolean; next: string | null }
 
 const STATUS_TEXT: Record<string, string> = {
-  queued: 'Queued', sending: 'Sending', retry_wait: 'Waiting to retry', sent: 'Sent', failed: 'Failed', cancelled: 'Cancelled', uncertain: 'Uncertain',
+  queued: 'Queued', sending: 'Sending', retry_wait: 'Waiting to retry', sent: 'Sent', failed: 'Failed', cancelled: 'Cancelled', uncertain: 'Uncertain', not_sent_restored: 'Not sent — restored from backup',
 };
 const kindText = (k: string) => k.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
 

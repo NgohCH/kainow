@@ -154,18 +154,24 @@ export class PublishingService {
 
   /** A member's notes by paste or upload, waiting for a reviewer (spec 5.4). */
   async submit(user: AuthUser, projectId: string, content: NewContent, body: { title?: unknown; intendedMode: unknown }): Promise<SourceSummary> {
-    const ctx = await this.access.authorize(user, 'notes.submit', projectId);
+    await this.access.authorize(user, 'notes.submit', projectId);
     const intendedMode = this.intendedMode(body.intendedMode);
+    // Reading the file can take a while: the submit right is checked again inside the write transaction with the project
+    // row locked, and the reviewers notified come from that check, not the one before reading (review F01).
+    let current: ProjectContext | undefined;
     const { source } = await this.notes.createSource({
       projectId,
       title: body.title,
       content,
       actorUserId: user.id,
+      reauthorise: async (db) => {
+        current = await this.access.authorize(user, 'notes.submit', projectId, db, true);
+      },
       submission: {
         submittedBy: user.id,
         intendedMode,
         refuse: refuseSecrets,
-        after: (db, src, at) => this.notify(db, projectId, this.reviewers(ctx, user.id), 'minutes_submitted', `Minutes submitted for review: ${src.title}`, `#/notes/${src.id}`, at),
+        after: (db, src, at) => this.notify(db, projectId, this.reviewers(current as ProjectContext, user.id), 'minutes_submitted', `Minutes submitted for review: ${src.title}`, `#/notes/${src.id}`, at),
       },
     });
     return source;

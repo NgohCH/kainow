@@ -72,6 +72,8 @@ const FILING_REASONS: Readonly<Record<string, string>> = {
   [PATH_TOO_LONG]: 'The folder path is too long',
   [BYTES_GONE]: 'The file is no longer kept',
   [NOT_FILEABLE]: 'The output was withdrawn, deleted or held before it was filed',
+  // Ended by a restore from backup (ops/after-restore.ts); the same words as other work a restore ends.
+  restored_from_backup: 'Not run — restored from backup',
 };
 
 /** "Filing failed — <reason>" for a failed version (spec 5.4). */

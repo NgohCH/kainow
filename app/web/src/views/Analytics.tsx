@@ -25,11 +25,13 @@ import {
 import { updatedLabel } from '../dashboard.ts';
 import { STATUS_LABEL } from '../projects.ts';
 import { ResourcesView } from './analytics/ResourcesPanel.tsx';
+import { OperationsPanelView } from './analytics/OperationsPanel.tsx';
+import type { OperationsPanelData } from '../operations.ts';
 import { CsvLink, Drill, type DrillTarget, ProblemsView, ProgressView, SystemView, TrendsView } from './analytics/Panels.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 
-type Served = 'progress' | 'problems' | 'system' | 'trends' | 'resources';
+type Served = 'progress' | 'problems' | 'system' | 'trends' | 'resources' | 'operations';
 type Loaded<T> = { query: string; data: T | null; error: string | null };
 
 /** One panel's figures for the filters in force; not fetched while the panel is hidden. Late answers are dropped. */
@@ -123,6 +125,7 @@ export function Analytics() {
   const system = usePanel<SystemPanel>('system', query, shown('system'));
   const trends = usePanel<TrendsPanel>('trends', query, shown('trends'));
   const resources = usePanel<ResourcesPanel>('resources', query, shown('resources'));
+  const operations = usePanel<OperationsPanelData>('operations', query, shown('operations'));
 
   const setFilters = (patch: Partial<ViewConfig['filters']>) => setConfig((c) => ({ ...c, filters: { ...c.filters, ...patch } }));
   const setColumns = (panel: ColumnPanel, order: string[], hidden: string[]) => setConfig((c) => ({ ...c, columns: { ...c.columns, [panel]: { order, hidden } } }));
@@ -211,7 +214,7 @@ export function Analytics() {
         </p>
       );
     }
-    const state = p === 'progress' ? progress : p === 'problems' ? problems : p === 'system' ? system : p === 'resources' ? resources : trends;
+    const state = p === 'progress' ? progress : p === 'problems' ? problems : p === 'system' ? system : p === 'resources' ? resources : p === 'operations' ? operations : trends;
     if (!state || (!state.data && !state.error)) return <p className="loading">Loading</p>;
     if (state.error) return <p role="alert" className="error">{state.error}</p>;
     const updated = <p className="meta">{updatedLabel((state.data as { computedAt: string }).computedAt)}</p>;
@@ -221,6 +224,7 @@ export function Analytics() {
       return <>{updated}<ProblemsView data={problems.data} columns={visibleColumns('problems')} onDrill={openDrill('problems')} csv={csv('problems')} />{drillFor('problems')}</>;
     if (p === 'system' && system?.data) return <>{updated}<SystemView data={system.data} csv={csv('system')} /></>;
     if (p === 'resources' && resources?.data) return <>{updated}<ResourcesView data={resources.data} modes={config.charts} onMode={setChart} csv={(table) => <CsvLink panel="resources" query={`${query}&table=${table}`} allowed={exportAllowed} />} /></>;
+    if (p === 'operations' && operations?.data) return <>{updated}<OperationsPanelView data={operations.data} csv={csv('operations')} /></>;
     if (p === 'trends' && trends?.data) return <>{updated}<TrendsView data={trends.data} modes={config.charts} onMode={setChart} csv={csv('trends')} /></>;
     return null;
   }

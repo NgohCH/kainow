@@ -1,5 +1,5 @@
 import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Put, Query, Req, Res } from '@nestjs/common';
-import { AnySignedInUser } from '../auth/access';
+import { AllowedWhenProtective, AnySignedInUser } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
 import { UUID } from '../common/uuid7';
@@ -34,6 +34,8 @@ export class LinesController {
   /** The resources report as JSON, or `?format=csv` as a download (spec 4, 13); needs `resource.view`. */
   @Get('report')
   @AnySignedInUser()
+  // GET audit (spec 7.3): the resources.report_exported record of a CSV download is kept in protective mode.
+  @AllowedWhenProtective()
   async reportOf(@Param('projectId') projectId: string, @Query('format') format: string | undefined, @Req() req: HttpRequest, @Res({ passthrough: true }) res: { setHeader(n: string, v: string): void }) {
     if (format !== 'csv') return this.report.build(who(req), projectId);
     const { text, filename } = await this.report.exportCsv(who(req), projectId);

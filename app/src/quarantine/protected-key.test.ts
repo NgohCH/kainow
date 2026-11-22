@@ -4,7 +4,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, test } from 'node:test';
-import { loadProtectedKey } from './protected-key';
+import { loadProtectedKey, loadRequiredProtectedKey } from './protected-key';
 import { runProtectedKeyCli } from './protected-key-cli';
 
 const dir = mkdtempSync(join(tmpdir(), 'kainow-key-'));
@@ -77,6 +77,17 @@ describe('protected key', () => {
     assert.equal(logs.length, 2, 'unset is normal and logs nothing');
     assert.match(logs[0], /not found/);
     assert.match(logs[1], /unreadable/);
+  });
+
+  // G05: when the deployment requires the key, a missing or broken key file stops the start instead of being a warning.
+  test('a required key that is missing, unreadable or the wrong length stops the start', () => {
+    const quiet = () => undefined;
+    assert.throws(() => loadRequiredProtectedKey(null, true, quiet), /protected key is required/);
+    assert.throws(() => loadRequiredProtectedKey(join(dir, 'nope.key'), true, quiet), /protected key is required/);
+    assert.throws(() => loadRequiredProtectedKey(keyFile('short2.key', randomBytes(31)).path, true, quiet), /protected key is required/);
+    const good = keyFile('good-required.key');
+    assert.ok(loadRequiredProtectedKey(good.path, true, quiet));
+    assert.equal(loadRequiredProtectedKey(null, false, quiet), null, 'not required: unset stays a normal state');
   });
 
   test('key id is stable and 16 hex', () => {

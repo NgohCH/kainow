@@ -38,6 +38,8 @@ import { AccessSettings } from './views/AccessSettings.tsx';
 import { Analytics } from './views/Analytics.tsx';
 import { StorageSettings } from './views/StorageSettings.tsx';
 import { ReportTypes } from './views/ReportTypes.tsx';
+import { Operations } from './views/Operations.tsx';
+import { OpsBanner, ProtectiveLine } from './views/OpsBanner.tsx';
 import { Definitions } from './views/Definitions.tsx';
 import { ResourceAdmin } from './views/ResourceAdmin.tsx';
 import { ResourceCatalogue } from './views/ResourceCatalogue.tsx';
@@ -159,6 +161,7 @@ export function SignIn({
         <Heading className="wordmark">Kainow</Heading>
       )}
       <p className="lede">{intro ?? 'Turn meeting notes into decisions and actions you have checked against the page.'}</p>
+      {!embedded && <ProtectiveLine />}
       {step === 'email' ? (
         <form onSubmit={requestCode} className="stack">
           <label>
@@ -325,6 +328,7 @@ export function App() {
             <button className="quiet" onClick={signOut}>Sign out</button>
           </span>
         </header>
+        <OpsBanner hash={hash} isAdmin />
         <div id="main">
           <Onboarding
             onFinished={() => {
@@ -345,7 +349,7 @@ export function App() {
   const summary = /^#\/summaries\/([0-9a-f-]{36})$/i.exec(hash);
   const thread = parseThreadHash(hash);
   const searching = isSearchHash(hash);
-  const adminPage = /^#\/(people|ai|departments|domains|organisation|approvals|notifications-settings|deliveries|go-live|escalated-feedback|leadership-grants|access-settings|storage|report-types|resources-admin|ai\/usage|admin\/analytics|admin\/analytics\/definitions)$/.exec(hash)?.[1];
+  const adminPage = /^#\/(people|ai|departments|domains|organisation|approvals|notifications-settings|deliveries|go-live|escalated-feedback|leadership-grants|access-settings|storage|report-types|resources-admin|ai\/usage|admin\/analytics|admin\/analytics\/definitions|admin\/operations)$/.exec(hash)?.[1];
 
   let page;
   if (invitation) page = <Invitation token={invitation[1]} user={user} onSignedIn={setUser} />;
@@ -368,6 +372,7 @@ export function App() {
   else if (hash === '#/resource-catalogue' && maintainer) page = <ResourceCatalogue />;
   else if (isAdmin && adminPage === 'admin/analytics') page = <Analytics />;
   else if (isAdmin && adminPage === 'admin/analytics/definitions') page = <Definitions />;
+  else if (isAdmin && adminPage === 'admin/operations') page = <Operations />;
   else if (hash === '#/leadership' && hasGrant) page = <Leadership prefs={prefs} ready={prefsLoaded} failed={prefsFailed} onChange={savePrefs} />;
   else if (quarantineCase) page = <CasePage key={quarantineCase[1]} caseId={quarantineCase[1]} />;
   else if (securityPage) page = <SecurityReviewPage />;
@@ -413,6 +418,7 @@ export function App() {
               <a href="#/report-types" aria-current={adminPage === 'report-types' ? 'page' : undefined}>Report types</a>
               <a href="#/resources-admin" aria-current={adminPage === 'resources-admin' ? 'page' : undefined}>Resources and finance</a>
               <a href="#/admin/analytics" aria-current={adminPage === 'admin/analytics' || adminPage === 'admin/analytics/definitions' ? 'page' : undefined}>Analytics</a>
+              <a href="#/admin/operations" aria-current={adminPage === 'admin/operations' ? 'page' : undefined}>Operations</a>
               <a href="#/ai" aria-current={adminPage === 'ai' || adminPage === 'ai/usage' ? 'page' : undefined}>AI</a>
             </>
           )}
@@ -432,6 +438,7 @@ export function App() {
           <Customise prefs={prefs} ready={prefsLoaded} failed={prefsFailed} onChange={savePrefs} onClose={() => setCustomising(false)} />
         </div>
       )}
+      <OpsBanner hash={hash} isAdmin={isAdmin} />
       <div id="main">
         {page}
       </div>

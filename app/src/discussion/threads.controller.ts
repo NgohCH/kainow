@@ -1,5 +1,5 @@
 import { Body, Controller, Get, HttpCode, NotFoundException, Param, Post, Put, Query, Req, BadRequestException } from '@nestjs/common';
-import { AnySignedInUser } from '../auth/access';
+import { AllowedWhenProtective, AnySignedInUser } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import type { AuthUser } from '../auth/tokens';
 import { ThreadsService } from './threads.service';
@@ -39,6 +39,8 @@ export class ThreadsController {
 
   @Get('threads/:threadId')
   @AnySignedInUser()
+  // GET audit (spec 7.3): each Deleted message shown is recorded (deleted.inspected), in protective mode too.
+  @AllowedWhenProtective()
   get(@Param('threadId') threadId: string, @Query('afterNo') afterNo: string | undefined, @Req() req: HttpRequest) {
     if (afterNo !== undefined && !/^\d{1,9}$/.test(afterNo)) throw new BadRequestException('afterNo must be a message number.');
     return this.threads.get(who(req), threadId, afterNo === undefined ? 0 : Number(afterNo));

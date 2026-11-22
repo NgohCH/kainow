@@ -2,12 +2,22 @@ export class ApiError extends Error {
   readonly status: number;
   /** The parsed body of the refusal, when the server sent one (a 409 may carry the current copy). */
   readonly data: unknown;
+  /** The server's machine code when it sent one (for example 'protective_read_only'). */
+  readonly code: string | null;
   constructor(message: string, status: number, data?: unknown) {
     super(message);
     this.status = status;
     this.data = data;
+    const c = (data as { code?: unknown } | undefined)?.code;
+    this.code = typeof c === 'string' ? c : null;
   }
 }
+
+/**
+ * Protective read-only mode refused a change (503 `protective_read_only`; the message is the server's fixed text). A person's own
+ * save shows this text and keeps its form; a background or automatic request (mark as read) shows nothing.
+ */
+export const isProtectiveRefusal = (e: unknown): e is ApiError => e instanceof ApiError && e.status === 503 && e.code === 'protective_read_only';
 
 // (import.meta.env is missing when the pure helpers are tested under plain node.)
 // In development Vite serves the page and proxies /api to the API; in production the API serves the page itself.

@@ -120,6 +120,7 @@ export class EmailDispatcher {
         const outcome = await this.attempt(c);
         if (outcome === 'sent') result.sent += 1;
         else if (outcome === 'failed') result.failed += 1;
+        else if (outcome === 'cancelled') result.cancelled += 1;
       }
       if (claimed.length + cancelled === 0) break;
     }
@@ -187,28 +188,9 @@ export class EmailDispatcher {
       ).rows as OutboxRow[];
       const claimed: Claimed[] = [];
       let cancelled = 0;
-      const cancel = async (id: string, reason: string): Promise<void> => {
-        await db.query(`UPDATE email_outbox SET status = 'cancelled', next_attempt_at = NULL, last_reason = $2 WHERE id = $1`, [id, reason]);
-        cancelled += 1;
-      };
       for (const r of due) {
-        if (!(await this.eligible(db, r, today))) {
-          await cancel(r.id, REASON_INELIGIBLE);
-          continue;
-        }
-        const rel = r.relevance;
-        if (rel && isConsolidated(rel)) {
-          const keep: typeof rel.items = [];
-          for (const item of rel.items) if (await stillRelevant(db, item.check, now)) keep.push(item);
-          if (keep.length < rel.items.length) {
-            await cancel(r.id, REASON_CONTENT_CHANGED);
-            if (keep.length > 0) await this.writeReplacement(db, r, rel, keep, now);
-            continue;
-          }
-        } else if (rel && !(await stillRelevant(db, rel, now))) {
-          await cancel(r.id, REASON_NOT_RELEVANT);
-          // A digest listing a task now held or Deleted goes again without it (nothing when the project is not Active).
-          if (r.kind === 'digest') await requeueDigest(db, r.id, now);
+        if (await this.screenOut(db, r, now, today)) {
+          cancelled += 1;
           continue;
         }
         const attemptNo = r.attempts + 1;
@@ -229,6 +211,38 @@ export class EmailDispatcher {
       }
       return { claimed, cancelled };
     });
+  }
+
+  /**
+   * Cancels a row whose recipient may no longer receive it or whose content no longer applies, and returns true; false
+   * when it may go. Run when a row is claimed and again just before it is sent (review F02), so a recipient who loses
+   * access while earlier emails of the batch are sending is not sent to. Nothing can recall an email once the mail
+   * service has accepted it; this narrows the gap to the moment of sending.
+   */
+  private async screenOut(db: PoolClient, r: OutboxRow, now: Date, today: string): Promise<boolean> {
+    const cancel = async (reason: string): Promise<void> => {
+      await db.query(`UPDATE email_outbox SET status = 'cancelled', next_attempt_at = NULL, last_reason = $2 WHERE id = $1`, [r.id, reason]);
+    };
+    if (!(await this.eligible(db, r, today))) {
+      await cancel(REASON_INELIGIBLE);
+      return true;
+    }
+    const rel = r.relevance;
+    if (rel && isConsolidated(rel)) {
+      const keep: typeof rel.items = [];
+      for (const item of rel.items) if (await stillRelevant(db, item.check, now)) keep.push(item);
+      if (keep.length < rel.items.length) {
+        await cancel(REASON_CONTENT_CHANGED);
+        if (keep.length > 0) await this.writeReplacement(db, r, rel, keep, now);
+        return true;
+      }
+    } else if (rel && !(await stillRelevant(db, rel, now))) {
+      await cancel(REASON_NOT_RELEVANT);
+      // A digest listing a task now held or Deleted goes again without it (nothing when the project is not Active).
+      if (r.kind === 'digest') await requeueDigest(db, r.id, now);
+      return true;
+    }
+    return false;
   }
 
   private async eligible(db: PoolClient, r: OutboxRow, today: string): Promise<boolean> {
@@ -266,14 +280,26 @@ export class EmailDispatcher {
   }
 
   /** Sends one claimed row and records the outcome. */
-  private async attempt(c: Claimed): Promise<'sent' | 'failed' | 'retry'> {
-    // Re-assert ownership just before sending: if another pass has marked this claim uncertain meanwhile, do not send.
+  private async attempt(c: Claimed): Promise<'sent' | 'failed' | 'retry' | 'cancelled'> {
+    // Just before sending, in one short transaction: re-assert ownership (another pass may have marked this claim
+    // uncertain), then check the recipient and the content again (review F02). Earlier emails in the batch may have
+    // taken a while to send, and access or the record may have changed meanwhile.
     const stamp = this.deps.clock();
-    const owned = await this.deps.pool.query(
-      `UPDATE email_outbox SET next_attempt_at = $4 WHERE id = $1 AND status = 'sending' AND attempts = $2 AND next_attempt_at = $3`,
-      [c.id, c.attemptNo, c.startedAt, stamp],
-    );
-    if (owned.rowCount === 0) return 'retry';
+    const verdict = await inTransaction(this.deps.pool, async (db) => {
+      const r = (
+        await db.query(`SELECT * FROM email_outbox WHERE id = $1 AND status = 'sending' AND attempts = $2 AND next_attempt_at = $3 FOR UPDATE`, [
+          c.id,
+          c.attemptNo,
+          c.startedAt,
+        ])
+      ).rows[0] as OutboxRow | undefined;
+      if (!r) return 'lost' as const;
+      if (await this.screenOut(db, r, stamp, todayUtc8(stamp))) return 'cancelled' as const;
+      await db.query(`UPDATE email_outbox SET next_attempt_at = $2 WHERE id = $1`, [c.id, stamp]);
+      return 'send' as const;
+    });
+    if (verdict === 'lost') return 'retry';
+    if (verdict === 'cancelled') return 'cancelled';
     c.startedAt = stamp;
     if (this.deps.transport.perMinute !== undefined) this.recentSends.push(stamp.getTime());
     let error: ReturnType<typeof classify> | undefined;

@@ -1,4 +1,5 @@
 import type { JobWithMetadata, PgBoss } from 'pg-boss';
+import type { ProtectiveCheck } from '../ops/protective';
 import { uuidv7 } from '../common/uuid7';
 import { QUEUES } from '../worker/queues';
 import { StorageWaitingForKey } from './connector-factory';
@@ -13,13 +14,31 @@ export const STORAGE_CONCURRENCY = 2;
 /** Codes that another attempt cannot fix: the subject is failed at once (spec 5.6). */
 const FINAL_CODES: ReadonlySet<StorageFailureCode> = new Set(['unauthorised', 'forbidden', 'invalid', 'too_large']);
 
-/** `log` takes fixed messages only; never an error object or message. */
-export async function registerStorageWorker(boss: PgBoss, deps: StorageDeps, log: (message: string) => void = (m) => console.error(m)): Promise<void> {
+/** A job fetched while protective read-only mode is on is sent again to start after this long (ops spec 7.3). */
+export const PROTECTIVE_AGAIN_MS = 60_000;
+
+/**
+ * `log` takes fixed messages only; never an error object or message. With `operations`, a job fetched while protective
+ * read-only mode is on is not run (ops spec 7.3, as the AI queue): it is sent again unchanged, to start a minute later,
+ * and no attempt is counted or recorded.
+ */
+export async function registerStorageWorker(
+  boss: PgBoss,
+  deps: StorageDeps,
+  log: (message: string) => void = (m) => console.error(m),
+  operations?: ProtectiveCheck,
+): Promise<void> {
   await boss.work(
     QUEUES.storage,
     { localConcurrency: STORAGE_CONCURRENCY, pollingIntervalSeconds: 0.5, includeMetadata: true },
     async (jobs: JobWithMetadata<StorageJobData>[]) => {
-      for (const job of jobs) await runStorageJob(boss, deps, job, log);
+      for (const job of jobs) {
+        if (operations && (await operations.isProtective())) {
+          await sendAgain(boss, job, job.data, new Date(Date.now() + PROTECTIVE_AGAIN_MS), log);
+          continue;
+        }
+        await runStorageJob(boss, deps, job, log);
+      }
     },
   );
 }

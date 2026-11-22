@@ -1,5 +1,6 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto';
+import { createCipheriv, createDecipheriv, randomBytes } from 'node:crypto';
 import { readFileSync } from 'node:fs';
+import { keyIdOf } from '../common/key-id';
 
 /** Nest provider token for the loaded key: `ProtectedKey | null` (null when the file is unset, missing or invalid). */
 export const PROTECTED_KEY = Symbol('PROTECTED_KEY');
@@ -24,7 +25,7 @@ const NONCE_BYTES = 12;
 const TAG_BYTES = 16;
 
 function fromBytes(key: Buffer): ProtectedKey {
-  const id = createHash('sha256').update(key).digest('hex').slice(0, 16);
+  const id = keyIdOf(key);
   return {
     id,
     encrypt(plain, aad) {
@@ -65,6 +66,15 @@ export function loadProtectedKey(path: string | null, log: (message: string) => 
     return null;
   }
   return fromBytes(bytes);
+}
+
+/** Like loadProtectedKey, but when `required` a missing or unusable key stops the start (KAINOW_REQUIRE_PROTECTED_KEY). */
+export function loadRequiredProtectedKey(path: string | null, required: boolean, log: (message: string) => void = (m) => console.error(m)): ProtectedKey | null {
+  const key = loadProtectedKey(path, log);
+  if (!key && required) {
+    throw new Error('The protected key is required (KAINOW_REQUIRE_PROTECTED_KEY=true) but KAINOW_PROTECTED_KEY_FILE did not give a usable key');
+  }
+  return key;
 }
 
 /** A new random key as raw bytes and its id (used by the CLI). */
