@@ -257,14 +257,27 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     await seedUser(t.pool, 'member@example.org');
     await seedProject(t.pool, { status: 'active', members: [{ userId: adminId, role: 'pm' }] });
   };
-  /** The safeguards (steps 3 to 8): second Administrator, recovery, mailbox, test email, calendar and backups. */
+  /**
+   * Step 8 the sub-project 10a way: a passed full restore drill is recorded, and Kainow ticks the step itself on the
+   * next refresh (a GET of the page). A person cannot tick it.
+   */
+  const passDrill = async () => {
+    await t.pool.query(
+      `INSERT INTO restore_drills (id, backup_run_id, set_name, started_at, finished_at, outcome, duration_seconds, sampled, checks)
+       VALUES ($1, NULL, 'set-test', now(), now(), 'passed', 60, false, '[]')`,
+      [uuidv7()],
+    );
+    assert.equal(step(await get(), 'backups').done, true, 'Kainow ticks step 8 after a passed drill');
+  };
+  /** The safeguards (steps 3 to 8): second Administrator, recovery, mailbox, test email, calendar and backups (by a drill). */
   const completeSafeguards = async () => {
     await seedUser(t.pool, 'second@example.org', 'enterprise_administrator');
     await recordCustodian();
     await queueTestEmail('sent');
-    for (const key of ['recovery', 'mailbox', 'test_email', 'calendar', 'backups']) {
+    for (const key of ['recovery', 'mailbox', 'test_email', 'calendar']) {
       assert.equal((await admin.request('POST', `/go-live/steps/${key}/tick`, {})).status, 200, key);
     }
+    await passDrill();
   };
   const reachClose = async () => {
     await completeSafeguards();
@@ -283,13 +296,20 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
 
   test('every safeguard is needed: with any one of steps 3 to 8 open, the checklist stays open', async () => {
     await reachClose();
-    for (const key of ['recovery', 'mailbox', 'test_email', 'calendar', 'backups']) {
+    for (const key of ['recovery', 'mailbox', 'test_email', 'calendar']) {
       // Reopen one step behind the service's back, as if it had never been done, and check the close waits for it.
       await t.pool.query(`UPDATE golive_checklist SET closed_at = NULL`);
       await t.pool.query(`UPDATE golive_steps SET ticked_at = NULL, ticked_by = NULL WHERE key = $1`, [key]);
       assert.equal((await get()).closedAt, null, key);
       await t.pool.query(`UPDATE golive_steps SET ticked_at = now(), ticked_by = $2 WHERE key = $1`, [key, adminId]);
     }
+    // Step 8 follows the drill: without a passed drill Kainow withdraws its tick and the checklist stays open.
+    await t.pool.query(`UPDATE golive_checklist SET closed_at = NULL`);
+    await t.pool.query(`DELETE FROM restore_drills`);
+    const noDrill = await get();
+    assert.equal(noDrill.closedAt, null, 'backups');
+    assert.equal(step(noDrill, 'backups').done, false, 'backups');
+    await passDrill();
     await t.pool.query(`UPDATE users SET status = 'disabled' WHERE email = 'second@example.org'`);
     await t.pool.query(`UPDATE golive_checklist SET closed_at = NULL`);
     await t.pool.query(`UPDATE golive_steps SET ticked_at = NULL WHERE key = 'second_admin'`);
@@ -303,9 +323,10 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     await t.pool.query(`UPDATE users SET status = 'disabled' WHERE id = $1`, [second]);
     await recordCustodian();
     await queueTestEmail('sent');
-    for (const key of ['recovery', 'mailbox', 'test_email', 'calendar', 'backups']) {
+    for (const key of ['recovery', 'mailbox', 'test_email', 'calendar']) {
       assert.equal((await admin.request('POST', `/go-live/steps/${key}/tick`, {})).status, 200, key);
     }
+    await passDrill();
     await reachLaunch();
     let body = await get();
     assert.equal(body.closedAt, null, 'only one active Administrator: stays open');
@@ -323,9 +344,10 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     await reachLaunch();
     await recordCustodian();
     await queueTestEmail('sent');
-    for (const key of ['recovery', 'mailbox', 'test_email', 'calendar']) await admin.request('POST', `/go-live/steps/${key}/tick`, {});
+    for (const key of ['recovery', 'mailbox', 'test_email']) await admin.request('POST', `/go-live/steps/${key}/tick`, {});
+    await passDrill();
     await t.pool.query(`UPDATE users SET status = 'disabled' WHERE id = $1`, [second]);
-    const last = await admin.request('POST', '/go-live/steps/backups/tick', {});
+    const last = await admin.request('POST', '/go-live/steps/calendar/tick', {});
     assert.equal(last.status, 200);
     assert.equal(last.body.closedAt, null);
     assert.equal(step(last.body, 'second_admin').done, false);
@@ -339,12 +361,13 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     await reachLaunch();
     await recordCustodian();
     await queueTestEmail('sent');
-    for (const key of ['recovery', 'mailbox', 'test_email', 'calendar']) await admin.request('POST', `/go-live/steps/${key}/tick`, {});
+    for (const key of ['recovery', 'mailbox', 'test_email']) await admin.request('POST', `/go-live/steps/${key}/tick`, {});
+    await passDrill();
     const other = await t.pool.connect();
     try {
       await other.query('BEGIN');
       await other.query(`UPDATE users SET status = 'disabled' WHERE id = $1`, [second]);
-      const closing = admin.request('POST', '/go-live/steps/backups/tick', {});
+      const closing = admin.request('POST', '/go-live/steps/calendar/tick', {});
       await new Promise((r) => setTimeout(r, 300));
       await other.query('COMMIT');
       const last = await closing;
@@ -376,8 +399,10 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     await seedUser(t.pool, 'second@example.org', 'enterprise_administrator');
     await recordCustodian();
     await queueTestEmail('sent');
-    for (const key of ['recovery', 'mailbox', 'test_email', 'calendar']) await admin.request('POST', `/go-live/steps/${key}/tick`, {});
-    const last = await admin.request('POST', '/go-live/steps/backups/tick', { note: 'Restore tested' });
+    for (const key of ['recovery', 'mailbox', 'test_email']) await admin.request('POST', `/go-live/steps/${key}/tick`, {});
+    await passDrill();
+    assert.equal((await get()).closedAt, null, 'step 8 alone does not close it');
+    const last = await admin.request('POST', '/go-live/steps/calendar/tick', { note: 'Calendar checked' });
     assert.equal(last.status, 200);
     assert.ok(last.body.closedAt);
   });
@@ -400,7 +425,7 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     const closed = (await t.pool.query(`SELECT closed_at FROM golive_checklist`)).rows[0].closed_at;
     assert.ok(closed);
     const ticked = (await t.pool.query(`SELECT key FROM golive_steps WHERE ticked_at IS NOT NULL AND ticked_by IS NULL ORDER BY position`)).rows.map((r) => r.key);
-    assert.deepEqual(ticked, ['organisation', 'second_admin', 'department', 'users', 'project']);
+    assert.deepEqual(ticked, ['organisation', 'second_admin', 'backups', 'department', 'users', 'project']);
   });
 
   test('refreshing at the same moment from several places ticks each step once', async () => {
