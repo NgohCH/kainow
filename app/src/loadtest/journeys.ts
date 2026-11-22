@@ -67,10 +67,31 @@ export function labelOf(method: string, path: string): string {
   return `${method} ${path.split('?')[0].replace(UUID_PATH, '/:id').replace(/\/versions\/\d+/, '/versions/:n')}`;
 }
 
-/** One request: 2xx is ok, a status in `refusals` is an expected refusal, anything else (or no answer) an error. */
-async function call(ctx: JourneyContext, journey: JourneyName, method: string, path: string, body?: unknown, refusals: number[] = [], who = ctx.me): Promise<any | undefined> {
+/**
+ * The answers a journey step expects when another person got there first, as the routes give them:
+ * - authorise a proposal: already approved is a success (200 with the existing record, created false: a repeated click,
+ *   records.service authoriseThrough / changes AlreadyAuthorised); already rejected is 409 "This proposal was rejected."
+ *   (changes/handlers.ts authoriseProposalHandler.validate);
+ * - reject a proposal: already decided is 409 "Only a proposal waiting for review can be rejected." (rejectProposal);
+ * - change a task's status: a status that moved is 409 "That change is not possible from …" (taskTransition, via
+ *   RecordsService.refusal, which maps any reason not starting "Only " or "Write " to 409).
+ * A 403 or 400 is never expected: the journeys only act where the person's role allows and send the required fields.
+ */
+export const EXPECTED_REFUSALS = {
+  authoriseProposal: [409],
+  rejectProposal: [409],
+  taskStatus: [409],
+} as const satisfies Record<string, readonly number[]>;
+
+/** 2xx is ok, a status in `refusals` is an expected refusal, anything else (or no answer, status 0) an error. */
+export function classify(status: number, refusals: readonly number[] = []): Sample['outcome'] {
+  return status >= 200 && status < 300 ? 'ok' : refusals.includes(status) ? 'refusal' : 'error';
+}
+
+/** One request, recorded with its outcome. */
+async function call(ctx: JourneyContext, journey: JourneyName, method: string, path: string, body?: unknown, refusals: readonly number[] = [], who = ctx.me): Promise<any | undefined> {
   const r = await who.request(method, path, body);
-  const outcome = r.status >= 200 && r.status < 300 ? 'ok' : refusals.includes(r.status) ? 'refusal' : 'error';
+  const outcome = classify(r.status, refusals);
   ctx.record({ journey, label: labelOf(method, path), method, status: r.status, ms: r.ms, outcome });
   return outcome === 'ok' ? r.body : undefined;
 }
@@ -139,8 +160,7 @@ async function write(ctx: JourneyContext): Promise<void> {
     completed: ['reopen', { note }],
   };
   const [action, body] = step[task.status] ?? ['start', {}];
-  // 409: the task moved since the list was read (another virtual person changed it).
-  await call(ctx, 'write', 'POST', `/records/tasks/${task.id}/${action}`, body, [409]);
+  await call(ctx, 'write', 'POST', `/records/tasks/${task.id}/${action}`, body, EXPECTED_REFUSALS.taskStatus);
 }
 
 async function dashboards(ctx: JourneyContext): Promise<void> {
@@ -160,12 +180,11 @@ async function approve(ctx: JourneyContext): Promise<void> {
   const waiting = ((list?.proposals ?? []) as { id: string; kind: string; reviewStatus: string }[]).filter((x) => x.reviewStatus === 'pending');
   const proposal = pick(ctx.rng, waiting);
   if (!proposal) return;
-  // 409: already decided (the journey expects this refusal).
   if (ctx.rng() < 0.65) {
     const body = proposal.kind === 'risk' ? { severity: 'medium' } : proposal.kind === 'decision' ? { rationale: 'Agreed during the load test.' } : {};
-    await call(ctx, 'approve', 'POST', `/proposals/${proposal.id}/authorise`, body, [409]);
+    await call(ctx, 'approve', 'POST', `/proposals/${proposal.id}/authorise`, body, EXPECTED_REFUSALS.authoriseProposal);
   } else {
-    await call(ctx, 'approve', 'POST', `/proposals/${proposal.id}/reject`, { reason: 'Not needed at this stage.' }, [409]);
+    await call(ctx, 'approve', 'POST', `/proposals/${proposal.id}/reject`, { reason: 'Not needed at this stage.' }, EXPECTED_REFUSALS.rejectProposal);
   }
 }
 

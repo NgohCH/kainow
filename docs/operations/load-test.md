@@ -65,7 +65,7 @@ To repeat a measurement, start again from an empty database: a run changes the d
 | Page reads (GET) | p95 under 1 s |
 | Saves (POST/PUT/PATCH/DELETE) | p95 under 2 s |
 | Errors | none, other than the refusals the journey expects |
-| AI queue | 2 places honoured (at most 2 calls open at the fake), none lost, and no request waits more than 5 s in all while a place is free (the allowance covers the job pick-up and the 1 s place poll) |
+| AI queue | 2 places honoured (at most 2 calls open at the fake), none lost and none failed or blocked, and no request waits more than 5 s in all while a place is free (the allowance covers the job pick-up and the 1 s place poll) |
 | Email queue | every email produced during the run is sent within 5 minutes |
 
 Measured results are machine-specific: each is recorded as "measured on <machine>; not a hardware guarantee". Misses are reported to the Product Owner, who decides.

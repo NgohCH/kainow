@@ -112,6 +112,12 @@ describe('load-test report', () => {
     assert.match(md, /\| Page reads \(GET\) \| p95 under 1 s \| [\d,]+ ms \| missed \|/);
     assert.match(md, /\| Saves \(POST\/PUT\/PATCH\/DELETE\) \| p95 under 2 s \| [\d,]+ ms \| missed \|/);
 
+    // Failed or blocked extractions (a seed without a protected key ends every one blocked) are a miss, even with none lost.
+    const failed = aims(result(fast, { ai: { requested: 4, succeeded: 0, notFinished: 0, failed: 4, queueWaitMs: [], runMs: [], slots: 2, maxInFlight: 0, maxIdleSlotWaitMs: 0 } }));
+    assert.equal(failed.find((a) => a.aim === 'AI queue')!.met, false);
+    const oneFailed = aims(result(fast, { ai: { requested: 4, succeeded: 3, notFinished: 0, failed: 1, queueWaitMs: [1000], runMs: [4000], slots: 2, maxInFlight: 2, maxIdleSlotWaitMs: 0 } }));
+    assert.equal(oneFailed.find((a) => a.aim === 'AI queue')!.met, false);
+
     // An idle slot while a request waited (more than the allowance) is a miss even with every run finished.
     const idle = aims(result(fast, { ai: { requested: 2, succeeded: 2, notFinished: 0, failed: 0, queueWaitMs: [20_000], runMs: [4000], slots: 2, maxInFlight: 1, maxIdleSlotWaitMs: 15_000 } }));
     assert.equal(idle.find((a) => a.aim === 'AI queue')!.met, false);

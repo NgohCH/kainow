@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { JOURNEYS, JOURNEY_WEIGHTS, mulberry32, pickJourney } from './journeys';
+import { EXPECTED_REFUSALS, JOURNEYS, JOURNEY_WEIGHTS, classify, mulberry32, pickJourney } from './journeys';
 import { codeFromLog } from './sessions';
 
 describe('load-test journeys', () => {
@@ -36,6 +36,25 @@ describe('load-test journeys', () => {
     const a = mulberry32(7);
     const b = mulberry32(7);
     for (let i = 0; i < 20; i++) assert.equal(pickJourney(a), pickJourney(b));
+  });
+
+  test('already-decided answers are classified as the routes give them', () => {
+    // Authorise an already approved proposal: 200 with the existing record (a repeated click) is a success.
+    assert.equal(classify(200, EXPECTED_REFUSALS.authoriseProposal), 'ok');
+    // Authorise an already rejected one, or reject a decided one: 409 is the expected refusal.
+    assert.equal(classify(409, EXPECTED_REFUSALS.authoriseProposal), 'refusal');
+    assert.equal(classify(409, EXPECTED_REFUSALS.rejectProposal), 'refusal');
+    // A task whose status moved: 409.
+    assert.equal(classify(409, EXPECTED_REFUSALS.taskStatus), 'refusal');
+    // A 202 (more approvers needed) is a success.
+    assert.equal(classify(202, EXPECTED_REFUSALS.authoriseProposal), 'ok');
+    // Never expected: role refusals, missing fields, server errors, no answer.
+    for (const status of [400, 403, 404, 500, 503, 0]) {
+      for (const refusals of Object.values(EXPECTED_REFUSALS)) assert.equal(classify(status, refusals), 'error', `status ${status}`);
+    }
+    // A step with no expected refusals: a 409 is an error.
+    assert.equal(classify(409), 'error');
+    assert.deepEqual(EXPECTED_REFUSALS, { authoriseProposal: [409], rejectProposal: [409], taskStatus: [409] });
   });
 
   test('the sign-in code is the latest one logged for that address', () => {

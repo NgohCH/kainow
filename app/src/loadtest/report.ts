@@ -140,7 +140,7 @@ export function aims(r: RunResult): AimRow[] {
   const saves = percentile(r.samples.filter((s) => s.method !== 'GET').map((s) => s.ms), 0.95);
   const errors = r.samples.filter((s) => s.outcome === 'error').length;
   const ai = r.ai;
-  const aiMet = ai.notFinished === 0 && ai.maxInFlight <= ai.slots && ai.maxIdleSlotWaitMs <= IDLE_SLOT_ALLOWANCE_MS;
+  const aiMet = ai.notFinished === 0 && ai.failed === 0 && ai.maxInFlight <= ai.slots && ai.maxIdleSlotWaitMs <= IDLE_SLOT_ALLOWANCE_MS;
   const emailMax = r.email.sendDelayMs.length ? Math.max(...r.email.sendDelayMs) : null;
   const emailMet = r.email.notSent === 0 && (emailMax === null || emailMax <= EMAIL_LIMIT_MS);
   return [
@@ -149,7 +149,7 @@ export function aims(r: RunResult): AimRow[] {
     { aim: 'Errors', target: 'none, other than expected refusals', measured: `${errors}`, met: errors === 0 },
     {
       aim: 'AI queue',
-      target: `${ai.slots} places honoured, none lost, no wait while a place is free (allowance ${sec(IDLE_SLOT_ALLOWANCE_MS)})`,
+      target: `${ai.slots} places honoured, none lost or failed, no wait while a place is free (allowance ${sec(IDLE_SLOT_ALLOWANCE_MS)})`,
       measured: `${ai.requested} requested, ${ai.succeeded} succeeded, ${ai.failed} failed, ${ai.notFinished} lost; at most ${ai.maxInFlight} at once; longest wait with a free place ${sec(ai.maxIdleSlotWaitMs)}`,
       met: aiMet,
     },
