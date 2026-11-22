@@ -34,7 +34,7 @@ CREATE TABLE updates (
   id                        uuid PRIMARY KEY,
   from_version              text        NOT NULL,
   to_version                text        NOT NULL,
-  tag                       text        NOT NULL,
+  tag                       text        NOT NULL CHECK (tag ~ '^v[0-9]+\.[0-9]+\.[0-9]+$'),  -- also names the staging folder
   commit                    text        NOT NULL,
   tag_object                text,                                  -- set when the tag is verified
   state                     text        NOT NULL CHECK (state IN (
@@ -78,7 +78,8 @@ CREATE TABLE update_steps (
   started_at    timestamptz NOT NULL,
   finished_at   timestamptz,
   outcome       text        NOT NULL CHECK (outcome IN ('running', 'passed', 'failed', 'skipped')),
-  failure_code  text
+  failure_code  text,
+  CHECK ((outcome = 'running') = (finished_at IS NULL))
 );
 CREATE INDEX update_steps_update_idx ON update_steps (update_id, started_at, id);
 

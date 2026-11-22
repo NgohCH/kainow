@@ -7,7 +7,7 @@ export type UpdateState =
 export const OPEN_STATES: readonly UpdateState[] = ['approved', 'preparing', 'ready', 'installing'];
 
 const NEXT: Record<UpdateState, readonly UpdateState[]> = {
-  approved: ['preparing', 'cancelled'],
+  approved: ['preparing', 'failed_before_install', 'cancelled'], // window_missed from the ops sweep (D125)
   preparing: ['ready', 'refused', 'failed_before_install', 'cancelled'],
   ready: ['installing', 'refused', 'failed_before_install', 'cancelled'],
   installing: ['succeeded', 'failed_before_install', 'failed_after_migration', 'failed_needs_attention'],
@@ -19,6 +19,9 @@ const NEXT: Record<UpdateState, readonly UpdateState[]> = {
   recovered: [],
   cancelled: [],
 };
+
+/** Every state, as the 0034 CHECK lists them (schema.db.test compares the two). */
+export const UPDATE_STATES = Object.keys(NEXT) as UpdateState[];
 
 export const canTransition = (from: UpdateState, to: UpdateState): boolean => NEXT[from].includes(to);
 

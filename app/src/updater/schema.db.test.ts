@@ -6,6 +6,7 @@ import { loadDatabaseConfig } from '../config';
 import { runMigrations } from '../db/migrate';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { seedUser } from '../testing/projects';
+import { OPEN_STATES, UPDATE_STATES } from './states';
 
 const migrationsDir = loadDatabaseConfig({ DATABASE_URL: 'x' }).migrationsDir;
 const NOW = new Date('2026-11-22T12:00:00Z');
@@ -86,6 +87,41 @@ describe('updates schema', { skip: SKIP_NO_DB }, () => {
     // Finished: no further change.
     assert.equal(await sqlstate(pool.query(`UPDATE update_steps SET outcome = 'passed' WHERE id = $1`, [sid])), '23001');
     assert.equal(await sqlstate(pool.query(`DELETE FROM update_steps WHERE id = $1`, [sid])), '23001');
+  });
+
+  test('a tag that is not vX.Y.Z is refused (it names the staging folder; final review #23)', async () => {
+    for (const bad of ['v1.0', '1.0.1', 'v1.0.1/../../x', 'v1.0.1 ', 'v1.0.1\n', '../v1.0.1', 'v1.0.1-rc1']) {
+      assert.equal(await sqlstate(update('cancelled', bad)), '23514', JSON.stringify(bad));
+    }
+    await update('cancelled', 'v12.0.10');
+  });
+
+  test('an update step is finished exactly when it is not running (final review #2)', async () => {
+    const id = await update('installing');
+    assert.equal(
+      await sqlstate(pool.query(`INSERT INTO update_steps (id, update_id, step, started_at, outcome) VALUES ($1, $2, 'backup', $3, 'passed')`, [uuidv7(), id, NOW])),
+      '23514',
+    );
+    assert.equal(
+      await sqlstate(
+        pool.query(`INSERT INTO update_steps (id, update_id, step, started_at, finished_at, outcome) VALUES ($1, $2, 'backup', $3, $3, 'running')`, [uuidv7(), id, NOW]),
+      ),
+      '23514',
+    );
+    const sid = uuidv7();
+    await pool.query(`INSERT INTO update_steps (id, update_id, step, started_at, outcome) VALUES ($1, $2, 'backup', $3, 'running')`, [sid, id, NOW]);
+    assert.equal(await sqlstate(pool.query(`UPDATE update_steps SET outcome = 'passed' WHERE id = $1`, [sid])), '23514', 'finished without a time');
+  });
+
+  test('the states CHECK and the updates_one_open index match UpdateState and OPEN_STATES (final review #3)', async () => {
+    const states = (await pool.query(`SELECT pg_get_constraintdef(oid) AS d FROM pg_constraint WHERE conrelid = 'updates'::regclass AND contype = 'c' AND pg_get_constraintdef(oid) LIKE '%state%'`)).rows
+      .map((r) => r.d as string)
+      .find((d) => d.includes("'approved'"));
+    assert.ok(states);
+    const inCheck = [...states!.matchAll(/'([a-z_]+)'::text/g)].map((m) => m[1]).sort();
+    assert.deepEqual(inCheck, [...UPDATE_STATES].sort());
+    const index = (await pool.query(`SELECT pg_get_indexdef('updates_one_open'::regclass) AS d`)).rows[0].d as string;
+    assert.deepEqual([...index.matchAll(/'([a-z_]+)'::text/g)].map((m) => m[1]).sort(), [...OPEN_STATES].sort());
   });
 
   test('operations_state accepts reason update, and still refuses an unknown reason', async () => {

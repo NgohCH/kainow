@@ -14,6 +14,7 @@ const ARROWS: Array<[UpdateState, UpdateState]> = [
   ['failed_after_migration', 'recovered'], ['failed_needs_attention', 'recovered'],
   ['preparing', 'refused'], ['ready', 'refused'], ['preparing', 'failed_before_install'], ['ready', 'failed_before_install'],
   ['approved', 'cancelled'], ['preparing', 'cancelled'], ['ready', 'cancelled'],
+  ['approved', 'failed_before_install'], // window_missed, ended by the ops sweep (D125)
 ];
 
 test('canTransition allows exactly the arrows of the state diagram', () => {
