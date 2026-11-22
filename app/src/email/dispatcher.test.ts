@@ -636,3 +636,69 @@ test('a digest listing a task held since goes again without that task (PO, 18 No
   assert.equal((await row(later)).status, 'cancelled');
   assert.equal((await pool.query(`SELECT 1 FROM email_outbox WHERE replaces = $1`, [later])).rowCount, 0);
 });
+
+// F02 (second review): eligibility and relevance are checked again just before each send, not only when the batch is
+// claimed. The transport is held on the first email of the batch while something changes for the second.
+async function heldBatch(change: (secondUser: string) => Promise<void>, secondRelevance?: EmailRelevance) {
+  const secondUser = await seedUser(pool, `q-${uuidv7().slice(-10)}@example.org`);
+  await pool.query(
+    `INSERT INTO memberships (id, project_id, user_id, role, starts_on) VALUES ($1, $2, $3, 'member', '2026-01-01')`,
+    [uuidv7(), projectId, secondUser],
+  );
+  const first = await queue({ subject: 'First', now: new Date(START), relevance: { kind: 'none', scope: 'project' } });
+  const second = await queue({
+    subject: 'Second',
+    toUserId: secondUser,
+    toAddress: 'second@example.org',
+    now: new Date(START + 1000),
+    relevance: secondRelevance ?? { kind: 'none', scope: 'project' },
+  });
+  const sent: string[] = [];
+  const transport: MailTransport = {
+    async send(m) {
+      if (m.subject === 'First') await change(secondUser);
+      sent.push(m.subject);
+      return { messageId: 'id' };
+    },
+  };
+  const result = await dispatcher(transport).dispatchDue();
+  return { first, second, sent, result };
+}
+
+test('a recipient whose project access is revoked while an earlier email is sending is not sent to', { skip: SKIP_NO_DB }, async () => {
+  const { first, second, sent, result } = await heldBatch(async (u) => {
+    await pool.query(`UPDATE memberships SET revoked_at = now(), revoked_by = $2 WHERE user_id = $1`, [u, adminId]);
+  });
+  assert.deepEqual(sent, ['First']);
+  assert.equal((await row(first)).status, 'sent');
+  const o = await row(second);
+  assert.deepEqual([o.status, o.last_reason], ['cancelled', 'recipient no longer eligible']);
+  assert.deepEqual(await attempts(second), [], 'no send attempt is recorded');
+  assert.deepEqual([result.sent, result.cancelled], [1, 1]);
+});
+
+test('a recipient whose account is disabled while an earlier email is sending is not sent to', { skip: SKIP_NO_DB }, async () => {
+  const { second, sent } = await heldBatch(async (u) => {
+    await pool.query(`UPDATE users SET status = 'disabled' WHERE id = $1`, [u]);
+  });
+  assert.deepEqual(sent, ['First']);
+  assert.equal((await row(second)).last_reason, 'recipient no longer eligible');
+});
+
+test('an email whose task changed while an earlier email was sending is cancelled as no longer relevant', { skip: SKIP_NO_DB }, async () => {
+  const taskId = await makeTask();
+  const { second, sent } = await heldBatch(
+    async () => {
+      await pool.query(`UPDATE tasks SET status = 'completed' WHERE id = $1`, [taskId]);
+    },
+    { kind: 'task', taskId, dueOn: '2026-11-20', reopenCount: 0, scope: 'project' },
+  );
+  assert.deepEqual(sent, ['First']);
+  assert.deepEqual([(await row(second)).status, (await row(second)).last_reason], ['cancelled', 'no longer relevant']);
+});
+
+test('with nothing changed, both emails of the held batch are sent', { skip: SKIP_NO_DB }, async () => {
+  const { sent, result } = await heldBatch(async () => undefined);
+  assert.deepEqual(sent, ['First', 'Second']);
+  assert.equal(result.sent, 2);
+});
