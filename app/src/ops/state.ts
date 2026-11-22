@@ -11,7 +11,7 @@ export const OPERATIONS_STATE_TTL_MS = 5_000;
 
 export interface ProtectiveState {
   protective: boolean;
-  reason: 'low_space' | 'restored_from_backup' | null;
+  reason: 'low_space' | 'restored_from_backup' | 'update' | null;
   since: Date | null;
 }
 

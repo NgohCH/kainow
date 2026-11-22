@@ -12,7 +12,7 @@ import { OrganisationState } from '../organisation/state';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedDepartment, seedProject, seedUser } from '../testing/projects';
-import { PROTECTIVE_MESSAGE } from './protective';
+import { PROTECTIVE_MESSAGE, UPDATE_BANNER, UPDATE_CODE, UPDATE_MESSAGE } from './protective';
 import { OperationsState } from './state';
 
 interface Route {
@@ -91,6 +91,40 @@ describe('protective read-only mode in the API', { skip: SKIP_NO_DB }, () => {
     assert.equal((await t.pool.query(`SELECT count(*)::int AS n FROM projects`)).rows[0].n, before);
     await protective(false);
     assert.notEqual((await pm.request('POST', '/projects', { name: 'New works' })).status, 503, 'off again: not refused');
+  });
+
+  const updating = async (on: boolean) => {
+    await t.pool.query(`UPDATE operations_state SET protective = $1, reason = $2, since = $3, detail = $4`, [on, on ? 'update' : null, on ? t.clock.now() : null, on ? '{"version":"1.0.1"}' : null]);
+    t.app.get(OperationsState).invalidate();
+  };
+
+  test('a POST during update maintenance is 503 update_in_progress with the update message', async () => {
+    await updating(true);
+    const r = await pm.request('POST', '/projects', { name: 'New works' });
+    assert.equal(r.status, 503);
+    assert.deepEqual(r.body, { code: 'update_in_progress', message: UPDATE_MESSAGE });
+    assert.equal(UPDATE_CODE, 'update_in_progress');
+    assert.equal(UPDATE_MESSAGE, 'Kainow is being updated. Nothing you have saved is affected; try again in a few minutes.');
+  });
+
+  test('GET still works during update maintenance', async () => {
+    await updating(true);
+    assert.equal((await pm.request('GET', '/projects')).status, 200);
+    assert.equal((await pm.request('GET', '/auth/me')).status, 200);
+  });
+
+  test('banner endpoint returns the update banner text when the reason is update', async () => {
+    await updating(true);
+    const m = await pm.request('GET', '/operations/banner');
+    assert.equal(m.status, 200);
+    assert.equal(m.body.protective, true);
+    assert.equal(m.body.reason, 'update');
+    assert.equal(m.body.text, UPDATE_BANNER);
+    assert.equal(UPDATE_BANNER, 'Kainow is being updated. You can read; changes are paused until the update finishes.');
+    const a = await admin.request('GET', '/operations/banner');
+    assert.equal(a.body.text, UPDATE_BANNER);
+    const pub = await t.anonymous('GET', '/operations/public-state');
+    assert.deepEqual(pub.body, { protective: true, reason: 'update', text: UPDATE_BANNER });
   });
 
   test('reads still answer', async () => {

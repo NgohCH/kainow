@@ -162,6 +162,19 @@ describe('resume from protective mode', { skip: SKIP_NO_DB }, () => {
     assert.equal((await state()).protective, true);
   });
 
+  test('resume is refused while the reason is update (409), and changes nothing', async () => {
+    await reading(MIN, 50 * GB);
+    await pool.query(`UPDATE operations_state SET reason = 'update', detail = '{"version":"1.0.1"}'`);
+    const resumedBefore = (await pool.query(`SELECT count(*)::int AS n FROM operations_state_changes WHERE action = 'resumed'`)).rows[0].n;
+    const body = await conflict(resume(pool, a1, 'Disk extended', NOW));
+    assert.equal(body.code, 'update_in_progress');
+    assert.match(body.message, /update/i);
+    const s = await state();
+    assert.equal(s.protective, true);
+    assert.equal(s.reason, 'update');
+    assert.equal((await pool.query(`SELECT count(*)::int AS n FROM operations_state_changes WHERE action = 'resumed'`)).rows[0].n, resumedBefore);
+  });
+
   test('a reason is required', async () => {
     await reading(MIN, 50 * GB);
     await assert.rejects(resume(pool, a1, '   ', NOW), BadRequestException);

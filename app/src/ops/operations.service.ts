@@ -12,7 +12,7 @@ import { BOSS_SCHEMA } from '../worker/queues';
 import { OPS_FAILURES, codeMigrationLevel, currentMigrationLevel } from './common';
 import { DRILL_AGAIN_TEXT, drillAgainReason } from './drill-again';
 import { type StorageLevel, levelFor } from './levels';
-import { PROTECTIVE_BANNER } from './protective';
+import { PROTECTIVE_BANNER, UPDATE_BANNER } from './protective';
 import { type OpsSettings, loadOpsSettings } from './settings';
 import { type BackupStatus, INTERRUPTED_AFTER_MS, type RunRow, backupStatus } from './status';
 
@@ -107,7 +107,7 @@ export interface OperationsView {
   growth: GrowthRow[];
   protective: {
     on: boolean;
-    reason: 'low_space' | 'restored_from_backup' | null;
+    reason: 'low_space' | 'restored_from_backup' | 'update' | null;
     /** When the mode started (after a restore: the restore time). */
     since: Date | null;
     /** After a restore only: the time of the backup set that was restored, and its name. Otherwise null. */
@@ -131,7 +131,7 @@ export interface GrowthRow {
   totalBytes: number | null;
 }
 
-export type BannerView = { protective: boolean; admin?: { backups: BackupStatus; storage: StorageLevel; text: string; link: string } };
+export type BannerView = { protective: boolean; reason?: 'update'; text?: string; admin?: { backups: BackupStatus; storage: StorageLevel; text: string; link: string } };
 
 const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
 const SEVERITY: Record<StorageLevel, number> = { normal: 0, unknown: 1, warning: 2, critical: 3 };
@@ -336,7 +336,7 @@ export class OperationsService {
       since: r?.since ?? null,
       setTime: restored ? str(r.detail.setTime) : null,
       setName: restored ? str(r.detail.setName) : null,
-      text: PROTECTIVE_BANNER,
+      text: r?.protective === true && r?.reason === 'update' ? UPDATE_BANNER : PROTECTIVE_BANNER,
     };
   }
 
@@ -363,8 +363,11 @@ export class OperationsService {
 
   /** The banner: protective mode for everyone; backup and storage warnings for Enterprise Administrators only. */
   async banner(isAdmin: boolean): Promise<BannerView> {
-    const protective = (await this.protective()).on;
-    if (!isAdmin) return { protective };
+    const p = await this.protective();
+    const protective = p.on;
+    // Update maintenance carries its own banner text; other protective reasons keep the web's own wording.
+    const update = protective && p.reason === 'update' ? { reason: 'update' as const, text: UPDATE_BANNER } : {};
+    if (!isAdmin) return { protective, ...update };
     const now = this.clock();
     const settings = await loadOpsSettings(this.pool);
     const [backup, storage] = await Promise.all([this.backupSummary(now), this.storage(now, settings)]);
@@ -380,6 +383,6 @@ export class OperationsService {
     if (worst === 'critical') parts.push('Storage: a disk is at its critical level.');
     else if (worst === 'warning') parts.push('Storage: a disk is at its warning level.');
     else if (worst === 'unknown') parts.push('Storage: no recent reading for a disk.');
-    return { protective, admin: { backups: backup.status, storage: worst, text: parts.join(' '), link: OPERATIONS_LINK } };
+    return { protective, ...update, admin: { backups: backup.status, storage: worst, text: parts.join(' '), link: OPERATIONS_LINK } };
   }
 }

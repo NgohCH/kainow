@@ -5,6 +5,7 @@ import type { HttpRequest } from '../auth/auth.guard';
 import { can } from '../auth/permissions';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { PG_POOL } from '../db/database.module';
+import { UPDATE_BANNER } from './protective';
 import { OperationsService } from './operations.service';
 import { OPS_BOUNDS, loadOpsSettings } from './settings';
 import { OpsSettingsService } from './settings.service';
@@ -92,6 +93,7 @@ export class OperationsController {
   @Public()
   @BeforeSetup()
   async publicState() {
-    return { protective: await this.state.isProtective() };
+    const s = await this.state.current();
+    return s.protective && s.reason === 'update' ? { protective: true, reason: 'update', text: UPDATE_BANNER } : { protective: s.protective };
   }
 }
