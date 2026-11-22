@@ -25,14 +25,14 @@ Then install Docker Engine with the Compose plugin inside that Ubuntu (or turn o
 
 ## What you need
 
-- Docker with the Compose plugin (version 24 or later), git, Node.js 20+, `ssh-keygen`, `curl`.
+- Docker Engine with the Compose plugin, at the version INSTALL.md "What you need" requires (24 or later), git, Node.js 20+, `ssh-keygen`, `curl`.
 - Around 4 GB of free disk space for the three builds, and an hour or two (the updater builds images twice).
 - The Kainow source on that host, on the branch under test. The examples assume it is at `$SRC`.
 
 Choose one working folder for everything, and set these in every shell you use for this check:
 
 ```
-export V=/tmp/kainow-verify              # everything lives here and is thrown away at the end
+export V=$HOME/kainow-verify             # everything lives here and is thrown away at the end (not /tmp: the updater's /tmp is a tmpfs)
 export SRC=/path/to/kainow               # the Kainow checkout under test
 mkdir -p "$V"
 ```
@@ -51,7 +51,7 @@ No passphrase, so the release script can sign without a prompt. This key exists 
 
 ```
 git init --bare "$V/origin.git"
-git clone -b "$(git -C "$SRC" rev-parse --abbrev-ref HEAD)" "$SRC" "$V/work"
+git clone -b "$(git -C "$SRC" rev-parse --abbrev-ref HEAD)" "$SRC" "$V/work"   # the branch under test must be checked out in $SRC (not detached) and its changes committed
 cd "$V/work"
 git checkout -B main
 git remote set-url origin "$V/origin.git"
@@ -164,13 +164,13 @@ KAINOW_RELEASE_REPO=example/kainow
 KAINOW_RELEASE_API=http://host.docker.internal:8099
 ```
 
-The last two are the only difference from a normal installation (INSTALL.md says to leave them unset): they point the release check at the stand-in. Add the four updater lines, printed as INSTALL.md "Updates", step 1 gives them:
+The last two are the only difference from a normal installation (INSTALL.md says to leave them unset): they point the release check at the stand-in. If you test in Safari or Firefox over plain http, also add `COOKIE_SECURE=false` (see `.env.example`; Chrome and Edge accept the cookie without it). Append the four updater lines to `.env`, as INSTALL.md "Updates", step 1 gives them (run in `$K`):
 
 ```
-echo "KAINOW_INSTALL_DIR=$(pwd -P)"
-echo "KAINOW_UID=$(stat -c %u .)"
-echo "KAINOW_GID=$(stat -c %g .)"
-echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)"
+echo "KAINOW_INSTALL_DIR=$(pwd -P)" >> .env
+echo "KAINOW_UID=$(stat -c %u .)" >> .env
+echo "KAINOW_GID=$(stat -c %g .)" >> .env
+echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)" >> .env
 ```
 
 Local changes go in `compose.override.yaml`, never `compose.yaml` (the updater refuses a changed tracked file). Two are needed here: the containers must reach the stand-in server on the host, and the updater must see the bare repository at the same path (its `origin` is a local folder, not GitHub). The backup key line goes in once the key exists (B3):
@@ -183,13 +183,18 @@ services:
     extra_hosts: ["host.docker.internal:host-gateway"]
   updater:
     volumes:
-      - /tmp/kainow-verify/origin.git:/tmp/kainow-verify/origin.git:ro
+      - /home/you/kainow-verify/origin.git:/home/you/kainow-verify/origin.git:ro
+```
+
+Write the real value of `$V/origin.git` (print it with `echo "$V/origin.git"`) in both places of the `updater` volume line, in place of `/home/you/kainow-verify/origin.git`: the updater must see the repository at the same path as the host. After B3 creates the backup key, add this to the same file:
+
+```
   ops:
     volumes:
       - ./secrets/kainow-backup.key:/run/secrets/kainow-backup.key:ro
 ```
 
-If you used another value for `$V`, change the path in the `updater` volume to match. Compose merges the lists, so the service's own mounts stay. Check it with `docker compose config -q` (prints nothing when valid; never run it without `-q` where others can see the screen).
+ Compose merges the lists, so the service's own mounts stay. Check it with `docker compose config -q` (prints nothing when valid; never run it without `-q` where others can see the screen).
 
 Build and start, and invite the administrator, as INSTALL.md "Install" steps 2 to 6 say. With `LOG_SIGN_IN_CODES=true` the setup link and the sign-in code are in `docker compose logs api`. Use `admin@example.org`, finish **Set up your organisation** with the domain `example.org` and one department. Saving the starting spend settings (step 4) is not needed for this check.
 
@@ -198,6 +203,7 @@ Build and start, and invite the administrator, as INSTALL.md "Install" steps 2 t
 ```
 sudo mkdir -p /srv/kainow-verify-backups && sudo chown 1000:1000 /srv/kainow-verify-backups
 mkdir -p secrets
+# The host steps below are INSTALL.md "Backups", step 2 (from the app folder, after npm run build); it explains them.
 (cd app && npm ci && npm run build && npm run backup-key -- --create ../secrets/kainow-backup.key)
 docker compose up -d
 docker compose --profile ops run --rm ops node dist/ops/backup-cli.js --kind manual
@@ -293,21 +299,21 @@ git push origin main
 PATH="$V/bin:$PATH" node scripts/release.mjs 0.0.3
 ```
 
-Run a manual backup first if the last one is more than 24 hours old (B3's command). In the browser: **Check now**, then **Approve update** for v0.0.3 with **As soon as possible**. Run the tick by hand until `ready`, then at or after the start time, as in C3.
+Run a manual backup first if the last one is more than 24 hours old (B3's command). In the browser: **Check now**, then **Approve update** for v0.0.3 with **As soon as possible**. Run the tick by hand until `ready`, then at or after the start time, as in C3, but run the tick that installs (the one that will fail) with `2>&1 | tee -a "$V/kainow-ops.log" | grep -F "After a failed update"` appended, as shown in D2, so that the operator line is seen when it is printed.
 
 ### D2. What to confirm after the failed tick
 
-- The tick ends with exit code 1 and the log line (also the one an operator would see in `/var/log/kainow-ops.log` or in cron mail):
+- The failing tick itself (run in D1 in the grep form shown below) ends with exit code 1 and prints the operator line (the one an operator would see in `/var/log/kainow-ops.log` or in cron mail):
 
   ```
   The update to v0.0.3 failed after the database migration started. Kainow is stopped and shows a notice page. Run: docker compose --profile updater run --rm updater node dist/updater/updater-cli.js recover. See INSTALL.md, 'After a failed update'.
   ```
 
-  Check the second form too, the one that is mailed: `docker compose --profile updater run --rm updater node dist/updater/updater-cli.js tick 2>&1 | tee -a "$V/kainow-ops.log" | grep -F "After a failed update"` prints that line.
+  Check it on that same tick, in the form INSTALL.md gives for mail, which writes everything to the log but prints only that line: `docker compose --profile updater run --rm updater node dist/updater/updater-cli.js tick 2>&1 | tee -a "$V/kainow-ops.log" | grep -F "After a failed update"`. Do not expect it from a second tick: the reminder is printed once, then repeated only after 24 hours (`recoveryLineDue` in `app/src/updater/tick.ts`).
 - `curl -i http://127.0.0.1:3000/` answers status 503 with the fixed page "Kainow is unavailable after a failed update. Nothing you saved before the update started has been lost. Please contact your Administrator." (`docker compose --profile updater ps notice` shows the `notice` service).
 - `git -C "$K" describe --tags --exact-match` prints `v0.0.2` (the folder is already back on the previous release).
 - The database is as the failed migration left it: `docker compose exec -T db psql -U kainow -d kainow -Atc "SELECT name FROM schema_migrations ORDER BY name DESC LIMIT 1"` still shows `0035_verify_update_marker.sql`.
-- A tick run a second time, and again after 24 hours, repeats the line (once a day). Not required to wait for the 24 hours; the automated tests cover it.
+- A second tick within the day prints no repeat of the line; it repeats once 24 hours have passed since the failure or the last reminder. Waiting for that is not required; the automated tests cover it.
 
 ### D3. Recover
 
