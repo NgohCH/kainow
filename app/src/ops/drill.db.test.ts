@@ -259,15 +259,18 @@ describe('restore drill', { skip: SKIP_NO_DB }, () => {
     await backup();
     const size = Number((await pool.query('SELECT pg_database_size(current_database())::text AS n')).rows[0].n);
     const need = size * 1.2 + 5 * GB + 2 * GB;
-    const { code, err, row } = await drill([], { statfs: () => ({ total: 10 * TB, free: Math.floor(need) - 1 }) });
+    // The drill measures the database again itself, and the size can move a little between the two readings (autovacuum
+    // can shrink it), so the test keeps a margin either side of the boundary instead of a single byte.
+    const margin = 64 * 1024 * 1024;
+    const { code, err, row } = await drill([], { statfs: () => ({ total: 10 * TB, free: Math.floor(need) - margin }) });
     assert.equal(code, 1);
     assert.equal(row.outcome, 'failed');
     assert.equal(row.failure_code, 'drill_no_space');
     assert.equal(check(row, 'space')?.result, 'failed');
     assert.ok(err.includes(OPS_FAILURES.drill_no_space));
     assert.deepEqual(await drillDatabases(), []);
-    // Exactly enough is enough.
-    const ok = await drill([], { statfs: () => ({ total: 10 * TB, free: Math.ceil(need) }) });
+    // Just enough is enough.
+    const ok = await drill([], { statfs: () => ({ total: 10 * TB, free: Math.ceil(need) + margin }) });
     assert.equal(ok.row.outcome, 'passed');
   });
 
