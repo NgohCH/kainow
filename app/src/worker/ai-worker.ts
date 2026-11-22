@@ -7,6 +7,7 @@ import type { AssistJob } from '../assist/queue';
 import { type ExtractionJob, JOB_OPTIONS } from '../extraction/queue';
 import type { ExtractionRunner, RunOutcome } from '../extraction/runner';
 import { POLICY_BOUNDS } from '../ai/policy';
+import type { ProtectiveCheck } from '../ops/protective';
 import { QUEUES } from './queues';
 
 /**
@@ -17,6 +18,9 @@ export const AI_CONCURRENCY = POLICY_BOUNDS.concurrency[1];
 
 /** A job that waited for a free AI place starts again after this many seconds (spec 6.5). */
 export const WAIT_AGAIN_SECONDS = 30;
+
+/** A job fetched while protective read-only mode is on is sent again to start after this many seconds (spec 7.3). */
+export const PROTECTIVE_AGAIN_SECONDS = 60;
 
 export interface AiRunners {
   extraction: ExtractionRunner;
@@ -42,10 +46,34 @@ function kindOf(data: AiJob): { kind: Kind; id: string } {
  * worker process and the tests. Each runner counts the attempts on its request row (spec 6.6); pg-boss retries are only
  * an upper bound.
  */
-export async function registerAiWorker(boss: PgBoss, runners: AiRunners, pool: Pool, concurrency: number = AI_CONCURRENCY): Promise<void> {
+export async function registerAiWorker(
+  boss: PgBoss,
+  runners: AiRunners,
+  pool: Pool,
+  concurrency: number = AI_CONCURRENCY,
+  operations?: ProtectiveCheck,
+): Promise<void> {
   await boss.work(QUEUES.ai, { localConcurrency: concurrency, pollingIntervalSeconds: 0.5, includeMetadata: true }, async (jobs: JobWithMetadata<AiJob>[]) => {
-    for (const job of jobs) await handle(boss, runners, pool, job);
+    for (const job of jobs) {
+      if (operations && (await operations.isProtective())) await holdForLater(boss, job);
+      else await handle(boss, runners, pool, job);
+    }
   });
+}
+
+/**
+ * Protective read-only mode (spec 7.3): the job is not run. It is sent again unchanged under the same singletonKey to
+ * start a minute later, and this delivery completes, so the queue keeps it and no pg-boss retry is used up. The request
+ * row is never claimed, so it stays queued with its attempts as they were. `resume` is kept exactly as this delivery
+ * would have honoured it: only on a first delivery (see `run`). Chosen over `offWork`, which would need a watcher to
+ * start the queue again and would stop this process noticing Resume until it restarted.
+ */
+async function holdForLater(boss: PgBoss, job: JobWithMetadata<AiJob>): Promise<void> {
+  const { kind, id } = kindOf(job.data);
+  const { resume, ...rest } = job.data;
+  const data = job.retryCount === 0 && resume !== undefined ? { ...rest, resume } : rest;
+  const sent = await boss.send(QUEUES.ai, data, { ...JOB_OPTIONS, singletonKey: id, priority: job.priority, startAfter: PROTECTIVE_AGAIN_SECONDS });
+  if (!sent) throw new Error(`${kind} ${id}: the job queue did not accept the job held for protective mode`);
 }
 
 /**

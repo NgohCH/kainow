@@ -1,6 +1,7 @@
 // The go-live checklist (spec §4): the 12 steps, the automatic checks and the closing rule (tightened by review G01).
 import type { Pool, PoolClient } from 'pg';
 import { uuidv7 } from '../common/uuid7';
+import { backupsStepHolds } from '../ops/drill-again';
 
 export type StepMode = 'auto' | 'confirm' | 'auto_or_skip';
 
@@ -21,7 +22,7 @@ export const STEPS: readonly StepDef[] = [
   { key: 'mailbox', mode: 'confirm', link: 'INSTALL.md, the section on Microsoft 365 email', text: 'Set up the Microsoft 365 sender mailbox and its permissions (INSTALL.md), with an auto-reply saying it is not monitored', explanation: 'Kainow sends its emails from this mailbox; people must not expect replies to be read.' },
   { key: 'test_email', mode: 'confirm', link: '#/deliveries', text: 'Send a test email and check that it arrived', explanation: 'Send a test email, wait until it shows as sent, then check it reached the inbox.' },
   { key: 'calendar', mode: 'confirm', link: '#/notifications-settings', text: "Set the working weekdays and this year's holidays", explanation: 'Notice times follow the working days, so the weekdays and holidays must be right.' },
-  { key: 'backups', mode: 'confirm', link: 'INSTALL.md, the section on Back up', text: 'Configure daily encrypted backups and complete a test restore', explanation: 'A backup is only real once a restore from it has worked.' },
+  { key: 'backups', mode: 'auto', link: 'INSTALL.md, the section on Backups', text: 'Configure daily encrypted backups and complete a test restore', explanation: 'Kainow ticks this once a full restore drill of a successful backup has passed, and unticks it when a new drill is needed.' },
   { key: 'department', mode: 'auto', link: '#/departments', text: 'Create a real department', explanation: 'Projects and people belong to a department.' },
   { key: 'users', mode: 'auto', link: '#/', text: 'Admit real users', explanation: 'At least one person who is not an Enterprise Administrator has accepted their invitation and is Active.' },
   { key: 'project', mode: 'auto', link: '#/', text: 'Launch the first real project', explanation: 'A real project has reached Active. The checklist closes once every step except the optional ones (logos, storage) is done.' },
@@ -84,7 +85,8 @@ export async function conditions(db: Db): Promise<Record<string, boolean>> {
       -- Connection checked (the Administrator's last "Check connection" succeeded) and a source area approved.
       (EXISTS (SELECT 1 FROM storage_settings WHERE last_check_state = 'connected')
         AND EXISTS (SELECT 1 FROM storage_destinations WHERE purpose = 'source_area' AND status = 'approved')) AS storage`);
-  return rows[0] as Record<string, boolean>;
+  // Step 8 (spec 10a 8.1): a passed full drill of a successful set, and no reason to drill again.
+  return { ...(rows[0] as Record<string, boolean>), backups: await backupsStepHolds(db) };
 }
 
 /**
@@ -103,7 +105,7 @@ export async function refreshChecklist(db: Pool, now: Date): Promise<void> {
     }
     const holds = await conditions(c);
     // An automatic tick in the closing set is withdrawn when its condition no longer holds (review G01): for example the
-    // second Administrator was disabled after Kainow ticked the step. Read in this transaction, under the checklist lock,
+    // second Administrator was disabled after Kainow ticked the step, or step 8's drill no longer counts (spec 10a 8.1). Read in this transaction, under the checklist lock,
     // so the close below rests on the current state and not on an old tick.
     const lapsed = STEPS.filter((s) => s.mode === 'auto' && CLOSING_KEYS.includes(s.key) && !holds[s.key]).map((s) => s.key);
     const unticked = (await c.query(

@@ -67,6 +67,30 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['department.restored', 'A retired department was brought back.'],
     ['access_settings.changed', 'Access and records settings were changed, with a reason (D90).'],
   ]),
+  ...audit('Operations', ADMIN, 'operations', [
+    ['ops.settings_changed', 'Operations settings (backup retention, storage levels, safe floor, diagnostic retention) were changed, with a reason.'],
+    ['ops.protective_resumed', 'An Enterprise Administrator resumed normal use after protective read-only mode, with a reason, once the checks passed.'],
+  ]),
+  ...audit('Operations', SYSTEM, 'backup run', [
+    ['ops.backup_succeeded', 'A backup run finished and its set was read back and checked.'],
+    ['ops.backup_failed', 'A backup run failed, with a fixed failure code.'],
+    ['ops.backup_key_changed', 'A backup ran with a new backup key (--new-key); key ids only.'],
+    ['ops.backup_expired', 'Old backup sets and unused stored files were removed after a backup; counts only.'],
+    ['ops.backup_interrupted', 'A backup run still unfinished after 6 hours was marked failed (interrupted) by the sweep.'],
+  ]),
+  ...audit('Operations', SYSTEM, 'storage check', [
+    ['ops.protective_entered', 'Kainow turned on protective read-only mode (the database disk fell below the safe floor, or a restore was made); free bytes only.'],
+    ['ops.storage_level_changed', 'A disk crossed the warning or critical storage level, or fell back to normal; location and percentage only.'],
+  ]),
+  ...audit('Operations', SYSTEM, 'restore drill', [
+    ['ops.restore_drill_passed', 'A restore drill restored a backup set into a temporary database and its checks passed (possibly over the 4-hour target); no secrets.'],
+    ['ops.restore_drill_failed', 'A restore drill failed: a failing check or a fixed failure code; no secrets.'],
+    ['ops.restore_drill_interrupted', 'A restore drill still unfinished after 6 hours was marked failed (interrupted) by the sweep.'],
+  ]),
+  ...audit('Operations', SYSTEM, 'restore', [
+    ['ops.restored_from_backup', 'Kainow was restored from a backup set into a new installation (operator command): the set, its time and the reason; queued emails, jobs and AI work were ended, not repeated.'],
+    ['ops.source_files_restored', 'restore-source-files put stored source files that were missing from the source area back from the backup folder (operator command); counts only.'],
+  ]),
   ...audit('Projects', PERSON, 'project', [
     ['project.created', 'A project was created as a draft.'],
     ['project.edited', 'A project’s details were edited.'],
@@ -312,6 +336,11 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['revoked', 'A leadership grant was revoked, with a reason.'],
   ]),
   ...group('access_settings_changes', 'Organisation', ADMIN, 'access settings', [['changed', 'Access and records settings changed: previous and new values, with a reason.']]),
+  ...group('operations_settings_changes', 'Operations', ADMIN, 'operations settings', [['changed', 'Operations settings changed: previous and new values, with a reason.']]),
+  ...group('operations_state_changes', 'Operations', SYSTEM, 'protective mode', [
+    ['entered', 'Kainow entered protective (read-only) mode, with the reason and detail.'],
+    ['resumed', 'An Enterprise Administrator resumed normal use after protective mode, with a reason.'],
+  ]),
   ...group('resource_line_events', 'Resources', PERSON, 'resource line', [
     ['created', 'A resource line was added to a project.'],
     ['edited', 'A resource line was edited: previous and new values.'],

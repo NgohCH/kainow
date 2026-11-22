@@ -4,6 +4,7 @@ import type { Pool } from 'pg';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
+import { OperationsState } from '../ops/state';
 import { INFORMATION, MSG, STEPS, TOTAL, custodianRecorded, refreshChecklist } from './checklist';
 
 export interface StepView {
@@ -13,7 +14,20 @@ export interface StepView {
 
 @Injectable()
 export class GoLiveService {
-  constructor(@Inject(PG_POOL) private readonly pool: Pool, @Inject(CLOCK) private readonly now: Clock) {}
+  constructor(
+    @Inject(PG_POOL) private readonly pool: Pool,
+    @Inject(CLOCK) private readonly now: Clock,
+    private readonly operations: OperationsState,
+  ) {}
+
+  /**
+   * Kainow's own ticks, made when the page is read. Skipped in protective read-only mode (spec 7.3, GET audit): they are
+   * a convenience the next read after Resume makes anyway, so the page shows the checklist as it stands.
+   */
+  private async refresh(): Promise<void> {
+    if (await this.operations.isProtective()) return;
+    await refreshChecklist(this.pool, this.now());
+  }
 
   /** Only Active Enterprise Administrators; everyone else is told the page does not exist. */
   private async admin(user: AuthUser): Promise<void> {
@@ -24,7 +38,7 @@ export class GoLiveService {
 
   async view(user: AuthUser) {
     await this.admin(user);
-    await refreshChecklist(this.pool, this.now());
+    await this.refresh();
     const closedAt = (await this.pool.query(`SELECT closed_at FROM golive_checklist WHERE id = 1`)).rows[0].closed_at as Date | null;
     const rows = (await this.pool.query(
       `SELECT s.key, s.position, s.ticked_by, u.display_name, s.ticked_at, s.note, s.skipped
@@ -53,7 +67,7 @@ export class GoLiveService {
 
   async summary(user: AuthUser) {
     await this.admin(user);
-    await refreshChecklist(this.pool, this.now());
+    await this.refresh();
     const closed = (await this.pool.query(`SELECT closed_at FROM golive_checklist WHERE id = 1`)).rows[0].closed_at;
     const done = (await this.pool.query(`SELECT count(*)::int AS n FROM golive_steps WHERE ticked_at IS NOT NULL`)).rows[0].n as number;
     return { open: !closed, done, total: TOTAL };

@@ -2,6 +2,7 @@ import type { PgBoss } from 'pg-boss';
 import type { AnalysisTick } from '../analysis/tick';
 import type { EmailDispatcher } from '../email/dispatcher';
 import type { Sweep } from '../notifications/sweep';
+import type { ProtectiveCheck } from '../ops/protective';
 import { QUEUES } from './queues';
 
 export interface ScheduleDeps {
@@ -13,6 +14,14 @@ export interface ScheduleDeps {
   quarantine?: { cleanWaiting(): Promise<number> };
   /** Storage jobs (external outputs spec 5.6): the outbox tick every minute and the daily tick at 02:30 UTC+8. */
   storage?: { sendOutbox(): Promise<number>; daily(): Promise<void> };
+  /**
+   * Protective read-only mode (spec 7.3). While it is on, the sweep tick runs only `opsSweep` (backup status, alert
+   * episodes and missing checks keep going), the analysis and quarantine ticks return at once, and email keeps going so
+   * sign-in codes and urgent notices are still sent. Without it nothing is ever paused (tests that do not care).
+   */
+  operations?: ProtectiveCheck;
+  /** The ops part of the sweep (runOpsSweep), run alone while protective mode is on; Sweep.runIfDue runs it otherwise. */
+  opsSweep?: () => Promise<void>;
   /** Fixed messages only; never an error object or message. */
   log?: (message: string) => void;
 }
@@ -27,6 +36,7 @@ export const STORAGE_DAILY_FAILED = 'The daily storage tick failed; it will run 
 const DAILY_0230 = '30 2 * * *';
 const UTC8 = 'Asia/Kuala_Lumpur';
 export const QUARANTINE_FAILED = 'Cleaning the quarantine cases waiting for the protected key failed; it will run again on the next tick.';
+export const OPS_SWEEP_FAILED = 'The operations checks failed; they will run again on the next tick.';
 
 /**
  * Schedules a tick every minute for the sweep, the email dispatch and the analysis decision, and processes jobs on both queues.
@@ -38,6 +48,7 @@ export const QUARANTINE_FAILED = 'Cleaning the quarantine cases waiting for the 
  */
 export async function registerSchedules(boss: PgBoss, deps: ScheduleDeps): Promise<void> {
   const log = deps.log ?? ((m: string) => console.error(m));
+  const protective = async (): Promise<boolean> => (deps.operations ? deps.operations.isProtective() : false);
 
   await boss.schedule(QUEUES.sweep, EVERY_MINUTE, null, { key: 'tick', singletonKey: 'tick' });
   await boss.schedule(QUEUES.email, EVERY_MINUTE, null, { key: 'tick', singletonKey: 'tick' });
@@ -46,12 +57,21 @@ export async function registerSchedules(boss: PgBoss, deps: ScheduleDeps): Promi
   // A failed run must not make pg-boss retry or crash the worker: the next tick looks at everything again.
   await boss.work(QUEUES.sweep, { localConcurrency: 1 }, async () => {
     try {
+      if (await protective()) {
+        try {
+          await deps.opsSweep?.();
+        } catch {
+          log(OPS_SWEEP_FAILED);
+        }
+        return;
+      }
       await deps.sweep.runIfDue();
     } catch {
       log(SWEEP_FAILED);
     }
   });
   await boss.work(QUEUES.email, { localConcurrency: 1 }, async () => {
+    // Not paused in protective mode: sign-in codes and urgent operations notices must still go out (D114).
     try {
       await deps.dispatcher.dispatchDue();
     } catch {
@@ -64,6 +84,7 @@ export async function registerSchedules(boss: PgBoss, deps: ScheduleDeps): Promi
     await boss.schedule(QUEUES.quarantine, EVERY_MINUTE, null, { key: 'tick', singletonKey: 'tick' });
     await boss.work(QUEUES.quarantine, { localConcurrency: 1 }, async () => {
       try {
+        if (await protective()) return;
         await quarantine.cleanWaiting();
       } catch {
         log(QUARANTINE_FAILED);
@@ -77,7 +98,9 @@ export async function registerSchedules(boss: PgBoss, deps: ScheduleDeps): Promi
     // The daily run can take hours at real provider latency; it runs once (its tasks isolate their own failures), so
     // it is given four hours and never retried the same day.
     await boss.schedule(QUEUES.storageDaily, DAILY_0230, null, { key: 'tick', singletonKey: 'tick', tz: UTC8, expireInSeconds: 4 * 60 * 60, retryLimit: 0 });
+    // Paused in protective mode like the other external work (D112); queued rows wait for Resume.
     await boss.work(QUEUES.storageOutbox, { localConcurrency: 1 }, async () => {
+      if (await protective()) return;
       try {
         await storage.sendOutbox();
       } catch {
@@ -85,6 +108,7 @@ export async function registerSchedules(boss: PgBoss, deps: ScheduleDeps): Promi
       }
     });
     await boss.work(QUEUES.storageDaily, { localConcurrency: 1 }, async () => {
+      if (await protective()) return;
       try {
         await storage.daily();
       } catch {
@@ -92,11 +116,13 @@ export async function registerSchedules(boss: PgBoss, deps: ScheduleDeps): Promi
       }
     });
   }
+  // The document queue has no handler yet; whoever adds one checks protective mode first, as above.
   const analysis = deps.analysis;
   if (analysis) {
     // Overlapping ticks are harmless: a thread already queued or running is skipped by the partial unique index.
     await boss.work(QUEUES.analysis, { localConcurrency: 1 }, async () => {
       try {
+        if (await protective()) return;
         await analysis.run();
       } catch {
         log(ANALYSIS_FAILED);

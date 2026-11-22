@@ -12,6 +12,8 @@ export const ACTIONS = [
   'storage.manage',
   'resources.catalogue.manage',
   'resources.settings.manage',
+  'operations.view',
+  'operations.manage',
 ] as const;
 
 export type Action = (typeof ACTIONS)[number];

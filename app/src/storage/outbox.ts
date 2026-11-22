@@ -50,7 +50,8 @@ export async function queueStorageJob(
 const BATCH = 100;
 
 /**
- * Sends every unsent outbox row as a storage job and marks it sent; urgent rows first. Rows are claimed with SKIP LOCKED,
+ * Sends every unsent outbox row as a storage job and marks it sent; urgent rows first. A row ended by a restore
+ * (`ended_at`, ops/after-restore.ts) is never sent. Rows are claimed with SKIP LOCKED,
  * so two ticks at once send each row once. A row whose key already has a queued job refreshes that job instead
  * (`sendOrRefresh`). Returns how many rows were sent.
  */
@@ -63,7 +64,7 @@ export async function sendStorageOutbox(pool: Pool, boss: PgBoss): Promise<numbe
       await c.query('BEGIN');
       const { rows } = await c.query<{ id: string; job: StorageJob; subject_id: string; urgent: boolean }>(
         `SELECT id, job, subject_id, urgent FROM storage_outbox
-          WHERE sent_at IS NULL
+          WHERE sent_at IS NULL AND ended_at IS NULL
           ORDER BY urgent DESC, created_at, id
           LIMIT $1
           FOR UPDATE SKIP LOCKED`,

@@ -31,6 +31,7 @@ import { AiModule } from './ai/ai.module';
 import { SpendModule } from './spend/spend.module';
 import { DashboardsModule } from './dashboards/dashboards.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { OpsModule } from './ops/ops.module';
 import { LeadershipModule } from './leadership/leadership.module';
 import type { StorageConnectorFactory } from './storage/connector-factory';
 import { OutputsModule } from './outputs/outputs.module';
@@ -102,6 +103,7 @@ export class AppModule {
         LeadershipModule,
         AnalyticsModule,
         StorageModule.register(options.storageConnectors),
+        OpsModule,
       ],
       controllers: [HealthController],
     };

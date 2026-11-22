@@ -211,7 +211,11 @@ For work actually completed during the pause, use the accepted reconciliation ex
 | Project exports allowed | Enterprise Administrator (`organisation.manage`) | Sub-project 9, D106: reason; Access and records page; Off by default. |
 | Approve/install or schedule a release update | Enterprise Administrator | Explicit approval for each release; pre-update backup/compatibility and integrity checks require verified design. |
 | Configure installation-wide AI concurrency | Enterprise Administrator | Default two across all projects and workers; 1 to 10, held in the database so it holds across every worker process; changed with a reason, recorded with the previous and new values. |
-| Configure automatic backups/retention and initiate protected restore | Enterprise Administrator under approved operational procedure | Daily encrypted/30-day default; restore authority never grants ordinary access to credential values or restricted sources. |
+| Configure automatic backups/retention and initiate protected restore | Enterprise Administrator under approved operational procedure | Daily encrypted/30-day default; restore authority never grants ordinary access to credential values or restricted sources. Sub-project 10a (D116): retention is set in Kainow (see the rows below); the backup schedule and restore are server commands run by the server operator, not web controls. |
+| View operations status, backups, drills, storage and protective mode | Enterprise Administrator (`operations.view`) | No project content; backup folder label and key id only, never key material or host paths. |
+| Change operations settings (backup retention, storage alert levels, safe floor, diagnostic retention) | Enterprise Administrator (`operations.manage`) | Reason; bounds of D110, D113–D115; recorded with previous and new values. |
+| Resume from protective mode | Enterprise Administrator (`operations.manage`) | Reason; only when the D114 checks pass. |
+| Run backups, restore drills, restores and storage checks | Server operator under the organisation's procedure (ops commands) | Recorded in Kainow; restore only into an empty installation; never reveals credential values or restricted sources (Matrix §8). |
 
 [Administrator analytics rules](Kainow-V1.0-Administrator-Analytics-and-Reporting-Rules.md) and [architecture](Kainow-V1.0-Application-Architecture-and-Operations-Design.md) contain the accepted detail.
 

@@ -26,3 +26,13 @@ export const BEFORE_SETUP_KEY = 'kainow:before-setup';
 
 /** The route also answers before the organisation is set up. Every other route answers 409 until then. */
 export const BeforeSetup = () => SetMetadata(BEFORE_SETUP_KEY, true);
+
+export const ALLOWED_WHEN_PROTECTIVE_KEY = 'kainow:allowed-when-protective';
+
+/**
+ * The route still changes data while Kainow is in protective read-only mode (spec 7.3): sign-in, sign-out and Resume.
+ * Every other non-GET route is refused with 503 while the mode is on. On a GET route the marker changes nothing (GETs
+ * are never refused); it only records that the handler's side-effect write (an audit record of an export or an
+ * opening) was audited and is kept while the mode is on.
+ */
+export const AllowedWhenProtective = () => SetMetadata(ALLOWED_WHEN_PROTECTIVE_KEY, true);

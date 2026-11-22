@@ -3,6 +3,7 @@ import type { ProjectStatus } from '../projects/matrix';
 import type { AnalyticsFilters } from './filters';
 import { PROBLEM_KEYS, type ProblemsPanel, type ProgressPanel } from './panels.service';
 import type { ResourcesPanel, ResourcesTable } from './resources-panel';
+import type { OperationsPanel } from './operations.service';
 import type { SystemPanel } from './system.service';
 import { TREND_KEYS, TRENDS_NOTE, type TrendKey, type TrendsPanel } from './trends.service';
 
@@ -38,7 +39,7 @@ export function toCsv(meta: Record<string, string>, columns: string[], rows: unk
 // ---- The analytics tables as CSV ------------------------------------------------------------------------------------
 
 /** The panels that can be exported, and their names in the file. */
-export const EXPORT_PANELS = { progress: 'Project progress', problems: 'Project problems', system: 'System problems', trends: 'Trends', resources: 'Resources and finance' } as const;
+export const EXPORT_PANELS = { progress: 'Project progress', problems: 'Project problems', system: 'System problems', trends: 'Trends', resources: 'Resources and finance', operations: 'Operations' } as const;
 
 export const RESOURCES_TABLE_LABELS: Record<ResourcesTable, string> = { lines: 'Resource lines', sharedItems: 'Shared items in overlap', finance: 'Finance by currency' };
 export const RESOURCES_NOTE = 'Counts resource lines and summary finance figures from recorded entries. No spending entries, notes or line text are exported.';
@@ -84,7 +85,7 @@ export const utc8Minute = (iso: string): string => `${new Date(Date.parse(iso) +
 /** The `#` lines: panel, filters, period, measure definitions version, computedAt (UTC+8) and coverage. */
 export function exportMeta(panel: ExportPanel, f: AnalyticsFilters, departmentName: string | null, computedAt: string, table?: ResourcesTable): Record<string, string> {
   const parts: string[] = [];
-  if (panel === 'system') parts.push('department, status, ownership and include archived do not apply (organisation-wide)');
+  if (panel === 'system' || panel === 'operations') parts.push('department, status, ownership and include archived do not apply (organisation-wide)');
   else {
     parts.push(`department: ${departmentName ?? 'all'}`);
     if (panel !== 'trends') parts.push(`status: ${f.statuses.map((s) => STATUS_LABEL[s]).join(', ')}`);
@@ -110,6 +111,7 @@ export type PanelData =
   | { panel: 'progress'; data: ProgressPanel }
   | { panel: 'problems'; data: ProblemsPanel }
   | { panel: 'system'; data: SystemPanel }
+  | { panel: 'operations'; data: OperationsPanel }
   | { panel: 'trends'; data: TrendsPanel }
   | { panel: 'resources'; data: ResourcesPanel; table: ResourcesTable };
 
@@ -170,6 +172,7 @@ export function panelTable(p: PanelData): Table {
       ],
     };
   }
+  if (p.panel === 'operations') return operationsTable(p.data);
   if (p.panel === 'resources') return resourcesTable(p.data, p.table);
   const d = p.data;
   return {
@@ -214,4 +217,32 @@ function resourcesTable(d: ResourcesPanel, table: ResourcesTable): Table {
     ],
     rows,
   };
+}
+
+const STORAGE_NAMES = { database_disk: 'Database disk', backup_disk: 'Backup disk', source_area: 'Source area' } as const;
+const BACKUP_STATUS_TEXT = { healthy: 'Healthy', last_failed: 'Last backup failed', target_exceeded: '24-hour recovery target exceeded', none: 'No backup yet' } as const;
+
+/** The Operations panel as one table: status first, then the counts in the period. Times in UTC+8. */
+function operationsTable(d: OperationsPanel): Table {
+  const at = (v: Date | string | null): string => (v ? utc8Minute(new Date(v).toISOString()) : 'None');
+  const s = d.status;
+  const rows: unknown[][] = [
+    ['Backups', 'Status', BACKUP_STATUS_TEXT[s.backups.status]],
+    ['Backups', 'Last successful backup', at(s.backups.lastSuccess?.finishedAt ?? s.backups.lastSuccess?.startedAt ?? null)],
+    ['Backups', 'Last attempt', at(s.backups.lastAttempt?.startedAt ?? null)],
+    ['Backups', 'Retention (days)', s.backups.retentionDays],
+    ['Backups', 'Drill again', s.backups.drillAgain ?? 'No'],
+    ['Restore drills', 'Last drill', s.lastDrill ? `${s.lastDrill.outcome} at ${at(s.lastDrill.startedAt)}` : 'None'],
+    ...s.storage.locations.map((l) => ['Storage', `${STORAGE_NAMES[l.location]} used %`, l.usedPct === null ? 'Unavailable' : Math.round(l.usedPct * 10) / 10]),
+    ...s.storage.locations.map((l) => ['Storage', `${STORAGE_NAMES[l.location]} level`, l.level]),
+    ['Protective mode', 'On', s.protective.on ? 'Yes' : 'No'],
+    ['Health', 'Migrations current', s.health.migrationsCurrent ? 'Yes' : 'No'],
+    ['Backups in the period', 'Runs', d.period.backups.total],
+    ['Backups in the period', 'Succeeded', d.period.backups.succeeded],
+    ['Backups in the period', 'Failed', d.period.backups.failed],
+    ['Restore drills in the period', 'Drills', d.period.drills.total],
+    ['Restore drills in the period', 'Passed', d.period.drills.passed],
+    ['Restore drills in the period', 'Failed', d.period.drills.failed],
+  ];
+  return { columns: ['Area', 'Measure', 'Value'], rows };
 }

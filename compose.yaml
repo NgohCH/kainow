@@ -4,6 +4,7 @@
 x-kainow: &kainow
   build:
     context: ./app
+    target: runtime
   image: kainow-app:0.0.0
   restart: unless-stopped
   read_only: true
@@ -99,6 +100,40 @@ services:
     # Same two lines as on api (environment KAINOW_PROTECTED_KEY_FILE and the read-only volume); see the note there.
     depends_on:
       migrate: { condition: service_completed_successfully }
+
+  # Backups, the restore drill and the storage check (INSTALL.md, "Backups"). Never starts with `up`: run it with
+  #   docker compose --profile ops run --rm ops node dist/ops/<command>-cli.js
+  # No depends_on, so a restore can run with only `db` started. No ports. It never sends email, only writes outbox rows.
+  ops:
+    <<: *kainow
+    build:
+      context: ./app
+      target: ops
+    image: kainow-ops:0.0.0
+    profiles: [ops]
+    restart: "no"
+    command: ["node", "-e", "console.log('Run a command: node dist/ops/<name>-cli.js')"]
+    environment:
+      <<: *kainow-env
+      KAINOW_BACKUP_DIR: /backups
+      KAINOW_BACKUP_DIR_LABEL: ${KAINOW_BACKUP_DIR:-not set}
+      KAINOW_BACKUP_KEY_FILE: /run/secrets/kainow-backup.key
+      KAINOW_DB_DATA_DIR: /pgdata
+      # Protected key: needed once the protected source area is in use (see the note on api). Same line as there.
+      #   KAINOW_PROTECTED_KEY_FILE: /run/secrets/kainow-protected.key
+    volumes:
+      # The folder must be writable by uid 1000 (the node user); INSTALL.md gives the chown line.
+      # Unset or missing: only `ops` runs fail (the folder is never created for you); other commands are unaffected.
+      - type: bind
+        source: ${KAINOW_BACKUP_DIR:-./kainow-backup-folder-not-set}
+        target: /backups
+        bind: { create_host_path: false }
+      # Only measured, to know how full the database disk is.
+      - kainow-db:/pgdata:ro
+      # Backup key (create with `npm run backup-key -- --create <path>`), then uncomment:
+      #   - ./secrets/kainow-backup.key:/run/secrets/kainow-backup.key:ro
+      # Protected key, same file as on api and worker:
+      #   - ./secrets/kainow-protected.key:/run/secrets/kainow-protected.key:ro
 
 volumes:
   kainow-db:

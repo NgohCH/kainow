@@ -113,15 +113,170 @@ Cross-project search adds migration 0019, which creates the `pg_trgm` extension.
 | Update to a newer copy of the code | `git pull` then `docker compose up -d --build` |
 | Change a setting in `.env` | edit it, then `docker compose up -d` |
 
-## Back up
+## Backups
 
-On Mac or Linux:
+Kainow takes its own backups: a complete copy of the database, encrypted with a backup key, written to a folder you choose that is apart from the running installation. Each run is recorded in Kainow, and a missing or failed backup is never shown as healthy. The server's scheduler (cron) starts the backups; Kainow has no button for them. The commands run in one-shot containers of the `ops` service in `compose.yaml`, which `docker compose up` never starts.
+
+**Real installations run on a Linux server.** The steps below are written for Linux with the Compose plugin. A Windows test computer is covered at the end of this section. **Status: written on 21 November 2026 against the code and its automated tests. These steps have not yet been run end to end on a Linux server, and the low-space protection has not yet been verified on one (see "Disk space and protective read-only mode").**
+
+### 1. Choose the backup folder
+
+Pick a folder that is not on the database's disk: a mounted network share or a second disk. It may be offline at times; a backup then fails visibly (below) and Kainow warns. If the folder is on the database's disk after all, a backup stops with `no_space` before it takes the database disk below the safe floor plus 2 GB, so it never pushes Kainow into protective read-only mode. **Use one backup folder per installation**: never point a test installation and the live one at the same folder, because each would expire the other's backup copies. Set it in `.env`, then give the Kainow container user (uid 1000) ownership of it:
+
+```
+KAINOW_BACKUP_DIR=/srv/kainow-backups
+```
+
+```
+sudo mkdir -p /srv/kainow-backups && sudo chown 1000:1000 /srv/kainow-backups
+```
+
+If `KAINOW_BACKUP_DIR` is not set, or the folder does not exist, only the `ops` commands fail (Docker reports that the bind source path does not exist). Every other `docker compose` command works as before, and Kainow never creates the folder for you. The Operations page shows the folder as written in `.env`, never the path inside the container.
+
+### 2. Create the backup key and keep its recovery copy
+
+The backup key is a 32-byte file kept outside the database, the backups and the protected key. From the `app` folder (after `npm run build`), create it next to `compose.yaml`:
+
+```
+mkdir -p ../secrets
+npm run backup-key -- --create ../secrets/kainow-backup.key
+```
+
+It refuses to overwrite an existing file and prints only the path and a short key id, never the key. If you created it as a user other than uid 1000, make it readable by the container: `sudo chown 1000 ../secrets/kainow-backup.key`.
+
+Then, in `compose.yaml`, uncomment the backup key line under the `ops` service (`./secrets/kainow-backup.key:/run/secrets/kainow-backup.key:ro`). The key is mounted into `ops` only, never into `api` or `worker`. If the protected key is in use (the protected source area, AI keys or quarantined originals), uncomment **both** protected-key lines under `ops` in `compose.yaml`, exactly as they appear there: in `environment`, `KAINOW_PROTECTED_KEY_FILE: /run/secrets/kainow-protected.key`, and in `volumes`, `./secrets/kainow-protected.key:/run/secrets/kainow-protected.key:ro`. With only the mount, `ops` does not know where the key is: the drill reports sealed values as Not tested and `restore` thinks the key is missing.
+
+**Once the protected source area is in use, the protected key is required in `ops`.** The source area is in use as soon as one is approved on **System Settings › Storage** (or files are stored in one). Every backup then also copies the source files: it downloads them through the storage connection, whose client secret is sealed with the protected key, so without the key in `ops` a backup fails with `protected_key_missing`. For the same reason `ops` then needs outbound HTTPS access to Microsoft Graph and its sign-in service, as `worker` has: the provided Compose network allows it; if the server's firewall limits outbound traffic, allow it for `ops` too.
+
+**Keep a recovery copy of the backup key apart from the backups and apart from the protected key's copy**: with the recovery custodian, for example, on a locked USB drive or in a password manager's secure files. A backup without its key is useless, and the key alone gives nothing. Never email the key or put it in the repository. Losing the key means every backup made with it can never be read.
+
+### 3. Make the first backup by hand
+
+With Kainow running (`docker compose up -d`):
+
+```
+docker compose --profile ops run --rm ops node dist/ops/backup-cli.js --kind manual
+```
+
+The first run builds the `ops` image, which takes a few minutes. It prints `run <id> succeeded`, or `run <id> failed <code>` with a fixed explanation. Exit code 0 means succeeded, 1 refused or failed, 2 wrong usage. Output never contains a key, a secret, file content or a database password.
+
+### 4. Schedule it
+
+Put these three lines in the server's crontab (`crontab -e`), exactly as given. `/opt/kainow` is a placeholder: use the folder that holds `compose.yaml`. Times are the server's time. Kainow does not need to know the backup time; it judges freshness against the 24-hour target alone.
+
+```
+# Daily backup at 02:00 server time
+0 2 * * *   cd /opt/kainow && docker compose --profile ops run --rm ops node dist/ops/backup-cli.js --kind daily >> /var/log/kainow-ops.log 2>&1
+# Storage check every five minutes
+*/5 * * * * cd /opt/kainow && docker compose --profile ops run --rm ops node dist/ops/storage-check-cli.js >> /var/log/kainow-ops.log 2>&1
+# Monthly restore drill (recommended), 03:30 on the 1st
+30 3 1 * *  cd /opt/kainow && docker compose --profile ops run --rm ops node dist/ops/restore-drill-cli.js >> /var/log/kainow-ops.log 2>&1
+```
+
+Each line sends everything to `/var/log/kainow-ops.log`, so cron itself mails nothing: **watch that log**, and rely on Kainow's own notices, which email every Enterprise Administrator when a run fails or no backup is younger than 24 hours. If you also want cron to mail someone, put `MAILTO=you@example.org` above the lines and drop `2>&1` from each (so only error output is mailed; the server needs a working mail command, and Docker may print progress lines to the error output). The log is a routine diagnostic: rotate it, for example with a `logrotate` entry `/var/log/kainow-ops.log { daily rotate 30 compress missingok notifempty }`.
+
+The three commands, with their other options:
+
+| Command | Runs | Options |
+| --- | --- | --- |
+| `backup-cli.js` | A backup, then expiry of old backup copies | `--kind daily\|manual\|pre_update` (`manual` when omitted); `--new-key` (see "Changing the backup key") |
+| `storage-check-cli.js` | One storage reading for the database disk, the backup disk and (once in use) the source area | none |
+| `restore-drill-cli.js` | A restore drill (below) | `--set <name>\|latest`, `--keep`, `--sample <n>`, `--drop <kainow_drill_name>` |
+
+Failures say which of these happened, never a raw error: `folder_missing` (the folder is not mounted), `folder_not_writable` (check the `chown` above), `key_missing`, `key_invalid` (the key file is not exactly 32 bytes), `key_changed`, `no_space` (the backup folder's disk is full, or the folder is on the database disk and free space there fell to the safe floor plus 2 GB), `dump_failed` (also when the database copy is still running after 6 hours: it is stopped then), `verify_failed` (the files written did not read back correctly), `source_files_failed` (some source files could not be downloaded from the source area: changed since Kainow stored them, access refused, or the provider unreachable; the output and the Operations page name them by stored-file id). A source file that is simply gone from the library does not fail a backup: Kainow flags it Missing (the Administrators and storage Administrators get a notice) and the run succeeds, saying "n source files already flagged in storage were not copied". For `source_files_failed`: if the provider was unreachable or refused access, check the storage connection on **System Settings › Storage** and run the backup again; if a file was changed in the library, put the original back (from the library's version history, or with `restore-source-files` after it is flagged), or have a storage Administrator remove the changed file so it is flagged Missing. Until then each backup fails and the 24-hour warning shows, `protected_key_missing` (the source area is in use and no protected key is mounted in `ops`), `database_unreachable`, `interrupted` (set by Kainow when a run is still unfinished after 6 hours). A restore drill whose restore is still running after 6 hours is stopped and fails with `drill_database_failed`.
+
+### 5. See the status in Kainow
+
+Enterprise Administrators open **Operations** in the top bar (`#/admin/operations`). It shows the last successful backup, the last attempt, whether the 24-hour target is met (Healthy, Last backup failed, Target exceeded, or No backup yet), the retention, the folder and the key id of the latest backup, the last 30 runs ("Backup size (encrypted)" is the size of the encrypted dump), the restore drills and the storage readings. A warning shows on every Administrator page until a fresh backup succeeds, and when a run fails or no backup is younger than 24 hours every Enterprise Administrator gets one urgent notice, by email and in Kainow, per episode. A new installation stays quiet for its first 24 hours. Existing work continues; updates are refused until a successful backup younger than 24 hours exists.
+
+Retention is set on that page by an Enterprise Administrator, with a reason: 30 days by default, 7 to 365. After each successful backup the same command removes backup copies older than that, except the newest successful backup and the newest pre-update backup, which are always kept. It never removes live data or history, and it never runs after a failed backup.
+
+### 6. The restore drill: what it proves
+
+A backup you have never restored is a guess. The drill restores a backup into a temporary database on the same server (never touching the live one), then checks that:
+
+- every file decrypts and matches its recorded checksum;
+- every table's row count matches the count recorded when the backup was taken;
+- every protected source file's checksum matches (once the source area is in use);
+- the protected key still opens one sealed value of each kind present (AI connection keys, quarantined originals and the storage connection's secret; a kind with none is "Not tested"; a kind present with no protected key mounted fails);
+- the restore took under 4 hours.
+
+It then removes the temporary database and records the result in Kainow. A full drill that passed completes go-live step 8, **Configure daily encrypted backups and complete a test restore**, which Kainow ticks for you. It asks for a new drill ("Drill again") when the backup key changes, when the backup folder changes, and when the source area comes into use after the last drill; the step is unticked until a new drill passes. A sampled drill (`--sample <n>`) is a quick check and does not count. Run one by hand before go-live:
+
+```
+docker compose --profile ops run --rm ops node dist/ops/restore-drill-cli.js
+```
+
+The drill needs free space on the database disk for its temporary database: about the live database's size × 1.2, plus the safe floor, plus 2 GB, and it stops and drops its database if space falls too low. It refuses to run while protective mode is on. `--keep` leaves the temporary database for inspection; drop it with `--drop <name>`. A drill that is refused before it starts records nothing in Kainow (the log has the reason).
+
+**What the drill does not prove.** It does not start Kainow on the restored copy, test email or AI connections, or cover files filed outside Kainow (see below). Its monthly timing on a small database says little about a large one: watch the duration it records.
+
+### 7. Changing the backup key
+
+A backup run refuses with `key_changed` when the key differs from the last successful backup's. To change deliberately, run once with `--new-key`: earlier backups can then be read only with the earlier key, so keep both recovery copies until those backups have expired. Kainow records the change and asks for a new drill.
+
+Source files are kept once per backup key in the backup folder (`kainow/files/<key id>/`), shared by every backup made with that key. After a key change the next backup copies every source file again into the new key's folder; the earlier key's folder is left as it is, so earlier backups still drill and restore their source files with the earlier key. Expect the backup folder to hold both copies until the last backup made with the earlier key has expired; Kainow then removes the earlier key's folder.
+
+### Disk space and protective read-only mode
+
+`storage-check` records free space for the database disk and the backup disk every five minutes, and, once the source area is in use, its size and the provider's quota as the Storage page shows them ("Unavailable" when the provider reports none). An Enterprise Administrator sets, with a reason, the warning level (default 80%, 50 to 95), the critical level (default 90%, above the warning level, up to 99) and the safe floor (default 5 GB free on the database disk, 1 to 1,000 GB). Reaching a level sends one urgent notice per episode, and no reading for 30 minutes shows as a warning.
+
+When free space on the database disk falls below the safe floor, Kainow enters **protective read-only mode** at once: people can still sign in and read everything, every change is refused with "Kainow is read-only for now to protect your data. Nothing you have saved is affected.", background work waits with its queue kept, and backups still run. Nothing is ever deleted to free space. The mode never ends by itself: after you free space, an Enterprise Administrator chooses **Resume normal use** on the Operations page, with a reason, and Kainow accepts it only when a reading from the last 10 minutes shows free space at or above the floor and the health checks pass. **The safe floor has not yet been verified on a real disk**: the check is in `docs/operations/verify-low-space.md` and needs a Linux VM. Until it has been run, treat 5 GB as a proposal, and leave plenty of headroom on the database disk.
+
+The safe floor must stay below the database disk's free space: a change to a floor at or above the free space in the latest reading (from the last 30 minutes) is refused, because it would make Kainow read-only at once.
+
+**Read-only and Resume keeps failing because the floor is too high.** If the floor was set at or above the free space the disk can ever reach (for example before a reading existed), Resume never passes, and the setting cannot be changed in Kainow while the mode is on. Lower the floor on the server, in the installation's project folder. Replace `admin@example.org` with an Enterprise Administrator's sign-in address (recorded as the person who made the change) and `5` with the new floor in GB, below the free space shown on the Operations page:
+
+```
+docker compose exec -T db psql -U kainow -d kainow -v ON_ERROR_STOP=1 <<'SQL'
+DO $$
+DECLARE
+  admin uuid;
+  prev jsonb;
+BEGIN
+  SELECT id INTO STRICT admin FROM users WHERE lower(email) = lower('admin@example.org') AND role = 'enterprise_administrator';
+  SELECT jsonb_build_object('backupRetentionDays', backup_retention_days, 'storageWarningPct', storage_warning_pct,
+                            'storageCriticalPct', storage_critical_pct, 'safeFloorGb', safe_floor_gb,
+                            'diagnosticRetentionDays', diagnostic_retention_days)
+    INTO STRICT prev FROM operations_settings;
+  UPDATE operations_settings SET safe_floor_gb = 5;
+  INSERT INTO operations_settings_changes (id, actor_id, at, reason, previous, next)
+  VALUES (gen_random_uuid(), admin, now(), 'Safe floor lowered on the server: it was above the free space, so Kainow could not resume',
+          prev, prev || jsonb_build_object('safeFloorGb', 5));
+END $$;
+SQL
+```
+
+It changes the floor and writes the change, with its reason, to the settings history in one step; if the address is not an Enterprise Administrator's, nothing changes. Wait for the next storage check (up to five minutes), then choose **Resume normal use**.
+
+Routine diagnostics retention (default 30 days, 7 to 365, set on the same page) covers the storage readings. The job-queue archive is not governed by it: the job queue removes its own archive after a fixed 7 days. The backup log `/var/log/kainow-ops.log` is the server's own file, which Kainow never rotates: rotate it with `logrotate` (see "Schedule it"). Container logs are rotated by Docker: three files of 10 MB per service.
+
+### What a backup does not cover
+
+- Files filed outside Kainow (external project deliverables) need the organisation's own backup. The database keeps their references.
+- Anything saved after the last backup (up to 24 hours at the default schedule).
+- The protected key and the backup key: keep their recovery copies (above and "Protected key").
+- The `.env` file: keep your own copy of your settings, apart from the backups.
+
+### Windows test computer
+
+Real installations run on Linux. On a Windows test computer, the matching Task Scheduler action for the daily backup is one line (change `C:\kainow` to your Kainow folder, and set `KAINOW_BACKUP_DIR` in `.env` to a folder path such as `C:/kainow-backups`):
+
+```
+schtasks /Create /SC DAILY /ST 02:00 /TN "Kainow backup" /TR "cmd /c cd /d C:\kainow && docker compose --profile ops run --rm ops node dist/ops/backup-cli.js --kind daily >> C:\kainow\kainow-ops.log 2>&1"
+```
+
+The other two use the same command with `storage-check-cli.js` and `/SC MINUTE /MO 5`, and with `restore-drill-cli.js` and `/SC MONTHLY /D 1 /ST 03:30`. The log redirection here is run by `cmd` and writes text only.
+
+**Line endings and files.** In Windows PowerShell 5.1 do **not** use `>` or `>>` for any command that writes a file you need to keep intact: PowerShell rewrites the output as text and corrupts a binary file such as a dump. Let the container or the database write the file, and copy it out.
+
+A plain, unencrypted dump of the database, for a one-off test copy only (it is not a Kainow backup: it is not recorded, not encrypted and not checked). On Mac or Linux:
 
 ```
 docker compose exec -T db pg_dump -U kainow -Fc kainow > kainow-backup-$(date +%F).dump
 ```
 
-In Windows PowerShell do **not** use `>` to save the dump: Windows PowerShell 5.1 rewrites the file as text and corrupts it. Let the database write the file and copy it out instead:
+In Windows PowerShell:
 
 ```
 docker compose exec -T db sh -c "pg_dump -U kainow -Fc kainow -f /tmp/kainow.dump"
@@ -129,7 +284,54 @@ docker compose cp db:/tmp/kainow.dump "kainow-backup-$(Get-Date -Format yyyy-MM-
 docker compose exec -T db rm /tmp/kainow.dump
 ```
 
-This holds everything: notes, original files, proposals, decisions, the audit trail and AI spend records. Keep it somewhere other than this computer. **Restoring from a backup has not been rehearsed** (the full restore drill is deferred to January), so treat the backup as unproven until you have restored one into a spare copy.
+A plain dump holds everything (notes, original files, proposals, decisions, the audit trail, AI spend records) in the clear: keep it somewhere safe, other than this computer.
+
+## Restore from a backup
+
+For a real disaster: the server or the database is lost and you need Kainow back from the backup folder. A restore goes into a **new, empty installation only**; it never overwrites a database, and a failed live database is replaced by a new installation. You need the backup folder, the backup key's recovery copy and (if AI keys, quarantined originals or the source area were in use) the protected key's recovery copy. Try the steps on a spare machine before you need them.
+
+1. **Start the new installation's settings.** Make a new Compose project as in "Going live" (steps 1 and 2: stop the old installation, name a new project in `.env`). In `.env` set `KAINOW_BACKUP_DIR` to the backup folder. Put the recovery copies of the backup key (and the protected key) in `secrets/`, and uncomment their mounts under `ops` in `compose.yaml` (`./secrets/kainow-backup.key:/run/secrets/kainow-backup.key:ro`, and `./secrets/kainow-protected.key:/run/secrets/kainow-protected.key:ro`). For the protected key, also uncomment the `environment` line `KAINOW_PROTECTED_KEY_FILE: /run/secrets/kainow-protected.key` under `ops`; without it `restore` reports that no protected key is mounted.
+2. **Start only the database:**
+
+   ```
+   docker compose up -d db
+   ```
+
+3. **Run the restore.** Use `latest`, or the name of one folder under `kainow/sets/`; the reason is recorded:
+
+   ```
+   docker compose --profile ops run --rm ops node dist/ops/restore-cli.js --set latest --reason "Server lost; restoring from backup"
+   ```
+
+   It refuses unless the database is empty. Before it restores, it checks the backup as the drill does (key, checksums, that the backup is not from a newer Kainow, enough free space), restores in one transaction, compares the row counts, and then puts Kainow into protective read-only mode with the backup's time recorded. It prints what happened, which you must read: **Kainow was restored from the backup taken at the time shown. Everything after that time is lost, including access changes: check People, grants and Administrators before resuming. Queued emails and jobs were not sent.**
+4. **Start Kainow:**
+
+   ```
+   docker compose up -d --build
+   ```
+
+   `migrate` brings an older backup up to the current version while the mode is on, and the worker starts with nothing to replay.
+5. **Install the crontab, then sign in and resume.** On a new server, first put the crontab lines from "Backups" (step 4, "Schedule it") in place: Resume needs a storage check from the last 10 minutes, and nothing runs one until the crontab does. Wait for the first check (up to five minutes). Everyone is signed out (sessions and unused sign-in codes are gone, and setup and recovery links are expired). An Enterprise Administrator signs in (sign-in works in protective mode), reviews People, grants and Administrators, and chooses **Resume normal use** on the Operations page, with a reason. Every Enterprise Administrator has an urgent notice about the restore.
+
+**What the restore does not repeat.** Emails that were queued show "Not sent — restored from backup" in the delivery history. An email that was being sent when the backup was taken shows as uncertain, marked as a possible duplicate: the old installation very probably sent it, so resend it only if you know it was not. Notices still waiting for their email (a daily email, someone away) stay in Kainow but are not emailed, and the day's scheduled digest is not sent on the day of the restore: the old installation may have sent them after the backup. Queued AI, analysis, extraction and storage work ends with "Not run — restored from backup", and AI spend reserved for it stays counted as uncertain. An output that was being filed shows "Filing failed — Not run — restored from backup" (use Try again); source files that were waiting to be stored are stored by Kainow's daily storage task after you resume. Quarantine cleaning waits until you resume, then runs. Nothing else is sent or filed again on its own: decide what to repeat once you have resumed.
+
+**Protected key.** Without the protected key's recovery copy, sealed AI keys and the storage secret cannot be opened: the restore prints a reminder, and Kainow shows the same warning. Mount it and restart `api` and `worker`.
+
+**Source files.** Files in the managed source area stay where they are; the restore does not touch them. If that area was lost as well (the library deleted, or files removed from it), approve the source area to use on **System Settings › Storage** (the same one once it is back, or a new one), then, with Kainow started and the protected key mounted in `ops`, run:
+
+```
+docker compose --profile ops run --rm ops node dist/ops/restore-source-files-cli.js
+```
+
+It looks up every stored source file at its recorded place. Each one that is missing there is put back from the backup folder (`kainow/files/`) into the approved source area, in its project, source and version folder; its content is checked against the SHA-256 Kainow recorded, and its reference is updated (the old place is kept in the file's move history). Files the backup folder does not hold (stored after the last backup, or never copied) are listed by stored-file id: their working text is still in Kainow, but their original must come from elsewhere. Exit code 0 means every missing file was put back (or none was missing), 1 that some were not, or that the command was refused. You can run it again; it only acts on files still missing. It works while Kainow is read-only after the restore.
+
+**If the restore is interrupted or fails** once it has started (power loss, a full disk, a message beginning "The restore ... " or "Row counts differ"), the target database may be half-restored and **must not be used**. Do not start Kainow on it. Drop it and recreate it empty, then run step 3 again:
+
+```
+docker compose exec -T db psql -U kainow -d postgres -c "DROP DATABASE kainow WITH (FORCE)" -c "CREATE DATABASE kainow OWNER kainow"
+```
+
+**Run this only in the new installation's own project folder** (check `docker compose ls` and `COMPOSE_PROJECT_NAME` in `.env` first): it deletes the whole database of that project, and a wrong folder would destroy a live installation. (If the project's database name or user differ in `compose.yaml`, use those.) This is the only supported repair: the restore itself refuses a database that already holds tables.
 
 ## Set up AI
 
@@ -166,7 +368,7 @@ Without the key (and without `KAINOW_REQUIRE_PROTECTED_KEY=true`), nothing break
 
 **Do not log SQL statements with their parameters on the database server.** The reported text travels to the database as bound parameters of the cleaning statements, so statement logging or slow-query logging that includes parameters would write it to the database server's log. Leave `log_statement` at `none` (or `ddl`), and set `log_parameter_max_length = 0` and `log_parameter_max_length_on_error = 0` on the database server.
 
-**What "removed from future backups" means.** Cleaning replaces the stored values, but PostgreSQL keeps the old row versions on disk (dead tuples) and in its write-ahead log until vacuum and log recycling remove them. A logical backup (`pg_dump`, as in "Back up" above) taken after the report is clean. A physical backup (a copy of the database files or of the write-ahead log) taken soon after a report can still hold the old values. If you take physical backups, run `VACUUM` on the affected tables after a report (`docker compose exec -T db psql -U kainow -d kainow -c "VACUUM"` vacuums them all) before the next one.
+**What "removed from future backups" means.** Cleaning replaces the stored values, but PostgreSQL keeps the old row versions on disk (dead tuples) and in its write-ahead log until vacuum and log recycling remove them. A logical backup (`pg_dump`, as in "Backups" above) taken after the report is clean. A physical backup (a copy of the database files or of the write-ahead log) taken soon after a report can still hold the old values. If you take physical backups, run `VACUUM` on the affected tables after a report (`docker compose exec -T db psql -U kainow -d kainow -c "VACUUM"` vacuums them all) before the next one.
 
 ## Remove everything
 
@@ -258,7 +460,10 @@ The command refuses, and changes nothing, when the reason is missing, when Kaino
 - The database has no published port and is reachable only by the other containers.
 - The server and worker run as a non-root user, on a read-only filesystem, with no extra Linux capabilities.
 - Before real use, appoint a second Enterprise Administrator and record the recovery custodian (see "Recovery custodian"). If every Administrator is locked out, the custodian restores access from the command line with `recover-admin`; this does not restore project roles.
-- Updates are manual (`git pull`, rebuild). An in-app updater is deferred to January.
+- Backups are real and checked: a daily encrypted copy of the database goes to a folder apart from the installation, every run is recorded in Kainow, and a failed or missing backup is never shown as healthy (see "Backups"). The restore drill proves a backup restores: it decrypts, matches every table's row count, checks the files and the protected key, and times the restore against the 4-hour target. A restore into a new installation is described under "Restore from a backup". Both are only as good as the schedule you set up and the key recovery copies you keep.
+- Kainow stops accepting changes before the database disk fills (protective read-only mode, see "Disk space and protective read-only mode"). That safe floor has not yet been verified on a real disk.
+- Up to 24 hours of work can be lost in a disaster (the backup interval), and access changes made after the backup are not restored: after a restore, check People, grants and Administrators before resuming.
+- Updates are manual (`git pull`, rebuild) until sub-project 10b brings the in-app updater. Take a backup first: `docker compose --profile ops run --rm ops node dist/ops/backup-cli.js --kind manual`.
 
 ## Microsoft 365 email
 
