@@ -5,7 +5,7 @@
 **Goal:** Daily encrypted backups run from the server, a restore drill that proves them, protective read-only mode before the database disk fills, and an Operations page for Enterprise Administrators.
 
 **Architecture:**
-- **Ops commands.** New code lives in `app/src/ops/`, as plain Node commands (the `recover-admin` two-layer pattern) built into a new Docker target `ops`. The server's cron runs them in one-shot containers. Each command records its result in new tables in migration `0032_operations.sql`.
+- **Ops commands.** New code lives in `app/src/ops/`, as plain Node commands (the `recover-admin` two-layer pattern) built into a new Docker target `ops`. The server's cron runs them in one-shot containers. Each command records its result in new tables in migration `0033_operations.sql`.
 - **Reading and acting on the results.** The API reads those tables for status, banners and the Operations page. A cached operations state drives a refusal in `AuthGuard` and a pause in the worker. The sweep raises the episodes that a missing command cannot raise itself.
 
 **Tech Stack:** NestJS 12, PostgreSQL 16 (`pg_dump`, `pg_restore`, `psql` version 16 client tools), pg-boss, Node `crypto` (AES-256-GCM), React web, `node:test`.
@@ -15,7 +15,7 @@
 ## Global Constraints
 
 **Numbers and delivery**
-- Migration `0032_operations.sql`; Decision Register D109–D116 (D117–D118 reserved); Configuration Catalogue C93–C99. Sub-project 9 owns 0031, D100–D108 and C85–C92.
+- Migration `0033_operations.sql`; Decision Register D109–D116 (D117–D118 reserved); Configuration Catalogue C93–C99. Sub-project 9 owns 0031, D100–D108 and C85–C92.
 - One PR, opened only after sub-project 9 is on main. Tasks 1–14 build from main; Task 15 is built after rebasing onto main with 9 merged.
 
 **Rules carried over from earlier sub-projects**
@@ -71,7 +71,7 @@
 ## File structure
 
 ```
-app/migrations/0032_operations.sql                 all 10a schema (Task 1)
+app/migrations/0033_operations.sql                 all 10a schema (Task 1)
 app/src/ops/settings.ts, settings.service.ts       operations settings (Task 1)
 app/src/ops/crypto.ts                              KNBK1 chunked encryption (Task 2)
 app/src/ops/backup-key-cli.ts                      backup key file (Task 2)
@@ -97,7 +97,7 @@ app/src/ops/source-files.ts, restore-source-files-cli.ts   after sub-project 9 (
 ### Task 1: Schema, operations settings and permissions
 
 **Files:**
-- Create: `app/migrations/0032_operations.sql`, `app/src/ops/settings.ts`, `app/src/ops/settings.service.ts`, `app/src/ops/settings.test.ts`, `app/src/ops/settings.db.test.ts`
+- Create: `app/migrations/0033_operations.sql`, `app/src/ops/settings.ts`, `app/src/ops/settings.service.ts`, `app/src/ops/settings.test.ts`, `app/src/ops/settings.db.test.ts`
 - Modify: `app/src/auth/permissions.ts` (add `'operations.view'`, `'operations.manage'`), `app/src/analytics/catalogue.ts`
 
 **Interfaces:**

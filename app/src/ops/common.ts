@@ -120,7 +120,7 @@ export async function withBackupLock<T>(
 
 const MIGRATIONS_DIR = join(__dirname, '..', '..', 'migrations');
 
-/** The highest applied migration, by name as recorded (for example 0032_operations.sql). */
+/** The highest applied migration, by name as recorded (for example 0033_operations.sql). */
 export async function currentMigrationLevel(db: Pick<Pool, 'query'>): Promise<string> {
   const r = await db.query('SELECT max(name) AS level FROM schema_migrations');
   return (r.rows[0]?.level as string | null) ?? '';

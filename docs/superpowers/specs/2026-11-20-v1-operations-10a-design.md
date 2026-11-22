@@ -3,7 +3,7 @@
 **Date:** 20 November 2026
 **Status:** Approved by the Product Owner on 20 November 2026, including the D110, D113–D115 bounds and the measured aims.
 **Builds on:** `main` at a33351c (sub-projects 1–8 merged). Branch `TheLord/vigilant-hawking-7ee526`. Sub-project 9 (external outputs and the managed source area) is being built in parallel on `TheLord/subproject-9-external-outputs-56227e` and is not merged.
-**Reserved numbers:** migration `0032_operations.sql`; Decision Register D109–D118; Configuration Catalogue C93–C104. Sub-project 9 holds 0031, D100–D108 and C85–C92. Sub-project 10b (updater, release signing, load test, supported browsers) follows this one and takes the numbers after whatever 10a uses.
+**Reserved numbers:** migration `0033_operations.sql`; Decision Register D109–D118; Configuration Catalogue C93–C104. Sub-project 9 holds 0031, D100–D108 and C85–C92. Sub-project 10b (updater, release signing, load test, supported browsers) follows this one and takes the numbers after whatever 10a uses.
 **Authority:**
 - Intent Card "Accepted runtime direction" (daily encrypted backups, 30-day retention, 24-hour/4-hour targets "require actual verification") and its managed-sources paragraph (protective low-space behaviour).
 - Product Summary §19 and §20.
@@ -442,7 +442,7 @@ In each case go-live step 8 is unticked until a new drill passes.
 
 **Restoring sub-project 9's files:** restore into the same installation's own database is not offered. A failed live database is replaced by a new installation. This keeps "never overwrites" absolute.
 
-## 9. Data model (migration `0032_operations.sql`)
+## 9. Data model (migration `0033_operations.sql`)
 
 Sketch only; the builder fixes exact names, indexes and append-only triggers in the project's style.
 
@@ -491,7 +491,7 @@ Other changes:
 - Email outbox status gains `not_sent_restored`, and notification kinds are free text.
 - Go-live: `UPDATE golive_steps` is not needed; the step mode lives in `checklist.ts`.
 - Each listed order sorts stably: `ORDER BY started_at DESC, id DESC` and `ORDER BY at DESC, id DESC`, never by uuid alone.
-- **Sub-project 9 overlap.** Its `0031` may also alter email outbox or notification constraints. Whichever merges second keeps both changes. This branch's migration is `0032`, so it runs after `0031` once both are on main. If this branch merges first, `0031` must still apply cleanly after `0032`. The builder checks the outbox status CHECK on both sides and writes the union.
+- **Sub-project 9 overlap.** Its `0031` may also alter email outbox or notification constraints. Whichever merges second keeps both changes. This branch's migration is `0033` (renumbered from the reserved `0032`, which a sub-project 9 follow-up took first), so it runs after `0031` and `0032`. If this branch merges first, `0031` must still apply cleanly after `0032`. The builder checks the outbox status CHECK on both sides and writes the union.
 
 ## 10. Screens
 

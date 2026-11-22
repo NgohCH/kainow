@@ -146,7 +146,7 @@ It can be run again on the same database (each run adds fresh destinations and o
 
 ## Operations: backups, restore drill and storage protection (V1.0 sub-project 10a)
 
-Design: [`docs/superpowers/specs/2026-11-20-v1-operations-10a-design.md`](../docs/superpowers/specs/2026-11-20-v1-operations-10a-design.md); decisions D109 (backups), D110 (retention), D111 (status and failures), D112 (restore drill and restore), D113 (storage monitoring), D114 (protective read-only mode), D115 (routine diagnostics) and D116 (operations settings and authority). Operator steps are in [`INSTALL.md`](../INSTALL.md), "Backups" and "Restore from a backup". Code is in `src/ops/`, migration `0032_operations.sql`.
+Design: [`docs/superpowers/specs/2026-11-20-v1-operations-10a-design.md`](../docs/superpowers/specs/2026-11-20-v1-operations-10a-design.md); decisions D109 (backups), D110 (retention), D111 (status and failures), D112 (restore drill and restore), D113 (storage monitoring), D114 (protective read-only mode), D115 (routine diagnostics) and D116 (operations settings and authority). Operator steps are in [`INSTALL.md`](../INSTALL.md), "Backups" and "Restore from a backup". Code is in `src/ops/`, migration `0033_operations.sql`.
 
 **The commands** run by the server's cron (not by the API or worker) in one-shot containers of the Compose service `ops`. The service has the profile `ops`, so `docker compose up` never starts it; run a command with `docker compose --profile ops run --rm ops node dist/ops/<name>-cli.js`. Exit codes: 0 succeeded, 1 refused or failed, 2 usage. Output is fixed text and never holds a key, secret, file content, connection string or host path.
 
