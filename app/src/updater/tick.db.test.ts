@@ -279,8 +279,15 @@ describe('the updater tick', { skip: SKIP_NO_DB }, () => {
       assert.equal(await runUpdaterCli(['tick'], failing.d), 1);
     });
 
-    test('recover is not available yet; anything else is usage (exit 2)', async () => {
-      for (const argv of [['recover'], ['recover', '--yes'], [], ['tock'], ['tick', 'extra']]) {
+    test('recover goes to the recovery command with its own arguments; anything else is usage (exit 2)', async () => {
+      const got: string[][] = [];
+      const recover = async (args: string[]) => (got.push(args), 7);
+      for (const argv of [['recover'], ['recover', '--yes']]) {
+        const { d } = deps();
+        assert.equal(await runUpdaterCli(argv, { ...d, recover }), 7, argv.join(' '));
+      }
+      assert.deepEqual(got, [[], ['--yes']]);
+      for (const argv of [[], ['tock'], ['tick', 'extra'], ['recover']]) {
         const { d, lines } = deps();
         assert.equal(await runUpdaterCli(argv, d), 2, argv.join(' '));
         assert.equal(lines.length, 1);

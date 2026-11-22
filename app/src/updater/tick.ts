@@ -227,20 +227,16 @@ export async function runTick(deps: TickDeps): Promise<{ did: TickDid }> {
 
 export const UPDATER_TEXT = {
   usage: 'Usage: node dist/updater/updater-cli.js tick | recover [--yes]',
-  recoverNotYet: 'The recover command is not available in this version.',
   busy: 'Another updater tick is running; this one stops.',
   databaseUnreachable: 'The updater could not reach the database.',
 } as const;
 
 /**
  * `updater-cli.js tick | recover [--yes]`. Exit 0 done (including busy and nothing to do),
- * 1 the step failed or the database could not be reached, 2 usage.
+ * 1 the step failed or the database could not be reached, 2 usage. `recover` (recover.ts) checks its own arguments.
  */
-export async function runUpdaterCli(argv: string[], deps: TickDeps): Promise<number> {
-  if (argv[0] === 'recover' && argv.slice(1).every((a) => a === '--yes') && argv.length <= 2) {
-    deps.log(UPDATER_TEXT.recoverNotYet);
-    return 2;
-  }
+export async function runUpdaterCli(argv: string[], deps: TickDeps & { recover?: (args: string[]) => Promise<number> }): Promise<number> {
+  if (argv[0] === 'recover' && deps.recover) return deps.recover(argv.slice(1));
   if (argv.length !== 1 || argv[0] !== 'tick') {
     deps.log(UPDATER_TEXT.usage);
     return 2;

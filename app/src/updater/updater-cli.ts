@@ -1,8 +1,10 @@
 import { isAbsolute } from 'node:path';
+import { createInterface } from 'node:readline';
 import { Pool } from 'pg';
 import { defaultStatfs } from '../ops/storage-check';
 import { installUpdate } from './install';
 import { prepareUpdate, resolveProjectName } from './prepare';
+import { pgRecoverStore, runRecover } from './recover';
 import { RealRunner, maskSecrets } from './runner';
 import { UPDATER_TEXT, runUpdaterCli } from './tick';
 
@@ -28,6 +30,28 @@ async function main(): Promise<number> {
   // The running installation's project name, also when COMPOSE_PROJECT_NAME is set only in the folder's .env (which this
   // container's environment does not see): read from Compose's resolved configuration, never logged.
   const projectName = () => resolveProjectName(runner, installDir, process.env, log);
+  /**
+   * recover's own pools, which it ends itself: the Kainow database, or another database of the same server (the server's
+   * own, the set-aside one). The URL is never logged.
+   */
+  const openPool = (database?: string): Pool => {
+    const url = new URL(databaseUrl);
+    if (database) url.pathname = `/${encodeURIComponent(database)}`;
+    const p = new Pool({ connectionString: url.toString() });
+    p.on('error', () => undefined);
+    return p;
+  };
+  /** The operator's answer from the terminal; null without one (run with --yes then). */
+  const ask = (question: string): Promise<string | null> => {
+    if (!process.stdin.isTTY) return Promise.resolve(null);
+    const rl = createInterface({ input: process.stdin, output: process.stdout });
+    return new Promise((resolve) => {
+      rl.question(question, (answer) => {
+        rl.close();
+        resolve(answer);
+      });
+    });
+  };
   try {
     return await runUpdaterCli(process.argv.slice(2), {
       pool,
@@ -39,6 +63,7 @@ async function main(): Promise<number> {
       // The db container is never restarted by an install (only api, worker and migrate), so this pool's connection,
       // which holds the tick's session lock, stays up throughout.
       install: async (u) => void (await installUpdate({ pool, runner, installDir, projectName: await projectName(), now, log }, u)),
+      recover: (args) => runRecover(args, { runner, installDir, projectName, store: pgRecoverStore(openPool, log), now, log, ask }),
     });
   } finally {
     await pool.end().catch(() => undefined);

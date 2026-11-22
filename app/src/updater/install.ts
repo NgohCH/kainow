@@ -200,6 +200,59 @@ function beforeSummary(tag: string, state: 'refused' | 'failed_before_install', 
     : `The update to ${tag} failed before installing; Kainow is running the previous version. ${FAILURE_TEXT[code]}`;
 }
 
+/** What waitHealthy needs: `compose` runs `docker compose` with the installation's flags. */
+export interface HealthDeps {
+  runner: Runner;
+  installDir: string;
+  compose: (args: string[], timeoutMs?: number) => Promise<RunResult>;
+  /** The clock, in milliseconds. */
+  now: () => number;
+  log: (line: string) => void;
+  sleep: (ms: number) => Promise<void>;
+}
+
+/**
+ * Spec 5.5 step 8, all within 10 minutes: the api container healthy, the worker running 60 seconds without a restart,
+ * then the post-update check (migration level and version) for `version`. Also used by `recover` (spec 5.9 step 7).
+ */
+export async function waitHealthy(h: HealthDeps, version: string): Promise<boolean> {
+  const { runner, installDir, compose, log } = h;
+  const ms = h.now;
+  const deadline = ms() + HEALTH_LIMIT_MS;
+  let worker: { key: string; since: number } | null = null;
+  for (;;) {
+    const ps = await compose(['ps', '--all', '--format', 'json']);
+    const rows = ps.code === 0 ? parsePs(ps.stdout) : [];
+    const api = rows.find((r) => r.Service === 'api');
+    const w = rows.find((r) => r.Service === 'worker');
+    const apiOk = api?.State === 'running' && api?.Health === 'healthy';
+    let workerOk = false;
+    if (w?.State === 'running' && w.ID) {
+      const ins = await runner.run('docker', ['inspect', '--format', '{{.RestartCount}} {{.State.StartedAt}}', w.ID], {
+        cwd: installDir,
+        timeoutMs: SHORT_MS,
+      });
+      if (ins.code === 0) {
+        // Running without a restart: the same container, restart count and start time, observed for 60 seconds.
+        const key = `${w.ID} ${ins.stdout.trim()}`;
+        if (!worker || worker.key !== key) worker = { key, since: ms() };
+        workerOk = ms() - worker.since >= WORKER_UP_MS;
+      } else worker = null;
+    } else worker = null;
+    if (apiOk && workerOk) {
+      const pc = await compose(['run', '--rm', '--no-deps', 'api', 'node', 'dist/updater/post-check-cli.js', '--expect', version]);
+      if (pc.code === 0) return true;
+      log(`The post-update check failed for ${version} (${pc.code}): ${tail(pc)}`);
+      return false;
+    }
+    if (ms() >= deadline) {
+      log(`Kainow ${version} did not pass its health checks within ${HEALTH_LIMIT_MS / 60_000} minutes (api ${api?.State ?? 'missing'}/${api?.Health ?? '-'}, worker ${w?.State ?? 'missing'}).`);
+      return false;
+    }
+    await h.sleep(HEALTH_POLL_MS);
+  }
+}
+
 /** Installs one update; the tick calls this for a due `ready` row and for an `installing` row (re-entry). */
 export function installUpdate(deps: InstallDeps, update: UpdateRow): Promise<UpdateState> {
   return installWithStore(deps, pgInstallStore(deps.pool), update);
@@ -258,42 +311,7 @@ export async function installWithStore(deps: Omit<InstallDeps, 'pool'>, store: I
     }
   };
 
-  // ---- health (spec 5.5 step 8) ----
-  const healthy = async (version: string): Promise<boolean> => {
-    const deadline = ms() + HEALTH_LIMIT_MS;
-    let worker: { key: string; since: number } | null = null;
-    for (;;) {
-      const ps = await compose(['ps', '--all', '--format', 'json']);
-      const rows = ps.code === 0 ? parsePs(ps.stdout) : [];
-      const api = rows.find((r) => r.Service === 'api');
-      const w = rows.find((r) => r.Service === 'worker');
-      const apiOk = api?.State === 'running' && api?.Health === 'healthy';
-      let workerOk = false;
-      if (w?.State === 'running' && w.ID) {
-        const ins = await runner.run('docker', ['inspect', '--format', '{{.RestartCount}} {{.State.StartedAt}}', w.ID], {
-          cwd: installDir,
-          timeoutMs: SHORT_MS,
-        });
-        if (ins.code === 0) {
-          // Running without a restart: the same container, restart count and start time, observed for 60 seconds.
-          const key = `${w.ID} ${ins.stdout.trim()}`;
-          if (!worker || worker.key !== key) worker = { key, since: ms() };
-          workerOk = ms() - worker.since >= WORKER_UP_MS;
-        } else worker = null;
-      } else worker = null;
-      if (apiOk && workerOk) {
-        const pc = await compose(['run', '--rm', '--no-deps', 'api', 'node', 'dist/updater/post-check-cli.js', '--expect', version]);
-        if (pc.code === 0) return true;
-        log(`The post-update check failed for ${version} (${pc.code}): ${tail(pc)}`);
-        return false;
-      }
-      if (ms() >= deadline) {
-        log(`Kainow ${version} did not pass its health checks within ${HEALTH_LIMIT_MS / 60_000} minutes (api ${api?.State ?? 'missing'}/${api?.Health ?? '-'}, worker ${w?.State ?? 'missing'}).`);
-        return false;
-      }
-      await sleep(HEALTH_POLL_MS);
-    }
-  };
+  const healthy = (version: string) => waitHealthy({ runner, installDir, compose, now: ms, log, sleep }, version);
 
   // ---- endings ----
   /** Spec 5.7, or 5.6's last paragraph (no migration): stop, previous code, notice page, best-effort record, log line. */
