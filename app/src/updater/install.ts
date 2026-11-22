@@ -29,6 +29,8 @@ import { join } from 'node:path';
 import type { Pool, PoolClient } from 'pg';
 import { uuidv7 } from '../common/uuid7';
 import { notifyAdmins } from '../ops/notify';
+import { loadOpsSettings } from '../ops/settings';
+import { enterProtective } from '../ops/storage-check';
 import { auditUpdateFailed, auditUpdateRefused, auditUpdateSucceeded } from './audit';
 import { mailUpdateEnded } from './people-mail';
 import { fetchCandidate, workingTreeState } from './git';
@@ -36,7 +38,7 @@ import { composeFlags, stagingDir } from './prepare';
 import { maskSecrets, type RunResult, type Runner } from './runner';
 import { FAILURE_TEXT, WINDOW_GRACE_MS, windowMissed, type FailureCode, type UpdateState } from './states';
 import { TRUSTED_SIGNERS, recoveryLine, type TickUpdate } from './tick';
-import { compareVersions, parseTag } from './version';
+import { parseTag } from './version';
 
 /** The update as the tick read it. */
 export type UpdateRow = TickUpdate;
@@ -60,7 +62,7 @@ const LOG_TAIL = 8000;
 /** The trusted signers file as it was before switch_code copied the release's own (restored when going back). */
 export const PREVIOUS_SIGNERS = `${TRUSTED_SIGNERS}.previous`;
 const RELEASE_SIGNERS = join('release', 'release-signers');
-/** Kainow's images (spec 5.4 step 6); tidy removes those older than the previous version. */
+/** Kainow's images (spec 5.4 step 6); tidy removes those of any version but the running and the previous one. */
 const KAINOW_IMAGES = ['kainow-app', 'kainow-ops', 'kainow-updater'];
 
 export const INSTALL_STEPS = [
@@ -318,6 +320,22 @@ export async function installWithStore(deps: Omit<InstallDeps, 'pool'>, store: I
   const healthy = (version: string) => waitHealthy({ runner, installDir, compose, now: ms, log, sleep }, version);
 
   /**
+   * Final review M3: after an end before installing, the staging checkout and the candidate ref are of no further use
+   * (a new approval prepares again). Best effort; the release's built images go at the next successful update's tidy.
+   */
+  const dropStaging = async () => {
+    try {
+      const staging = stagingDir(installDir, u.tag);
+      await runner.run('git', ['worktree', 'remove', '--force', staging], { cwd: installDir });
+      await runner.run('git', ['worktree', 'prune'], { cwd: installDir });
+      await rm(staging, { recursive: true, force: true });
+      await runner.run('git', ['update-ref', '-d', `refs/kainow/candidate/${u.tag}`], { cwd: installDir });
+    } catch (err) {
+      log(`Removing the staging checkout failed: ${maskSecrets(err instanceof Error ? err.message : String(err))}`);
+    }
+  };
+
+  /**
    * The object `refs/tags/<tag>` names in the Kainow folder: null when there is no such tag, undefined when git could
    * not say. switch_code creates it, so the next update finds the folder on a release tag (and going back, the failed
    * path and `recover` find the previous version by its tag name).
@@ -357,7 +375,7 @@ export async function installWithStore(deps: Omit<InstallDeps, 'pool'>, store: I
   };
 
   /** Spec 5.6: previous code and images, health, then maintenance off and the end recorded. Idempotent. */
-  const goBack = async (code: FailureCode, stopped: boolean, switched: boolean): Promise<UpdateState> => {
+  const goBack = async (code: FailureCode, stopped: boolean, switched: boolean, noticeStarted = false): Promise<UpdateState> => {
     const end = endStateFor(code);
     if (stopped || switched) {
       const stepId = await store.startStep(u.id, 'go_back', deps.now());
@@ -371,6 +389,8 @@ export async function installWithStore(deps: Omit<InstallDeps, 'pool'>, store: I
       }
       if (switched && !(await restoreSigners())) ok = false;
       if (ok) {
+        // A re-entry after a failed going back may find the notice page on Kainow's port (final review #30).
+        if (noticeStarted) await compose(['stop', 'notice']);
         const up = await compose(['up', '-d', '--no-deps', 'api', 'worker'], 10 * 60_000);
         if (up.code !== 0) {
           log(`Going back: starting api and worker on ${previousTag} failed (${up.code}): ${tail(up)}`);
@@ -385,6 +405,7 @@ export async function installWithStore(deps: Omit<InstallDeps, 'pool'>, store: I
     }
     await store.endBefore(u.id, 'installing', { state: end, code, tag: u.tag, summary: beforeSummary(u.tag, end, code) }, deps.now());
     log(`The update to ${u.tag} ended ${end}: ${code}. Kainow is on ${previousTag}.`);
+    await dropStaging();
     return end;
   };
 
@@ -413,7 +434,8 @@ export async function installWithStore(deps: Omit<InstallDeps, 'pool'>, store: I
           const i = ref.lastIndexOf(':');
           const [repo, tag] = [ref.slice(0, i), ref.slice(i + 1)];
           const v = parseTag(`v${tag}`);
-          if (!KAINOW_IMAGES.includes(repo) || !v || compareVersions(v, from) >= 0) continue;
+          // Older than the previous version, or left by a failed newer release (final review M3).
+          if (!KAINOW_IMAGES.includes(repo) || !v || tag === u.fromVersion || tag === u.toVersion) continue;
           const rmi = await runner.run('docker', ['image', 'rm', ref], { cwd: installDir, timeoutMs: SHORT_MS });
           if (rmi.code !== 0) log(`Removing the old image ${ref} failed (${rmi.code}); it is kept.`);
         }
@@ -436,7 +458,7 @@ export async function installWithStore(deps: Omit<InstallDeps, 'pool'>, store: I
     if (at.kind === 'continue_from') return maintenanceOffAndTidy();
     if (at.kind === 'failed_after_migration') return failedAfter('failed_after_migration', reentryCode(ours, 'after'));
     const names = new Set(ours.map((s) => s.step));
-    return goBack(reentryCode(ours, 'before'), names.has('stop'), names.has('switch_code'));
+    return goBack(reentryCode(ours, 'before'), names.has('stop'), names.has('switch_code'), names.has('notice_page'));
   }
   if (u.state !== 'ready') {
     log(`The update to ${u.tag} is ${u.state}; nothing to install.`);
@@ -493,6 +515,7 @@ export async function installWithStore(deps: Omit<InstallDeps, 'pool'>, store: I
     const written = await store.endBefore(u.id, 'ready', { state: end, code: problem, tag: u.tag, summary: beforeSummary(u.tag, end, problem) }, deps.now());
     if (!written) return (await store.stateOf(u.id)) ?? u.state;
     log(`The update to ${u.tag} ended ${end}: ${problem}. Nothing was changed.`);
+    await dropStaging();
     return end;
   }
   if (!(await store.begin(u.id, deps.now()))) {
@@ -698,6 +721,23 @@ export function pgInstallStore(pool: Pool): InstallStore {
       now,
       JSON.stringify({ previousReason: 'update', updateId: id, outcome }),
     ]);
+    // Final review M4: a low-space reading taken while update maintenance was on could not enter protective mode then
+    // (it was already on); the latest database-disk reading decides now, as the storage check would.
+    const last = (
+      await c.query(
+        `SELECT free_bytes, total_bytes FROM storage_readings WHERE location = 'database_disk' AND NOT unavailable ORDER BY at DESC, id DESC LIMIT 1`,
+      )
+    ).rows[0] as { free_bytes: string | null; total_bytes: string | null } | undefined;
+    if (last?.free_bytes != null) {
+      const free = Number(last.free_bytes);
+      const floor = (await loadOpsSettings(c)).safeFloorGb * 1024 ** 3;
+      if (Number.isFinite(free) && free >= 0 && free < floor) {
+        const total = last.total_bytes == null ? null : Number(last.total_bytes);
+        // A millisecond after the 'resumed' row, so the history lists the two in the order they happened.
+        const at = new Date(now.getTime() + 1);
+        await enterProtective(c, 'low_space', { location: 'database_disk', freeBytes: free, totalBytes: total, floorBytes: floor }, at);
+      }
+    }
   };
 
   let lastStepMs = 0;

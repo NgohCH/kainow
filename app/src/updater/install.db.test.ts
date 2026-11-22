@@ -50,7 +50,7 @@ describe('installing an update (database)', { skip: SKIP_NO_DB }, () => {
     try {
       await c.query('BEGIN');
       await c.query(`SET LOCAL session_replication_role = replica`);
-      for (const tbl of ['update_steps', 'update_changes', 'updates', 'updater_ticks', 'email_outbox', 'notifications', 'audit_events', 'operations_state_changes', 'backup_runs']) {
+      for (const tbl of ['update_steps', 'update_changes', 'updates', 'updater_ticks', 'email_outbox', 'notifications', 'audit_events', 'operations_state_changes', 'backup_runs', 'storage_readings']) {
         await c.query(`DELETE FROM ${tbl}`);
       }
       await c.query(`UPDATE operations_state SET protective = false, reason = NULL, since = NULL, detail = NULL, changed_by = NULL WHERE id`);
@@ -174,6 +174,38 @@ describe('installing an update (database)', { skip: SKIP_NO_DB }, () => {
     const states = (await pool.query(`SELECT detail FROM update_changes WHERE update_id = $1 ORDER BY at, id`, [u.id])).rows.map((x) => x.detail.to);
     assert.deepEqual(states, ['installing', 'succeeded']);
     assert.equal(head, COMMIT);
+  });
+
+  test('a low database-disk reading taken during the update puts Kainow in protective mode when maintenance ends (M4)', async () => {
+    const u = await seedUpdate();
+    onBackup = async () => {
+      // The storage check runs while update maintenance is on: it records the reading but cannot enter protective mode.
+      await pool.query(
+        `INSERT INTO storage_readings (id, at, location, total_bytes, free_bytes, used_bytes) VALUES ($1, $2, 'database_disk', $3, $4, $5)`,
+        [uuidv7(t), new Date(t), 100 * 1024 ** 3, 1024 ** 3, 99 * 1024 ** 3],
+      );
+    };
+    assert.equal(await installUpdate(deps(), u), 'succeeded');
+    const s = await ops();
+    assert.deepEqual([s.protective, s.reason], [true, 'low_space']);
+    const changes = (await pool.query(`SELECT action, reason FROM operations_state_changes ORDER BY at, id`)).rows;
+    assert.deepEqual(changes, [
+      { action: 'entered', reason: 'update' },
+      { action: 'resumed', reason: null },
+      { action: 'entered', reason: 'low_space' },
+    ]);
+    assert.equal(await count(`SELECT count(*)::int AS n FROM notifications WHERE kind = 'protective_mode_entered'`), 1);
+  });
+
+  test('a database-disk reading above the floor leaves maintenance simply ended (M4)', async () => {
+    const u = await seedUpdate();
+    await pool.query(`INSERT INTO storage_readings (id, at, location, total_bytes, free_bytes, used_bytes) VALUES ($1, $2, 'database_disk', $3, $3, 0)`, [
+      uuidv7(t),
+      new Date(t),
+      100 * 1024 ** 3,
+    ]);
+    assert.equal(await installUpdate(deps(), u), 'succeeded');
+    assert.equal((await ops()).protective, false);
   });
 
   test('maintenance is on before the backup command starts (Review Focus 3)', async () => {
@@ -384,7 +416,15 @@ describe('installing an update (database)', { skip: SKIP_NO_DB }, () => {
       JSON.stringify({ updateId: u.id, version: '1.1.0' }),
     ]);
     for (const [step, outcome] of [['recheck', 'passed'], ['maintenance_on', 'passed'], ['backup', 'passed'], ['stop', 'passed'], ['switch_code', 'running']]) {
-      await pool.query(`INSERT INTO update_steps (id, update_id, step, started_at, outcome) VALUES ($1, $2, $3, $4, $5)`, [uuidv7(t), u.id, step, new Date(t++), outcome]);
+      await pool.query(`INSERT INTO update_steps (id, update_id, step, started_at, finished_at, outcome) VALUES ($1, $2, $3, $4, $5, $6)`, [
+        uuidv7(t),
+        u.id,
+        step,
+        new Date(t),
+        outcome === 'running' ? null : new Date(t),
+        outcome,
+      ]);
+      t++; // the next step, and the re-entry's own steps, start a millisecond later
     }
     assert.equal(await installUpdate(deps(), { ...u, state: 'installing' }), 'failed_before_install');
     const r = await row(u.id);

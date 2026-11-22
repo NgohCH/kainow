@@ -537,15 +537,38 @@ describe('installing an update', () => {
       'kainow-app:1.1.0', 'kainow-ops:1.1.0', 'kainow-updater:1.1.0',
       'kainow-app:1.0.0', 'kainow-ops:1.0.0', 'kainow-updater:1.0.0',
       'kainow-app:0.9.2', 'kainow-ops:0.9.2', 'kainow-updater:0.0.0',
+      'kainow-app:1.2.0', // left by a failed preparation of a newer release (final review M3)
       'kainow-app:latest', 'postgres:16', 'someone-else:0.1.0',
     ];
     await writeFile(join(dir, 'release-signers.previous'), 'OLD\n');
     assert.equal(await run(), 'succeeded');
-    assert.deepEqual(world.removed, ['kainow-app:0.9.2', 'kainow-ops:0.9.2', 'kainow-updater:0.0.0']);
+    assert.deepEqual(world.removed, ['kainow-app:0.9.2', 'kainow-ops:0.9.2', 'kainow-updater:0.0.0', 'kainow-app:1.2.0']);
     const g = runner.lines('git');
     assert.ok(g.some((l) => l.includes('worktree remove --force') && l.includes(join('.kainow-staging', 'v1.1.0'))));
     assert.ok(g.includes('git update-ref -d refs/kainow/candidate/v1.1.0'));
     await assert.rejects(readFile(join(dir, 'release-signers.previous')), 'the kept signers file is removed');
+  });
+
+  test('an end before installing removes the staging checkout and the candidate ref (M3)', async () => {
+    for (const fail of [() => (world.backupCodes = [1]), () => world.checkoutFails.add(COMMIT)]) {
+      store = new MemoryStore(() => t);
+      runner.calls.length = 0;
+      world.checkoutFails.clear();
+      world.head = 'v1.0.0';
+      world.version = '1.0.0';
+      world.api = world.worker = true;
+      fail();
+      assert.equal(await run(), 'failed_before_install');
+      const g = runner.lines('git');
+      assert.ok(g.some((l) => l.includes('worktree remove --force') && l.includes(join('.kainow-staging', 'v1.1.0'))), g.join('\n'));
+      assert.ok(g.includes('git update-ref -d refs/kainow/candidate/v1.1.0'));
+    }
+    // and a refusal at the re-check
+    store = new MemoryStore(() => t);
+    runner.calls.length = 0;
+    git.fetchCandidate = async () => ({ ok: true, tagObject: 'ef'.repeat(20) });
+    assert.equal(await run(), 'refused');
+    assert.ok(runner.lines('git').includes('git update-ref -d refs/kainow/candidate/v1.1.0'));
   });
 
   test('the old images are never removed before succeeded', async () => {
