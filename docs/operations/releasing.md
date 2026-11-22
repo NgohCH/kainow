@@ -48,7 +48,7 @@ Only the Product Owner (PO) publishes releases. A release is an annotated git ta
    node scripts/release.mjs X.Y.Z
    ```
 
-The script refuses unless: it is on `main`; the tree is clean; `main` equals `origin/main`; `X.Y.Z` is greater than every existing `vN.N.N` tag; the key in `user.signingkey` is listed in `release/release-signers`; and `CHANGELOG.md` has a non-empty section for `X.Y.Z`. Then it sets the version in `app/package.json`, `app/package-lock.json` and `app/web/package.json`, sets every `image: kainow-<name>:X.Y.Z` line in `compose.yaml` (app, ops and updater), commits "Release vX.Y.Z", makes the signed tag, and verifies the tag the same way an installation will. If verification fails it stops before pushing. Otherwise it asks:
+The script refuses unless: it is on `main`; the tree is clean; `main` equals `origin/main`; `X.Y.Z` is greater than every existing `vN.N.N` tag; the key in `user.signingkey` is listed in `release/release-signers`; and `CHANGELOG.md` has a non-empty section for `X.Y.Z`. Then it sets the version in `app/package.json`, `app/package-lock.json` and `app/web/package.json`, sets every `image: kainow-<name>:X.Y.Z` line in `compose.yaml` (app, ops and updater), commits "Release vX.Y.Z", makes the signed tag, and verifies the tag the same way an installation will: against this release's `release/release-signers` and against the one of the previous release (`vN.N.N`, the highest existing tag), which is what installations on it trust. It also refuses when a `compose.yaml` line naming a `kainow-` image would not carry `X.Y.Z` (write them as `image: kainow-<name>:X.Y.Z`). If verification fails it stops before pushing. Otherwise it asks:
 
 ```
 Push vX.Y.Z to origin and create the GitHub release? (yes/no)

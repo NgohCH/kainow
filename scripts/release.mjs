@@ -140,6 +140,7 @@ function checks(repo, version) {
   for (const t of tags) {
     if (cmp(want, t) <= 0) refuse(`Version ${version} is not greater than the existing release v${t.join('.')}.`);
   }
+  const previous = tags.length ? `v${tags.sort(cmp).at(-1).join('.')}` : null;
   const signers = join(repo, SIGNERS);
   if (!existsSync(signers)) refuse(`${SIGNERS} is missing.`);
   const signingKey = git(repo, ['config', '--get', 'user.signingkey']).stdout.trim();
@@ -150,10 +151,21 @@ function checks(repo, version) {
   const log = join(repo, 'CHANGELOG.md');
   const section = existsSync(log) ? changelogSection(readFileSync(log, 'utf8'), version) : null;
   if (section === null) refuse(`CHANGELOG.md has no section "## ${version}" with content.`);
-  return { signingKey, section };
+  return { signingKey, section, previous };
 }
 
-function release(work, version, signingKey, section, identity, notesDir) {
+/** The tag verified as an installation does, against `signersFile`. */
+function verifies(work, tag, signersFile) {
+  const v = git(work, [
+    '-c', 'gpg.format=ssh',
+    '-c', `gpg.ssh.allowedSignersFile=${slash(signersFile)}`,
+    '-c', 'gpg.ssh.program=ssh-keygen',
+    'verify-tag', '--raw', tag,
+  ]);
+  return v.code === 0 && GOOD.test(`${v.stdout}\n${v.stderr}`);
+}
+
+function release(work, version, signingKey, section, identity, notesDir, previous) {
   const tag = `v${version}`;
   const compose = join(work, 'compose.yaml');
   const composeText = setComposeTags(readFileSync(compose, 'utf8'), version); // refuses before anything is written
@@ -168,14 +180,23 @@ function release(work, version, signingKey, section, identity, notesDir) {
   writeFileSync(notes, section + '\n');
   must(work, [...id, '-c', 'gpg.format=ssh', '-c', `user.signingkey=${signingKey}`, 'tag', '-s', '--cleanup=verbatim', tag, '-F', notes]);
   // Exactly as an installation verifies it (app/src/updater/git.ts).
-  const v = git(work, [
-    '-c', 'gpg.format=ssh',
-    '-c', `gpg.ssh.allowedSignersFile=${slash(join(work, SIGNERS))}`,
-    '-c', 'gpg.ssh.program=ssh-keygen',
-    'verify-tag', '--raw', tag,
-  ]);
-  if (v.code !== 0 || !GOOD.test(`${v.stdout}\n${v.stderr}`)) {
+  if (!verifies(work, tag, join(work, SIGNERS))) {
     refuse(`The new tag ${tag} does not verify against ${SIGNERS}. Nothing was pushed.`);
+  }
+  // An installation on the previous release verifies against that release's signers file, never this one's (spec 4.3,
+  // final review #7): a release signed only by a key added now would be refused by every installation.
+  if (previous) {
+    const prev = git(work, ['show', `${previous}:${SIGNERS}`]);
+    if (prev.code === 0) {
+      const file = join(notesDir, 'previous-signers');
+      writeFileSync(file, prev.stdout);
+      if (!verifies(work, tag, file)) {
+        refuse(
+          `The new tag ${tag} does not verify against ${SIGNERS} of ${previous}, which installations on ${previous} trust. ` +
+            'Sign it with a key listed there (a new key is added by one release and used from the next). Nothing was pushed.',
+        );
+      }
+    }
   }
   return { tag, notes };
 }
@@ -214,7 +235,7 @@ async function main(argv) {
   const repo = top.stdout.trim();
   const temp = mkdtempSync(join(tmpdir(), 'kainow-release-'));
   try {
-    const { signingKey, section } = checks(repo, version);
+    const { signingKey, section, previous } = checks(repo, version);
     const identity = {
       name: git(repo, ['config', '--get', 'user.name']).stdout.trim() || 'Kainow release',
       email: git(repo, ['config', '--get', 'user.email']).stdout.trim() || 'release@example.org',
@@ -224,7 +245,7 @@ async function main(argv) {
       work = cloneDir ? resolve(cloneDir) : join(temp, 'clone');
       must(repo, ['clone', '-q', '--no-hardlinks', slash(repo), work]);
     }
-    const { tag, notes } = release(work, version, signingKey, section, identity, temp);
+    const { tag, notes } = release(work, version, signingKey, section, identity, temp, previous);
     console.log(`Made and verified ${tag} in ${work}.`);
     if (dry) {
       console.log('Dry run: nothing was pushed and no GitHub release was created.');

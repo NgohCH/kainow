@@ -234,6 +234,27 @@ describe('scripts/release.mjs', { skip }, () => {
     assert.equal(JSON.parse(readFileSync(join(clone, 'app/package.json'), 'utf8')).version, '1.1.0', 'nothing written');
   });
 
+  it('refuses a release signed only by a key the previous release does not trust (final review #7)', () => {
+    const old = newKey('k9a');
+    const fresh = newKey('k9b');
+    const { work } = setup({ signers: [old], key: fresh, tags: ['v1.1.0'] });
+    // After v1.1.0 the new key replaces the old one in the file; installations on v1.1.0 still trust only the old key.
+    writeFileSync(join(work, 'release/release-signers'), fresh.line + '\n');
+    git(work, 'commit', '-q', '-am', 'rotate to the new key only');
+    git(work, 'push', '-q', 'origin', 'main');
+    const r = release(work, '1.2.0', '--dry-run');
+    assert.equal(r.code, 1, r.stdout + r.stderr);
+    assert.match(r.stderr, /does not verify against release\/release-signers of v1\.1\.0/);
+
+    // Signed by the old key while the file lists both: accepted.
+    const both = setup({ signers: [old], key: old, tags: ['v1.1.0'] });
+    writeFileSync(join(both.work, 'release/release-signers'), [old.line, fresh.line].join('\n') + '\n');
+    git(both.work, 'commit', '-q', '-am', 'add the new key');
+    git(both.work, 'push', '-q', 'origin', 'main');
+    const ok = release(both.work, '1.2.0', '--dry-run');
+    assert.equal(ok.code, 0, ok.stdout + ok.stderr);
+  });
+
   it('answering no makes no push', () => {
     const key = newKey('k7');
     const { origin, work } = setup({ signers: [key], key });
