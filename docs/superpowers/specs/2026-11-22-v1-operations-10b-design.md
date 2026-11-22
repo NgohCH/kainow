@@ -76,8 +76,9 @@ A02 promises a built-in update path where an Enterprise Administrator approves e
 | D122 | **Installing an update** (22 November 2026). The updater runs only when the server's schedule starts it; it is never left running. After approval it fetches and verifies the release and builds it while the current version keeps running. At the approved time it puts Kainow into maintenance (read-only, with its own banner), takes a pre-update backup, and installs only if that backup succeeds. It then migrates the database, starts the new version and checks its health. The update counts as succeeded only when every check passes; maintenance then ends. If anything fails before the migration starts, Kainow returns to the previous version and normal use by itself, and Enterprise Administrators are told. Every step is recorded in Kainow. |
 | D123 | **A failed update after the migration** (22 November 2026). If the migration or anything after it fails, Kainow stays stopped and shows a fixed page saying it is unavailable after a failed update and asking people to contact their Administrator. The updater sends no email (it holds no email settings); the server operator is alerted through the server's log mail. Nothing is restored automatically. The server operator runs the recovery command, which keeps the failed database under another name, restores the update's pre-update backup with the previous version, and starts Kainow in protective read-only as for any restore (D112); an Administrator checks and resumes. Because maintenance blocked every save after the pre-update backup, nothing saved is lost. |
 | D124 | **Supported browsers** (22 November 2026). Kainow supports the current and previous major releases of Edge, Chrome, Firefox and Safari at each product release, on desktop, tablet and phone. Each release records a browser matrix with the exact versions checked, how (automated or by hand) and the result; a version not checked is recorded as not checked, never as supported. |
+| D125 | **An update that could not start on time** (23 November 2026; controller ruling from the final review, *pending PO confirmation*). An approved update not started within 60 minutes of its start time is not installed late: it ends failed before installing (`window_missed`), nothing changed; the Enterprise Administrators are told and everyone warned is emailed that it is cancelled; it is approved again for a new time. |
 
-D125 and D126 stay reserved for decisions found while building.
+D126 stays reserved for decisions found while building.
 
 ## 3. Concepts
 
@@ -166,6 +167,7 @@ Started by the first tick after approval:
 5. **Compatibility checks** (Architecture §7 "compatibility validation"), all against the staging checkout with the installation's own `.env` and `compose.override.yaml`, before anything stops:
    - `docker compose … config -q` must succeed. A release that needs a new required setting fails here (`settings_missing`, naming the variable from Compose's message, never its value).
    - The `db` service in the resolved staging configuration must equal the running one's (image, volumes, environment names). Otherwise `db_service_changed`: such a release is installed by hand.
+   - Every `kainow-` image of the resolved staging configuration must end `:X.Y.Z` (the release's own version); otherwise `image_version_mismatch` (refused): building such a release would re-tag the running version's images with new code. `scripts/release.mjs` refuses to make such a release too.
    - The release's `release/requirements.json`, if present, is read: `{ "manual": true, "note": "…" }` refuses with `manual_install` and shows the note; `{ "minimumFrom": "X.Y.Z" }` refuses with `upgrade_path` when the running version is older (install the named release first).
 6. **Build**: with the staging checkout as the project directory and the installation's project name and files: `docker compose --project-directory <staging> --project-name <installation's project name> --env-file <Kainow folder>/.env -f <staging>/compose.yaml [-f <Kainow folder>/compose.override.yaml] build`, so `build.context: ./app` resolves to the **new** code. This produces `kainow-app:X.Y.Z`, `kainow-ops:X.Y.Z` and `kainow-updater:X.Y.Z` beside the running images. The running containers are untouched. A test checks that the built image's `package.json` version is `X.Y.Z`.
 7. State becomes `ready`. A build failure ends the update as `failed_before_install` (`build_failed`), removes the staging checkout and notifies; nothing has changed.
@@ -176,11 +178,11 @@ Preparation is limited to 60 minutes; beyond that it is `build_failed` (`build_t
 
 The first tick at or after the approved time, with the update `ready`. Each step is recorded in `update_steps` with its start, finish and outcome.
 
-1. **Re-check**: still approved and not cancelled; protective mode (low space) not on; the staging tag object is the same object id as verified in §5.4 (`build_failed` otherwise is not possible — a mismatch is `refused`, `tag_changed`).
+1. **Re-check**: first, not more than 60 minutes past its start time (D125, C107): a `ready` row found later (the server was off, the cron line missing) is not installed and ends `failed_before_install` with `window_missed`, nothing touched, the Enterprise Administrators told, everyone who was warned emailed "cancelled"; the move to `installing` is conditional on the same hour. An `approved` row first seen more than 60 minutes after its start ends the same way in §5.4, and the worker's ops sweep ends `approved` and `ready` rows past the hour by itself, so a missing updater never leaves one open. Then: still approved and not cancelled; protective mode (low space) not on; the staging tag object is the same object id as verified in §5.4 (`build_failed` otherwise is not possible — a mismatch is `refused`, `tag_changed`).
 2. **Maintenance on**: set `operations_state` to `protective = true, reason = 'update'` with the update id. The API refuses changes with the update text (§7.1); the worker pauses (10a's rules: email still sends). Wait 10 seconds beyond the state cache's 5 seconds, so every process has seen it.
 3. **Pre-update backup**: `docker compose --profile ops run --rm ops node dist/ops/backup-cli.js --kind pre_update` (the **running** version's `ops` image), reading the run id from its last output line. If the backup lock is held (a nightly backup or a drill is running; the backup command gets a distinct exit code for this, 3), it waits and retries every minute for up to 30 minutes, with maintenance on. If it fails, or the lock is still held after 30 minutes, the update ends `failed_before_install` (`backup_failed`), maintenance ends, and the Administrators are told; 10a's backup-failure notice also fires.
 4. **Stop**: `docker compose stop api worker`. From here until §5.6 step 3, people see the browser's own "can't reach" or the web app's offline message (§7.2).
-5. **Switch the code**: `git -c advice.detachedHead=false checkout --detach <commit>` in the Kainow folder; then copy `release/release-signers` to the trusted file (§4.3). If the checkout fails, go back (§5.6) with `checkout_failed`.
+5. **Switch the code**: record the release as the local tag `refs/tags/vX.Y.Z` at the verified tag object (`git update-ref refs/tags/vX.Y.Z <tag object> ''`; a tag already there must be that object, else `tag_changed`, which the re-check also refuses), so the folder is on a release tag for the next update, the tick's running tag and §5.6/§5.9's previous tag; then `git -c advice.detachedHead=false checkout --detach <commit>` in the Kainow folder; then copy `release/release-signers` to the trusted file (§4.3). If the checkout fails, go back (§5.6) with `checkout_failed`.
 6. **Migrate**: `docker compose run --rm migrate` (now the new image). This is **the point of no return**: from the moment this command starts, any failure is `failed_after_migration`.
 7. **Start**: `docker compose up -d api worker`.
 8. **Health checks** (all within 10 minutes):
@@ -211,7 +213,7 @@ If going back itself fails health checks, the update is recorded `failed_needs_a
 
 ### 5.8 Failure codes
 
-Fixed codes with fixed text, as 10a's (never raw command output, which can carry paths): `local_changes`, `not_on_release`, `no_space_to_build`, `settings_missing`, `db_service_changed`, `manual_install`, `upgrade_path`, `backup_busy`, `fetch_failed`, `not_annotated`, `tag_name_mismatch`, `signature_invalid`, `commit_mismatch`, `version_mismatch`, `not_newer`, `tag_changed`, `build_failed`, `build_timeout`, `protective_on`, `backup_failed`, `checkout_failed`, `migration_failed`, `start_failed`, `health_failed`, `rollback_failed`. The full command output goes to the cron log only, with the database URL masked.
+Fixed codes with fixed text, as 10a's (never raw command output, which can carry paths): `local_changes`, `not_on_release`, `no_space_to_build`, `settings_missing`, `db_service_changed`, `manual_install`, `upgrade_path`, `backup_busy`, `fetch_failed`, `not_annotated`, `tag_name_mismatch`, `signature_invalid`, `commit_mismatch`, `version_mismatch`, `not_newer`, `tag_changed`, `build_failed`, `build_timeout`, `protective_on`, `backup_failed`, `checkout_failed`, `migration_failed`, `start_failed`, `health_failed`, `rollback_failed`, `image_version_mismatch` (§5.4 step 5, final review I2), `window_missed` (§5.5 step 1, D125). The full command output goes to the cron log only, with the database URL masked.
 
 ### 5.9 The recovery command (`recover`)
 
@@ -246,7 +248,8 @@ approved → preparing → ready → installing → succeeded
                 │          │        ├─────→ failed_before_install
                 │          │        ├─────→ failed_after_migration → recovered
                 │          │        └─────→ failed_needs_attention → recovered
-                ├──────────┴──→ refused / failed_before_install (build)
+                ├──────────┴──→ refused / failed_before_install (build, window_missed)
+approved | ready ──→ failed_before_install (window_missed, D125: more than 60 minutes past the start)
 approved | preparing | ready ──→ cancelled   (by an Enterprise Administrator, with a reason)
 ```
 
@@ -277,7 +280,8 @@ On the Operations page, **Updates** section, for the newest available release: *
 - **Emails** to every Active person (accounts able to sign in), through the existing email outbox, one row per person, with the organisation's branding:
   - on approval: "Kainow will be unavailable on <date> from <time> (UTC+8) for about <n> minutes while it is updated. Anything you save before then is kept.";
   - the day before: the same text, sent 24 hours before the start, only when the approval was made more than 24 hours ahead;
-  - on a cancellation or a new time: the matching short text.
+  - on a cancellation or a new time: the matching short text;
+  - when the update ends before its window without anything stopping (refused or failed in preparation, ended at the re-check, `window_missed`): the cancellation text, so nobody waits for an outage that will not come (final review M1). Not after Kainow was stopped: from then on people saw the update happen.
   The day-before email is sent by the worker's sweep (an `update_reminder_sent_at` column, so it goes once).
 - **Banner** for every signed-in person, from approval until the update starts: "Kainow will be unavailable on <date> from <time> for about <n> minutes for an update." During maintenance the protective banner shows the update text (§7.1).
 - These emails are operational notices: they ignore personal notification preferences, like sign-in codes, and are not part of digests. *Design call.*
@@ -482,7 +486,7 @@ Calls the builder makes are recorded in the plan and the final hand-over note.
 
 ## 17. Documents updated in this branch
 
-- **Consolidated Specification**: D119–D124; the browser paragraph points to the matrix.
+- **Consolidated Specification**: D119–D125; the browser paragraph points to the matrix.
 - **Configuration Catalogue**: C105 release source (product repository, daily check, Check now); C106 updater schedule (cron every 5 minutes); C107 update notice (minimum 15 minutes, maximum 30 days ahead, day-before email); C108 release signers file and key rotation; C109 expected update length (5–240 minutes, default 30); C110 supported-browser matrix.
 - **Permission Matrix §8**: the rows of §12.
 - **Remaining Design and Verification Register**: §6 updater contract "designed in sub-project 10b" with verification state; R19 browser matrix; the capacity row with the load-test result.

@@ -38,6 +38,8 @@ Run against a test installation of this branch with the load-test seed ("Example
 
 Defects the smoke run found and that were fixed before this result: every page load for anyone who is not a security reviewer asked `GET /security/cases` and was refused (403), and the first load asked for `/favicon.ico` (404); both were logged by the browsers as console errors. The header now asks `GET /security/me`, and the page names its tab icon.
 
+A defect the smoke run showed that is **not fixed** in this result (recorded so the PO can decide): on phone-width screens (390 px) a proposal's details line runs into the "Report a suspected secret" link. The steps still passed: they check what is on screen, not the layout.
+
 Not counted as a failure: before sign-in the page asks `GET /auth/me`, which answers 401; Chrome, Edge and Firefox log that answer as a console error by design.
 
 ## Build target

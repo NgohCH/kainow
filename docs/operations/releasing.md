@@ -32,6 +32,8 @@ Only the Product Owner (PO) publishes releases. A release is an annotated git ta
 
    (`gpg.format=ssh` is set by the script for its own commands.) Use `ssh-agent` if you do not want to type the passphrase for each signature.
 
+5. **Publish the key before `v1.0.0`.** Installations check the key in `release/release-signers` against the one printed in INSTALL.md ("Install", "Get the code at a signed release", where it now says "Release key: not yet published") and on the release's GitHub page. Before making `v1.0.0`, replace that line in INSTALL.md with the public key line and its fingerprint (`ssh-keygen -lf <path-to-key>.pub` prints `256 SHA256:… kainow-release (ED25519)`), commit it, and put the same two on the `v1.0.0` GitHub release page.
+
 ## Making a release
 
 1. On `main`, up to date with `origin/main`, with a clean working tree.
