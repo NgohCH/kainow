@@ -148,7 +148,7 @@ It can be run again on the same database (each run adds fresh destinations and o
 
 Design: [`docs/superpowers/specs/2026-11-20-v1-operations-10a-design.md`](../docs/superpowers/specs/2026-11-20-v1-operations-10a-design.md); decisions D109 (backups), D110 (retention), D111 (status and failures), D112 (restore drill and restore), D113 (storage monitoring), D114 (protective read-only mode), D115 (routine diagnostics) and D116 (operations settings and authority). Operator steps are in [`INSTALL.md`](../INSTALL.md), "Backups" and "Restore from a backup". Code is in `src/ops/`, migration `0033_operations.sql`.
 
-**The commands** run by the server's cron (not by the API or worker) in one-shot containers of the Compose service `ops`. The service has the profile `ops`, so `docker compose up` never starts it; run a command with `docker compose --profile ops run --rm ops node dist/ops/<name>-cli.js`. Exit codes: 0 succeeded, 1 refused or failed, 2 usage. Output is fixed text and never holds a key, secret, file content, connection string or host path.
+**The commands** run by the server's cron (not by the API or worker) in one-shot containers of the Compose service `ops`. The service has the profile `ops`, so `docker compose up` never starts it; run a command with `docker compose --profile ops run --rm ops node dist/ops/<name>-cli.js`. Exit codes: 0 succeeded, 1 refused or failed, 2 usage; `backup` also exits 3 when another backup, drill or restore holds the backup lock (nothing was done; the updater's pre-update backup retries on it). Output is fixed text and never holds a key, secret, file content, connection string or host path.
 
 | `npm run` (inside `app/`) | File | Options | What it does |
 | --- | --- | --- | --- |
@@ -193,7 +193,31 @@ While protective mode is on, the API refuses every request that is not `GET`, `H
 
 **Tests.** `npm run build`, then `node --test --test-concurrency=1 dist/ops/<file>.test.js` with `KAINOW_TEST_DATABASE_URL` set to a throwaway database (for example `postgres://postgres:test@127.0.0.1:15432/kainow_test_sp10`). Tool tests need `pg_dump` and `pg_restore` 16, either installed or through `KAINOW_TEST_PG_DOCKER`; without them they skip with a stated reason. Web tests: `npm --prefix web test`.
 
-**Not covered yet.** The low-space check on a real Linux disk (`docs/operations/verify-low-space.md`: written, **not yet run**); a cron-driven week on a Linux VM; the source-area backup, drill and `restore-source-files` against a real Microsoft 365 tenant (tested against the fake Graph server only); the updater and the pre-update hook's caller (sub-project 10b, which uses `backup --kind pre_update` and `freshBackup`).
+**Not covered yet.** The low-space check on a real Linux disk (`docs/operations/verify-low-space.md`: written, **not yet run**); a cron-driven week on a Linux VM; the source-area backup, drill and `restore-source-files` against a real Microsoft 365 tenant (tested against the fake Graph server only); the updater and the pre-update hook's caller are sub-project 10b's (below).
+
+## Updates, releases, load test and browsers (V1.0 sub-project 10b)
+
+Design: [`docs/superpowers/specs/2026-11-22-v1-operations-10b-design.md`](../docs/superpowers/specs/2026-11-22-v1-operations-10b-design.md); decisions D119 (releases and signing), D120 (checking for releases), D121 (approving an update), D122 (installing an update), D123 (a failed update after the migration) and D124 (supported browsers). Operator steps are in [`INSTALL.md`](../INSTALL.md), "Updates" and "After a failed update"; releasing in [`docs/operations/releasing.md`](../docs/operations/releasing.md). Code is in `src/updater/` and `src/loadtest/`, migration `0034_updates.sql`.
+
+**Releases.** `node scripts/release.mjs X.Y.Z [--dry-run]` from the repository root (Product Owner only): sets the version in the package files and the `kainow-*` image tags in `compose.yaml`, commits, makes the SSH-signed tag and verifies it against `release/release-signers` before asking to push. `CHANGELOG.md` needs a section for the version.
+
+**The updater** is the Compose service `updater` (profile `updater`, image `kainow-updater`, Dockerfile target `updater`), the only part of Kainow that holds the Docker socket. It runs as the Kainow folder's owner (`KAINOW_UID`, `KAINOW_GID`, plus the socket's group `DOCKER_GID`) with the folder mounted at the same path (`KAINOW_INSTALL_DIR`); while these are unset only `updater` runs fail. Run a command with `docker compose --profile updater run --rm updater node dist/updater/<file>`:
+
+| Command | Run by | What it does |
+| --- | --- | --- |
+| `updater-cli.js tick` | The server's cron, every 5 minutes | At most one thing under its own advisory lock: prepare an approved update (verify, compatibility checks, build beside the running version), install a due one (maintenance, pre-update backup, stop, switch, migrate, start, health checks), or repeat the recovery line once a day after a failure. Exit 0 done, 1 failed, 2 usage or settings missing. |
+| `updater-cli.js recover [--yes]` | The server operator, after a failed update | Keeps the failed database as `kainow_failed_<YYYYMMDD>_<id>`, restores the update's pre-update set with the previous version (no restore when no migration ran), records the update as recovered and starts Kainow. Asks for `yes` unless `--yes`. Exit 0 recovered, 1 refused or failed, 2 usage. |
+| `post-check-cli.js --expect X.Y.Z` | The updater, in a one-off `api` container | Exit 0 only when the database's migration level equals the code's and the code's version is X.Y.Z. |
+
+The `notice` service (same image, profile `updater`) serves the fixed "update failed" page with status 503 on Kainow's port; only the updater starts it and `recover` stops it. The release check runs in the worker (daily) and the API (Check now); `KAINOW_RELEASE_REPO` and `KAINOW_RELEASE_API` stay unset outside tests. Failures are stored as fixed codes with fixed text (`src/updater/states.ts`); command output goes only to the updater's stdout, with connection strings masked.
+
+**Load test.** `npm run load-test -- --seed` on an empty test database, then `npm run load-test -- --users 10 --minutes 30 --think 5-20 --api-log <file>` against a test API and worker; it refuses any database that is not its seeded test organisation. How to run it, the aims and the latest result: [`docs/operations/load-test.md`](../docs/operations/load-test.md).
+
+**Browsers.** The automated smoke run is in `tests/browsers/` (see its README), the Safari check by hand in [`docs/operations/safari-check.md`](../docs/operations/safari-check.md), and the matrix in [`docs/operations/browser-matrix.md`](../docs/operations/browser-matrix.md).
+
+**Tests.** `npm run build`, then `node --test --test-concurrency=1 dist/updater/<file>.test.js` (database tests need `KAINOW_TEST_DATABASE_URL`; signature tests need `git` and `ssh-keygen` and skip with a stated reason without them). The flow tests use a fake command runner, never real Docker.
+
+**Not covered yet.** A real update end to end on Linux (a signed local release installed and updated, then a failing migration recovered) and the planned-outage aim; a real release, which follows the go-live history rewrite (`v1.0.0`); Safari, until the Product Owner's check.
 
 ## Milestones
 

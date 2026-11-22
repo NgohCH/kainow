@@ -209,13 +209,19 @@ For work actually completed during the pause, use the accepted reconciliation ex
 | Report types (add, rename, retire) | Enterprise Administrator (`organisation.manage`) | Sub-project 9, R14: retiring keeps history and blocks new selection. |
 | Designate or end a storage Administrator | Enterprise Administrator, never for themselves | Sub-project 9, D104: reason; Kainow grants and revokes direct write on the source area's recorded `projects` folder. |
 | Project exports allowed | Enterprise Administrator (`organisation.manage`) | Sub-project 9, D106: reason; Access and records page; Off by default. |
-| Approve/install or schedule a release update | Enterprise Administrator | Explicit approval for each release; pre-update backup/compatibility and integrity checks require verified design. |
+| Approve/install or schedule a release update | Enterprise Administrator | Explicit approval for each release; pre-update backup/compatibility and integrity checks require verified design. Designed in sub-project 10b (D119–D123): see the update rows below. |
 | Configure installation-wide AI concurrency | Enterprise Administrator | Default two across all projects and workers; 1 to 10, held in the database so it holds across every worker process; changed with a reason, recorded with the previous and new values. |
 | Configure automatic backups/retention and initiate protected restore | Enterprise Administrator under approved operational procedure | Daily encrypted/30-day default; restore authority never grants ordinary access to credential values or restricted sources. Sub-project 10a (D116): retention is set in Kainow (see the rows below); the backup schedule and restore are server commands run by the server operator, not web controls. |
 | View operations status, backups, drills, storage and protective mode | Enterprise Administrator (`operations.view`) | No project content; backup folder label and key id only, never key material or host paths. |
 | Change operations settings (backup retention, storage alert levels, safe floor, diagnostic retention) | Enterprise Administrator (`operations.manage`) | Reason; bounds of D110, D113–D115; recorded with previous and new values. |
 | Resume from protective mode | Enterprise Administrator (`operations.manage`) | Reason; only when the D114 checks pass. |
 | Run backups, restore drills, restores and storage checks | Server operator under the organisation's procedure (ops commands) | Recorded in Kainow; restore only into an empty installation; never reveals credential values or restricted sources (Matrix §8). |
+| See release checks, available releases and update history | Enterprise Administrator (`operations.view`) | Sub-project 10b (D120): no host paths or command output. |
+| Check for releases now | Enterprise Administrator (`operations.view`) | Sub-project 10b (D120): at most once a minute. |
+| Approve, reschedule or cancel an update | Enterprise Administrator (`operations.manage`) | Sub-project 10b (D121): reason; one signed, newer release; start at least 15 minutes ahead; refused in protective mode. |
+| Prepare and install an approved update | The updater, started by the server's schedule | Sub-project 10b (D122): only the approved tag and commit, verified against the installation's release key; pre-update backup first. |
+| Recover from a failed update | Server operator (`recover` command) | Sub-project 10b (D123): keeps the failed database; restores the update's own pre-update backup; Kainow restarts read-only. |
+| Publish a release | Product Owner only (release key) | Sub-project 10b (D119): signed tag on the product repository. |
 
 [Administrator analytics rules](Kainow-V1.0-Administrator-Analytics-and-Reporting-Rules.md) and [architecture](Kainow-V1.0-Application-Architecture-and-Operations-Design.md) contain the accepted detail.
 
