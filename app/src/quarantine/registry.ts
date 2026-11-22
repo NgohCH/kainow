@@ -946,6 +946,7 @@ export const NO_USER_TEXT: Readonly<Record<string, string>> = {
   'updates.release_notes': 'release text from a signed tag: written by the Product Owner and verified against the release key, organisation-level, no project scope (spec 7.4)',
   'updates.failure_code': ENUM,
   'update_changes.action': ENUM,
+  'update_changes.reason': 'an Administrator reason for approving, rescheduling or cancelling an update: organisation-level, no project scope (spec 7.4); credential-checked when typed',
   'update_changes.detail': 'fixed facts about the change (states, times, minutes), never typed text',
   'update_steps.step': ENUM,
   'update_steps.outcome': ENUM,

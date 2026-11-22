@@ -66,6 +66,7 @@ CREATE TABLE update_changes (
   at         timestamptz NOT NULL,
   action     text        NOT NULL CHECK (action IN ('approved', 'rescheduled', 'cancelled', 'state_changed', 'reminded')),
   actor_id   uuid        REFERENCES users (id),
+  reason     text        CHECK (reason IS NULL OR btrim(reason) <> ''),  -- the Administrator's reason (approve, reschedule, cancel)
   detail     jsonb
 );
 CREATE INDEX update_changes_update_idx ON update_changes (update_id, at, id);

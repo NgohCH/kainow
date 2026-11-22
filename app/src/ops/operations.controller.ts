@@ -5,6 +5,7 @@ import type { HttpRequest } from '../auth/auth.guard';
 import { can } from '../auth/permissions';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { PG_POOL } from '../db/database.module';
+import { scheduledBanner } from '../updater/updates.service';
 import { UPDATE_BANNER } from './protective';
 import { OperationsService } from './operations.service';
 import { OPS_BOUNDS, loadOpsSettings } from './settings';
@@ -81,11 +82,15 @@ export class OperationsController {
     return resume(this.pool, who(req).id, body(b).reason, this.now(), { state: this.state });
   }
 
-  /** Any signed-in person: protective mode. Enterprise Administrators also get the backup and storage warning. */
+  /**
+   * Any signed-in person: protective mode and the scheduled update (10b, from approval until it starts).
+   * Enterprise Administrators also get the backup and storage warning.
+   */
   @Get('operations/banner')
   @AnySignedInUser()
-  banner(@Req() req: HttpRequest) {
-    return this.operations.banner(can(who(req).role, 'operations.view'));
+  async banner(@Req() req: HttpRequest) {
+    const [b, s] = await Promise.all([this.operations.banner(can(who(req).role, 'operations.view')), scheduledBanner(this.pool, this.now())]);
+    return { ...b, scheduled: s ? { startsAt: s.startsAt, expectedMinutes: s.expectedMinutes, text: s.text } : null };
   }
 
   /** Before sign-in: only whether protective mode is on, for the sign-in page text. */

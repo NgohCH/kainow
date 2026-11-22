@@ -4,6 +4,7 @@
  */
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
+import { sendDueReminders } from '../updater/people-mail';
 import { closeEpisode, openEpisode } from './alerts';
 import { OPS_FAILURES } from './common';
 import { notifyAdmins } from './notify';
@@ -197,7 +198,7 @@ async function expireDiagnostics(pool: Pool, now: Date): Promise<void> {
 /** Runs every step even when one fails, then reports the first failure (the caller logs a fixed message). */
 export async function runOpsSweep(pool: Pool, now: Date): Promise<void> {
   let failure: unknown;
-  for (const step of [markInterruptedRuns, checkBackupTarget, checkStorageReadings, expireDiagnostics]) {
+  for (const step of [markInterruptedRuns, checkBackupTarget, checkStorageReadings, expireDiagnostics, sendDueReminders]) {
     try {
       await step(pool, now);
     } catch (err) {

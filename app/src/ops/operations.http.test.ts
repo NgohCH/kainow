@@ -172,14 +172,14 @@ describe('operations API', { skip: SKIP_NO_DB }, () => {
     await protective(true);
     const m = await member.request('GET', '/operations/banner');
     assert.equal(m.status, 200);
-    assert.deepEqual(m.body, { protective: true });
+    assert.deepEqual(m.body, { protective: true, scheduled: null });
     const a = await admin.request('GET', '/operations/banner');
     assert.equal(a.body.protective, true);
     assert.equal(a.body.admin.backups, 'target_exceeded');
     assert.match(a.body.admin.text, /^Backups: 24-hour recovery target exceeded\. Last successful backup \d{1,2} [A-Z][a-z]{2} \d\d:\d\d\./);
     assert.equal(a.body.admin.link, '#/admin/operations');
     await protective(false);
-    assert.deepEqual((await member.request('GET', '/operations/banner')).body, { protective: false });
+    assert.deepEqual((await member.request('GET', '/operations/banner')).body, { protective: false, scheduled: null });
   });
 
   test('banner: an administrator with healthy backups and normal storage has empty text; critical storage shows', async () => {
