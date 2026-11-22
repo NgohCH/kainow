@@ -99,10 +99,14 @@ export class UpdatesController {
     return view;
   }
 
-  /** { reason }; only before the update starts. */
+  /**
+   * { reason }; only before the update starts. Allowed in protective mode (final review M7): it touches only the update's
+   * own rows and the outbox, and otherwise an update approved before low space would fail at its window instead.
+   */
   @Post('admin/updates/:id/cancel')
   @HttpCode(200)
   @RequireAction('operations.manage')
+  @AllowedWhenProtective()
   async cancel(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest) {
     const view = await cancelUpdate(this.pool, who(req).id, id, body(b), this.now());
     await this.nudge.nudge();

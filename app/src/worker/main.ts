@@ -118,7 +118,7 @@ async function main(): Promise<void> {
   };
   // The daily release check runs at a minute fixed per installation (from the organisation name), so installations do
   // not all call GitHub together. Before onboarding the minute is 0; it moves once a name is saved and the worker restarts.
-  const minuteRow = (await pool.query(`SELECT abs(hashtext(name)) % 60 AS minute FROM organisation WHERE id = 1`)).rows[0] as
+  const minuteRow = (await pool.query(`SELECT ((hashtext(name)::bigint % 60) + 60) % 60 AS minute FROM organisation WHERE id = 1`)).rows[0] as
     | { minute: number }
     | undefined;
   const releaseCheck = {

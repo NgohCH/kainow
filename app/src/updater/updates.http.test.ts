@@ -4,6 +4,7 @@ import { uuidv7 } from '../common/uuid7';
 import { APP_CONFIG, type AppConfig } from '../config';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
+import { OperationsState } from '../ops/state';
 import { seedUser } from '../testing/projects';
 
 const MIN = 60_000;
@@ -85,6 +86,19 @@ describe('updates API', { skip: SKIP_NO_DB }, () => {
     assert.equal(c.body.state, 'cancelled');
     assert.equal((await admin.request('POST', `/admin/updates/${a.body.id}/cancel`, { reason: 'Again' })).status, 409);
     assert.equal((await admin.request('POST', `/admin/updates/${uuidv7()}/cancel`, { reason: 'None' })).status, 404);
+  });
+
+  test('in protective mode (low space) an approved update can still be cancelled, but not approved or moved (M7)', async () => {
+    await ready();
+    const a = await admin.request('POST', '/admin/updates', approveBody());
+    assert.equal(a.status, 201);
+    await t.pool.query(`UPDATE operations_state SET protective = true, reason = 'low_space', since = $1 WHERE id`, [now()]);
+    t.app.get(OperationsState).invalidate(); // past the state cache
+    const moved = await admin.request('POST', `/admin/updates/${a.body.id}/reschedule`, { startsAt: approveBody().startsAt, expectedMinutes: 30, reason: 'Later' });
+    assert.equal(moved.status, 503);
+    const c = await admin.request('POST', `/admin/updates/${a.body.id}/cancel`, { reason: 'Disk is low' });
+    assert.equal(c.status, 200, JSON.stringify(c.body));
+    assert.equal(c.body.state, 'cancelled');
   });
 
   test('approve without a fresh backup is 409 with the fixed text', async () => {

@@ -110,7 +110,8 @@ describe('approving, rescheduling and cancelling updates', { skip: SKIP_NO_DB },
     assert.equal(a[0].detail.tag, 'v1.1.0');
   });
 
-  test('approve emails every Active person and nobody disabled, invited or on hold', async () => {
+  // "On hold" is a project membership, not an account status: account status alone decides who is emailed (final review #13).
+  test('approve emails every Active account and nobody disabled or invited', async () => {
     await approve();
     const rows = await mail('update_scheduled');
     assert.deepEqual(rows.map((r) => r.to_user_id).sort(), [admin, member].sort());
