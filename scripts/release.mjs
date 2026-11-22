@@ -103,9 +103,21 @@ function setJsonVersion(file, version, alsoRoot) {
   writeFileSync(file, JSON.stringify(j, null, 2) + '\n');
 }
 
-/** Every `image: kainow-<name>:X.Y.Z` line (app, ops, updater, ...) gets the new version. */
+/**
+ * Every `image: kainow-<name>:X.Y.Z` line (app, ops, updater, ...) gets the new version. Refuses when any line naming a
+ * `kainow-` image would keep another tag (quoted, `latest`, a comment after it, ...): an installation would otherwise
+ * build the release over the running version's images (final review I2; the installation refuses it too).
+ */
 function setComposeTags(text, version) {
-  return text.replace(/^(\s*image:\s*kainow-[a-z0-9-]+:)\d+\.\d+\.\d+(\s*)$/gm, `$1${version}$2`);
+  const out = text.replace(/^(\s*image:\s*kainow-[a-z0-9-]+:)\d+\.\d+\.\d+(\s*)$/gm, `$1${version}$2`);
+  const lines = out.split(/\r?\n/).filter((l) => /^\s*image:\s*["']?kainow-/.test(l));
+  const want = new RegExp(String.raw`^\s*image:\s*kainow-[a-z0-9-]+:` + version.replace(/\./g, String.raw`\.`) + String.raw`\s*$`);
+  const stale = lines.filter((l) => !want.test(l));
+  if (!lines.length) refuse('compose.yaml has no "image: kainow-<name>:X.Y.Z" line.');
+  if (stale.length) {
+    refuse(`compose.yaml has image lines that would not carry ${version}: ${stale.map((l) => l.trim()).join('; ')}. Write them as "image: kainow-<name>:X.Y.Z".`);
+  }
+  return out;
 }
 
 function checks(repo, version) {
@@ -143,11 +155,12 @@ function checks(repo, version) {
 
 function release(work, version, signingKey, section, identity, notesDir) {
   const tag = `v${version}`;
+  const compose = join(work, 'compose.yaml');
+  const composeText = setComposeTags(readFileSync(compose, 'utf8'), version); // refuses before anything is written
   setJsonVersion(join(work, 'app/package.json'), version, false);
   setJsonVersion(join(work, 'app/package-lock.json'), version, true);
   setJsonVersion(join(work, 'app/web/package.json'), version, false);
-  const compose = join(work, 'compose.yaml');
-  writeFileSync(compose, setComposeTags(readFileSync(compose, 'utf8'), version));
+  writeFileSync(compose, composeText);
   const id = ['-c', `user.name=${identity.name}`, '-c', `user.email=${identity.email}`];
   must(work, ['add', 'app/package.json', 'app/package-lock.json', 'app/web/package.json', 'compose.yaml']);
   must(work, [...id, 'commit', '-q', '--allow-empty', '-m', `Release ${tag}`]);

@@ -220,6 +220,20 @@ describe('scripts/release.mjs', { skip }, () => {
     assert.equal(git(work, 'tag', '-l'), '');
   });
 
+  it('refuses when an image: kainow- line would keep its old version, before committing anything', () => {
+    const key = newKey('k8');
+    const { work } = setup({ signers: [key], key });
+    writeFileSync(join(work, 'compose.yaml'), COMPOSE.replace(/0\.0\.0/g, '1.1.0').replace('image: kainow-ops:1.1.0', 'image: "kainow-ops:1.1.0"'));
+    git(work, 'commit', '-q', '-am', 'quoted image');
+    git(work, 'push', '-q', 'origin', 'main');
+    const clone = join(root, 'stale-clone');
+    const r = release(work, '1.2.0', '--dry-run', '--clone-dir', clone);
+    assert.equal(r.code, 1);
+    assert.match(r.stderr, /compose\.yaml has image lines that would not carry 1\.2\.0: image: "kainow-ops:1\.1\.0"/);
+    assert.equal(git(clone, 'log', '-1', '--format=%s'), 'quoted image', 'no release commit');
+    assert.equal(JSON.parse(readFileSync(join(clone, 'app/package.json'), 'utf8')).version, '1.1.0', 'nothing written');
+  });
+
   it('answering no makes no push', () => {
     const key = newKey('k7');
     const { origin, work } = setup({ signers: [key], key });
