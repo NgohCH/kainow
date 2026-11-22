@@ -6,6 +6,7 @@ import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 import { insertAiDraft } from './meetings.service';
 import { MEETING_STILL_OPEN } from './publishing.service';
+import { NotesService } from '../notes/notes.service';
 
 const KEY = `sk-${'a1B2c3D4e5'.repeat(3)}`;
 
@@ -451,5 +452,53 @@ The portal key is ${KEY}.`, coversThroughNo: 1, analysisRunId: await seedAiRun(m
     assert.ok(!JSON.stringify(r.body).includes(KEY));
     assert.equal(await count(`SELECT count(*) AS n FROM sources WHERE thread_id = $1`, [meeting]), 0);
     assert.equal(await count(`SELECT count(*) AS n FROM extraction_runs`), 0);
+  });
+  // F01, member submissions (review of PR #20): the submit check is repeated inside the write transaction, and the
+  // reviewers notified are those holding a reviewer role then, not when the request started.
+  describe('access changed while a submission is being processed', () => {
+    function holdNextPrepare(): { reached: Promise<void>; release: () => void } {
+      const svc = t.app.get(NotesService) as any;
+      const original = svc.prepare.bind(svc);
+      let release!: () => void;
+      let reached!: () => void;
+      const gate = new Promise<void>((r) => (release = r));
+      const reachedP = new Promise<void>((r) => (reached = r));
+      svc.prepare = async (...args: unknown[]) => {
+        svc.prepare = original;
+        const prepared = await original(...args);
+        reached();
+        await gate;
+        return prepared;
+      };
+      return { reached: reachedP, release };
+    }
+    const revoke = async (userId: string) => {
+      await t.pool.query(`UPDATE memberships SET revoked_at = now(), revoked_by = $2 WHERE project_id = $1 AND user_id = $3`, [project, ids.pm, userId]);
+    };
+
+    test("a member whose membership is revoked during processing is refused and nothing is written", async () => {
+      const before = await count(`SELECT count(*) AS n FROM sources WHERE project_id = $1`, [project]);
+      const hold = holdNextPrepare();
+      const pending = submitNote(ada);
+      await hold.reached;
+      await revoke(ids.ada);
+      hold.release();
+      const r = await pending;
+      assert.ok(r.status === 403 || r.status === 404, `refused, got ${r.status}`);
+      assert.equal(await count(`SELECT count(*) AS n FROM sources WHERE project_id = $1`, [project]), before);
+      assert.equal(await count(`SELECT count(*) AS n FROM notifications WHERE kind = 'minutes_submitted'`), 0);
+    });
+
+    test('a reviewer whose membership is revoked during processing is not notified', async () => {
+      const hold = holdNextPrepare();
+      const pending = submitNote(ada);
+      await hold.reached;
+      await revoke(ids.deputy);
+      hold.release();
+      const r = await pending;
+      assert.equal(r.status, 201, JSON.stringify(r.body));
+      const notified = (await t.pool.query(`SELECT user_id FROM notifications WHERE kind = 'minutes_submitted' ORDER BY user_id`)).rows.map((x) => x.user_id);
+      assert.deepEqual(notified, [ids.pm, ids.sponsor].sort());
+    });
   });
 });

@@ -14,6 +14,7 @@ export interface HttpRequest {
   method?: string;
   headers: Record<string, string | string[] | undefined>;
   auth?: AuthContext;
+  socket?: { remoteAddress?: string };
 }
 
 export const CSRF_HEADER = 'x-csrf-token';
