@@ -10,7 +10,8 @@ import { StoredSourceFiles } from './source-files';
 
 /**
  * Usage: npm run backup -- [--kind daily|manual|pre_update] [--new-key]
- * Run by the server's cron in the ops container (spec 4.2). Exit 0 succeeded, 1 refused or failed, 2 usage.
+ * Run by the server's cron in the ops container (spec 4.2). Exit 0 succeeded, 1 refused or failed, 2 usage,
+ * 3 another backup, drill or restore holds the backup lock (nothing was done; the updater retries on it).
  */
 async function main(): Promise<number> {
   let config;

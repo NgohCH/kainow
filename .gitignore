@@ -6,3 +6,10 @@
 # Protected key files (never commit)
 secrets/
 *.key
+
+# Local Compose changes (INSTALL.md; compose.override.example.yaml shows the usual ones).
+compose.override.yaml
+# The installation's trusted release signers file (a copy of release/release-signers, INSTALL.md "Install").
+/release-signers
+# The updater's staging checkouts (10b spec 5.4).
+.kainow-staging/

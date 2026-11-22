@@ -296,8 +296,9 @@ export async function runBackup(argv: string[], deps: BackupDeps): Promise<numbe
   try {
     const result = await withBackupLock(deps.pool, () => backupLocked(args.kind, args.newKey, deps));
     if (result === 'busy') {
+      // A distinct code: the updater waits and retries on it (10b spec 5.5 step 3).
       deps.err(BACKUP_TEXT.busy);
-      return 1;
+      return 3;
     }
     return result;
   } catch {

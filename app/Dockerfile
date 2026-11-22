@@ -40,3 +40,15 @@ FROM runtime AS ops
 USER root
 RUN apt-get update  && apt-get install -y --no-install-recommends ca-certificates curl gnupg  && install -d /usr/share/postgresql-common/pgdg  && curl -fsSL -o /usr/share/postgresql-common/pgdg/apt.postgresql.org.asc https://www.postgresql.org/media/keys/ACCC4CF8.asc  && echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt bookworm-pgdg main" > /etc/apt/sources.list.d/pgdg.list  && apt-get update  && apt-get install -y --no-install-recommends postgresql-client-16  && apt-get purge -y --auto-remove curl gnupg  && rm -rf /var/lib/apt/lists/*
 USER node
+
+# --- the updater image: the same app plus git, ssh-keygen (release signatures) and Docker's CLI with its Compose plugin ---
+# Docker's CLI and Compose plugin come from Docker's own apt repository, checked with its signed key; their versions are pinned.
+# git and openssh-client are Debian bookworm's (security updates come with the distribution, as for the PostgreSQL client above).
+# Compose runs it as the Kainow folder's owner (KAINOW_UID:KAINOW_GID) with the Docker socket's group (10b spec 5.1).
+FROM runtime AS updater
+USER root
+RUN apt-get update  && apt-get install -y --no-install-recommends ca-certificates curl  && install -m 0755 -d /etc/apt/keyrings  && curl -fsSL -o /etc/apt/keyrings/docker.asc https://download.docker.com/linux/debian/gpg  && echo "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.asc] https://download.docker.com/linux/debian bookworm stable" > /etc/apt/sources.list.d/docker.list  && apt-get update  && apt-get install -y --no-install-recommends git openssh-client libnss-wrapper docker-ce-cli=5:29.10.0-1~debian.12~bookworm docker-compose-plugin=5.8.0-1~debian.12~bookworm  && apt-get purge -y --auto-remove curl  && rm -rf /var/lib/apt/lists/*
+# ssh-keygen needs a passwd entry for the user it runs as; the entry point supplies one (see the script).
+COPY --chmod=0755 docker/updater-entrypoint.sh /usr/local/bin/kainow-updater-entrypoint
+ENTRYPOINT ["kainow-updater-entrypoint"]
+USER node

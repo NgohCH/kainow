@@ -241,10 +241,11 @@ describe('backup command', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(changed.detail, { previousKeyId: first, keyId: key(other).id });
   });
 
-  test('while the lock is held, the run refuses and records nothing', async () => {
+  test('backup-cli returns 3 when the backup lock is held, and records nothing', async () => {
+    // 3, not 1: the updater waits and retries on this code (10b spec 5.5 step 3).
     const { d, out, err } = deps();
     const code = await withBackupLock(pool, () => runBackup([], d));
-    assert.equal(code, 1);
+    assert.equal(code, 3);
     assert.ok([...out, ...err].includes('Another backup or drill is running'));
     assert.equal((await pool.query('SELECT count(*)::int AS n FROM backup_runs')).rows[0].n, 0);
   });

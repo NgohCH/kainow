@@ -115,3 +115,8 @@ CREATE TRIGGER update_steps_guard BEFORE UPDATE OR DELETE ON update_steps
   FOR EACH ROW EXECUTE FUNCTION update_steps_guard();
 CREATE TRIGGER update_steps_no_truncate BEFORE TRUNCATE ON update_steps
   FOR EACH STATEMENT EXECUTE FUNCTION kainow_append_only();
+
+-- ---------------------------------------------------------------------------
+-- Go-live: the updater step (spec 10).
+-- ---------------------------------------------------------------------------
+INSERT INTO golive_steps (key, position) VALUES ('updates', 13);

@@ -133,5 +133,65 @@ services:
       # Protected key, same file as on api and worker:
       #   - ./secrets/kainow-protected.key:/run/secrets/kainow-protected.key:ro
 
+  # The updater (10b; INSTALL.md, "Updates"). Never starts with `up`: the server's cron starts it every five minutes with
+  #   docker compose --profile updater run --rm updater node dist/updater/updater-cli.js tick
+  # It installs only an update an Enterprise Administrator approved, signed by the release key. It holds the Docker
+  # socket, which is root-equivalent control of this computer: remove its crontab line to turn it off. No ports, no keys,
+  # no email settings. It runs as the owner of the Kainow folder, which it sees at the same path as on the host, so the
+  # docker compose commands it runs there resolve the same files, project name and .env as yours do.
+  # KAINOW_INSTALL_DIR, KAINOW_UID, KAINOW_GID and DOCKER_GID are needed only here (INSTALL.md gives the lines).
+  # Unset: only `updater` runs fail, naming the missing setting; other commands are unaffected (as for ops' folder).
+  updater:
+    build:
+      context: ./app
+      target: updater
+    image: kainow-updater:0.0.0
+    profiles: [updater]
+    restart: "no"
+    read_only: true
+    tmpfs: [/tmp, /home/kainow]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    user: "${KAINOW_UID:-KAINOW_UID-not-set}:${KAINOW_GID:-KAINOW_GID-not-set}"
+    group_add: ["${DOCKER_GID:-DOCKER_GID-not-set}"]
+    command: ["node", "-e", "console.log('Run a command: node dist/updater/updater-cli.js tick')"]
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: "3" }
+    environment:
+      DATABASE_URL: postgres://kainow:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the .env file}@db:5432/kainow
+      NODE_ENV: production
+      KAINOW_INSTALL_DIR: ${KAINOW_INSTALL_DIR:-/KAINOW_INSTALL_DIR-not-set}
+      HOME: /home/kainow
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+      - type: bind
+        source: ${KAINOW_INSTALL_DIR:-/KAINOW_INSTALL_DIR-not-set}
+        target: ${KAINOW_INSTALL_DIR:-/KAINOW_INSTALL_DIR-not-set}
+        bind: { create_host_path: false }
+
+  # The notice page after a failed update (10b spec 5.7): one fixed page, status 503, on Kainow's port. Only the updater
+  # starts it (`docker compose --profile updater up -d notice`) while api is stopped; `recover` stops it. No socket,
+  # no database, no settings.
+  notice:
+    build:
+      context: ./app
+      target: updater
+    image: kainow-updater:0.0.0
+    profiles: [updater]
+    restart: unless-stopped
+    read_only: true
+    tmpfs: [/tmp]
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    command: ["node", "dist/updater/notice-server.js"]
+    logging:
+      driver: json-file
+      options: { max-size: 10m, max-file: "3" }
+    environment:
+      NODE_ENV: production
+    ports:
+      - "127.0.0.1:${KAINOW_PORT:-3000}:3000"
+
 volumes:
   kainow-db:

@@ -49,14 +49,14 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     assert.equal((await t.anonymous('GET', '/go-live')).status, 401);
   });
 
-  test('the page lists the 12 steps in order with text, explanation and link', async () => {
+  test('the page lists the 13 steps in order with text, explanation and link', async () => {
     const body = await get();
-    assert.deepEqual(body.steps.map((s: any) => s.key), ['organisation', 'logos', 'second_admin', 'recovery', 'mailbox', 'test_email', 'calendar', 'backups', 'department', 'users', 'project', 'storage']);
-    assert.deepEqual(body.steps.map((s: any) => s.position), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    assert.deepEqual(body.steps.map((s: any) => s.key), ['organisation', 'logos', 'second_admin', 'recovery', 'mailbox', 'test_email', 'calendar', 'backups', 'department', 'users', 'project', 'storage', 'updates']);
+    assert.deepEqual(body.steps.map((s: any) => s.position), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
     assert.equal(step(body, 'organisation').text, 'Register your organisation: its name and email domains');
     assert.equal(step(body, 'organisation').link, '#/organisation');
     assert.ok(body.steps.every((s: any) => s.explanation.length > 0 && s.explanation.length <= 160));
-    assert.deepEqual(body.steps.map((s: any) => s.mode), ['auto', 'auto_or_skip', 'auto', 'confirm', 'confirm', 'confirm', 'confirm', 'auto', 'auto', 'auto', 'auto', 'auto_or_skip']);
+    assert.deepEqual(body.steps.map((s: any) => s.mode), ['auto', 'auto_or_skip', 'auto', 'confirm', 'confirm', 'confirm', 'confirm', 'auto', 'auto', 'auto', 'auto', 'auto_or_skip', 'auto']);
     assert.deepEqual([body.closedAt, body.notDoneAtClose], [null, []]);
   });
 
@@ -65,7 +65,7 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(body.information.map((i: any) => [i.key, i.text, i.link]), [
       ['ai', 'AI: at least one approved model; projects need their own connection and limits before AI runs', '#/ai'],
     ]);
-    assert.equal(body.steps.length, 12);
+    assert.equal(body.steps.length, 13);
     assert.ok(!body.steps.some((s: any) => s.key === 'ai'));
   });
 
@@ -94,7 +94,7 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     body = await get();
     for (const k of ['second_admin', 'department', 'logos']) assert.deepEqual([k, step(body, k).done, step(body, k).tickedBy], [k, true, 'kainow']);
     assert.equal(body.steps.filter((s: any) => s.done).length, 4, 'with the organisation');
-    assert.deepEqual((await admin.request('GET', '/go-live/summary')).body, { open: true, done: 4, total: 12 });
+    assert.deepEqual((await admin.request('GET', '/go-live/summary')).body, { open: true, done: 4, total: 13 });
   });
 
   test('a disabled second Administrator does not count', async () => {
@@ -265,7 +265,7 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     await reachClose();
     const body = await get();
     assert.ok(body.closedAt);
-    assert.deepEqual(body.notDoneAtClose, ['logos', 'second_admin', 'mailbox', 'test_email', 'calendar', 'backups', 'storage']);
+    assert.deepEqual(body.notDoneAtClose, ['logos', 'second_admin', 'mailbox', 'test_email', 'calendar', 'backups', 'storage', 'updates']);
     assert.equal((await admin.request('GET', '/go-live/summary')).body.open, false);
     const closes = (await events(t)).filter((e) => e.action === 'closed');
     assert.deepEqual(closes, [{ step_key: null, action: 'closed', actor_id: null, note: null }]);

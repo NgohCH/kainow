@@ -34,8 +34,8 @@ export const GIT_ENV: Readonly<Record<string, string>> = Object.freeze({
 
 export type GitResult = { code: number; stdout: string; stderr: string };
 
-/** Runs `git <args>` in `dir`. Never throws: a failure to start is code 127, a timeout code 124. */
-export function git(dir: string, args: string[], env?: NodeJS.ProcessEnv): Promise<GitResult> {
+/** Runs `git <args>` in `dir`. Never throws: a failure to start is code 127, a timeout code 124 (default 2 minutes). */
+export function git(dir: string, args: string[], env?: NodeJS.ProcessEnv, timeoutMs: number = GIT_TIMEOUT_MS): Promise<GitResult> {
   return new Promise((resolve) => {
     execFile(
       'git',
@@ -43,7 +43,7 @@ export function git(dir: string, args: string[], env?: NodeJS.ProcessEnv): Promi
       {
         cwd: dir,
         env: { ...process.env, ...GIT_ENV, ...env },
-        timeout: GIT_TIMEOUT_MS,
+        timeout: timeoutMs,
         killSignal: 'SIGKILL',
         maxBuffer: 64 * 1024 * 1024,
         windowsHide: true,
