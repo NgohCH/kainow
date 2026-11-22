@@ -313,6 +313,18 @@ export async function installWithStore(deps: Omit<InstallDeps, 'pool'>, store: I
 
   const healthy = (version: string) => waitHealthy({ runner, installDir, compose, now: ms, log, sleep }, version);
 
+  /**
+   * The object `refs/tags/<tag>` names in the Kainow folder: null when there is no such tag, undefined when git could
+   * not say. switch_code creates it, so the next update finds the folder on a release tag (and going back, the failed
+   * path and `recover` find the previous version by its tag name).
+   */
+  const localTag = async (): Promise<string | null | undefined> => {
+    const r = await runner.run('git', ['for-each-ref', '--format=%(objectname)', `refs/tags/${u.tag}`], { cwd: installDir });
+    if (r.code !== 0) return undefined;
+    const id = r.stdout.trim().toLowerCase();
+    return id ? id : null;
+  };
+
   // ---- endings ----
   /** Spec 5.7, or 5.6's last paragraph (no migration): stop, previous code, notice page, best-effort record, log line. */
   const failedAfter = async (state: 'failed_after_migration' | 'failed_needs_attention', code: FailureCode): Promise<UpdateState> => {
@@ -454,6 +466,14 @@ export async function installWithStore(deps: Omit<InstallDeps, 'pool'>, store: I
         if (c.code !== 0 || c.stdout.trim().toLowerCase() !== u.commit.trim().toLowerCase()) problem = 'tag_changed';
       }
     }
+    if (!problem) {
+      // switch_code records the release as a local tag; one already there must be the verified object.
+      const local = await localTag();
+      if (local === undefined || (local !== null && local !== u.tagObject?.toLowerCase())) {
+        log(`The local tag ${u.tag} is not the verified release tag.`);
+        problem = 'tag_changed';
+      }
+    }
   } catch (err) {
     await store.endStep(recheckId, 'failed', null, deps.now());
     throw err;
@@ -530,6 +550,23 @@ export async function installWithStore(deps: Omit<InstallDeps, 'pool'>, store: I
     // ---- 5. switch the code ----
     switched = true;
     await step('switch_code', async () => {
+      // The release becomes a local tag pointing at the verified tag object ('' = only if there is none yet), so the
+      // folder is on a release tag after the switch. A tag already there must be that same object.
+      const local = await localTag();
+      if (local === undefined) {
+        log(`Reading the local tag ${u.tag} failed.`);
+        throw new Fail('checkout_failed');
+      }
+      if (local === null) {
+        const t = await runner.run('git', ['update-ref', `refs/tags/${u.tag}`, u.tagObject!, ''], { cwd: installDir });
+        if (t.code !== 0) {
+          log(`Recording the local tag ${u.tag} failed (${t.code}): ${tail(t)}`);
+          throw new Fail('checkout_failed');
+        }
+      } else if (local !== u.tagObject?.toLowerCase()) {
+        log(`The local tag ${u.tag} is not the verified release tag.`);
+        throw new Fail('tag_changed');
+      }
       try {
         await keepSigners();
       } catch {
