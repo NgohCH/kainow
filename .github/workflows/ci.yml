@@ -51,7 +51,9 @@ jobs:
           echo "deb [signed-by=/usr/share/postgresql-common/pgdg/apt.postgresql.org.asc] https://apt.postgresql.org/pub/repos/apt $(lsb_release -cs)-pgdg main" | sudo tee /etc/apt/sources.list.d/pgdg.list
           sudo apt-get update
           sudo apt-get install -y postgresql-client-16
-          pg_dump --version
+          # The runner image also has a newer client first on PATH; Kainow's tools must match the version 16 server.
+          echo "KAINOW_PG_BIN=/usr/lib/postgresql/16/bin" >> "$GITHUB_ENV"
+          /usr/lib/postgresql/16/bin/pg_dump --version
       - run: npm ci
       - run: npm test
 
