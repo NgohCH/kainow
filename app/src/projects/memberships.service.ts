@@ -11,6 +11,7 @@ import { isCalendarDate } from '../extraction/due';
 import { type ProjectContext, ProjectAccess } from './access.service';
 import { canManageRole } from './matrix';
 import { type MembershipRow, type ProjectRole, SINGLE_HOLDER_ROLES, datesOverlap, doubleHolding, membershipState, requiredRolesCheck, separationCheck } from './membership';
+import { queueProjectSharing } from '../outputs/sharing-queue';
 
 export const PROJECT_ROLES: readonly ProjectRole[] = ['pm', 'deputy_pm', 'owner', 'sponsor', 'member'];
 
@@ -160,6 +161,8 @@ export class MembershipsService {
       `INSERT INTO membership_events (id, membership_id, kind, new_starts_on, new_expires_on, actor_id, reason, at) VALUES ($1, $2, 'appointed', $3, $4, $5, $6, $7)`,
       [uuidv7(at.getTime()), id, candidate.startsOn, candidate.expiresOn, actorId, reason, at],
     );
+    // A joiner is shared with (spec 5.5); a role this replaced was queued urgent by recordChange above.
+    await queueProjectSharing(c, ctx.project.id, 'normal');
     await writeAudit(c, {
       at,
       action: 'membership.appointed',
@@ -218,6 +221,8 @@ export class MembershipsService {
       [uuidv7(at.getTime()), row.id, kind, row.startsOn, row.expiresOn, next?.startsOn ?? null, next?.expiresOn ?? null, actorId, reason, at],
     );
     await writeAudit(c, { at, action: `membership.${kind}`, actorUserId: actorId, subjectType: 'project', subjectId: projectId, detail: { membershipId: row.id } });
+    // SharePoint follows (spec 5.5): only an extension can never take access away.
+    await queueProjectSharing(c, projectId, kind === 'extended' ? 'normal' : 'urgent');
   }
 
   async extend(user: AuthUser, membershipId: string, input: Record<string, unknown>) {

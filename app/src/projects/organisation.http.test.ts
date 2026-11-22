@@ -45,6 +45,40 @@ describe('departments and eligible domains', { skip: SKIP_NO_DB }, () => {
     assert.equal((await t.pool.query(`SELECT count(*)::int AS n FROM audit_events WHERE action LIKE 'department.%'`)).rows[0].n, 3);
   });
 
+  test('a retired department’s name is never used again: it is brought back instead', async () => {
+    const id = (await admin.request('POST', '/departments', { name: 'Water Services' })).body.department.id;
+    const other = (await admin.request('POST', '/departments', { name: 'Asset Management' })).body.department.id;
+    assert.equal((await admin.request('POST', `/departments/${id}/retire`)).status, 200);
+
+    // Adding it again, in any case or spacing, is refused and names the retired department.
+    for (const name of ['Water Services', 'water  services', ' WATER SERVICES ']) {
+      const again = await admin.request('POST', '/departments', { name });
+      assert.equal(again.status, 409, name);
+      assert.equal(again.body.message, 'A retired department is called Water Services. Bring it back instead of making a second one.');
+      assert.deepEqual(again.body.retiredDepartment, { id, name: 'Water Services' });
+    }
+    // So is renaming another department to it.
+    assert.equal((await admin.request('POST', `/departments/${other}/rename`, { name: 'Water services' })).status, 409);
+    assert.equal((await t.pool.query(`SELECT count(*)::int AS n FROM departments`)).rows[0].n, 2);
+
+    // Bringing it back: Administrator only, keeps the id, and it can be chosen again.
+    assert.equal((await member.request('POST', `/departments/${id}/restore`)).status, 403);
+    const back = await admin.request('POST', `/departments/${id}/restore`);
+    assert.equal(back.status, 200, JSON.stringify(back.body));
+    assert.deepEqual(back.body.department, { id, name: 'Water Services', status: 'active' });
+    assert.deepEqual((await member.request('GET', '/departments')).body.departments.map((d: { id: string }) => d.id).sort(), [id, other].sort());
+    assert.equal((await admin.request('POST', `/departments/${id}/restore`)).status, 409, 'not retired');
+    const audit = await t.pool.query(`SELECT actor_user_id FROM audit_events WHERE action = 'department.restored' AND subject_id = $1`, [id]);
+    assert.equal(audit.rowCount, 1);
+
+    // A retired department whose name an active one took meanwhile (made before this rule) cannot come back under it.
+    assert.equal((await admin.request('POST', `/departments/${other}/retire`)).status, 200);
+    await t.pool.query(`INSERT INTO departments (id, name, created_by, created_at) SELECT gen_random_uuid(), 'Asset Management', created_by, created_at FROM departments WHERE id = $1`, [other]);
+    const clash = await admin.request('POST', `/departments/${other}/restore`);
+    assert.equal(clash.status, 409);
+    assert.equal(clash.body.message, 'A department with that name already exists.');
+  });
+
   test('only an administrator manages eligible domains', async () => {
     assert.equal((await member.request('GET', '/domains')).status, 403);
     assert.equal((await member.request('POST', '/domains', { domain: 'example.com' })).status, 403);

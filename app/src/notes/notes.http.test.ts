@@ -263,9 +263,9 @@ describe('notes intake over HTTP', { skip: SKIP_NO_DB }, () => {
       let reached!: () => void;
       const gate = new Promise<void>((r) => (release = r));
       const reachedP = new Promise<void>((r) => (reached = r));
-      svc.prepare = async (content: unknown) => {
+      svc.prepare = async (...args: unknown[]) => {
         svc.prepare = original;
-        const prepared = await original(content);
+        const prepared = await original(...args);
         reached();
         await gate;
         return prepared;

@@ -9,6 +9,7 @@ import { isCalendarDate } from '../extraction/due';
 import { loadAccessSettings } from '../organisation/access-settings';
 import { type ProjectContext, ProjectAccess, managesGrants } from './access.service';
 import { GRANT_KINDS, type GrantKind, type GrantRow, defaultGrantEnd, grantSpanOk, grantState, mayDecide } from './grants';
+import { queueProjectSharing } from '../outputs/sharing-queue';
 
 const NOT_MANAGER = 'Only an Enterprise Administrator, the Owner or a Sponsor can manage Audit and Oversight access.';
 const spanMessage = (max: number) => `Access can be granted for at most ${max} days at a time.`;
@@ -63,6 +64,11 @@ export class GrantsService {
       `INSERT INTO grant_events (id, grant_id, kind, previous_expires_on, new_expires_on, actor_id, reason, at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
       [uuidv7(at.getTime()), grantId, kind, prev ?? null, next ?? null, actorId, reason, at],
     );
+    // An Audit/Oversight grant that starts, ends or changes changes who may read the project's outputs (spec 5.5).
+    if (kind !== 'requested' && kind !== 'declined') {
+      const projectId = (await c.query<{ project_id: string }>(`SELECT project_id FROM access_grants WHERE id = $1`, [grantId])).rows[0].project_id;
+      await queueProjectSharing(c, projectId, kind === 'approved' || kind === 'extended' || kind === 'restored' ? 'normal' : 'urgent');
+    }
   }
 
   async request(user: AuthUser, projectId: string, input: Record<string, unknown>) {

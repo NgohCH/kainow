@@ -98,6 +98,52 @@ DATABASE_URL=postgres://.../kainow_bench_sp8 npm run bench-resources
 
 Result of the run on 20 November 2026 (p95, all four aims met): Resources tab with 100 lines 96.0 ms (aim 200; 36.4 ms after the final fix wave); finance with 1,000 entries 27.9 ms (aim 200); Resources and finance panel 79.5 ms (aim 500); leadership summary at organisation scope 489.4 ms (aim 500, little room; most of its time is sub-project 7's task measures; the two re-runs after the final fix wave read 561.7 and 540.6 ms, missed, with no change to its code path). The full table and the two fixes made after the first run are in the spec. All seeded names are dummy and the e-mail addresses are at `@example.org`.
 
+## External outputs and storage (V1.0 sub-project 9)
+
+Design: [`docs/superpowers/specs/2026-11-20-v1-external-outputs-design.md`](../docs/superpowers/specs/2026-11-20-v1-external-outputs-design.md); decisions D100–D108. The output register, generated Markdown/DOCX/PDF/CSV files, project CSV exports, filing in SharePoint or OneDrive with folder sharing kept in step with each output's readers, and the managed source area (every source version's original and text kept in SharePoint).
+
+| Screen | Route | Who |
+| --- | --- | --- |
+| Project › Outputs (register, submit, register, file, approve, audience) | `#/projects/<id>/outputs` | Output readers; actions by role (Permission Matrix §5) |
+| Project settings › Outputs (destination, formats, export roles) | from the project's settings | PM, Owner or Sponsor while delegated; otherwise the Enterprise Administrator |
+| Storage (connection, destinations, storage Administrators, checks, manifest) | `#/storage` | Enterprise Administrator (`storage.manage`) |
+| Report types | `#/report-types` | Enterprise Administrator |
+| Access and records: "Project exports allowed" (Off by default) | `#/access-settings` | Enterprise Administrator |
+
+**Storage settings** (System Settings › Storage, Enterprise Administrator, each change with a reason and kept in an append-only history):
+
+| Setting | Default | Notes |
+| --- | --- | --- |
+| Tenant ID, application (client) ID, client secret | none | The secret is sealed with the protected key and never shown again; without the protected key it cannot be saved and storage work waits. "Check connection" records its result. |
+| Directory lookup | Off | On needs `User.ReadBasic.All` as well and is checked by looking up the Administrator's own address; it allows OneDrive destinations. Off: Kainow shares only with addresses on the approved email domains. |
+| Destinations | none | A SharePoint library (or, with lookup on, a person's OneDrive), for the source area (exactly one approved) or outputs. Approval needs a passing check, including a library limited to site owners. |
+| Scheduled checks | Off | A daily check (02:30 UTC+8) of up to 2,000 output files and 2,000 source files. |
+| Approved formats; projects may change formats, choose their destination, set export roles | all formats; On, On, On | |
+| Storage Administrators | none | Direct write on the source area, never self-designated. |
+
+Microsoft app registration and site permissions: see "Storage in SharePoint or OneDrive" in [`INSTALL.md`](../INSTALL.md).
+
+**Development without a Microsoft tenant.** Set `KAINOW_LOCAL_STORAGE_DIR` to a folder (both the API and the worker) and Kainow can use the `local` connector, which keeps files under that folder and records its "grants" in a JSON sidecar. It is refused when `NODE_ENV=production` and is not offered in the Storage page's form: add a local destination as the Enterprise Administrator with `POST /admin/storage/destinations` and `{ "kind": "local", "purpose": "outputs" or "source_area", "label": ..., "reason": ... }`, then check and approve it on the Storage page. Every Kainow account counts as having an account there. Tests use it end to end.
+
+**Probe.** `npm run probe-storage` checks a real tenant (the Product Owner runs it once a tenant exists; it is not run in CI). It needs the database with a saved storage connection and a destination added on the Storage page, and the protected key:
+
+```
+DATABASE_URL=... KAINOW_PROTECTED_KEY_FILE=... npm run probe-storage -- --destination "<label>" --test-account <person@your-domain> --granted fullcontrol
+```
+
+It works in its own `kainow-probe-<time>` folder, removes it permanently at the end and prints one line per check: token, destination, folder, small upload, chunked upload, hashes (Microsoft's QuickXorHash against Kainow's, which confirms the self-derived test vectors), move, invite and revoke (read and write, to the test account), unknown account (how Microsoft refuses an unknown address), library permissions (how site owners, site collection administrators or a OneDrive owner appear), permanent delete, write sufficed (`--granted` says which site permission the app holds: `write` or `fullcontrol`; every Kainow site is granted Full control unless a run with `--granted write` prints "write sufficed: ok") and the permissions needed. It never prints the client secret or a token. Exit code 0 when nothing failed.
+
+**Bench.** `npm run bench-outputs` times the register list, the tasks export, share-sync, the restricted-folder move and the daily source check against the aims (spec section 15), the storage jobs against the fake Graph server with 50 ms added to every request. It seeds the sub-project 7 data set plus outputs and stored files into its own database, whose name must end in `_bench` or `_bench_<suffix>`, migrated first:
+
+```
+DATABASE_URL=postgres://.../kainow_bench_sp9 npm run migrate
+DATABASE_URL=postgres://.../kainow_bench_sp9 npm run bench-outputs
+```
+
+It can be run again on the same database (each run adds fresh destinations and one 50-reader project). All seeded names are dummy and the e-mail addresses are at `@example.org`.
+
+**Go-live checklist step 12, "Connect storage and approve the source area".** It ticks itself once the last "Check connection" succeeded and a source area is approved, or the Administrator skips it with a note; until it is done, source files stay in the database and are stored when a source area is approved.
+
 ## Milestones
 
 | # | Milestone | Status |

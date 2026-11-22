@@ -1,6 +1,6 @@
 import { BadRequestException } from '@nestjs/common';
 
-export const SEARCH_KINDS = ['project', 'person', 'note', 'ai_proposal', 'human_proposal', 'task', 'decision', 'question', 'risk', 'message'] as const;
+export const SEARCH_KINDS = ['project', 'person', 'note', 'ai_proposal', 'human_proposal', 'task', 'decision', 'question', 'risk', 'message', 'output'] as const;
 export type SearchKind = (typeof SEARCH_KINDS)[number];
 
 /** Ranking order of kinds in results; the two proposal kinds share a rank. */
@@ -15,6 +15,7 @@ export const KIND_ORDER: Record<SearchKind, number> = {
   human_proposal: 6,
   note: 7,
   message: 8,
+  output: 9,
 };
 
 const MAX_LENGTH = 200;
@@ -72,6 +73,8 @@ export function hrefFor(r: {
       return `#/runs/${r.runId}`;
     case 'human_proposal':
       return `#/projects/${r.projectId}/notes/${r.itemId}`;
+    case 'output':
+      return `#/projects/${r.projectId}/outputs/${r.itemId}`;
     case 'message':
       return `#/projects/${r.projectId}/threads/${r.threadId}?m=${r.messageNo}`;
     default:

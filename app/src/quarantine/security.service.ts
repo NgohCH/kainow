@@ -38,6 +38,7 @@ import { PG_POOL } from '../db/database.module';
 import { CASE_CLOSED, type Disclosures, WAITING_FOR_KEY, unhold } from './cases.service';
 import { type RevealedValue, readOriginals, restoreOriginals } from './clean';
 import { PROTECTED_KEY, type ProtectedKey } from './protected-key';
+import { stillInStorage } from '../storage/withhold';
 import { lockSweeps } from './sweep-lock';
 import { ITEM_KINDS, type ItemKind } from './registry';
 
@@ -110,6 +111,8 @@ export interface SecurityCase {
   /** For a reviewer: whether they hold a current grant naming the case. */
   /** The reported item and its confirmed copies, each of which Reveal original can open: references only. */
   items: Array<{ kind: ItemKind; id: string; role: string }>;
+  /** "Still in storage" while a withheld file of the case is not yet removed, or a held output has linked documents (external outputs spec 4.7, 8.5). */
+  stillInStorage: { label: string; files: number; links: number } | null;
   currentGrant?: boolean;
 }
 
@@ -477,6 +480,7 @@ export class SecurityService {
         disclosuresLabel: DISCLOSURES_LABEL,
         items: r.items,
         changedSinceCleaning: changed.map((c) => ({ table: c.table, rowKey: c.rowKey, label: CHANGED_SINCE_CLEANING })),
+        stillInStorage: await stillInStorage(this.pool, r.id),
         ...(viewer ? { currentGrant: (await this.currentGrant(this.pool, viewer, r.id)) !== null } : {}),
       });
     }
@@ -568,7 +572,7 @@ export class SecurityService {
       const changed = r.changed.map((x) => ({ table: x.table, rowKey: safeKey(x.rowKey) }));
 
       // Holds end: the item, its confirmed copies, and every place found (masked or held for want of the key).
-      await unhold(db, c.kind, c.itemId, c.id);
+      await unhold(db, c.kind, c.itemId, c.id, at);
       const places = (
         await db.query<{ kind: ItemKind; id: string; decision: string | null }>(
           `SELECT item_kind AS kind, item_id AS id, NULL AS decision FROM quarantine_items WHERE case_id = $1 AND role = 'copy'
@@ -576,7 +580,7 @@ export class SecurityService {
           [c.id],
         )
       ).rows;
-      for (const p of places) await unhold(db, p.kind, p.id, c.id);
+      for (const p of places) await unhold(db, p.kind, p.id, c.id, at);
       // Places nobody decided: their text is back, so the release dismisses them.
       const undecided = (
         await db.query<{ kind: ItemKind; id: string }>(

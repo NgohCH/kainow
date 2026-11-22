@@ -2,6 +2,7 @@ import type { Pool, PoolClient } from 'pg';
 import type { Clock } from '../auth/tokens';
 import { sha256Hex } from '../notes/text';
 import { uuidv7 } from '../common/uuid7';
+import { addSourceVersionFiles } from '../storage/sources';
 import { findCredentials } from '../extraction/credentials';
 import { CLAIM_ATTEMPTS_SQL, type RunJob, type RunOutcome, isLastAttempt } from '../extraction/runner';
 import { WAITING_FOR_PLACE } from '../ai/guarded-call';
@@ -212,6 +213,8 @@ export class AnalysisRunner {
          VALUES ($1, $2, $3, 'discussion', $4, $5, $6, $7, $8)`,
         [versionId, sourceId, versionNo, text, sha256Hex(text), text.length, run.requestedBy, at],
       );
+      // The transcript's text is preserved in the managed source area (external outputs spec 9.1).
+      if (run.projectId) await addSourceVersionFiles(client, versionId, run.projectId, false);
       for (const s of spans) {
         await client.query(
           `INSERT INTO transcript_spans (source_version_id, message_no, message_version_id, author_id, header_start, body_start, body_end, is_context)

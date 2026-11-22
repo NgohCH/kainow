@@ -9,6 +9,7 @@ export const ACTIONS = [
   'spend.view',
   'analytics.view',
   'organisation.manage',
+  'storage.manage',
   'resources.catalogue.manage',
   'resources.settings.manage',
 ] as const;

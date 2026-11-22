@@ -207,9 +207,11 @@ async function moveSummaries(db: Db, what: RemovedMaterial, reason: RemovalReaso
  * but never shares or shows a withdrawn answer (completeQuestion shares only from review_state 'none').
  * A cleared answer touched again goes back to review; nothing is ever brought back by this hook.
  *
+ * Last, every output rendered from such a draft goes to "Access review required" (outputsOnMaterialRemoved, D101).
+ *
  * Locks: the caller may hold thread, message, audience or (Confirm/Withdraw) summary rows. Summary rows are locked
- * here in id order, then answer rows in request id order, then draft rows in id order, so two removals cannot
- * deadlock with each other. Everything else that locks an answer together with a thread takes the thread first
+ * here in id order, then answer rows in request id order, then draft rows in id order, then output rows in id order,
+ * so two removals cannot deadlock with each other. Everything else that locks an answer together with a thread takes the thread first
  * (share, re-answer, the worker's completion).
  */
 export async function onMaterialRemoved(
@@ -227,6 +229,22 @@ export async function onMaterialRemoved(
   for (const id of primary) causeOf.set(id, reason);
   const requestIds = [...causeOf.keys()].sort();
   if (requestIds.length === 0) return { withdrawn: 0, review: 0 };
+  const result = await moveAnswersAndDrafts(db, requestIds, causeOf, reason, at);
+  // Outputs rendered from those drafts (D101): locked last, in id order. Loaded when first needed: the outputs readers
+  // import the draft and thread services, which import this hook, and Nest needs those classes whole at start.
+  const { outputsOnMaterialRemoved } = await import('../outputs/removal');
+  await outputsOnMaterialRemoved(db, causeOf, at);
+  return result;
+}
+
+/** Answers, then drafts, built on the touched requests (see onMaterialRemoved). */
+async function moveAnswersAndDrafts(
+  db: PoolClient,
+  requestIds: string[],
+  causeOf: ReadonlyMap<string, RemovalReason>,
+  reason: RemovalReason,
+  at: Date,
+): Promise<{ withdrawn: number; review: number }> {
   let withdrawn = 0;
   let review = 0;
   const event = (

@@ -16,7 +16,15 @@ function cleanName(v: unknown): string {
   return name;
 }
 
-/** Organisation settings an Enterprise Administrator keeps: departments and eligible email domains. */
+const DUPLICATE_NAME = 'A department with that name already exists.';
+const retiredName = (name: string) => `A retired department is called ${name}. Bring it back instead of making a second one.`;
+
+/**
+ * Organisation settings an Enterprise Administrator keeps: departments and eligible email domains. Departments are one
+ * central list (Product Owner, 21 November 2026): only the Enterprise Administrator adds, renames, retires or brings
+ * one back, everyone else picks from it, and a name is never used twice, by an active or a retired department (names
+ * compared ignoring case and extra spaces).
+ */
 @Injectable()
 export class OrganisationService {
   constructor(
@@ -34,12 +42,13 @@ export class OrganisationService {
 
   async addDepartment(nameIn: unknown, actorUserId: string) {
     const name = cleanName(nameIn);
+    await this.refuseRetiredName(name, null);
     const id = uuidv7();
     const at = this.now();
     try {
       await this.pool.query(`INSERT INTO departments (id, name, created_by, created_at) VALUES ($1, $2, $3, $4)`, [id, name, actorUserId, at]);
     } catch (err) {
-      if ((err as { code?: string }).code === UNIQUE_VIOLATION) throw new ConflictException('A department with that name already exists.');
+      if ((err as { code?: string }).code === UNIQUE_VIOLATION) throw new ConflictException(DUPLICATE_NAME);
       throw err;
     }
     await writeAudit(this.pool, { at, action: 'department.added', actorUserId, subjectType: 'department', subjectId: id, detail: { name } });
@@ -48,6 +57,7 @@ export class OrganisationService {
 
   async renameDepartment(id: string, nameIn: unknown, actorUserId: string) {
     const name = cleanName(nameIn);
+    await this.refuseRetiredName(name, id);
     const at = this.now();
     let rows;
     try {
@@ -56,7 +66,7 @@ export class OrganisationService {
         [id, name, actorUserId, at],
       ));
     } catch (err) {
-      if ((err as { code?: string }).code === UNIQUE_VIOLATION) throw new ConflictException('A department with that name already exists.');
+      if ((err as { code?: string }).code === UNIQUE_VIOLATION) throw new ConflictException(DUPLICATE_NAME);
       throw err;
     }
     if (!rows[0]) throw new NotFoundException();
@@ -80,6 +90,46 @@ export class OrganisationService {
     }
     await writeAudit(this.pool, { at, action: 'department.retired', actorUserId, subjectType: 'department', subjectId: id });
     return rows[0];
+  }
+
+  /** Brings a retired department back into the list, under its name. Refused while an active department has that name. */
+  async restoreDepartment(id: string, actorUserId: string) {
+    const at = this.now();
+    let rows;
+    try {
+      ({ rows } = await this.pool.query(
+        `UPDATE departments SET status = 'active', updated_by = $2, updated_at = $3 WHERE id = $1 AND status = 'retired' RETURNING id, name, status`,
+        [id, actorUserId, at],
+      ));
+    } catch (err) {
+      if ((err as { code?: string }).code === UNIQUE_VIOLATION) throw new ConflictException(DUPLICATE_NAME);
+      throw err;
+    }
+    if (!rows[0]) {
+      const exists = (await this.pool.query(`SELECT 1 FROM departments WHERE id = $1`, [id])).rowCount;
+      if (exists) throw new ConflictException('That department is not retired.');
+      throw new NotFoundException();
+    }
+    await writeAudit(this.pool, { at, action: 'department.restored', actorUserId, subjectType: 'department', subjectId: id });
+    return rows[0];
+  }
+
+  /**
+   * A name a retired department already has (ignoring case and extra spaces) is refused, naming that department so the
+   * Administrator can bring it back. `except` is the department being renamed.
+   */
+  private async refuseRetiredName(name: string, except: string | null): Promise<void> {
+    const retired = (
+      await this.pool.query<{ id: string; name: string }>(
+        `SELECT id, name FROM departments
+          WHERE status = 'retired' AND lower(regexp_replace(btrim(name), '[[:space:]]+', ' ', 'g')) = lower($1) AND ($2::uuid IS NULL OR id <> $2)
+          ORDER BY id LIMIT 1`,
+        [name, except],
+      )
+    ).rows[0];
+    if (retired) {
+      throw new ConflictException({ statusCode: 409, message: retiredName(retired.name), error: 'Conflict', retiredDepartment: retired });
+    }
   }
 
   async listDomains() {

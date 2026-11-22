@@ -91,8 +91,8 @@ export class AccessSettingsService {
       const value = await this.merged(client, next, true);
       try {
         await client.query(
-          `UPDATE access_settings SET archive_after_months = $1, grant_default_days = $2, grant_max_days = $3, invitation_valid_days = $4, analytics_export_allowed = $5 WHERE id`,
-          [value.archiveAfterMonths, value.grantDefaultDays, value.grantMaxDays, value.invitationValidDays, value.analyticsExportAllowed],
+          `UPDATE access_settings SET archive_after_months = $1, grant_default_days = $2, grant_max_days = $3, invitation_valid_days = $4, analytics_export_allowed = $5, project_exports_allowed = $6 WHERE id`,
+          [value.archiveAfterMonths, value.grantDefaultDays, value.grantMaxDays, value.invitationValidDays, value.analyticsExportAllowed, value.projectExportsAllowed],
         );
       } catch (err) {
         // Validation runs first; a CHECK failure here is only a fallback.

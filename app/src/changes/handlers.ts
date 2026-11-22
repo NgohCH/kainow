@@ -8,7 +8,7 @@ import { decide } from '../projects/matrix';
 import type { Created, RecordsService } from '../records/records.service';
 import type { ChangeKind } from './rules';
 
-export type TargetKind = 'extraction_item' | 'human_proposal' | 'task' | 'decision' | 'risk' | 'project_budget' | 'expenditure';
+export type TargetKind = 'extraction_item' | 'human_proposal' | 'task' | 'decision' | 'risk' | 'output_version' | 'project_budget' | 'expenditure';
 
 /** The target of a request as loaded (and locked) by ChangesService: its columns, camel-cased where named, plus projectId. */
 export type Row = Record<string, any>;
@@ -56,6 +56,11 @@ export interface ChangeHandler {
   targetKinds?: readonly TargetKind[];
   /** True when the target belongs to another project than the request (risk hand-over: the closing project's risk). */
   targetInOtherProject?: boolean;
+  /**
+   * Runs in the submitting transaction once the request exists (and before any approval given with it), whichever route
+   * submitted it: for what must be recorded whenever this kind of change is asked for.
+   */
+  afterSubmit?(c: PoolClient, ctx: ProjectContext, target: Row, request: RequestRow, at: Date): Promise<void>;
   /** The refusal (400) when the terms are not complete enough to approve, else null. Checked on every approval. */
   readyToApprove?(terms: Record<string, unknown>): string | null;
   /**

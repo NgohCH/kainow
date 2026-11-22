@@ -24,8 +24,9 @@ export const RECOVERY = {
 } as const;
 
 const utc = (d: Date): string => d.toISOString().slice(0, 16).replace('T', ' ');
+// Listed by email, the same order the dry run uses; the disabling itself locks by id.
 const named = (admins: Array<Pick<DisabledAdministrator, 'displayName' | 'email'>>): string =>
-  admins.map((a) => `${a.displayName} ${a.email}`).join(', ');
+  [...admins].sort((a, b) => (a.email < b.email ? -1 : a.email > b.email ? 1 : 0)).map((a) => `${a.displayName} ${a.email}`).join(', ');
 
 export interface RecoverOptions {
   email: string;

@@ -290,3 +290,38 @@ Kainow can send all its email, sign-in codes and reminders, as one mailbox in yo
 If Microsoft rejects the sender's credentials, Kainow does not retry that email and shows the reason in the delivery history; check the secret has not expired and that steps 2 and 3 are done. The client secret is never written to the database, the logs or any screen.
 
 **Sending rate.** Exchange Online accepts at most 30 messages a minute from one mailbox. Kainow sends at most 30 a minute through Microsoft 365 and keeps the rest queued for the next minute, so a large batch (for example the first morning after a long holiday) goes out over a few minutes. If Microsoft still answers that a sending limit or quota is reached, Kainow treats it as temporary and retries on its normal schedule.
+
+## Storage in SharePoint or OneDrive
+
+Kainow keeps every uploaded source file and its text in a protected **source area**, and files approved project outputs, in your own Microsoft 365 SharePoint (or OneDrive). It signs in as an application that can reach only the sites you grant it, one by one. You need a Microsoft 365 administrator for steps 1 to 4 and the protected key (see "Protected key") before step 5. Every name below is a placeholder; use your own.
+
+1. **Register an application.** In the Microsoft Entra admin centre choose **App registrations**, then **New registration**, for example "Kainow storage", single tenant. Note the **Directory (tenant) ID** and the **Application (client) ID**. Under **Certificates & secrets** make a **New client secret** and copy its **Value** at once (it is shown only once). A separate registration from the email one keeps each one's permissions small.
+2. **Give it Microsoft Graph application permissions.** Under **API permissions** choose **Add a permission**, **Microsoft Graph**, **Application permissions**, and add `Sites.Selected`. Add `User.ReadBasic.All` as well **only** if you will turn directory lookup on in Kainow (it lets Kainow check that a person is an account in your tenant before sharing a folder with them, and is needed for OneDrive destinations; it reads names and addresses only). Then choose **Grant admin consent**. `Sites.Selected` on its own reaches no site at all until step 3.
+3. **Grant the application each site it will use.** For every site that holds a Kainow library, run one of these (the Storage page shows the same commands for each destination). Every Kainow site needs **Full control**: on output sites Kainow shares each output folder with the people who may read it, and on the source-area site it gives the storage Administrators you designate direct access by inviting them to the area's `projects` folder. **Write** is enough only if the probe (step 7) shows "write sufficed: ok" for your tenant:
+
+   ```
+   Grant-PnPAzureADAppSitePermission -AppId "<application-id>" -DisplayName "Kainow" -Site "https://<tenant>.sharepoint.com/sites/<site-name>" -Permissions FullControl
+   ```
+
+   or with Microsoft Graph (as an administrator):
+
+   ```
+   POST https://graph.microsoft.com/v1.0/sites/<site-id>/permissions
+   { "roles": ["fullcontrol"], "grantedToIdentities": [ { "application": { "id": "<application-id>", "displayName": "Kainow" } } ] }
+   ```
+
+   Use the same for the source-area site. If Microsoft refuses `fullcontrol` when the permission is created, create it with `write` and then change it with `PATCH https://graph.microsoft.com/v1.0/sites/<site-id>/permissions/<permission-id>` and `{ "roles": ["fullcontrol"] }`. With only `write`, designating a storage Administrator fails as forbidden unless the probe has shown that `write` suffices. A OneDrive destination is the account's personal site, `https://<tenant>-my.sharepoint.com/personal/<account>`.
+4. **Limit each Kainow library to the site owners.** SharePoint gives every file in a library the library's own permissions as well as the ones Kainow adds, so a library that site members can open would show every output to them. For each library Kainow uses: open the library, **Settings**, **Library settings**, **Permissions for this document library**, **Stop Inheriting Permissions**, then remove every group, person and sharing link except the site's **Owners** group. Kainow refuses to approve a library where anyone else can open it, names who, and warns on the Storage page if that changes later; it never removes those permissions itself. In the SharePoint admin centre set each of these sites' external sharing to **Only people in your organization**, so no guest can be invited.
+5. **Connect Kainow.** Sign in as an Enterprise Administrator and open **System Settings › Storage**. Enter the tenant ID, the application ID and the client secret, with a reason; the secret is stored encrypted with the protected key and never shown again (without the protected key it cannot be saved). Choose **Check connection**: it should say "Connected". Turn directory lookup on only if you added `User.ReadBasic.All` in step 2.
+6. **Add and approve the destinations.** Add the source-area library (exactly one) and one or more output libraries by the site address and the library name, check each one and approve it with a reason. Then designate the people who may open the source area directly (storage Administrators; never yourself), and choose each project's output destination in its settings (or let projects choose). The go-live checklist step "Connect storage and approve the source area" then ticks itself; until it does, source files stay in the database and are moved to the source area once it is approved.
+7. **Check it against your tenant (recommended).** With the provided Compose setup (the `api` service already has the database address and the protected key):
+
+   ```
+   docker compose run --rm api node dist/storage/probe-storage-cli.js --destination "<label>" --test-account <person@your-domain> --granted fullcontrol
+   ```
+
+   Outside Docker: `DATABASE_URL=... KAINOW_PROTECTED_KEY_FILE=... npm run probe-storage -- --destination "<label>" --test-account <person@your-domain> --granted fullcontrol`.
+
+   It works in its own folder, removes it permanently afterwards, prints one line per check and never prints the secret or a token. `--granted` says which site permission you gave in step 3. To find out whether `write` is enough in your tenant, grant `write` instead of Full control on one site, run the probe against a destination there with `--granted write`, and keep `write` only if it prints "write sufficed: ok". Send the output to whoever looks after Kainow. The output may name the people and groups who can open the library, so check it before you send it on.
+
+To stop Kainow reaching a site, remove the site permission of step 3 (or delete the client secret in Entra). Files Kainow filed stay where they are; Kainow never deletes a filed output.
