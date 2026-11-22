@@ -7,6 +7,7 @@ import { FakeRunner } from '../testing/fake-runner';
 import { PREVIOUS_SIGNERS } from './install';
 import {
   RECOVER_TEXT,
+  SET_ASIDE_PATTERN,
   decideSituation,
   runRecover,
   setAsideName,
@@ -237,6 +238,25 @@ describe('recover (spec 5.9)', () => {
       kind: 'refused',
       message: RECOVER_TEXT.partial,
     });
+    assert.deepEqual(decideSituation({ kainow: k(null, { hasUpdates: false, reason: 'restored_from_backup' }), setAside: null }), {
+      kind: 'refused',
+      message: RECOVER_TEXT.partial,
+    });
+    // Non-empty, no updates table, no set-aside database: may be the failed database itself, half-migrated. Never drop advice.
+    for (const f of [
+      { kainow: k(null, { hasUpdates: false }), setAside: null },
+      { kainow: k(null, { hasUpdates: false, reason: 'update' }), setAside: null },
+      { kainow: k(null, { hasUpdates: false }), setAside: { name: 'kainow_failed_20260101_ffffffff', latest: update({ id: 'ffffffff-0000-7000-8000-000000000009', state: 'recovered' }) } },
+    ]) {
+      const d = decideSituation(f);
+      assert.deepEqual(d, { kind: 'refused', message: RECOVER_TEXT.unrecognised });
+      assert.ok(!(d as { message: string }).message.includes('dropdb'));
+    }
+    // An installing row with update maintenance: still in progress, or its failure not yet recorded.
+    assert.deepEqual(decideSituation({ kainow: k(update({ state: 'installing' }), { reason: 'update' }), setAside: null }), {
+      kind: 'refused',
+      message: RECOVER_TEXT.inProgress('v1.1.0'),
+    });
     // An earlier recover renamed the failed database: carry on from the restore.
     const empty = k(null, { empty: true, hasUpdates: false });
     assert.deepEqual(decideSituation({ kainow: empty, setAside: { name: ASIDE, latest: update() } }), {
@@ -317,6 +337,14 @@ describe('recover (spec 5.9)', () => {
     assert.equal(lines.at(-1), RECOVER_TEXT.back('1.0.0'));
     assert.equal(lines.at(-1), 'Kainow is back on v1.0.0. Review and choose Resume on the Operations page.');
     assert.ok(store.closed);
+  });
+
+  test('a set-aside name not as expected never reaches the rename SQL', async () => {
+    assert.match(setAsideName(ID, NOW), SET_ASIDE_PATTERN);
+    store.situationIs = { kind: 'fresh', update: update({ id: "x'; DROP DATABASE kainow; --" }) };
+    assert.equal(await runRecover(['--yes'], deps()), 1);
+    assert.ok(!events.some((e) => e.startsWith('psql') || e.startsWith('rename')));
+    assert.ok(lines.at(-1)!.startsWith('The set-aside database name'));
   });
 
   test('a rename refused while a connection is going away is tried again', async () => {

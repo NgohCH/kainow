@@ -77,7 +77,12 @@ export const RECOVER_TEXT = {
   nothing: 'There is no failed update to recover from.',
   notNeeded: (tag: string, state: UpdateState) => `The latest update (${tag}) is: ${stateWords(state)}. There is nothing to recover.`,
   noBackup: `The failed update has no pre-update backup recorded, so recover cannot restore it. Nothing was changed. ${SEE_INSTALL}`,
-  partial: `The Kainow database is not the failed one and not empty: an earlier recover or restore stopped part way, and its copy must not be started. Drop and recreate it empty, then run recover again: ${RECREATE_COMMANDS}`,
+  partial: `The Kainow database is a restored copy that an earlier recover or restore did not finish, and it must not be started. Drop and recreate it empty, then run recover again: ${RECREATE_COMMANDS}`,
+  /** Never drop advice: this may be the failed database itself, half-migrated (spec 5.7), which is kept (spec 5.9 step 3). */
+  unrecognised: `The Kainow database is not recognised: it holds no update record and is not a restored copy. It may be the failed database itself, half-migrated. Do not drop it. Nothing was changed. ${SEE_INSTALL}`,
+  inProgress: (tag: string) =>
+    `The update to ${tag} is still in progress, or its failure is not yet recorded. Nothing was changed. Wait for the next updater tick (every five minutes), then run recover again if it says to.`,
+  badName: (name: string) => `The set-aside database name ${name} is not as expected; nothing was changed. ${SEE_INSTALL}`,
   declined: 'Nothing was changed.',
   prompt: 'Type yes to continue: ',
   notAtTag: (tag: string) =>
@@ -94,6 +99,9 @@ export const RECOVER_TEXT = {
   backWritable: (version: string) => `Kainow is back on v${version}.`,
 } as const;
 
+/** What setAsideName gives; checked before it goes into the rename's SQL. */
+export const SET_ASIDE_PATTERN = /^kainow_failed_\d{8}_[0-9a-f]{8}$/;
+
 /** `kainow_failed_<YYYYMMDD>_<first 8 hex of the update id>` (the date in UTC+8, as everywhere in Kainow). */
 export function setAsideName(updateId: string, now: Date): string {
   return `${KAINOW_DB}_failed_${todayUtc8(now).replace(/-/g, '')}_${updateId.replace(/-/g, '').slice(0, 8).toLowerCase()}`;
@@ -109,13 +117,20 @@ export function decideSituation(f: Found): Situation {
     if (RECOVERABLE.includes(k.latest.state)) return { kind: 'fresh', update: k.latest };
     // A restored copy whose record was never put right (or one a stopped restore left behind) is never started.
     if (k.latest.state === 'installing' && k.reason === 'restored_from_backup') return { kind: 'refused', message: RECOVER_TEXT.partial };
+    if (k.latest.state === 'installing') return { kind: 'refused', message: RECOVER_TEXT.inProgress(k.latest.tag) };
     return { kind: 'refused', message: RECOVER_TEXT.notNeeded(k.latest.tag, k.latest.state) };
   }
   if (k && k.hasUpdates) return { kind: 'refused', message: RECOVER_TEXT.nothing };
-  if (k && !k.empty) return { kind: 'refused', message: RECOVER_TEXT.partial };
-  // `kainow` is empty or missing: an earlier recover renamed the failed database.
   const s = f.setAside;
-  if (s?.latest && s.latest.state === 'failed_after_migration' && s.name.endsWith(idSuffix(s.latest.id))) {
+  // The rename provably happened: a set-aside database holds the failed update.
+  const renamed = !!(s?.latest && s.latest.state === 'failed_after_migration' && s.name.endsWith(idSuffix(s.latest.id)));
+  if (k && !k.empty) {
+    // Drop advice only for a copy that is provably the restore target, never for what may be the failed database.
+    if (renamed || k.reason === 'restored_from_backup') return { kind: 'refused', message: RECOVER_TEXT.partial };
+    return { kind: 'refused', message: RECOVER_TEXT.unrecognised };
+  }
+  // `kainow` is empty or missing: an earlier recover renamed the failed database.
+  if (renamed && s?.latest) {
     return { kind: 'set_aside', update: s.latest, failedDb: s.name, createKainow: k === null };
   }
   return { kind: 'refused', message: RECOVER_TEXT.nothing };
@@ -288,6 +303,10 @@ export async function runRecover(argv: string[], deps: RecoverDeps): Promise<num
     // ---- 3. keep the failed database ----
     let createKainow = sit.kind === 'set_aside' ? sit.createKainow : true;
     if (sit.kind === 'fresh') {
+      if (!SET_ASIDE_PATTERN.test(aside)) {
+        log(RECOVER_TEXT.badName(aside));
+        return 1;
+      }
       const stop = await compose(['stop', 'api', 'worker'], 5 * 60_000);
       if (stop.code !== 0) log(`Stopping api and worker failed (${stop.code}): ${tail(stop)}`);
       await store.releaseKainow();
@@ -550,9 +569,17 @@ export async function inspectKainow(pool: Pool): Promise<NonNullable<Found['kain
               to_regclass('public.operations_state') IS NOT NULL AS has_state`,
     )
   ).rows[0];
-  if (!t.has_updates) return { empty: t.empty === true, hasUpdates: false, latest: null, reason: null };
+  // Read whatever the schema holds: reason restored_from_backup is what proves a copy is the restore target.
+  let reason: string | null = null;
+  if (t.has_state) {
+    try {
+      reason = (await pool.query(`SELECT reason FROM operations_state WHERE id`)).rows[0]?.reason ?? null;
+    } catch {
+      reason = null; // half-migrated: not provably a restored copy
+    }
+  }
+  if (!t.has_updates) return { empty: t.empty === true, hasUpdates: false, latest: null, reason };
   const latest = await readLatestUpdate(pool);
-  const reason = t.has_state ? ((await pool.query(`SELECT reason FROM operations_state WHERE id`)).rows[0]?.reason ?? null) : null;
   return { empty: false, hasUpdates: true, latest, reason };
 }
 
