@@ -8,6 +8,10 @@ export interface AuthSettings {
   sessionHours: number;
   /** Design detail, not an accepted product default: minimum gap between codes for one account. */
   codeResendSeconds: number;
+  /** Abuse protection per network address (design detail): see auth/address-limiter.ts. */
+  addressWindowMinutes: number;
+  maxCodeRequestsPerAddress: number;
+  maxFailedCodesPerAddress: number;
 }
 
 /** How email leaves Kainow: sign-in codes, invitations and everything in the outbox. */
@@ -32,6 +36,12 @@ export interface AppConfig extends DatabaseConfig {
   appUrl: string;
   /** File holding the protected key (32 bytes); null means quarantine cleaning waits for it. */
   protectedKeyFile: string | null;
+  /**
+   * Express "trust proxy": which proxies may say who the caller is (X-Forwarded-For). null trusts none, so the caller is
+   * the connecting address. Behind a reverse proxy set TRUST_PROXY (for example "loopback" or "1"), or every caller
+   * looks like the proxy and shares one set of sign-in limits.
+   */
+  trustProxy: string | number | null;
 }
 
 export const DEFAULT_AUTH_SETTINGS: AuthSettings = {
@@ -40,6 +50,9 @@ export const DEFAULT_AUTH_SETTINGS: AuthSettings = {
   lockoutMinutes: 30,
   sessionHours: 12,
   codeResendSeconds: 60,
+  addressWindowMinutes: 15,
+  maxCodeRequestsPerAddress: 100,
+  maxFailedCodesPerAddress: 10,
 };
 
 export const APP_CONFIG = Symbol('APP_CONFIG');
@@ -90,12 +103,32 @@ export function loadEmailConfig(env: NodeJS.ProcessEnv): EmailConfig {
       if (!env.SMTP_FROM) throw new Error('SMTP_FROM must be set when SMTP_URL is set');
       return { provider: 'smtp', url: env.SMTP_URL, from: env.SMTP_FROM };
     }
-    if (env.LOG_SIGN_IN_CODES === 'true') return { provider: 'log' };
+    if (env.LOG_SIGN_IN_CODES === 'true') {
+      assertLogAllowed(env);
+      return { provider: 'log' };
+    }
     throw new Error(
       'No way to deliver sign-in codes: set EMAIL_PROVIDER (m365 or smtp) with its settings, or set LOG_SIGN_IN_CODES=true for local development only',
     );
   }
   throw new Error('EMAIL_PROVIDER must be m365, smtp or log');
+}
+
+/**
+ * Printing sign-in codes to the log lets anyone who reads the log sign in as anyone. In production it is allowed only
+ * while Kainow is reached on this computer alone (APP_URL unset or a loopback address), as INSTALL.md's trial does.
+ */
+function assertLogAllowed(env: NodeJS.ProcessEnv): void {
+  if (env.NODE_ENV !== 'production') return;
+  let host = 'localhost';
+  try {
+    host = new URL(appUrlFrom(env)).hostname;
+  } catch {
+    host = '';
+  }
+  if (!['localhost', '127.0.0.1', '[::1]'].includes(host)) {
+    throw new Error('Sign-in codes cannot be printed to the log in production when APP_URL is not this computer: set EMAIL_PROVIDER (m365 or smtp)');
+  }
 }
 
 function appUrlFrom(env: NodeJS.ProcessEnv): string {
@@ -133,7 +166,16 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     appUrl: appUrlFrom(env),
     email,
     protectedKeyFile: protectedKeyFileFrom(env),
+    trustProxy: trustProxyFrom(env),
   };
+}
+
+/** A number of proxy hops, or Express's address list ("loopback", "10.0.0.1, 10.0.0.2"). "true" is refused: it trusts anyone. */
+export function trustProxyFrom(env: NodeJS.ProcessEnv): string | number | null {
+  const raw = env.TRUST_PROXY?.trim();
+  if (!raw || raw === 'false') return null;
+  if (raw === 'true') throw new Error('TRUST_PROXY=true would let any caller choose their own address; give the number of proxies or their addresses');
+  return /^\d+$/.test(raw) ? Number(raw) : raw;
 }
 
 /** In production, invitation links need the real address people use (review minor). */

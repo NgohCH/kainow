@@ -253,6 +253,8 @@ The command refuses, and changes nothing, when the reason is missing, when Kaino
 
 - Only this computer can reach Kainow (the port is bound to 127.0.0.1). Do not publish it to a network without putting HTTPS in front.
 - The database has no published port and is reachable only by the other containers.
+- Sign-in is limited per network address as well as per account: an address that requests more than 100 codes, or enters more than 10 wrong codes, within 15 minutes is refused until the 15 minutes are up. Successful sign-ins do not count, so an office sharing one address is not held back. **If HTTPS is put in front with a reverse proxy, set `TRUST_PROXY` in `.env`** to the number of proxies (usually `1`) or their addresses, on the API service. Without it every caller looks like the proxy and shares one limit.
+- `LOG_SIGN_IN_CODES=true` is refused when `APP_URL` is anything other than this computer, so codes are never printed to the log once Kainow is reached from elsewhere. Set up email first.
 - The server and worker run as a non-root user, on a read-only filesystem, with no extra Linux capabilities.
 - Before real use, appoint a second Enterprise Administrator and record the recovery custodian (see "Recovery custodian"). If every Administrator is locked out, the custodian restores access from the command line with `recover-admin`; this does not restore project roles.
 - Updates are manual (`git pull`, rebuild). An in-app updater is deferred to January.

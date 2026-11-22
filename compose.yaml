@@ -60,6 +60,8 @@ services:
       M365_CLIENT_ID: ${M365_CLIENT_ID:-}
       M365_CLIENT_SECRET: ${M365_CLIENT_SECRET:-}
       COOKIE_SECURE: ${COOKIE_SECURE:-true}
+      # Behind an HTTPS reverse proxy: how many proxies (usually 1) may name the caller, for the sign-in limits.
+      TRUST_PROXY: ${TRUST_PROXY:-}
       APP_URL: ${APP_URL:-http://localhost:${KAINOW_PORT:-3000}}
     # Protected key for quarantined credentials (INSTALL.md, "Protected key"). Optional: without it, cleaning waits.
     # To use it, create the file with `npm run protected-key -- --create <path>`, then uncomment on BOTH api and worker:

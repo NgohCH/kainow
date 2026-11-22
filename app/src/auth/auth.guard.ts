@@ -12,6 +12,9 @@ export interface HttpRequest {
   method?: string;
   headers: Record<string, string | string[] | undefined>;
   auth?: AuthContext;
+  /** The caller's address as Express works it out (see TRUST_PROXY). */
+  ip?: string;
+  socket?: { remoteAddress?: string };
 }
 
 export const CSRF_HEADER = 'x-csrf-token';

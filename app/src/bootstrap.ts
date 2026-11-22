@@ -23,6 +23,9 @@ export async function createApp(
     logger: logger ?? ['error', 'warn', 'log'],
     bodyParser: false,
   });
+  // Who the caller is, for the sign-in limits: the connecting address unless TRUST_PROXY names the proxy in front.
+  if (config.trustProxy !== null) app.set('trust proxy', config.trustProxy);
+  app.disable('x-powered-by');
   app.useBodyParser('json', { limit: JSON_BODY_LIMIT });
   // Logo uploads arrive as the image file itself; the service checks its contents and the 512 KB limit.
   app.useBodyParser('raw', { type: ['image/png', 'image/jpeg'], limit: LOGO_BODY_LIMIT });
@@ -32,6 +35,8 @@ export async function createApp(
     res.setHeader('Content-Security-Policy', "default-src 'self'; style-src 'self'; img-src 'self' data:; base-uri 'none'; form-action 'self'; frame-ancestors 'none'");
     res.setHeader('X-Content-Type-Options', 'nosniff');
     res.setHeader('Referrer-Policy', 'no-referrer');
+    // Browsers ignore this over plain http (the local trial); behind HTTPS it stops a later visit being downgraded.
+    res.setHeader('Strict-Transport-Security', 'max-age=31536000');
     next();
   });
 

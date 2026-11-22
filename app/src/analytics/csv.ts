@@ -8,11 +8,11 @@ import { TREND_KEYS, TRENDS_NOTE, type TrendKey, type TrendsPanel } from './tren
 
 /**
  * CSV for the analytics export (dashboards spec 7.6): RFC 4180 cells with CRLF line ends, preceded by `#` lines that
- * state what the file holds. A text cell starting with `=`, `+`, `-` or `@` gets a `'` in front, so a spreadsheet never
+ * state what the file holds. A text cell starting with `=`, `+`, `-`, `@`, a tab or a carriage return gets a `'` in front, so a spreadsheet never
  * reads it as a formula. Numbers are written as they are (they come from counts, never from typed text).
  */
 
-const FORMULA_START = /^[=+\-@]/;
+const FORMULA_START = /^[=+\-@\t\r]/;
 /** UTF-8 byte order mark, so spreadsheet programs read Malay characters correctly. */
 export const BOM = '\uFEFF';
 const NEEDS_QUOTES = /[",\r\n]/;

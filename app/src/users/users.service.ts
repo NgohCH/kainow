@@ -22,10 +22,14 @@ export class UsersService {
   ) {}
 
   /** MVP: every user is an Enterprise Administrator (decision R03). */
-  async create(input: { email: unknown; displayName: unknown; actorUserId?: string | null }): Promise<AuthUser> {
+  async create(input: { email: unknown; displayName: unknown; actorUserId?: string | null; requireEligibleDomain?: boolean }): Promise<AuthUser> {
     const email = normaliseEmail(input.email);
     if (!email) {
       throw new BadRequestException('A valid email address is required');
+    }
+    // Like invitations and recovery: once the organisation is registered, an Administrator must be on one of its domains.
+    if (input.requireEligibleDomain && !(await this.domainAllowed(email))) {
+      throw new BadRequestException("That email is not on one of the organisation's email domains");
     }
     const displayName = typeof input.displayName === 'string' ? input.displayName.trim() : '';
     if (displayName.length < 1 || displayName.length > 200) {
@@ -53,6 +57,15 @@ export class UsersService {
       client.release();
     }
     return { id, email, displayName, role: 'enterprise_administrator' };
+  }
+
+  private async domainAllowed(email: string): Promise<boolean> {
+    const { rows } = await this.pool.query<{ ok: boolean }>(
+      `SELECT NOT EXISTS (SELECT 1 FROM organisation WHERE id = 1 AND registered_at IS NOT NULL)
+           OR EXISTS (SELECT 1 FROM eligible_domains WHERE domain = $1 AND removed_at IS NULL) AS ok`,
+      [email.split('@')[1]],
+    );
+    return rows[0].ok;
   }
 
   /**

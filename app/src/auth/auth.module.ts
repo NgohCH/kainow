@@ -4,6 +4,7 @@ import { APP_CONFIG, type AppConfig } from '../config';
 import { OrganisationState } from '../organisation/state';
 import { UsersController } from '../users/users.controller';
 import { UsersService } from '../users/users.service';
+import { ADDRESS_LIMITER, AddressLimiter } from './address-limiter';
 import { AuthController } from './auth.controller';
 import { AuthGuard } from './auth.guard';
 import { AuthService } from './auth.service';
@@ -28,6 +29,15 @@ export class AuthModule {
         UsersService,
         OrganisationState,
         { provide: APP_GUARD, useClass: AuthGuard },
+        {
+          provide: ADDRESS_LIMITER,
+          inject: [APP_CONFIG, CLOCK],
+          useFactory: ({ auth }: AppConfig, clock: Clock) =>
+            new AddressLimiter(
+              { windowMinutes: auth.addressWindowMinutes, maxCodeRequests: auth.maxCodeRequestsPerAddress, maxFailedCodes: auth.maxFailedCodesPerAddress },
+              clock,
+            ),
+        },
         {
           provide: CODE_SENDER,
           inject: [APP_CONFIG, CLOCK],

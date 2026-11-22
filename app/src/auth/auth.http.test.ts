@@ -32,7 +32,9 @@ describe('sign-in over HTTP', { skip: SKIP_NO_DB }, () => {
     await resetPublicSchema(pool);
     await runMigrations(pool, config.migrationsDir);
     await seedOrganisation(pool);
-    await new UsersService(pool, clock.now).create({ email: EMAIL, displayName: 'Admin' });
+    const admin = await new UsersService(pool, clock.now).create({ email: EMAIL, displayName: 'Admin' });
+    // New Administrators must be on an organisation email domain.
+    await pool.query(`INSERT INTO eligible_domains (id, domain, added_by, added_at) VALUES (gen_random_uuid(), 'example.org', $1, now())`, [admin.id]);
     await pool.end();
     app = await NestFactory.create(AppModule.register(config, { codeSender: sender, clock: clock.now }), { logger: false });
     await app.listen(0);

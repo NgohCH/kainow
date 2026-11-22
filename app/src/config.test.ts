@@ -24,8 +24,29 @@ test('defaults the port and keeps the accepted sign-in settings', () => {
     lockoutMinutes: 30,
     sessionHours: 12,
     codeResendSeconds: 60,
+    addressWindowMinutes: 15,
+    maxCodeRequestsPerAddress: 100,
+    maxFailedCodesPerAddress: 10,
   });
   assert.deepEqual(config.auth, DEFAULT_AUTH_SETTINGS);
+});
+
+test('TRUST_PROXY: unset trusts no proxy; a hop count or address list is passed on; "true" is refused', () => {
+  assert.equal(loadConfig(base).trustProxy, null);
+  assert.equal(loadConfig({ ...base, TRUST_PROXY: 'false' }).trustProxy, null);
+  assert.equal(loadConfig({ ...base, TRUST_PROXY: '1' }).trustProxy, 1);
+  assert.equal(loadConfig({ ...base, TRUST_PROXY: 'loopback' }).trustProxy, 'loopback');
+  assert.throws(() => loadConfig({ ...base, TRUST_PROXY: 'true' }), /TRUST_PROXY=true/);
+});
+
+test('in production, sign-in codes go to the log only while Kainow is reached on this computer', () => {
+  const prod = { ...base, NODE_ENV: 'production' };
+  assert.deepEqual(loadConfig(prod).email, { provider: 'log' });
+  assert.deepEqual(loadConfig({ ...prod, APP_URL: 'http://127.0.0.1:3000' }).email, { provider: 'log' });
+  assert.throws(() => loadConfig({ ...prod, APP_URL: 'https://kainow.example.org' }), /cannot be printed to the log in production/);
+  assert.throws(() => loadWorkerConfig({ ...prod, APP_URL: 'https://kainow.example.org' }), /cannot be printed to the log in production/);
+  // Outside production the log stays available, whatever APP_URL says.
+  assert.deepEqual(loadConfig({ ...base, APP_URL: 'https://kainow.example.org' }).email, { provider: 'log' });
 });
 
 test('rejects a port that is not an integer from 1 to 65535', () => {
