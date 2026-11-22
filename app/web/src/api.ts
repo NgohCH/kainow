@@ -32,7 +32,7 @@ export const setCsrfToken = (t: string | null | undefined): void => {
 // --- While Kainow restarts after an update (10b spec 7.2) ---
 // The web app remembers whether the last word from the server was update maintenance (the banner or the public state with
 // reason 'update', or a save refused with 'update_in_progress'). A network failure after that is the update stopping
-// Kainow: it says so, asks /health every 15 seconds, and reloads the page once Kainow answers.
+// Kainow: it says so, asks /health every 15 seconds, and reloads the page once anything answers (even a 503).
 export const RESTART_MESSAGE = 'Kainow is restarting after an update…';
 export const RESTART_RETRY_MS = 15_000;
 
@@ -85,8 +85,10 @@ function startRestartWatch(): void {
   const env = restartEnv ?? browserRestartEnv();
   const retry = () => {
     env.setTimeout(() => {
+      // Any answer at all means Kainow (or its notice page, which answers 503 for ever after a failed update) is
+      // back: reload so people see it. Only a network error means it is still restarting.
       env.fetch(BASE + '/health').then(
-        (r) => (r.ok ? env.reload() : retry()),
+        () => env.reload(),
         () => retry(),
       );
     }, RESTART_RETRY_MS);

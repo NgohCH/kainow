@@ -15,11 +15,14 @@ export interface OperationsPanel {
     growth: OperationsView['growth'];
     protective: OperationsView['protective'];
     health: OperationsView['health'];
+    updates: OperationsView['updates'];
   };
   /** Counts in the chosen period. */
   period: {
     backups: { total: number; succeeded: number; failed: number };
     drills: { total: number; passed: number; failed: number };
+    /** Updates whose start time falls in the period, by outcome (10b spec 11). Open: approved, preparing, ready, installing. */
+    updates: { total: number; succeeded: number; failed: number; cancelled: number; open: number };
   };
   computedAt: string;
 }
@@ -59,9 +62,25 @@ export class OperationsPanelService {
         [start, end, now],
       )
     ).rows[0];
+    // Failed: refused, failed before install, failed after migration, needing attention, and recovered (a failure undone).
+    const u = (
+      await this.pool.query(
+        `SELECT count(*)::int AS total,
+                count(*) FILTER (WHERE state = 'succeeded')::int AS succeeded,
+                count(*) FILTER (WHERE state IN ('refused', 'failed_before_install', 'failed_after_migration', 'failed_needs_attention', 'recovered'))::int AS failed,
+                count(*) FILTER (WHERE state = 'cancelled')::int AS cancelled,
+                count(*) FILTER (WHERE state IN ('approved', 'preparing', 'ready', 'installing'))::int AS open
+           FROM updates WHERE starts_at >= $1 AND starts_at < $2`,
+        [start, end],
+      )
+    ).rows[0];
     return {
-      status: { backups, lastDrill: view.drills.last, storage: view.storage, growth, protective: view.protective, health: view.health },
-      period: { backups: { total: b.total, succeeded: b.succeeded, failed: b.failed }, drills: { total: d.total, passed: d.passed, failed: d.failed } },
+      status: { backups, lastDrill: view.drills.last, storage: view.storage, growth, protective: view.protective, health: view.health, updates: view.updates },
+      period: {
+        backups: { total: b.total, succeeded: b.succeeded, failed: b.failed },
+        drills: { total: d.total, passed: d.passed, failed: d.failed },
+        updates: { total: u.total, succeeded: u.succeeded, failed: u.failed, cancelled: u.cancelled, open: u.open },
+      },
       computedAt: now.toISOString(),
     };
   }

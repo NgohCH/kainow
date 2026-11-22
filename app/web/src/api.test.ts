@@ -42,7 +42,7 @@ async function runNextTimer(env: ReturnType<typeof restartEnv>) {
 
 test('a network failure while the last banner was update maintenance shows the restart message and retries every 15 s', async () => {
   assert.equal(RESTART_MESSAGE, 'Kainow is restarting after an update…');
-  const env = restartEnv(['down', false, true]);
+  const env = restartEnv(['down', 'down', false]);
   setRestartEnv(env);
   const seen: boolean[] = [];
   onRestarting((on) => seen.push(on));
@@ -57,14 +57,15 @@ test('a network failure while the last banner was update maintenance shows the r
   assert.equal(isRestarting(), true);
   assert.deepEqual(seen, [true]);
 
-  // Every 15 seconds /health is asked; the page reloads once it answers.
+  // Every 15 seconds /health is asked; the page reloads once it answers at all. A 503 answer (the notice page after a
+  // failed update answers 503 for ever) reloads too, so people see the notice; only a network error retries.
   assert.deepEqual(env.timers.map((x) => x.ms), [RESTART_RETRY_MS]);
   assert.equal(RESTART_RETRY_MS, 15_000);
   await runNextTimer(env); // down
   assert.deepEqual(env.timers.map((x) => x.ms), [15_000]);
-  await runNextTimer(env); // answers, not ok
+  await runNextTimer(env); // down
   assert.equal(env.reloaded, 0);
-  await runNextTimer(env); // ok
+  await runNextTimer(env); // answers 503
   assert.equal(env.reloaded, 1);
   assert.deepEqual(env.healthCalls, ['/health', '/health', '/health']);
   assert.equal(env.timers.length, 0, 'no more retries after the reload');

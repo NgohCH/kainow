@@ -134,6 +134,13 @@ export async function needsRecovery(db: Pick<Pool | PoolClient, 'query'>): Promi
   return !!r && RECOVERY_STATES.includes(r.state);
 }
 
+/** The warning at the top of every Administrator page while the latest update needs recovery (spec 11), else null. */
+export async function recoveryWarning(db: Pick<Pool | PoolClient, 'query'>): Promise<string | null> {
+  const r = (await db.query(`SELECT state, to_version FROM updates ORDER BY approved_at DESC, id DESC LIMIT 1`)).rows[0];
+  if (!r || !RECOVERY_STATES.includes(r.state)) return null;
+  return `The update to v${r.to_version} failed. Kainow is on the notice page for everyone else; the server operator must run the recovery command (INSTALL.md, 'After a failed update').`;
+}
+
 /** The scheduled-update banner: from approval until the update starts (state approved, preparing or ready, start ahead). */
 export async function scheduledBanner(db: Pick<Pool | PoolClient, 'query'>, now: Date): Promise<{ startsAt: Date; expectedMinutes: number; text: string } | null> {
   const r = (

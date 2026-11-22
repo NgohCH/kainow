@@ -5,7 +5,7 @@ import type { HttpRequest } from '../auth/auth.guard';
 import { can } from '../auth/permissions';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { PG_POOL } from '../db/database.module';
-import { scheduledBanner } from '../updater/updates.service';
+import { recoveryWarning, scheduledBanner } from '../updater/updates.service';
 import { UPDATE_BANNER } from './protective';
 import { OperationsService } from './operations.service';
 import { OPS_BOUNDS, loadOpsSettings } from './settings';
@@ -89,8 +89,11 @@ export class OperationsController {
   @Get('operations/banner')
   @AnySignedInUser()
   async banner(@Req() req: HttpRequest) {
-    const [b, s] = await Promise.all([this.operations.banner(can(who(req).role, 'operations.view')), scheduledBanner(this.pool, this.now())]);
-    return { ...b, scheduled: s ? { startsAt: s.startsAt, expectedMinutes: s.expectedMinutes, text: s.text } : null };
+    const isAdmin = can(who(req).role, 'operations.view');
+    const [b, s, recovery] = await Promise.all([this.operations.banner(isAdmin), scheduledBanner(this.pool, this.now()), isAdmin ? recoveryWarning(this.pool) : null]);
+    const scheduled = s ? { startsAt: s.startsAt, expectedMinutes: s.expectedMinutes, text: s.text } : null;
+    // Enterprise Administrators also get the failed-update warning (10b spec 11), shown at the top of every page.
+    return b.admin ? { ...b, admin: { ...b.admin, recovery }, scheduled } : { ...b, scheduled };
   }
 
   /** Before sign-in: only whether protective mode is on, for the sign-in page text. */

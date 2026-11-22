@@ -237,12 +237,21 @@ function operationsTable(d: OperationsPanel): Table {
     ...s.storage.locations.map((l) => ['Storage', `${STORAGE_NAMES[l.location]} level`, l.level]),
     ['Protective mode', 'On', s.protective.on ? 'Yes' : 'No'],
     ['Health', 'Migrations current', s.health.migrationsCurrent ? 'Yes' : 'No'],
+    ['Updates', 'Latest update', s.updates.latestState ? `${s.updates.latestToVersion ?? ''} ${s.updates.latestState}`.trim() : 'None'],
+    ['Updates', 'Newest release available', s.updates.available ?? 'None'],
+    ['Updates', 'Last release check', at(s.updates.lastCheckAt)],
+    ['Updates', 'Not checked for 3 days', s.updates.stale ? 'Yes' : 'No'],
     ['Backups in the period', 'Runs', d.period.backups.total],
     ['Backups in the period', 'Succeeded', d.period.backups.succeeded],
     ['Backups in the period', 'Failed', d.period.backups.failed],
     ['Restore drills in the period', 'Drills', d.period.drills.total],
     ['Restore drills in the period', 'Passed', d.period.drills.passed],
     ['Restore drills in the period', 'Failed', d.period.drills.failed],
+    ['Updates in the period', 'Updates', d.period.updates.total],
+    ['Updates in the period', 'Succeeded', d.period.updates.succeeded],
+    ['Updates in the period', 'Failed', d.period.updates.failed],
+    ['Updates in the period', 'Cancelled', d.period.updates.cancelled],
+    ['Updates in the period', 'Not finished', d.period.updates.open],
   ];
   return { columns: ['Area', 'Measure', 'Value'], rows };
 }
