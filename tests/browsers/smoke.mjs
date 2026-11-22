@@ -122,7 +122,7 @@ const STEPS = [
     await page.getByRole('link', { name: 'Work', exact: true }).click();
     await page.getByRole('heading', { name: 'Tasks', level: 2 }).waitFor();
   }],
-  ['Open a task and save a progress change', async (page) => {
+  ['Save a task progress change from the Work list', async (page) => {
     // A task the signed-in person may act on: block an In progress one with a reason, or (when none is left) unblock a
     // Blocked one with how it was resolved. Either is a saved progress change.
     await page.locator('li.work-item').first().waitFor();

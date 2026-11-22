@@ -9,7 +9,7 @@
 | 3 | My Projects | the project list with Load Project 01 |
 | 4 | Open a project | the project's heading and About |
 | 5 | Work tab | Tasks |
-| 6 | Open a task and save a progress change | blocks an In progress task with a reason ("Block: done.", the task shows Blocked); when none is left, unblocks a Blocked one ("Unblock: done.", In Progress) |
+| 6 | Save a task progress change from the Work list | blocks an In progress task with a reason ("Block: done.", the task shows Blocked); when none is left, unblocks a Blocked one ("Unblock: done.", In Progress) |
 | 7 | Post a discussion comment | the comment appears under Messages |
 | 8 | Open a note | the note's heading |
 | 9 | Review screen with a proposal | the run inserts a finished AI run (`review-run.mjs`) on Meeting notes 6.1 in Load Project 06 (the Administrator is its Owner); the note, its Review button, then Review proposals with the source text and the decision waiting |
