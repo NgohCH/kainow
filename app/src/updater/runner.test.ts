@@ -1,10 +1,13 @@
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+import { mkdtemp, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, test } from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { FakeRunner } from '../testing/fake-runner';
 import { gitToolsMissing } from '../testing/git-releases';
+import { CODE_OUTPUT_TOO_LARGE, runProcess } from './process';
 import { RealRunner, maskSecrets } from './runner';
 
 describe('maskSecrets', () => {
@@ -85,4 +88,56 @@ describe('RealRunner', () => {
     assert.equal(res.code, 124);
     assert.ok(Date.now() - started < 10_000);
   });
+
+  test('at the timeout the whole process tree is killed, grandchildren included', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'kainow-tree-'));
+    const pidFile = join(dir, 'grandchild.pid');
+    try {
+      // The child (standing in for docker) starts a grandchild (standing in for the Compose plugin) and both wait.
+      const script =
+        `const { spawn } = require('node:child_process');` +
+        `const g = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { stdio: 'ignore' });` +
+        `require('node:fs').writeFileSync(${JSON.stringify(pidFile)}, String(g.pid));` +
+        `setInterval(() => {}, 1000);`;
+      const r = new RealRunner(dir, { docker: process.execPath });
+      const res = await r.run('docker', ['-e', script], { timeoutMs: 1500 });
+      assert.equal(res.code, 124);
+      const gpid = Number(await readFile(pidFile, 'utf8'));
+      assert.ok(gpid > 0);
+      // SIGTERM reaches the group at once; allow the kill to land.
+      const deadline = Date.now() + 10_000;
+      while (alive(gpid) && Date.now() < deadline) await sleep(100);
+      assert.equal(alive(gpid), false, 'the grandchild is gone');
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+
+  test('output over the limit is its own code (125), not a timeout, and the tree is killed', async () => {
+    const res = await runProcess(process.execPath, ['-e', `process.stdout.write('x'.repeat(4096)); setInterval(() => {}, 1000)`], {
+      cwd: tmpdir(),
+      env: process.env,
+      timeoutMs: 20_000,
+      maxBuffer: 1024,
+    });
+    assert.equal(res.code, CODE_OUTPUT_TOO_LARGE);
+    assert.notEqual(res.code, 124);
+  });
 });
+
+function alive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    // On Linux a killed process re-parented to a PID 1 that does not reap it stays a zombie (state Z): it is dead.
+    if (process.platform === 'linux') {
+      try {
+        return !/^\d+ \(.*\) Z/.test(readFileSync(`/proc/${pid}/stat`, 'utf8'));
+      } catch {
+        return false;
+      }
+    }
+    return true;
+  } catch (e) {
+    return (e as NodeJS.ErrnoException).code === 'EPERM';
+  }
+}

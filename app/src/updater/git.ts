@@ -7,10 +7,10 @@
  * verified, `signersAt` gives the caller the candidate's own file so it can replace
  * the trusted one (rotation).
  *
- * git is always run with execFile (never a shell), no global or system config, no
+ * git is always run with spawn (never a shell), no global or system config, no
  * terminal prompts and a 2-minute timeout.
  */
-import { execFile } from 'node:child_process';
+import { runProcess } from './process';
 import { compareVersions, isNewer, parseTag, versionString } from './version';
 
 export const SIGNING_PRINCIPAL = 'kainow-release';
@@ -34,30 +34,12 @@ export const GIT_ENV: Readonly<Record<string, string>> = Object.freeze({
 
 export type GitResult = { code: number; stdout: string; stderr: string };
 
-/** Runs `git <args>` in `dir`. Never throws: a failure to start is code 127, a timeout code 124 (default 2 minutes). */
+/**
+ * Runs `git <args>` in `dir`. Never throws: a failure to start is code 127, a timeout code 124 (default 2 minutes;
+ * the whole process tree is killed, helpers included), output over 64 MB code 125.
+ */
 export function git(dir: string, args: string[], env?: NodeJS.ProcessEnv, timeoutMs: number = GIT_TIMEOUT_MS): Promise<GitResult> {
-  return new Promise((resolve) => {
-    execFile(
-      'git',
-      args,
-      {
-        cwd: dir,
-        env: { ...process.env, ...GIT_ENV, ...env },
-        timeout: timeoutMs,
-        killSignal: 'SIGKILL',
-        maxBuffer: 64 * 1024 * 1024,
-        windowsHide: true,
-      },
-      (err, stdout, stderr) => {
-        let code = 0;
-        if (err) {
-          const e = err as NodeJS.ErrnoException & { code?: number | string; killed?: boolean };
-          code = typeof e.code === 'number' ? e.code : e.code === 'ENOENT' ? 127 : e.killed ? 124 : 1;
-        }
-        resolve({ code, stdout: String(stdout), stderr: String(stderr) });
-      },
-    );
-  });
+  return runProcess('git', args, { cwd: dir, env: { ...process.env, ...GIT_ENV, ...env }, timeoutMs, maxBuffer: 64 * 1024 * 1024 });
 }
 
 const OBJECT_ID = /^[0-9a-f]{40}([0-9a-f]{24})?$/; // SHA-1 or SHA-256

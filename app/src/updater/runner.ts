@@ -2,12 +2,12 @@
  * The updater's only way to run commands (10b spec 5.1): git and docker, through an
  * injectable Runner so the steps can be tested with a scripted fake.
  *
- * Commands run with execFile (never a shell). git goes through git.ts (no global or
+ * Commands run with spawn (never a shell). git goes through git.ts (no global or
  * system config, no prompts). Output is returned, never stored: callers log it with
  * maskSecrets and record only fixed failure codes (spec 5.8).
  */
-import { execFile } from 'node:child_process';
 import { git } from './git';
+import { runProcess } from './process';
 
 export type RunResult = { code: number; stdout: string; stderr: string };
 export type RunOptions = { cwd?: string; timeoutMs?: number; env?: Record<string, string> };
@@ -21,7 +21,8 @@ const DEFAULT_DOCKER_TIMEOUT_MS = 10 * 60_000;
 
 /**
  * Runs real commands. `defaultCwd` is the Kainow folder, used when a call gives no cwd.
- * Never throws: a command that cannot start is code 127, one killed at its timeout code 124.
+ * Never throws: a command that cannot start is code 127; at its timeout the whole process tree is killed and the
+ * result is code 124; output over the limit is code 125 (process.ts).
  * `binaries` lets a test stand in another program for docker.
  */
 export class RealRunner implements Runner {
@@ -33,27 +34,11 @@ export class RealRunner implements Runner {
   run(cmd: 'git' | 'docker', args: string[], opts: RunOptions = {}): Promise<RunResult> {
     const cwd = opts.cwd ?? this.defaultCwd;
     if (cmd === 'git') return git(cwd, args, opts.env, opts.timeoutMs);
-    return new Promise((resolve) => {
-      execFile(
-        this.binaries.docker ?? 'docker',
-        args,
-        {
-          cwd,
-          env: { ...process.env, ...opts.env },
-          timeout: opts.timeoutMs ?? DEFAULT_DOCKER_TIMEOUT_MS,
-          killSignal: 'SIGKILL',
-          maxBuffer: 256 * 1024 * 1024,
-          windowsHide: true,
-        },
-        (err, stdout, stderr) => {
-          let code = 0;
-          if (err) {
-            const e = err as NodeJS.ErrnoException & { code?: number | string; killed?: boolean };
-            code = typeof e.code === 'number' ? e.code : e.code === 'ENOENT' ? 127 : e.killed ? 124 : 1;
-          }
-          resolve({ code, stdout: String(stdout), stderr: String(stderr) });
-        },
-      );
+    return runProcess(this.binaries.docker ?? 'docker', args, {
+      cwd,
+      env: { ...process.env, ...opts.env },
+      timeoutMs: opts.timeoutMs ?? DEFAULT_DOCKER_TIMEOUT_MS,
+      maxBuffer: 256 * 1024 * 1024,
     });
   }
 }
