@@ -41,6 +41,17 @@ describe('load-test report', () => {
     assert.equal(percentile([], 0.95), null);
   });
 
+  test('a journey that stopped is an error but never a response time (final review #44)', () => {
+    const samples: Sample[] = [];
+    for (let i = 1; i <= 100; i++) samples.push(sample({ ms: 1000 + i }));
+    for (let i = 0; i < 20; i++) samples.push(sample({ label: 'browse journey stopped', status: 0, ms: 0, outcome: 'error', untimed: true }));
+    const browse = summarise(samples).find((r) => r.journey === 'browse')!;
+    assert.equal(browse.count, 120);
+    assert.equal(browse.errors, 20);
+    assert.equal(browse.p50Ms, 1050, 'the 0 ms entries do not pull the times down');
+    assert.equal(browse.p95Ms, 1095);
+  });
+
   test('report computes p50/p95/p99 and lists expected refusals separately from errors', () => {
     const samples: Sample[] = [];
     for (let i = 1; i <= 100; i++) samples.push(sample({ ms: i }));

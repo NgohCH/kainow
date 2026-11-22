@@ -14,7 +14,12 @@ export interface Sample {
   status: number;
   ms: number;
   outcome: 'ok' | 'refusal' | 'error';
+  /** A journey that stopped with an exception: counted as an error, never as a response time (final review #44). */
+  untimed?: boolean;
 }
+
+/** The response times of the samples that have one. */
+const times = (xs: Sample[]): number[] => xs.filter((s) => !s.untimed).map((s) => s.ms);
 
 export interface AiResult {
   /** Extractions the journey asked for (answered 202). */
@@ -112,7 +117,7 @@ export interface Row {
 export function summarise(samples: Sample[]): Row[] {
   return JOURNEYS.map((journey) => {
     const mine = samples.filter((s) => s.journey === journey);
-    const ms = mine.map((s) => s.ms);
+    const ms = times(mine);
     return {
       journey,
       count: mine.length,
@@ -136,8 +141,8 @@ const n = (x: number | null): string => (x === null ? '–' : Math.round(x).toLo
 const sec = (x: number | null): string => (x === null ? '–' : `${(x / 1000).toFixed(1)} s`);
 
 export function aims(r: RunResult): AimRow[] {
-  const reads = percentile(r.samples.filter((s) => s.method === 'GET').map((s) => s.ms), 0.95);
-  const saves = percentile(r.samples.filter((s) => s.method !== 'GET').map((s) => s.ms), 0.95);
+  const reads = percentile(times(r.samples.filter((s) => s.method === 'GET')), 0.95);
+  const saves = percentile(times(r.samples.filter((s) => s.method !== 'GET')), 0.95);
   const errors = r.samples.filter((s) => s.outcome === 'error').length;
   const ai = r.ai;
   const aiMet = ai.notFinished === 0 && ai.failed === 0 && ai.maxInFlight <= ai.slots && ai.maxIdleSlotWaitMs <= IDLE_SLOT_ALLOWANCE_MS;
@@ -182,7 +187,7 @@ export function writeReport(r: RunResult, m: Machine): string {
   const rows = summarise(r.samples);
   const aimRows = aims(r);
   const missed = aimRows.filter((a) => !a.met);
-  const all = r.samples.map((s) => s.ms);
+  const all = times(r.samples);
   const out: string[] = [];
   out.push(`## Result of ${r.startedAt.slice(0, 10)}`, '');
   out.push(`_measured on ${m.label}; not a hardware guarantee_`, '');

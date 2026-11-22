@@ -83,7 +83,7 @@ export async function runLoad(opts: LoadOptions): Promise<RunResult> {
         try {
           await RUN[j](ctx);
         } catch {
-          samples.push({ journey: j, label: `${j} journey stopped`, method: 'GET', status: 0, ms: 0, outcome: 'error' });
+          samples.push({ journey: j, label: `${j} journey stopped`, method: 'GET', status: 0, ms: 0, outcome: 'error', untimed: true });
         }
         done++;
         await sleep(thinkMin + rng() * (thinkMax - thinkMin));
