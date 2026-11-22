@@ -15,6 +15,8 @@ import { MAINTENANCE_WAIT_MS, installUpdate, type InstallDeps, type InstallGit }
 import { prepareUpdate, type PrepareDeps } from './prepare';
 import type { UpdateState } from './states';
 import { runTick, type TickUpdate } from './tick';
+import { endMissedWindows } from './window-sweep';
+import { runOpsSweep } from '../ops/sweep-ops';
 
 const migrationsDir = loadDatabaseConfig({ DATABASE_URL: 'x' }).migrationsDir;
 const NOW = new Date('2026-12-01T04:00:00Z');
@@ -267,6 +269,89 @@ describe('installing an update (database)', { skip: SKIP_NO_DB }, () => {
     assert.equal(await count(`SELECT count(*)::int AS n FROM operations_state_changes`), 0);
     assert.equal(await count(`SELECT count(*)::int AS n FROM audit_events WHERE action = 'ops.update_refused'`), 1);
     assert.equal(await count(`SELECT count(*)::int AS n FROM notifications WHERE kind = 'update_refused'`), 1);
+    // M1: ended at the re-check; everyone told of the outage gets the "cancelled" email.
+    assert.equal(await count(`SELECT count(*)::int AS n FROM email_outbox WHERE kind = 'update_cancelled'`), 1);
+  });
+
+  test('window_missed: a ready row 61 minutes past its start ends failed_before_install; audit, notice, email; maintenance untouched (D125)', async () => {
+    const u = await seedUpdate('ready', new Date(NOW.getTime() - 61 * 60_000));
+    assert.equal(await installUpdate(deps(), u), 'failed_before_install');
+    const r = await row(u.id);
+    assert.equal(r.state, 'failed_before_install');
+    assert.equal(r.failure_code, 'window_missed');
+    assert.ok(r.finished_at);
+    assert.deepEqual(await steps(u.id), ['recheck:failed:window_missed']);
+    assert.deepEqual((await pool.query(`SELECT detail FROM audit_events WHERE action = 'ops.update_failed'`)).rows, [
+      { detail: { tag: 'v1.1.0', failureCode: 'window_missed' } },
+    ]);
+    const n = (await pool.query(`SELECT summary FROM notifications WHERE kind = 'update_failed' AND urgent`)).rows;
+    assert.equal(n.length, 1);
+    assert.match(n[0].summary, /within an hour of its start time.*Approve it again with a new start time\./);
+    assert.equal(await count(`SELECT count(*)::int AS n FROM email_outbox WHERE kind = 'update_cancelled'`), 1);
+    assert.equal(await count(`SELECT count(*)::int AS n FROM operations_state_changes`), 0, 'maintenance never went on');
+    assert.ok(!runner.calls.some((c) => c.cmd === 'docker'));
+    assert.deepEqual(
+      (await pool.query(`SELECT detail FROM update_changes WHERE update_id = $1 ORDER BY at, id`, [u.id])).rows.map((x) => x.detail),
+      [{ from: 'ready', to: 'failed_before_install', failureCode: 'window_missed' }],
+    );
+  });
+
+  test('begin refuses a ready row whose hour ran out during the re-check; the next run ends it window_missed', async () => {
+    const u = await seedUpdate('ready', new Date(NOW.getTime() - 59 * 60_000));
+    git.fetchCandidate = async () => {
+      t += 2 * 60_000; // the re-check took two minutes
+      return { ok: true, tagObject: TAG_OBJECT };
+    };
+    assert.equal(await installUpdate(deps(), u), 'ready');
+    assert.equal((await row(u.id)).state, 'ready');
+    assert.deepEqual(await steps(u.id), ['recheck:skipped']);
+    assert.ok(!runner.calls.some((c) => c.cmd === 'docker'));
+    assert.equal(await installUpdate(deps(), u), 'failed_before_install');
+    assert.equal((await row(u.id)).failure_code, 'window_missed');
+  });
+
+  test('the ops sweep ends approved and ready rows more than 60 minutes past their start; preparing, installing and on-time rows stay', async () => {
+    const late = new Date(NOW.getTime() - 61 * 60_000);
+    const cases: Array<[UpdateState, Date, string]> = [
+      ['approved', late, 'failed_before_install'],
+      ['ready', late, 'failed_before_install'],
+      ['preparing', late, 'preparing'],
+      ['installing', late, 'installing'],
+      ['ready', new Date(NOW.getTime() - 60 * 60_000), 'ready'],
+      ['approved', new Date(NOW.getTime() + 60 * 60_000), 'approved'],
+    ];
+    const clear = async () => {
+      const c = await pool.connect();
+      try {
+        await c.query('BEGIN');
+        await c.query(`SET LOCAL session_replication_role = replica`);
+        for (const tbl of ['update_steps', 'update_changes', 'updates', 'notifications', 'email_outbox', 'audit_events']) await c.query(`DELETE FROM ${tbl}`);
+        await c.query('COMMIT');
+      } finally {
+        c.release();
+      }
+    };
+    for (const [state, startsAt, want] of cases) {
+      await clear();
+      const u = await seedUpdate(state, startsAt);
+      assert.equal(await endMissedWindows(pool, NOW), want === state ? 0 : 1, `${state} ${startsAt.toISOString()}`);
+      const r = await row(u.id);
+      assert.equal(r.state, want, `${state} ${startsAt.toISOString()}`);
+      if (want !== state) {
+        assert.equal(r.failure_code, 'window_missed');
+        assert.equal(await count(`SELECT count(*)::int AS n FROM audit_events WHERE action = 'ops.update_failed'`), 1);
+        assert.equal(await count(`SELECT count(*)::int AS n FROM notifications WHERE kind = 'update_failed' AND urgent`), 1);
+        assert.equal(await count(`SELECT count(*)::int AS n FROM email_outbox WHERE kind = 'update_cancelled'`), 1);
+        const ch = (await pool.query(`SELECT detail FROM update_changes WHERE update_id = $1`, [u.id])).rows.map((x) => x.detail);
+        assert.deepEqual(ch, [{ from: state, to: 'failed_before_install', failureCode: 'window_missed' }]);
+        assert.equal(await endMissedWindows(pool, NOW), 0, 'idempotent');
+      }
+    }
+    // Wired into the ops sweep.
+    await clear();
+    const u = await seedUpdate('approved', late);
+    await runOpsSweep(pool, NOW).catch(() => undefined);
+    assert.equal((await row(u.id)).failure_code, 'window_missed');
   });
 
   test('re-entry: the updater killed during the migration; the next tick finds the row installing and follows 5.7', async () => {
@@ -274,12 +359,13 @@ describe('installing an update (database)', { skip: SKIP_NO_DB }, () => {
     crashOnMigrate = true;
     const d = deps();
     const tick = (now: Date) =>
-      runTick({ pool, runner, installDir: dir, now: () => now, log: (l) => lines.push(l), prepare: async () => undefined, install: async (x) => void (await installUpdate(d, x)) });
+      runTick({ pool, runner, installDir: dir, now: () => now, log: (l) => lines.push(l), prepare: async () => undefined, install: (x) => installUpdate(d, x) });
     assert.equal((await tick(NOW)).did, 'failed');
     assert.equal((await row(u.id)).state, 'installing');
     assert.deepEqual((await steps(u.id)).slice(-1), ['migrate:running']);
     crashOnMigrate = false;
-    assert.equal((await tick(new Date(NOW.getTime() + 300_000))).did, 'installed');
+    // M6: the install ended failed_after_migration, so the tick records 'failed', not 'installed'.
+    assert.equal((await tick(new Date(NOW.getTime() + 300_000))).did, 'failed');
     const r = await row(u.id);
     assert.equal(r.state, 'failed_after_migration');
     assert.equal(r.failure_code, 'migration_failed');
@@ -312,8 +398,8 @@ describe('installing an update (database)', { skip: SKIP_NO_DB }, () => {
   test('a row still preparing more than 60 minutes after its start ends failed_before_install build_timeout and notifies', async () => {
     const u = await seedUpdate('preparing', new Date(NOW.getTime() - 61 * 60_000));
     const pd: PrepareDeps = { pool, runner, installDir: dir, projectName: 'kainow', now: () => NOW, log: (l) => lines.push(l), statfs: () => ({ total: 1e12, free: 1e12 }) };
-    const out = await runTick({ ...pd, prepare: async (x) => void (await prepareUpdate(pd, x)), install: async () => undefined });
-    assert.equal(out.did, 'prepared');
+    const out = await runTick({ ...pd, prepare: (x) => prepareUpdate(pd, x), install: async () => undefined });
+    assert.equal(out.did, 'failed', 'M6: a preparation that ended failed is not recorded as prepared');
     const r = await row(u.id);
     assert.equal(r.state, 'failed_before_install');
     assert.equal(r.failure_code, 'build_timeout');

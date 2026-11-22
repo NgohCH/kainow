@@ -61,11 +61,21 @@ export function peopleMail(kind: PeopleMailKind, u: ScheduledUpdate): { subject:
  */
 export async function mailEveryone(client: PoolClient, kind: PeopleMailKind, u: ScheduledUpdate, now: Date): Promise<number> {
   const { subject, body } = peopleMail(kind, u);
-  const people = (await client.query(`SELECT id, email FROM users WHERE status = 'active' ORDER BY id`)).rows as Array<{ id: string; email: string }>;
+  const people = (await client.query(`SELECT id, email FROM users WHERE status = 'active' ORDER BY email, id`)).rows as Array<{ id: string; email: string }>;
   for (const p of people) {
     await writeOutbox(client, { toUserId: p.id, toAddress: p.email, subject, body, kind, projectId: null, initiatedBy: 'system', now });
   }
   return people.length;
+}
+
+/**
+ * Final review M1: an announced update that ends before its window (refused, failed before installing, window missed)
+ * gets the "update cancelled" email, so nobody waits for an outage that will not come. Uses the caller's transaction.
+ */
+export async function mailUpdateEnded(client: PoolClient, id: string, now: Date): Promise<number> {
+  const r = (await client.query(`SELECT id, starts_at, expected_minutes FROM updates WHERE id = $1`, [id])).rows[0];
+  if (!r) return 0;
+  return mailEveryone(client, 'update_cancelled', { id: r.id, startsAt: r.starts_at, expectedMinutes: r.expected_minutes }, now);
 }
 
 /**

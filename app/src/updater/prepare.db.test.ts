@@ -168,6 +168,14 @@ describe('preparing an update (database and real git)', { skip: SKIP_NO_DB }, ()
     assert.equal(JSON.parse(readFileSync(join(repos.install, 'app', 'package.json'), 'utf8')).version, '1.0.0');
   });
 
+  test('steps started within the same millisecond still list in the order they ran (M5)', async (t) => {
+    if (skipGit) return t.skip(skipGit);
+    const u = await seedUpdate();
+    const { d } = deps();
+    assert.equal(await prepareUpdate({ ...d, now: () => NOW }, u), 'ready');
+    assert.deepEqual(await steps(u.id), ['space:passed', 'working_tree:passed', 'verify:passed', 'staging:passed', 'compatibility:passed', 'build:passed']);
+  });
+
   test('a refusal records its code, audit and notice, and removes staging', async (t) => {
     if (skipGit) return t.skip(skipGit);
     const u = await seedUpdate();
@@ -190,6 +198,9 @@ describe('preparing an update (database and real git)', { skip: SKIP_NO_DB }, ()
     assert.deepEqual([notes[0].user_id, notes[0].kind, notes[0].urgent], [admin, 'update_refused', true]);
     assert.match(notes[0].summary, /^The update to v1\.1\.0 was refused: /);
     assert.equal((await pool.query(`SELECT count(*)::int AS n FROM email_outbox WHERE kind = 'update_refused'`)).rows[0].n, 1);
+    // M1: everyone told of the outage gets the "cancelled" email (one active account here).
+    const mail = (await pool.query(`SELECT to_address, subject FROM email_outbox WHERE kind = 'update_cancelled'`)).rows;
+    assert.deepEqual(mail, [{ to_address: 'prepare8-admin@example.org', subject: 'Kainow update cancelled' }]);
     assert.ok(!existsSync(staging()));
     assert.ok(!(await git(repos.install, ['worktree', 'list'])).stdout.includes('.kainow-staging'));
   });

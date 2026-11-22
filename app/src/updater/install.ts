@@ -30,10 +30,11 @@ import type { Pool, PoolClient } from 'pg';
 import { uuidv7 } from '../common/uuid7';
 import { notifyAdmins } from '../ops/notify';
 import { auditUpdateFailed, auditUpdateRefused, auditUpdateSucceeded } from './audit';
+import { mailUpdateEnded } from './people-mail';
 import { fetchCandidate, workingTreeState } from './git';
 import { composeFlags, stagingDir } from './prepare';
 import { maskSecrets, type RunResult, type Runner } from './runner';
-import { FAILURE_TEXT, type FailureCode, type UpdateState } from './states';
+import { FAILURE_TEXT, WINDOW_GRACE_MS, windowMissed, type FailureCode, type UpdateState } from './states';
 import { TRUSTED_SIGNERS, recoveryLine, type TickUpdate } from './tick';
 import { compareVersions, parseTag } from './version';
 
@@ -158,7 +159,10 @@ export type BeforeEnd = { state: 'refused' | 'failed_before_install'; code: Fail
 export interface InstallStore {
   /** Steps a dead attempt left running are closed as failed. */
   closeRunning(id: string, now: Date): Promise<void>;
-  /** Under the updates lock: ready (and due) → installing; false when cancelled, rescheduled or no longer ready. */
+  /**
+   * Under the updates lock: ready, due and not more than 60 minutes past its start (D125) → installing; false when
+   * cancelled, rescheduled, no longer ready or too late.
+   */
   begin(id: string, now: Date): Promise<boolean>;
   /** Re-entry, under the updates lock: the recorded steps when the row is still installing (running ones then closed). */
   reenter(id: string, now: Date): Promise<StepRow[] | null>;
@@ -444,8 +448,13 @@ export async function installWithStore(deps: Omit<InstallDeps, 'pool'>, store: I
   const recheckId = await store.startStep(u.id, 'recheck', deps.now());
   let problem: FailureCode | null = null;
   try {
-    const p = await store.protective();
-    if (p.protective && !(p.reason === 'update' && p.updateId === u.id)) problem = 'protective_on';
+    // D125: more than 60 minutes past its start (the updater did not run in time) it is not installed; re-approve.
+    if (windowMissed(u.startsAt, deps.now())) {
+      log(`The update to ${u.tag} is more than ${WINDOW_GRACE_MS / 60_000} minutes past its start time; it is not installed.`);
+      problem = 'window_missed';
+    }
+    const p = problem ? null : await store.protective();
+    if (p?.protective && !(p.reason === 'update' && p.updateId === u.id)) problem = 'protective_on';
     if (!problem) {
       const w = await g.workingTreeState(installDir);
       if (!w.clean) {
@@ -488,8 +497,14 @@ export async function installWithStore(deps: Omit<InstallDeps, 'pool'>, store: I
   }
   if (!(await store.begin(u.id, deps.now()))) {
     await store.endStep(recheckId, 'skipped', null, deps.now());
-    log(`The update to ${u.tag} was cancelled or moved before it started; nothing was changed.`);
-    return (await store.stateOf(u.id)) ?? u.state;
+    const state = await store.stateOf(u.id);
+    // Still ready: the 60 minutes ran out during the re-check; the next tick (or the ops sweep) ends it window_missed.
+    log(
+      state === 'ready'
+        ? `The update to ${u.tag} did not start within ${WINDOW_GRACE_MS / 60_000} minutes of its start time; nothing was changed.`
+        : `The update to ${u.tag} was cancelled or moved before it started; nothing was changed.`,
+    );
+    return state ?? u.state;
   }
   await store.endStep(recheckId, 'passed', null, deps.now());
   log(`Installing the update to ${u.tag}.`);
@@ -692,7 +707,11 @@ export function pgInstallStore(pool: Pool): InstallStore {
     },
     begin: (id, now) =>
       inLock(async (c) => {
-        const r = await c.query(`UPDATE updates SET state = 'installing' WHERE id = $1 AND state = 'ready' AND starts_at <= $2 RETURNING id`, [id, now]);
+        const r = await c.query(
+          `UPDATE updates SET state = 'installing'
+            WHERE id = $1 AND state = 'ready' AND starts_at <= $2 AND starts_at >= $2 - make_interval(secs => $3::double precision) RETURNING id`,
+          [id, now, WINDOW_GRACE_MS / 1000],
+        );
         if (r.rowCount !== 1) return false;
         await change(c, id, now, { from: 'ready', to: 'installing' });
         return true;
@@ -780,6 +799,8 @@ export function pgInstallStore(pool: Pool): InstallStore {
         if (end.state === 'refused') await auditUpdateRefused(c, audit);
         else await auditUpdateFailed(c, audit);
         await notifyAdmins(c, { kind: end.state === 'refused' ? 'update_refused' : 'update_failed', summary: end.summary, link: LINK, now, urgent: true });
+        // M1: ended at the re-check, nothing was stopped: everyone was told of an outage that will not come.
+        if (from === 'ready') await mailUpdateEnded(c, id, now);
         return true;
       }),
     succeed: (id, stepId, tag, now) =>

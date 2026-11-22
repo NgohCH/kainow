@@ -59,10 +59,10 @@ async function main(): Promise<number> {
       installDir,
       now,
       log,
-      prepare: async (u) => void (await prepareUpdate({ pool, runner, installDir, projectName: await projectName(), now, log, statfs: defaultStatfs }, u)),
+      prepare: async (u) => prepareUpdate({ pool, runner, installDir, projectName: await projectName(), now, log, statfs: defaultStatfs }, u),
       // The db container is never restarted by an install (only api, worker and migrate), so this pool's connection,
       // which holds the tick's session lock, stays up throughout.
-      install: async (u) => void (await installUpdate({ pool, runner, installDir, projectName: await projectName(), now, log }, u)),
+      install: async (u) => installUpdate({ pool, runner, installDir, projectName: await projectName(), now, log }, u),
       recover: (args) => runRecover(args, { runner, installDir, projectName, store: pgRecoverStore(openPool, log), now, log, ask }),
     });
   } finally {

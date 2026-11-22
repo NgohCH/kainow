@@ -23,10 +23,11 @@ import { loadOpsSettings } from '../ops/settings';
 import { notifyAdmins } from '../ops/notify';
 import type { StatFs } from '../ops/storage-check';
 import { auditUpdateFailed, auditUpdateRefused } from './audit';
+import { mailUpdateEnded } from './people-mail';
 import { fetchCandidate, verifyCandidate, workingTreeState } from './git';
 import { CODE_TIMEOUT } from './process';
 import { maskSecrets, type RunResult, type Runner } from './runner';
-import { FAILURE_TEXT, type FailureCode } from './states';
+import { FAILURE_TEXT, WINDOW_GRACE_MS, windowMissed, type FailureCode } from './states';
 import type { TickUpdate } from './tick';
 import { compareVersions, parseTag } from './version';
 
@@ -38,8 +39,8 @@ const GB = 1024 ** 3;
  * updater layers in full (+0.33 GB), about 2.1 GB. × 1.5 ≈ 3.2 GB, below 4 GB, so 4 GB stands.
  */
 export const SPACE_MARGIN_GB = 4;
-/** The whole preparation's limit (spec 5.4): beyond it the update is `build_timeout`. */
-export const PREPARE_LIMIT_MS = 60 * 60_000;
+/** The whole preparation's limit (spec 5.4): beyond it the update is `build_timeout`. The same 60 minutes as the start grace. */
+export const PREPARE_LIMIT_MS = WINDOW_GRACE_MS;
 /** `docker compose config` and the image version check: short, and never beyond the preparation's limit. */
 const SHORT_DOCKER_MS = 5 * 60_000;
 const LINK = '#/admin/operations';
@@ -180,6 +181,27 @@ function apiImageOf(json: string): string | null {
   }
 }
 
+/**
+ * Final review I2: the `kainow-*` images of the staged configuration that do not end `:<version>` (all of them must, or
+ * building the release would re-tag the running version's images with new code); null when the JSON cannot be read or
+ * names no Kainow image. Only image names are returned, never other configuration values.
+ */
+export function staleKainowImages(json: string, version: string): string[] | null {
+  let services: Record<string, any> | undefined;
+  try {
+    services = (JSON.parse(json) as { services?: Record<string, any> }).services;
+  } catch {
+    return null;
+  }
+  if (!services || typeof services !== 'object') return null;
+  const images = Object.keys(services)
+    .sort()
+    .map((k) => services![k]?.image)
+    .filter((i): i is string => typeof i === 'string' && /^kainow-/.test(i));
+  if (!images.length) return null;
+  return [...new Set(images.filter((i) => !i.endsWith(`:${version}`)))];
+}
+
 const tail = (r: RunResult): string => maskSecrets(`${r.stdout}\n${r.stderr}`.trim().slice(-LOG_TAIL));
 
 class Stop {
@@ -191,7 +213,7 @@ class Stop {
 }
 class Cancelled {}
 
-const BUILD_CODES: readonly FailureCode[] = ['build_failed', 'build_timeout'];
+const BUILD_CODES: readonly FailureCode[] = ['build_failed', 'build_timeout', 'window_missed'];
 
 function summaryFor(tag: string, s: Stop): string {
   const head =
@@ -252,6 +274,11 @@ export async function prepareWithStore(deps: Omit<PrepareDeps, 'pool'>, store: P
   };
 
   try {
+    if (u.state === 'approved' && windowMissed(u.startsAt, deps.now())) {
+      // D125: first seen more than 60 minutes after its start (the updater did not run): never prepared late.
+      log(`The update to ${u.tag} was first seen more than ${WINDOW_GRACE_MS / 60_000} minutes after its start time; it is not installed.`);
+      throw new Stop('failed_before_install', 'window_missed');
+    }
     if (remaining() <= 0) {
       log(`The update to ${u.tag} is more than ${PREPARE_LIMIT_MS / 60_000} minutes past its start time and still not prepared.`);
       throw new Stop('failed_before_install', 'build_timeout');
@@ -330,6 +357,11 @@ export async function prepareWithStore(deps: Omit<PrepareDeps, 'pool'>, store: P
       if (!a || !b || JSON.stringify(a) !== JSON.stringify(b)) {
         log(`The new release's db service differs from the running one (image, volumes or environment names).`);
         throw new Stop('refused', 'db_service_changed');
+      }
+      const stale = staleKainowImages(next.stdout, u.toVersion);
+      if (!stale || stale.length) {
+        log(`The new release's Kainow images must all be tagged ${u.toVersion}${stale?.length ? `; not: ${stale.join(', ')}` : ''}.`);
+        throw new Stop('refused', 'image_version_mismatch');
       }
       apiImage = apiImageOf(next.stdout);
 
@@ -443,6 +475,7 @@ export function pgPrepareStore(pool: Pool): PrepareStore {
       JSON.stringify(detail),
     ]);
 
+  let lastStepMs = 0;
   return {
     begin: (id, now) =>
       inLock(async (c) => {
@@ -464,7 +497,9 @@ export function pgPrepareStore(pool: Pool): PrepareStore {
       return r.rows[0]?.state === 'preparing';
     },
     async startStep(id, step, now) {
-      const stepId = uuidv7(now.getTime());
+      // M5: steps started within the same millisecond still list in the order they ran (ORDER BY started_at, id).
+      lastStepMs = Math.max(now.getTime(), lastStepMs + 1);
+      const stepId = uuidv7(lastStepMs);
       await pool.query(`INSERT INTO update_steps (id, update_id, step, started_at, outcome) VALUES ($1, $2, $3, $4, 'running')`, [stepId, id, step, now]);
       return stepId;
     },
@@ -508,6 +543,8 @@ export function pgPrepareStore(pool: Pool): PrepareStore {
           now,
           urgent: true,
         });
+        // M1: everyone was told of the outage; it will not come.
+        await mailUpdateEnded(c, id, now);
         return true;
       }),
     async safeFloorGb() {

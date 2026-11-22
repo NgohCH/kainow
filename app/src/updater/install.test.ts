@@ -310,6 +310,55 @@ describe('installing an update', () => {
     assert.ok(t - NOW.getTime() >= MAINTENANCE_WAIT_MS + 60_000);
   });
 
+  test('window_missed: a ready row more than 60 minutes past its start ends failed_before_install, nothing touched (D125)', async () => {
+    let fetched = 0;
+    git.fetchCandidate = async () => {
+      fetched += 1;
+      return { ok: true, tagObject: TAG_OBJECT };
+    };
+    assert.equal(await run(update({ startsAt: new Date(NOW.getTime() - 61 * 60_000) })), 'failed_before_install');
+    assert.equal(store.state, 'failed_before_install');
+    assert.deepEqual(store.stepLine(), ['recheck:failed:window_missed']);
+    assert.equal((store.ends[0] as BeforeEnd).code, 'window_missed');
+    assert.match((store.ends[0] as BeforeEnd).summary, /Approve it again with a new start time\./);
+    assert.deepEqual(store.audits, ['ops.update_failed']);
+    assert.deepEqual(store.notices, ['update_failed']);
+    assert.equal(fetched, 0, 'nothing is fetched');
+    assert.equal(store.maintenanceOnAt, null, 'maintenance never went on');
+    assert.deepEqual(composeLines(), []);
+    assert.equal(world.head, 'v1.0.0');
+  });
+
+  test('window_missed boundary: exactly 60 minutes past its start still installs', async () => {
+    assert.equal(await run(update({ startsAt: new Date(NOW.getTime() - 60 * 60_000) })), 'succeeded');
+  });
+
+  test('a ready row whose begin is refused (the hour ran out during the re-check, or a reschedule) changes nothing', async () => {
+    store.begin = async () => false;
+    assert.equal(await run(), 'ready');
+    assert.deepEqual(store.stepLine(), ['recheck:skipped']);
+    assert.equal(store.maintenanceOnAt, null);
+    assert.ok(lines.some((l) => l.includes('did not start within 60 minutes')));
+  });
+
+  test('switch_code records the release as a local tag at the verified tag object (C1)', async () => {
+    assert.equal(await run(), 'succeeded');
+    const g = runner.lines('git');
+    assert.ok(g.includes(`git update-ref refs/tags/v1.1.0 ${TAG_OBJECT} `), g.join('\n'));
+    const upd = g.findIndex((l) => l.startsWith('git update-ref refs/tags/'));
+    const co = g.findIndex((l) => l.includes(`checkout --detach ${COMMIT}`));
+    assert.ok(upd >= 0 && upd < co, 'the tag is recorded before the checkout');
+  });
+
+  test('a local tag that differs from the verified object refuses at the re-check (tag_changed)', async () => {
+    const original = runner.run.bind(runner);
+    runner.run = async (cmd, args, opts) =>
+      cmd === 'git' && args[0] === 'for-each-ref' ? { code: 0, stdout: `${'ef'.repeat(20)}\n`, stderr: '' } : original(cmd, args, opts);
+    assert.equal(await run(), 'refused');
+    assert.deepEqual(store.stepLine(), ['recheck:failed:tag_changed']);
+    assert.equal(store.maintenanceOnAt, null);
+  });
+
   test('maintenance is on before the backup command starts (Review Focus 3)', async () => {
     let checked = false;
     const original = runner.run.bind(runner);

@@ -37,7 +37,8 @@ test('OPEN_STATES are the four the unique index covers', () => {
 const CODES: FailureCode[] = ['local_changes', 'not_on_release', 'no_space_to_build', 'settings_missing', 'db_service_changed',
   'manual_install', 'upgrade_path', 'backup_busy', 'fetch_failed', 'not_annotated', 'tag_name_mismatch', 'signature_invalid',
   'commit_mismatch', 'version_mismatch', 'not_newer', 'tag_changed', 'build_failed', 'build_timeout', 'protective_on',
-  'backup_failed', 'checkout_failed', 'migration_failed', 'start_failed', 'health_failed', 'rollback_failed'];
+  'backup_failed', 'checkout_failed', 'migration_failed', 'start_failed', 'health_failed', 'rollback_failed',
+  'image_version_mismatch', 'window_missed'];
 
 test('every FailureCode has text without a slash or URL', () => {
   assert.deepEqual(Object.keys(FAILURE_TEXT).sort(), [...CODES].sort());

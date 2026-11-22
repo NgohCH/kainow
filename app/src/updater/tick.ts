@@ -4,12 +4,15 @@
  * lock and from the updates service's transaction lock), does at most one thing, and
  * records that it ran in `updater_ticks` (diagnostic, D115):
  *
- *   approved, or preparing left by a tick that died  → prepare (Task 8)
- *   ready, and its start time reached                → install (Task 9)
+ *   approved, or preparing left by a tick that died  → prepare (Task 8); an approved row first seen more than 60
+ *                                                      minutes after its start ends `window_missed` there (D125)
+ *   ready, and its start time reached                → install (Task 9); more than 60 minutes past its start the
+ *                                                      re-check ends it `window_missed` instead (D125)
  *   installing, found with the lock free             → install again (re-entry, Task 9)
  *   failed_after_migration | failed_needs_attention  → the operator's recovery line, once a day
  *
- * A tick that finds the lock held stops at once and records nothing.
+ * `did` is 'prepared' or 'installed' only when that step did not end the update as refused or failed; otherwise
+ * 'failed' (and the command exits 1). A tick that finds the lock held stops at once and records nothing.
  */
 import { createHash } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
@@ -43,11 +46,15 @@ export interface TickDeps {
   installDir: string;
   now: () => Date;
   log: (line: string) => void;
-  prepare: (u: TickUpdate) => Promise<void>;
-  install: (u: TickUpdate) => Promise<void>;
+  /** The state the update is in afterwards (void when not known). */
+  prepare: (u: TickUpdate) => Promise<UpdateState | string | void>;
+  install: (u: TickUpdate) => Promise<UpdateState | string | void>;
 }
 
 const RECOVERY_STATES: readonly UpdateState[] = ['failed_after_migration', 'failed_needs_attention'];
+/** End states that make the tick's `did` 'failed' (final review M6). */
+const FAILED_ENDS: readonly string[] = ['refused', 'failed_before_install', 'failed_after_migration', 'failed_needs_attention'];
+const outcome = (ended: unknown, ok: TickDid): TickDid => (typeof ended === 'string' && FAILED_ENDS.includes(ended) ? 'failed' : ok);
 const DAY_MS = 24 * 60 * 60_000;
 const RECOVER_COMMAND = 'docker compose --profile updater run --rm updater node dist/updater/updater-cli.js recover';
 /** The trusted release signers file in the Kainow folder (spec 4.3). */
@@ -171,14 +178,11 @@ async function tickLocked(deps: TickDeps): Promise<TickDid> {
     if (picked) {
       const { u } = picked;
       if (u.state === 'approved' || u.state === 'preparing') {
-        await deps.prepare(u);
-        did = 'prepared';
+        did = outcome(await deps.prepare(u), 'prepared');
       } else if (u.state === 'ready' && u.startsAt.getTime() <= at.getTime()) {
-        await deps.install(u);
-        did = 'installed';
+        did = outcome(await deps.install(u), 'installed');
       } else if (u.state === 'installing') {
-        await deps.install(u);
-        did = 'installed';
+        did = outcome(await deps.install(u), 'installed');
       } else if (RECOVERY_STATES.includes(u.state) && (await recoveryLineDue(deps.pool, picked.finishedAt, at))) {
         deps.log(recoveryLine(u.state as 'failed_after_migration' | 'failed_needs_attention', u.tag));
         did = 'remind_recovery';

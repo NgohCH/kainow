@@ -195,6 +195,26 @@ describe('the updater tick', { skip: SKIP_NO_DB }, () => {
       });
     }
 
+    test('M6: a step that ends the update refused or failed records did = failed; ready or cancelled stays prepared/installed', async () => {
+      for (const [state, ended, did] of [
+        ['approved', 'refused', 'failed'],
+        ['approved', 'failed_before_install', 'failed'],
+        ['approved', 'ready', 'prepared'],
+        ['approved', 'cancelled', 'prepared'],
+        ['ready', 'failed_after_migration', 'failed'],
+        ['ready', 'failed_before_install', 'failed'],
+        ['ready', 'succeeded', 'installed'],
+      ] as const) {
+        await pool.query(`DELETE FROM updater_ticks`);
+        await pool.query(`UPDATE updates SET state = 'cancelled' WHERE state IN ('approved', 'preparing', 'ready', 'installing')`);
+        await seedUpdate(state, { startsAt: state === 'ready' ? NOW : undefined });
+        const { d, lines } = deps({ prepare: async () => ended, install: async () => ended });
+        assert.deepEqual(await runTick(d), { did }, `${state} → ${ended}`);
+        assert.deepEqual((await ticks()).map((r) => r.did), [did]);
+        assert.deepEqual(lines, []);
+      }
+    });
+
     test('an older failed update behind a newer open one: the open one is acted on', async () => {
       await seedUpdate('failed_after_migration', { approvedAt: at(-48 * HOUR), finishedAt: at(-47 * HOUR) });
       const id = await seedUpdate('approved');

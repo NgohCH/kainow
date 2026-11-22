@@ -27,7 +27,7 @@ export type FailureCode =
   | 'manual_install' | 'upgrade_path' | 'backup_busy' | 'fetch_failed' | 'not_annotated' | 'tag_name_mismatch'
   | 'signature_invalid' | 'commit_mismatch' | 'version_mismatch' | 'not_newer' | 'tag_changed' | 'build_failed'
   | 'build_timeout' | 'protective_on' | 'backup_failed' | 'checkout_failed' | 'migration_failed' | 'start_failed'
-  | 'health_failed' | 'rollback_failed';
+  | 'health_failed' | 'rollback_failed' | 'image_version_mismatch' | 'window_missed';
 
 /** Fixed sentences only: never command output, paths or URLs. */
 export const FAILURE_TEXT: Record<FailureCode, string> = {
@@ -56,7 +56,21 @@ export const FAILURE_TEXT: Record<FailureCode, string> = {
   start_failed: 'Kainow did not start on the new version.',
   health_failed: 'Kainow did not pass its health checks on the new version.',
   rollback_failed: 'Going back to the previous version failed.',
+  image_version_mismatch:
+    "The new release's image names do not carry its version, so building it would replace the running version's images.",
+  window_missed:
+    'The update could not start within an hour of its start time (the updater did not run in time), so it was not installed. Approve it again with a new start time.',
 };
+
+/**
+ * How late an update may still start (D125, C107): a `ready` row is installed, and an `approved` row prepared, only
+ * within 60 minutes of its start time; later it ends `failed_before_install` with `window_missed`. Also the preparation's
+ * limit (spec 5.4).
+ */
+export const WINDOW_GRACE_MS = 60 * 60_000;
+
+/** True when `startsAt` is more than WINDOW_GRACE_MS before `now`. */
+export const windowMissed = (startsAt: Date, now: Date): boolean => now.getTime() - startsAt.getTime() > WINDOW_GRACE_MS;
 
 const WORDS: Record<UpdateState, string> = {
   approved: 'Approved, waiting to be prepared',

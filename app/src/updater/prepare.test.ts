@@ -14,6 +14,7 @@ import {
   prepareWithStore,
   projectNameFor,
   resolveProjectName,
+  staleKainowImages,
   stagingDir,
   type PrepareDeps,
   type PrepareEnd,
@@ -21,7 +22,7 @@ import {
   type PrepareStep,
   type PrepareStore,
 } from './prepare';
-import type { FailureCode } from './states';
+import { WINDOW_GRACE_MS, type FailureCode } from './states';
 import type { TickUpdate } from './tick';
 
 const GB = 1024 ** 3;
@@ -425,12 +426,64 @@ describe('preparing an update', () => {
     assert.deepEqual(store.steps, [], 'no step is started');
     assert.ok(!runner.calls.some((c) => c.args.includes('build')));
 
-    // An approved row the updater never saw until well after its start is not prepared either.
+    // An approved row the updater never saw until well after its start is not prepared either: window_missed (D125).
     store = new MemoryStore();
     runner = new FakeRunner();
     docker();
     assert.equal(await run(update({ startsAt })), 'failed_before_install');
+    const end = store.ends[0] as Extract<PrepareEnd, { code: FailureCode }>;
+    assert.equal(end.code, 'window_missed');
+    assert.match(end.summary, /Approve it again with a new start time\./);
+    assert.deepEqual(store.steps, [], 'no step is started');
+    assert.ok(!runner.calls.some((c) => c.args.includes('build') || c.args.includes('fetch')));
+  });
+
+  test('window_missed: an approved row first seen 61 minutes late ends; at exactly 60 minutes it is still prepared', async () => {
+    docker();
+    assert.equal(await run(update({ startsAt: new Date(NOW.getTime() - WINDOW_GRACE_MS - 60_000) })), 'failed_before_install');
+    assert.equal((store.ends[0] as { code: string }).code, 'window_missed');
+    assert.equal(store.state, 'failed_before_install');
+
+    // Exactly 60 minutes late is not past the grace; it then runs out of preparation time (build_timeout), as before.
+    store = new MemoryStore();
+    runner = new FakeRunner();
+    docker();
+    assert.equal(await run(update({ startsAt: new Date(NOW.getTime() - WINDOW_GRACE_MS) })), 'failed_before_install');
     assert.equal((store.ends[0] as { code: string }).code, 'build_timeout');
+
+    // 59 minutes late: prepared with what is left of the hour.
+    store = new MemoryStore();
+    runner = new FakeRunner();
+    docker();
+    assert.equal(await run(update({ startsAt: new Date(NOW.getTime() - WINDOW_GRACE_MS + 60_000) })), 'ready');
+  });
+
+  test('image_version_mismatch: a staged kainow- image that keeps another version is refused before the build (I2)', async () => {
+    const next = JSON.parse(dbJson());
+    next.services.ops = { image: 'kainow-ops:1.0.0' };
+    next.services.worker = { image: 'kainow-app:1.1.0' };
+    docker({ next: JSON.stringify(next) });
+    assert.equal(await run(), 'refused');
+    const end = store.ends[0] as Extract<PrepareEnd, { code: FailureCode }>;
+    assert.equal(end.code, 'image_version_mismatch');
+    assert.deepEqual(store.steps.at(-1), { step: 'compatibility', outcome: 'failed', code: 'image_version_mismatch' });
+    assert.ok(!runner.calls.some((c) => c.args.at(-1) === 'build'), 'nothing is built');
+    assert.ok(lines.some((l) => l.includes('kainow-ops:1.0.0')));
+    assert.ok(!lines.some((l) => l.includes('hunter2')), 'config output is never logged');
+    assert.ok(!existsSync(staging()));
+  });
+
+  test('staleKainowImages lists kainow- images not on the version, and null when there is none or the JSON is bad', () => {
+    const cfg = (images: Record<string, string>) =>
+      JSON.stringify({ services: Object.fromEntries(Object.entries(images).map(([k, v]) => [k, { image: v }])) });
+    assert.deepEqual(staleKainowImages(cfg({ api: 'kainow-app:1.1.0', db: 'postgres:16', ops: 'kainow-ops:1.1.0' }), '1.1.0'), []);
+    assert.deepEqual(
+      staleKainowImages(cfg({ api: 'kainow-app:1.0.0', worker: 'kainow-app:1.0.0', updater: 'kainow-updater:latest' }), '1.1.0'),
+      ['kainow-app:1.0.0', 'kainow-updater:latest'],
+    );
+    assert.deepEqual(staleKainowImages(cfg({ api: 'kainow-app:11.1.0' }), '1.1.0'), ['kainow-app:11.1.0'], 'the whole version, not its end');
+    assert.equal(staleKainowImages(cfg({ db: 'postgres:16' }), '1.1.0'), null);
+    assert.equal(staleKainowImages('not json', '1.1.0'), null);
   });
 
   test('a retry after the start time gets only what is left of 60 minutes past the start', async () => {
