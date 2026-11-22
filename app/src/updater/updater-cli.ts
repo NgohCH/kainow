@@ -1,5 +1,7 @@
 import { isAbsolute } from 'node:path';
 import { Pool } from 'pg';
+import { defaultStatfs } from '../ops/storage-check';
+import { prepareUpdate, projectNameFor } from './prepare';
 import { RealRunner, maskSecrets } from './runner';
 import { UPDATER_TEXT, runUpdaterCli, type TickUpdate } from './tick';
 
@@ -20,16 +22,19 @@ async function main(): Promise<number> {
   }
   const pool = new Pool({ connectionString: databaseUrl });
   pool.on('error', () => undefined); // an idle client dropping must not crash the run; the next query reports it
-  // Preparing (Task 8) and installing (Task 9) are not in this version yet.
+  // Installing (Task 9) is not in this version yet.
   const notYet = (what: string) => async (u: TickUpdate) => log(`${what} the update to ${u.tag} is not available in this version yet.`);
+  const runner = new RealRunner(installDir);
+  const now = () => new Date();
+  const projectName = projectNameFor(process.env, installDir);
   try {
     return await runUpdaterCli(process.argv.slice(2), {
       pool,
-      runner: new RealRunner(installDir),
+      runner,
       installDir,
-      now: () => new Date(),
+      now,
       log,
-      prepare: notYet('Preparing'),
+      prepare: async (u) => void (await prepareUpdate({ pool, runner, installDir, projectName, now, log, statfs: defaultStatfs }, u)),
       install: notYet('Installing'),
     });
   } finally {
