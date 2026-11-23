@@ -109,6 +109,11 @@ export class OutputFilesService {
       const status = (await checkFile(this.deps, f.id)).status;
       throw await this.refused(BLOCKING.includes(status) ? status : 'changed', v, manages);
     }
+    // The provider can take a while to answer, and access or the file may change meanwhile (a membership revoked, the
+    // audience narrowed, the version held). Check both again before handing out the bytes (second review).
+    await this.outputs.visible(user, projectId, outputId);
+    const now = await loadFile(this.pool, f.id);
+    if (!now || now.state !== 'stored' || BLOCKING.includes(now.check_status)) throw this.notOpenable(await this.versionFile(outputId, versionNo));
     return { filename: f.name, mediaType: MEDIA_TYPES[v.format] ?? 'application/octet-stream', bytes };
   }
 

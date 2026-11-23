@@ -41,6 +41,8 @@ describe('people over HTTP', { skip: SKIP_NO_DB }, () => {
     await runMigrations(pool, config.migrationsDir);
     await seedOrganisation(pool);
     adminId = (await new UsersService(pool, clock.now).create({ email: EMAIL, displayName: 'Admin' })).id;
+    // New Administrators must be on an organisation email domain.
+    await pool.query(`INSERT INTO eligible_domains (id, domain, added_by, added_at) VALUES (gen_random_uuid(), 'example.org', $1, now())`, [adminId]);
     app = await createApp(config, { codeSender: sender, clock: clock.now, logger: false, extractionQueue: { enqueue: async () => undefined } });
     await app.listen(0);
     base = await app.getUrl();

@@ -81,7 +81,25 @@ export function loadEmailConfig(env: NodeJS.ProcessEnv): EmailConfig {
       'LOG_SIGN_IN_CODES (the log email provider) is refused when NODE_ENV=production: set EMAIL_PROVIDER to m365 or smtp, or set NODE_ENV=development for a trial on your own computer',
     );
   }
+  // Second review (M1b): NODE_ENV now comes from .env, so a server left on development would log codes again. Logged
+  // codes are therefore also refused unless people open Kainow on this computer itself.
+  if (email.provider === 'log' && !isLoopbackUrl(appUrlFrom(env))) {
+    throw new Error(
+      'LOG_SIGN_IN_CODES (the log email provider) is refused when APP_URL is not this computer (localhost or 127.0.0.1): set EMAIL_PROVIDER to m365 or smtp',
+    );
+  }
   return email;
+}
+
+/** True when the address is this computer only: localhost (or a name under it), 127.0.0.0/8 or ::1. */
+export function isLoopbackUrl(url: string): boolean {
+  let host: string;
+  try {
+    host = new URL(url).hostname.toLowerCase();
+  } catch {
+    return false;
+  }
+  return host === 'localhost' || host.endsWith('.localhost') || /^127(\.\d{1,3}){3}$/.test(host) || host === '[::1]';
 }
 
 function chooseEmailConfig(env: NodeJS.ProcessEnv): EmailConfig {

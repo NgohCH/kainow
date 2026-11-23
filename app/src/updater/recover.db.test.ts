@@ -117,7 +117,7 @@ const SUMMARY: BackupSummary = {
   finishedAt: at(89).toISOString(),
   keyId: 'k1',
   kainowVersion: '1.0.0',
-  migrationLevel: '0034_updates.sql',
+  migrationLevel: '0035_updates.sql',
   databaseBytes: 1000,
   fileCount: 0,
   sourceArea: 'not_in_use',

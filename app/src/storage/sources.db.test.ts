@@ -76,7 +76,7 @@ describe('managed source area: storing source versions', { skip: SKIP_NO_DB }, (
     return id;
   };
   const uploadNote = async (name = 'Site notes.txt', bytes = BYTES) =>
-    notes().createSource({ projectId: project, content: { file: { originalname: name, buffer: bytes } }, actorUserId: pmId });
+    notes().createSource({ projectId: project, content: { file: { originalname: name, buffer: bytes } }, actorUserId: pmId, reauthorise: async () => undefined });
   const filesOf = async (versionId: string) =>
     rows(
       `SELECT f.purpose, f.name, f.state, f.project_id, f.attempts, f.failure_code, f.item_id, f.path, f.size_bytes, f.sha256, f.provider_hash, f.destination_id, f.stored_at
@@ -124,6 +124,7 @@ describe('managed source area: storing source versions', { skip: SKIP_NO_DB }, (
         projectId: project,
         content: { file: { originalname: 'Other.txt', buffer: Buffer.from('Other notes.') } },
         actorUserId: pmId,
+        reauthorise: async () => undefined,
         submission: { submittedBy: pmId, intendedMode: 'project', refuse: () => undefined, after: async () => { throw new Error('after failed'); } },
       }),
       /after failed/,

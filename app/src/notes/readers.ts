@@ -1,3 +1,6 @@
+import { join } from 'node:path';
+import { Worker } from 'node:worker_threads';
+import { inflateRawSync } from 'node:zlib';
 import { MAX_TEXT_CHARS, MAX_UPLOAD_BYTES, NoteTextError, normaliseText } from './text';
 
 export class UploadRejected extends Error {}
@@ -41,8 +44,10 @@ function checkSignature(kind: FileKind, bytes: Buffer): void {
 
 interface ZipEntry {
   name: string;
+  method: number;
   compressedSize: number;
   uncompressedSize: number;
+  localHeaderOffset: number;
 }
 
 /**
@@ -77,25 +82,60 @@ export function inspectZip(bytes: Buffer): ZipEntry[] {
       throw new UploadRejected('The Word document is damaged (bad ZIP entry).');
     }
     const flags = bytes.readUInt16LE(pos + 8);
+    const method = bytes.readUInt16LE(pos + 10);
     const compressedSize = bytes.readUInt32LE(pos + 20);
     const uncompressedSize = bytes.readUInt32LE(pos + 24);
     const nameLen = bytes.readUInt16LE(pos + 28);
     const extraLen = bytes.readUInt16LE(pos + 30);
     const commentLen = bytes.readUInt16LE(pos + 32);
+    const localHeaderOffset = bytes.readUInt32LE(pos + 42);
     if (pos + 46 + nameLen > bytes.length) throw new UploadRejected('The Word document is damaged.');
     if (flags & 0x1) throw new UploadRejected('Encrypted Word documents are not accepted.');
     const name = bytes.toString('utf8', pos + 46, pos + 46 + nameLen);
-    if (compressedSize === 0xffffffff || uncompressedSize === 0xffffffff) {
+    if (compressedSize === 0xffffffff || uncompressedSize === 0xffffffff || localHeaderOffset === 0xffffffff) {
       throw new UploadRejected('ZIP64 archives are not accepted.');
     }
     total += uncompressedSize;
     if (total > MAX_ZIP_UNCOMPRESSED_BYTES) {
       throw new UploadRejected('The Word document expands to too much data.');
     }
-    entries.push({ name, compressedSize, uncompressedSize });
+    if (method !== 0 && method !== 8) throw new UploadRejected('The Word document uses an unsupported compression method.');
+    entries.push({ name, method, compressedSize, uncompressedSize, localHeaderOffset });
     pos += 46 + nameLen + extraLen + commentLen;
   }
   return entries;
+}
+
+/**
+ * The sizes in the directory are only what the file claims. Each part is unpacked here with a hard ceiling of its
+ * claimed size, so a part that expands to more than it declared is refused before mammoth unpacks it without limit.
+ */
+export function verifyZipSizes(bytes: Buffer, entries: ZipEntry[]): void {
+  for (const e of entries) {
+    const at = e.localHeaderOffset;
+    if (at + 30 > bytes.length || bytes.readUInt32LE(at) !== 0x04034b50) {
+      throw new UploadRejected('The Word document is damaged (bad ZIP entry).');
+    }
+    const start = at + 30 + bytes.readUInt16LE(at + 26) + bytes.readUInt16LE(at + 28);
+    const end = start + e.compressedSize;
+    if (end > bytes.length) throw new UploadRejected('The Word document is damaged.');
+    const data = bytes.subarray(start, end);
+    let actual: number;
+    if (e.method === 0) {
+      actual = data.length;
+    } else {
+      try {
+        // One byte of headroom: a part that fills it has more than it declared.
+        actual = inflateRawSync(data, { maxOutputLength: e.uncompressedSize + 1 }).length;
+      } catch (err) {
+        if (err instanceof RangeError || (err as { code?: string }).code === 'ERR_BUFFER_TOO_LARGE') {
+          throw new UploadRejected('The Word document expands to more data than it declares.');
+        }
+        throw new UploadRejected('The Word document is damaged.');
+      }
+    }
+    if (actual !== e.uncompressedSize) throw new UploadRejected('The Word document expands to more data than it declares.');
+  }
 }
 
 function decodeUtf8Strict(bytes: Buffer): string {
@@ -115,6 +155,7 @@ async function readDocx(bytes: Buffer): Promise<string> {
   if (body && body.uncompressedSize > 50 * 1024 * 1024) {
     throw new UploadRejected('The Word document body is too large.');
   }
+  verifyZipSizes(bytes, entries);
   // eslint-disable-next-line @typescript-eslint/no-require-imports
   const mammoth = require('mammoth') as MammothApi;
   try {
@@ -181,59 +222,57 @@ function htmlToText(html: string): string {
     });
 }
 
-// pdfjs-dist is ESM only and this project compiles to CommonJS, so the import must not be rewritten to require().
-const importEsm = new Function('specifier', 'return import(specifier)') as (s: string) => Promise<any>;
+/**
+ * A PDF can hide a compressed stream that unpacks to gigabytes, and pdf.js has no ceiling of its own. So each PDF is
+ * read in a worker thread that is stopped when it runs too long or the process grows too much, and the API thread
+ * never blocks on it. Only a few run at once. Technical defaults, not product policy.
+ */
+export const PDF_LIMITS = { timeoutMs: 60_000, maxGrowthBytes: 768 * 1024 * 1024, heapMb: 512, concurrent: 2 };
+
+let pdfRunning = 0;
+const pdfWaiting: Array<() => void> = [];
 
 async function readPdf(bytes: Buffer): Promise<string> {
-  const pdfjs = await importEsm('pdfjs-dist/legacy/build/pdf.mjs');
-  const task = pdfjs.getDocument({
-    data: new Uint8Array(bytes),
-    isEvalSupported: false,
-    disableFontFace: true,
-    useSystemFonts: false,
-    verbosity: 0,
-  });
-  let doc: any;
+  if (pdfRunning >= PDF_LIMITS.concurrent) await new Promise<void>((go) => pdfWaiting.push(go));
+  pdfRunning += 1;
   try {
-    doc = await task.promise;
-  } catch (err) {
-    if (err && (err as { name?: string }).name === 'PasswordException') {
-      throw new UploadRejected('Password-protected PDFs are not accepted.');
-    }
-    throw new UploadRejected('The PDF could not be read.');
-  }
-  try {
-    if (doc.numPages > MAX_PDF_PAGES) {
-      throw new UploadRejected(`The PDF has more than ${MAX_PDF_PAGES} pages.`);
-    }
-    const pages: string[] = [];
-    let chars = 0;
-    for (let p = 1; p <= doc.numPages; p++) {
-      const page = await doc.getPage(p);
-      const content = await page.getTextContent();
-      let line = '';
-      const lines: string[] = [];
-      for (const item of content.items as Array<{ str?: string; hasEOL?: boolean }>) {
-        if (typeof item.str !== 'string') continue;
-        line += item.str;
-        if (item.hasEOL) {
-          lines.push(line);
-          line = '';
-        }
-      }
-      if (line) lines.push(line);
-      const text = lines.join('\n');
-      chars += text.length;
-      if (chars > MAX_TEXT_CHARS * 2) {
-        throw new UploadRejected('The PDF has too much text.');
-      }
-      pages.push(text);
-      page.cleanup();
-    }
-    return pages.join('\n\n');
+    return await readPdfInWorker(bytes);
   } finally {
-    await task.destroy();
+    pdfRunning -= 1;
+    pdfWaiting.shift()?.();
   }
+}
+
+function readPdfInWorker(bytes: Buffer): Promise<string> {
+  const tooBig = () => new UploadRejected('The PDF could not be read: it needs more time or memory than allowed.');
+  return new Promise((resolveText, reject) => {
+    const worker = new Worker(join(__dirname, 'pdf-text.worker.js'), {
+      workerData: new Uint8Array(bytes),
+      resourceLimits: { maxOldGenerationSizeMb: PDF_LIMITS.heapMb },
+    });
+    const baseline = process.memoryUsage().rss;
+    let settled = false;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      clearInterval(watch);
+      void worker.terminate();
+      fn();
+    };
+    const timer = setTimeout(() => finish(() => reject(tooBig())), PDF_LIMITS.timeoutMs);
+    // pdf.js decodes into ArrayBuffers, which the heap limit does not cover, so the whole process is watched too.
+    const watch = setInterval(() => {
+      if (process.memoryUsage().rss - baseline > PDF_LIMITS.maxGrowthBytes) finish(() => reject(tooBig()));
+    }, 50);
+    worker.once('message', (reply: { ok: true; text: string } | { ok: false; rejected: string | null }) =>
+      finish(() => (reply.ok ? resolveText(reply.text) : reject(new UploadRejected(reply.rejected ?? 'The PDF could not be read.')))),
+    );
+    worker.once('error', (err: Error & { code?: string }) =>
+      finish(() => reject(err.code === 'ERR_WORKER_OUT_OF_MEMORY' ? tooBig() : new UploadRejected('The PDF could not be read.'))),
+    );
+    worker.once('exit', () => finish(() => reject(new UploadRejected('The PDF could not be read.'))));
+  });
 }
 
 export interface ReadFile {

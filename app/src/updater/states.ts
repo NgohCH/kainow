@@ -20,7 +20,7 @@ const NEXT: Record<UpdateState, readonly UpdateState[]> = {
   cancelled: [],
 };
 
-/** Every state, as the 0034 CHECK lists them (schema.db.test compares the two). */
+/** Every state, as the 0035 CHECK lists them (schema.db.test compares the two). */
 export const UPDATE_STATES = Object.keys(NEXT) as UpdateState[];
 
 export const canTransition = (from: UpdateState, to: UpdateState): boolean => NEXT[from].includes(to);

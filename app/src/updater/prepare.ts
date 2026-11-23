@@ -133,7 +133,7 @@ export async function resolveProjectName(runner: Runner, installDir: string, env
 
 /**
  * The staging checkout's folder. Throws unless `tag` is a release tag (final review #23): the path is removed with
- * `rm -rf`, so a value read from the database never names anything else. The schema refuses such a tag too (0034).
+ * `rm -rf`, so a value read from the database never names anything else. The schema refuses such a tag too (0035).
  */
 export function stagingDir(installDir: string, tag: string): string {
   if (!parseTag(tag)) throw new Error('not a release tag');

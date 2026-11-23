@@ -5,7 +5,7 @@ import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
 import { OperationsState } from '../ops/state';
-import { INFORMATION, MSG, STEPS, TOTAL, custodianRecorded, refreshChecklist } from './checklist';
+import { CLOSING_REQUIREMENTS, INFORMATION, MSG, STEPS, TOTAL, conditions, custodianRecorded, refreshChecklist } from './checklist';
 
 export interface StepView {
   key: string; position: number; text: string; explanation: string; link: string; mode: string; done: boolean;
@@ -62,7 +62,10 @@ export class GoLiveService {
     const notDoneAtClose = closedAt
       ? rows.filter((r) => r.ticked_at === null || (r.ticked_at as Date).getTime() > closedAt.getTime()).map((r) => r.key as string)
       : [];
-    return { closedAt: closedAt ? closedAt.toISOString() : null, steps, notDoneAtClose, information: INFORMATION };
+    // Conditions that are not steps and still hold up closing (the protected key, second review G05).
+    const holds = closedAt ? {} : await conditions(this.pool);
+    const waitingFor = closedAt ? [] : CLOSING_REQUIREMENTS.filter((r) => !holds[r.key]);
+    return { closedAt: closedAt ? closedAt.toISOString() : null, steps, notDoneAtClose, waitingFor, information: INFORMATION };
   }
 
   async summary(user: AuthUser) {

@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { makeDocx, makePdf, makeZip } from '../testing/files';
-import { MAX_ZIP_ENTRIES, UploadRejected, inspectZip, readUpload } from './readers';
+import { deflateSync } from 'node:zlib';
+import { MAX_ZIP_ENTRIES, PDF_LIMITS, UploadRejected, inspectZip, readUpload } from './readers';
 import { MAX_UPLOAD_BYTES } from './text';
 
 const rejects = (p: Promise<unknown>, re: RegExp) => assert.rejects(p, (e: unknown) => e instanceof UploadRejected && re.test(e.message));
@@ -85,6 +86,21 @@ test('a ZIP bomb is refused from its directory, before anything is inflated', as
   await rejects(readUpload('a.docx', bomb), /too large|too much/);
 });
 
+test('a Word part that expands to more than it declares is refused before mammoth unpacks it', async () => {
+  const doc = makeDocx(['Hello']);
+  const big = makeZip([
+    { name: '[Content_Types].xml', data: '<x/>' },
+    { name: 'word/document.xml', data: Buffer.alloc(20 * 1024 * 1024, 0x20) },
+  ]);
+  // The directory claims 1 KB for the body; the data really unpacks to 20 MB.
+  const dirOffset = big.readUInt32LE(big.length - 22 + 16);
+  const secondEntry = dirOffset + 46 + '[Content_Types].xml'.length;
+  big.writeUInt32LE(1024, secondEntry + 24);
+  await rejects(readUpload('a.docx', big), /more data than it declares/);
+  // An honest document still reads.
+  assert.match((await readUpload('a.docx', doc)).text, /Hello/);
+});
+
 test('an archive with too many parts is refused', async () => {
   const many = makeZip(Array.from({ length: MAX_ZIP_ENTRIES + 1 }, (_, i) => ({ name: `f${i}`, data: 'x' })));
   assert.throws(() => inspectZip(many), /too many parts/);
@@ -109,4 +125,51 @@ test('a file whose content does not match its name is refused', async () => {
 
 test('a damaged PDF is refused', async () => {
   await rejects(readUpload('a.pdf', Buffer.from('%PDF-1.4\nthis is not really a pdf')), /could not be read/);
+});
+
+/** A one-page PDF whose compressed content stream unpacks to `size` bytes of spaces. */
+function pdfBomb(size: number): Buffer {
+  const packed = deflateSync(Buffer.alloc(size, 0x20), { level: 9 });
+  const parts: Buffer[] = [];
+  const offsets: number[] = [];
+  let length = 0;
+  const add = (b: Buffer | string) => {
+    const buf = typeof b === 'string' ? Buffer.from(b, 'latin1') : b;
+    parts.push(buf);
+    length += buf.length;
+  };
+  add('%PDF-1.4\n');
+  const objs: Array<Array<Buffer | string>> = [
+    ['<< /Type /Catalog /Pages 2 0 R >>'],
+    ['<< /Type /Pages /Kids [3 0 R] /Count 1 >>'],
+    ['<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R >>'],
+    [`<< /Length ${packed.length} /Filter /FlateDecode >>\nstream\n`, packed, '\nendstream'],
+  ];
+  objs.forEach((o, i) => {
+    offsets.push(length);
+    add(`${i + 1} 0 obj\n`);
+    o.forEach(add);
+    add('\nendobj\n');
+  });
+  const xref = length;
+  add(`xref\n0 ${objs.length + 1}\n0000000000 65535 f \n`);
+  for (const o of offsets) add(`${String(o).padStart(10, '0')} 00000 n \n`);
+  add(`trailer\n<< /Size ${objs.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`);
+  return Buffer.concat(parts);
+}
+
+test('a PDF whose content unpacks to far more than it looks is stopped, and the API thread keeps answering', async () => {
+  const saved = { ...PDF_LIMITS };
+  PDF_LIMITS.maxGrowthBytes = 64 * 1024 * 1024;
+  try {
+    const bomb = pdfBomb(400 * 1024 * 1024);
+    assert.ok(bomb.length < 2 * 1024 * 1024, 'the file itself is small');
+    let ticks = 0;
+    const beat = setInterval(() => (ticks += 1), 10);
+    await rejects(readUpload('a.pdf', bomb), /more time or memory than allowed/);
+    clearInterval(beat);
+    assert.ok(ticks > 0, 'the event loop was not blocked while the PDF was read');
+  } finally {
+    Object.assign(PDF_LIMITS, saved);
+  }
 });

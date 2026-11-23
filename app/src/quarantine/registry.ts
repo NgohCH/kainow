@@ -959,6 +959,8 @@ export const NO_USER_TEXT: Readonly<Record<string, string>> = {
   'storage_daily.location': ENUM,
   'ops_alerts.kind': ENUM,
   'ops_alerts.location': ENUM,
+  'service_key_status.service': ENUM,
+  'service_key_status.key_id': 'a key identifier (part of a hash), never key material',
   'analytics_views.config': 'filters and panel choices of a saved analytics view, from fixed options and ids; the view name is the only typed text',
   'analytics_views.name': 'a saved view name typed by an Administrator: personal and organisation-level, no project scope (spec 7.4); credential-checked when typed',
   'leadership_grant_events.detail': 'previous and new end dates of a leadership grant: dates and ids, never free text',

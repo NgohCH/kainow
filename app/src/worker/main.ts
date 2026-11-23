@@ -20,6 +20,7 @@ import { AudienceService } from '../discussion/audience.service';
 import { ProjectAccess } from '../projects/access.service';
 import { CasesService, cleanWaitingCases } from '../quarantine/cases.service';
 import type { PgBoss } from 'pg-boss';
+import { reportKeyStatus } from '../quarantine/key-status';
 import { loadRequiredProtectedKey } from '../quarantine/protected-key';
 import { OperationsState } from '../ops/state';
 import { runOpsSweep } from '../ops/sweep-ops';
@@ -43,6 +44,8 @@ async function main(): Promise<void> {
   // The protected key (history spec 7.3): held in memory only; without it, waiting quarantine cases stay waiting.
   const keyLog = new Logger('ProtectedKey');
   const key = loadRequiredProtectedKey(config.protectedKeyFile, config.requireProtectedKey, (m) => keyLog.warn(m));
+  // Which key the worker started with, for the go-live checklist (second review, G05). Never fatal.
+  await reportKeyStatus(pool, 'worker', key?.id ?? null).catch(() => keyLog.warn('could not record whether the protected key is loaded'));
   // The email nudge needs the queue, which starts later; a nudge before then is simply lost and the next tick catches it.
   let boss: PgBoss | undefined;
   const nudge: EmailNudge = {

@@ -3,7 +3,7 @@
 **Date:** 22 November 2026
 **Status:** Approved by the Product Owner on 22 November 2026, including the calls listed at hand-over (updater runs as the folder owner, compatibility checks before stopping, D111 backup rule at approval, 30-minute backup retry, recovery on the previous version, configurable release API, load-test aims, go-live step `updates`, restart message).
 **Builds on:** sub-project 10a, branch `TheLord/vigilant-hawking-7ee526` (PR #24, open). This branch (`TheLord/nice-goldberg-5d2b2b`) is cut from 10a's head 2b270e3 and is rebased onto `main` once #24 merges.
-**Reserved numbers:** migration `0034_updates.sql`; Decision Register D119–D126 (D125–D126 kept for decisions found while building); Configuration Catalogue C105–C112 (C111–C112 kept likewise). 10a holds 0033, D109–D118 and C93–C104. Checked on `main` at 94b592f (highest: migration 0032, D108, C92).
+**Reserved numbers:** migration `0035_updates.sql` (reserved as 0034; renumbered when main took 0034 for the service-key status); Decision Register D119–D126 (D125–D126 kept for decisions found while building); Configuration Catalogue C105–C112 (C111–C112 kept likewise). 10a holds 0033, D109–D118 and C93–C104. Checked on `main` at 94b592f (highest: migration 0032, D108, C92).
 **Authority:**
 - Intent Card "Accepted runtime direction" ("release-specific Administrator-approved updates"; 200 registered / 10 concurrent users).
 - Product Summary §19 (every release update needs explicit Enterprise Administrator approval; tested scale-up).
@@ -314,7 +314,7 @@ What a compromised Enterprise Administrator account can do: approve an update to
 
 INSTALL.md states plainly that the updater container has root-equivalent control of the server through the Docker socket, runs only when cron starts it, and can be disabled by removing its crontab line (updates are then done by hand: the same steps, documented).
 
-## 9. Data model (migration `0034_updates.sql`)
+## 9. Data model (migration `0035_updates.sql`)
 
 Sketch; the builder fixes names, indexes and append-only triggers in the project's style.
 

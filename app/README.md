@@ -197,7 +197,7 @@ While protective mode is on, the API refuses every request that is not `GET`, `H
 
 ## Updates, releases, load test and browsers (V1.0 sub-project 10b)
 
-Design: [`docs/superpowers/specs/2026-11-22-v1-operations-10b-design.md`](../docs/superpowers/specs/2026-11-22-v1-operations-10b-design.md); decisions D119 (releases and signing), D120 (checking for releases), D121 (approving an update), D122 (installing an update), D123 (a failed update after the migration) and D124 (supported browsers). Operator steps are in [`INSTALL.md`](../INSTALL.md), "Updates" and "After a failed update"; releasing in [`docs/operations/releasing.md`](../docs/operations/releasing.md). Code is in `src/updater/` and `src/loadtest/`, migration `0034_updates.sql`.
+Design: [`docs/superpowers/specs/2026-11-22-v1-operations-10b-design.md`](../docs/superpowers/specs/2026-11-22-v1-operations-10b-design.md); decisions D119 (releases and signing), D120 (checking for releases), D121 (approving an update), D122 (installing an update), D123 (a failed update after the migration) and D124 (supported browsers). Operator steps are in [`INSTALL.md`](../INSTALL.md), "Updates" and "After a failed update"; releasing in [`docs/operations/releasing.md`](../docs/operations/releasing.md). Code is in `src/updater/` and `src/loadtest/`, migration `0035_updates.sql`.
 
 **Releases.** `node scripts/release.mjs X.Y.Z [--dry-run]` from the repository root (Product Owner only): sets the version in the package files and the `kainow-*` image tags in `compose.yaml`, commits, makes the SSH-signed tag and verifies it against `release/release-signers` before asking to push. `CHANGELOG.md` needs a section for the version.
 

@@ -45,3 +45,8 @@ describe('analytics CSV', () => {
     assert.equal(evil.split('\r\n')[1], 'x');
   });
 });
+
+test('a cell starting with a tab or carriage return is also kept from being read as a formula', () => {
+  assert.equal(csvCell('\t=HYPERLINK("x")'), `"'\t=HYPERLINK(""x"")"`);
+  assert.equal(csvCell('\r=1+1'), `"'\r=1+1"`);
+});

@@ -223,7 +223,7 @@ describe('withholding held files in storage', { skip: SKIP_NO_DB }, () => {
   async function storedSource(): Promise<{ sourceId: string; versionId: string; original: Record<string, any>; text: Record<string, any>; bytes: Buffer }> {
     const bytes = Buffer.from(`Plant room notes.\nThe vault code is ${SECRET} for the valve room.\n`);
     const { source, version } = await t.app.get(NotesService).createSource({
-      projectId: project, content: { file: { originalname: 'Site notes.txt', buffer: bytes } }, actorUserId: ids.pm,
+      projectId: project, content: { file: { originalname: 'Site notes.txt', buffer: bytes } }, actorUserId: ids.pm, reauthorise: async () => undefined,
     });
     await storeSourceVersion(deps(), version.id);
     await drain();
@@ -470,7 +470,7 @@ The vault code is ${SECRET}.
     const OTHER = 'KX4LOCKER5521BETA';
     const bytes = Buffer.from(`Plant room notes.\nThe vault code is ${SECRET} and the locker code ${OTHER}.\n`);
     const { source, version } = await t.app.get(NotesService).createSource({
-      projectId: project, content: { file: { originalname: 'Site notes.txt', buffer: bytes } }, actorUserId: ids.pm,
+      projectId: project, content: { file: { originalname: 'Site notes.txt', buffer: bytes } }, actorUserId: ids.pm, reauthorise: async () => undefined,
     });
     await storeSourceVersion(deps(), version.id);
     await drain();
