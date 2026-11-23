@@ -234,12 +234,10 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
   });
 
   test('after closing, no step can be ticked or unticked, Confirm steps included', async () => {
-    await recordCustodian();
-    await admin.request('POST', '/go-live/steps/recovery/tick', {});
     await reachClose();
     const body = await get();
     assert.ok(body.closedAt);
-    assert.deepEqual([step(body, 'recovery').canUntick, step(body, 'recovery').canTick, step(body, 'calendar').canTick], [false, false, false]);
+    assert.deepEqual([step(body, 'recovery').canUntick, step(body, 'recovery').canTick, step(body, 'calendar').canUntick, step(body, 'logos').canUntick], [false, false, false, false]);
   });
 
   test('Kainow-ticked steps cannot be ticked or unticked by a person', async () => {
@@ -254,24 +252,167 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     assert.equal(step(await get(), 'organisation').done, true, 'still ticked');
   });
 
-  const reachClose = async () => {
+  /** Department, users and project: the steps that used to close the checklist on their own. */
+  const reachLaunch = async () => {
     await seedUser(t.pool, 'member@example.org');
     await seedProject(t.pool, { status: 'active', members: [{ userId: adminId, role: 'pm' }] });
   };
-
-  test('the checklist closes when department, users and project are done, and lists what is open', async () => {
+  /**
+   * Step 8 the sub-project 10a way: a passed full restore drill is recorded, and Kainow ticks the step itself on the
+   * next refresh (a GET of the page). A person cannot tick it.
+   */
+  const passDrill = async () => {
+    await t.pool.query(
+      `INSERT INTO restore_drills (id, backup_run_id, set_name, started_at, finished_at, outcome, duration_seconds, sampled, checks)
+       VALUES ($1, NULL, 'set-test', now(), now(), 'passed', 60, false, '[]')`,
+      [uuidv7()],
+    );
+    assert.equal(step(await get(), 'backups').done, true, 'Kainow ticks step 8 after a passed drill');
+  };
+  /** Step 13 (10b): the updater ran in the last 24 hours on a release; Kainow ticks it on the next refresh. */
+  const updaterRan = () =>
+    t.pool.query(`INSERT INTO updater_ticks (id, at, did, running_tag, key_fingerprint) VALUES ($1, now(), 'nothing', 'v1.0.0', NULL)`, [uuidv7()]);
+  /** The safeguards (steps 3 to 8, and 13): second Administrator, recovery, mailbox, test email, calendar, backups (by a drill) and the updater. */
+  const completeSafeguards = async () => {
+    await seedUser(t.pool, 'second@example.org', 'enterprise_administrator');
     await recordCustodian();
-    await admin.request('POST', '/go-live/steps/recovery/tick', { note: 'Done' });
+    await queueTestEmail('sent');
+    for (const key of ['recovery', 'mailbox', 'test_email', 'calendar']) {
+      assert.equal((await admin.request('POST', `/go-live/steps/${key}/tick`, {})).status, 200, key);
+    }
+    await passDrill();
+    await updaterRan();
+  };
+  const reachClose = async () => {
+    await completeSafeguards();
+    await reachLaunch();
+  };
+
+  // Review G01: a launched project does not close the checklist while a safeguard is still open.
+  test('department, users and project alone do not close the checklist while safeguards are open', async () => {
+    await reachLaunch();
+    const body = await get();
+    assert.equal(body.closedAt, null);
+    assert.deepEqual(['department', 'users', 'project'].map((k) => step(body, k).done), [true, true, true]);
+    assert.equal((await admin.request('GET', '/go-live/summary')).body.open, true);
+    assert.deepEqual((await events(t)).filter((e) => e.action === 'closed'), []);
+  });
+
+  test('every safeguard is needed: with any one of steps 3 to 8 open, the checklist stays open', async () => {
     await reachClose();
+    for (const key of ['recovery', 'mailbox', 'test_email', 'calendar']) {
+      // Reopen one step behind the service's back, as if it had never been done, and check the close waits for it.
+      await t.pool.query(`UPDATE golive_checklist SET closed_at = NULL`);
+      await t.pool.query(`UPDATE golive_steps SET ticked_at = NULL, ticked_by = NULL WHERE key = $1`, [key]);
+      assert.equal((await get()).closedAt, null, key);
+      await t.pool.query(`UPDATE golive_steps SET ticked_at = now(), ticked_by = $2 WHERE key = $1`, [key, adminId]);
+    }
+    // Step 8 follows the drill: without a passed drill Kainow withdraws its tick and the checklist stays open.
+    await t.pool.query(`UPDATE golive_checklist SET closed_at = NULL`);
+    await t.pool.query(`DELETE FROM restore_drills`);
+    const noDrill = await get();
+    assert.equal(noDrill.closedAt, null, 'backups');
+    assert.equal(step(noDrill, 'backups').done, false, 'backups');
+    await passDrill();
+    await t.pool.query(`UPDATE users SET status = 'disabled' WHERE email = 'second@example.org'`);
+    await t.pool.query(`UPDATE golive_checklist SET closed_at = NULL`);
+    await t.pool.query(`UPDATE golive_steps SET ticked_at = NULL WHERE key = 'second_admin'`);
+    assert.equal((await get()).closedAt, null, 'second_admin');
+  });
+
+  // G01 (review of PR #19): a stale automatic tick must not close the checklist. Real sequence, no hand-edited ticks.
+  test('a second Administrator disabled after the automatic tick keeps the checklist open until another is active', async () => {
+    const second = await seedUser(t.pool, 'second@example.org', 'enterprise_administrator');
+    assert.equal(step(await get(), 'second_admin').done, true, 'ticked by Kainow while two Administrators are active');
+    await t.pool.query(`UPDATE users SET status = 'disabled' WHERE id = $1`, [second]);
+    await recordCustodian();
+    await queueTestEmail('sent');
+    for (const key of ['recovery', 'mailbox', 'test_email', 'calendar']) {
+      assert.equal((await admin.request('POST', `/go-live/steps/${key}/tick`, {})).status, 200, key);
+    }
+    await passDrill();
+    await updaterRan();
+    await reachLaunch();
+    let body = await get();
+    assert.equal(body.closedAt, null, 'only one active Administrator: stays open');
+    assert.equal(step(body, 'second_admin').done, false, 'the stale tick is withdrawn');
+    assert.deepEqual((await events(t)).filter((e) => e.step_key === 'second_admin').map((e) => [e.action, e.actor_id]), [['ticked', null], ['unticked', null]]);
+    await t.pool.query(`UPDATE users SET status = 'active' WHERE id = $1`, [second]);
+    body = await get();
+    assert.ok(body.closedAt, 'a second active Administrator again lets it close');
+    assert.equal(step(body, 'second_admin').done, true);
+  });
+
+  test('an Administrator ticking the last step does not close the checklist on a stale second-Administrator tick', async () => {
+    const second = await seedUser(t.pool, 'second@example.org', 'enterprise_administrator');
+    await get();
+    await reachLaunch();
+    await recordCustodian();
+    await queueTestEmail('sent');
+    for (const key of ['recovery', 'mailbox', 'test_email']) await admin.request('POST', `/go-live/steps/${key}/tick`, {});
+    await passDrill();
+    await updaterRan();
+    await t.pool.query(`UPDATE users SET status = 'disabled' WHERE id = $1`, [second]);
+    const last = await admin.request('POST', '/go-live/steps/calendar/tick', {});
+    assert.equal(last.status, 200);
+    assert.equal(last.body.closedAt, null);
+    assert.equal(step(last.body, 'second_admin').done, false);
+  });
+
+  // G01 race (second review): an Administrator disabled while the closing transaction runs must not leave a closed
+  // checklist with one active Administrator. The disable is held open in another transaction while the last step is ticked.
+  test('an Administrator disabled during the closing transaction keeps the checklist open', async () => {
+    const second = await seedUser(t.pool, 'second@example.org', 'enterprise_administrator');
+    await get();
+    await reachLaunch();
+    await recordCustodian();
+    await queueTestEmail('sent');
+    for (const key of ['recovery', 'mailbox', 'test_email']) await admin.request('POST', `/go-live/steps/${key}/tick`, {});
+    await passDrill();
+    await updaterRan();
+    const other = await t.pool.connect();
+    try {
+      await other.query('BEGIN');
+      await other.query(`UPDATE users SET status = 'disabled' WHERE id = $1`, [second]);
+      const closing = admin.request('POST', '/go-live/steps/calendar/tick', {});
+      await new Promise((r) => setTimeout(r, 300));
+      await other.query('COMMIT');
+      const last = await closing;
+      assert.equal(last.status, 200);
+      assert.equal(last.body.closedAt, null, 'the close saw the committed disable');
+      assert.equal(step(last.body, 'second_admin').done, false);
+    } finally {
+      other.release();
+    }
+  });
+
+  test('the checklist closes once every step but the optional ones (logos, storage) is done, and lists what is open', async () => {
+    await reachLaunch();
+    assert.equal((await get()).closedAt, null);
+    await completeSafeguards();
     const body = await get();
     assert.ok(body.closedAt);
-    assert.deepEqual(body.notDoneAtClose, ['logos', 'second_admin', 'mailbox', 'test_email', 'calendar', 'backups', 'storage', 'updates']);
+    assert.deepEqual(body.notDoneAtClose, ['logos', 'storage']);
     assert.equal((await admin.request('GET', '/go-live/summary')).body.open, false);
     const closes = (await events(t)).filter((e) => e.action === 'closed');
     assert.deepEqual(closes, [{ step_key: null, action: 'closed', actor_id: null, note: null }]);
     const again = await get();
     assert.equal(again.closedAt, body.closedAt, 'closed once');
     assert.equal((await events(t)).filter((e) => e.action === 'closed').length, 1);
+  });
+
+  test('a person ticking the last safeguard closes the checklist at once', async () => {
+    await reachLaunch();
+    await seedUser(t.pool, 'second@example.org', 'enterprise_administrator');
+    await recordCustodian();
+    await queueTestEmail('sent');
+    for (const key of ['recovery', 'mailbox', 'test_email']) await admin.request('POST', `/go-live/steps/${key}/tick`, {});
+    await passDrill();
+    await updaterRan();
+    assert.equal((await get()).closedAt, null, 'step 8 alone does not close it');
+    const last = await admin.request('POST', '/go-live/steps/calendar/tick', { note: 'Calendar checked' });
+    assert.equal(last.status, 200);
+    assert.ok(last.body.closedAt);
   });
 
   test('after closing, tick, untick and skip are refused', async () => {
@@ -292,7 +433,7 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     const closed = (await t.pool.query(`SELECT closed_at FROM golive_checklist`)).rows[0].closed_at;
     assert.ok(closed);
     const ticked = (await t.pool.query(`SELECT key FROM golive_steps WHERE ticked_at IS NOT NULL AND ticked_by IS NULL ORDER BY position`)).rows.map((r) => r.key);
-    assert.deepEqual(ticked, ['organisation', 'department', 'users', 'project']);
+    assert.deepEqual(ticked, ['organisation', 'second_admin', 'backups', 'department', 'users', 'project', 'updates']);
   });
 
   test('refreshing at the same moment from several places ticks each step once', async () => {

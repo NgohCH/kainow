@@ -68,6 +68,15 @@ export function loadProtectedKey(path: string | null, log: (message: string) => 
   return fromBytes(bytes);
 }
 
+/** Like loadProtectedKey, but when `required` a missing or unusable key stops the start (KAINOW_REQUIRE_PROTECTED_KEY). */
+export function loadRequiredProtectedKey(path: string | null, required: boolean, log: (message: string) => void = (m) => console.error(m)): ProtectedKey | null {
+  const key = loadProtectedKey(path, log);
+  if (!key && required) {
+    throw new Error('The protected key is required (KAINOW_REQUIRE_PROTECTED_KEY=true) but KAINOW_PROTECTED_KEY_FILE did not give a usable key');
+  }
+  return key;
+}
+
 /** A new random key as raw bytes and its id (used by the CLI). */
 export function newKeyBytes(): { bytes: Buffer; id: string } {
   const bytes = randomBytes(KEY_BYTES);

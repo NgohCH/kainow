@@ -31,7 +31,7 @@ export interface GoLiveSummary {
   total: number;
 }
 
-export const CLOSING_RULE = 'The checklist closes by itself when a real department exists, real users are admitted and the first project is launched.';
+export const CLOSING_RULE = 'The checklist closes by itself once every step except the optional ones (logos, storage) is done, including the safeguards in steps 3 to 8 and the first project launch.';
 
 /** A day such as "11 Nov 2026", in UTC+8. */
 export function dayText(iso: string): string {

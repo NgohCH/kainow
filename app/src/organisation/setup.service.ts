@@ -243,5 +243,7 @@ async function activeAdministrators(c: PoolClient): Promise<DisabledAdministrato
   const locked = (await c.query<DisabledAdministrator>(`${sql} FOR UPDATE`)).rows;
   // Anyone made Active in between has their projects locked too.
   await lockProjectsOf(c, locked.map((a) => a.id).filter((id) => !seen.includes(id)));
-  return locked;
+  // Locked in id order; listed (audit detail, notices) by email, id, since ids made in the same millisecond do not
+  // follow creation order.
+  return locked.sort((a, b) => (a.email < b.email ? -1 : a.email > b.email ? 1 : a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
 }

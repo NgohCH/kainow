@@ -1,4 +1,4 @@
-// The go-live checklist (spec §4): the 13 steps, the automatic checks and the closing rule.
+// The go-live checklist (spec §4): the 13 steps, the automatic checks and the closing rule (tightened by review G01).
 import type { Pool, PoolClient } from 'pg';
 import { uuidv7 } from '../common/uuid7';
 import { backupsStepHolds } from '../ops/drill-again';
@@ -25,13 +25,11 @@ export const STEPS: readonly StepDef[] = [
   { key: 'backups', mode: 'auto', link: 'INSTALL.md, the section on Backups', text: 'Configure daily encrypted backups and complete a test restore', explanation: 'Kainow ticks this once a full restore drill of a successful backup has passed, and unticks it when a new drill is needed.' },
   { key: 'department', mode: 'auto', link: '#/departments', text: 'Create a real department', explanation: 'Projects and people belong to a department.' },
   { key: 'users', mode: 'auto', link: '#/', text: 'Admit real users', explanation: 'At least one person who is not an Enterprise Administrator has accepted their invitation and is Active.' },
-  { key: 'project', mode: 'auto', link: '#/', text: 'Launch the first real project', explanation: 'A real project has reached Active. When this and the two steps before it are done, the checklist closes.' },
+  { key: 'project', mode: 'auto', link: '#/', text: 'Launch the first real project', explanation: 'A real project has reached Active. The checklist closes once every step except the optional ones (logos, storage) is done.' },
   { key: 'storage', mode: 'auto_or_skip', link: '#/storage', text: 'Connect storage and approve the source area', explanation: 'Kainow keeps source files and filed outputs in your own SharePoint or OneDrive. Connect it and approve the source area, or skip this step.' },
   { key: 'updates', mode: 'auto', link: 'INSTALL.md, the section on Updates', text: 'Schedule the updater', explanation: 'Kainow ticks this once the updater has run in the last 24 hours on a release.' },
 ];
 
-/** Automatic steps Kainow also unticks when their condition stops holding. */
-const UNTICKABLE = ['backups', 'updates'] as const;
 const UPDATER_TICK_WINDOW_MS = 24 * 60 * 60_000;
 
 export const TOTAL = STEPS.length;
@@ -48,7 +46,13 @@ export const INFORMATION: ReadonlyArray<{ key: string; text: string; explanation
     link: '#/ai',
   },
 ];
-export const CLOSING_KEYS = ['department', 'users', 'project'] as const;
+/**
+ * The checklist closes only when every step except the optional ones (mode auto_or_skip: logos, storage) is done
+ * (review G01). A launched project alone does not close it: the safeguards (second Administrator, recovery, mailbox,
+ * test email, calendar, backups) must be done first, because once closed no step can be ticked and the record would
+ * show go-live without them.
+ */
+export const CLOSING_KEYS: readonly string[] = STEPS.filter((s) => s.mode !== 'auto_or_skip').map((s) => s.key);
 export const MSG = {
   autoStep: 'Kainow ticks this step itself.',
   testEmailFirst: 'Send a test email first, then check it arrived.',
@@ -75,7 +79,8 @@ export async function conditions(db: Db, now: Date = new Date()): Promise<Record
     SELECT
       EXISTS (SELECT 1 FROM organisation WHERE registered_at IS NOT NULL) AS organisation,
       EXISTS (SELECT 1 FROM organisation_logos) AS logos,
-      (SELECT count(*) FROM users WHERE role = 'enterprise_administrator' AND status = 'active') >= 2 AS second_admin,
+      -- FOR SHARE: inside the closing transaction, wait for a concurrent disable to commit and then see it (second review).
+      (SELECT count(*) FROM (SELECT id FROM users WHERE role = 'enterprise_administrator' AND status = 'active' FOR SHARE) a) >= 2 AS second_admin,
       EXISTS (SELECT 1 FROM departments) AS department,
       EXISTS (SELECT 1 FROM users WHERE status = 'active' AND role <> 'enterprise_administrator') AS users,
       (EXISTS (SELECT 1 FROM projects WHERE status = 'active')
@@ -92,7 +97,8 @@ export async function conditions(db: Db, now: Date = new Date()): Promise<Record
 }
 
 /**
- * Ticks every automatic step whose condition holds, then closes the checklist when department, users and project are done.
+ * Ticks every automatic step whose condition holds, withdraws an automatic closing-step tick whose condition has lapsed,
+ * then closes the checklist when every step in CLOSING_KEYS is done.
  * Safe to run at any time and from several places at once; does nothing once the checklist is closed.
  */
 export async function refreshChecklist(db: Pool, now: Date): Promise<void> {
@@ -105,6 +111,18 @@ export async function refreshChecklist(db: Pool, now: Date): Promise<void> {
       return;
     }
     const holds = await conditions(c, now);
+    // An automatic tick in the closing set is withdrawn when its condition no longer holds (review G01): for example the
+    // second Administrator was disabled after Kainow ticked the step, or step 8's drill no longer counts (spec 10a 8.1), or the updater has not run on a release for 24 hours (step 13, 10b). Read in this transaction, under the checklist lock,
+    // so the close below rests on the current state and not on an old tick.
+    const lapsed = STEPS.filter((s) => s.mode === 'auto' && CLOSING_KEYS.includes(s.key) && !holds[s.key]).map((s) => s.key);
+    const unticked = (await c.query(
+      `UPDATE golive_steps SET ticked_at = NULL, ticked_by = NULL, note = NULL, skipped = false
+        WHERE key = ANY($1::text[]) AND ticked_at IS NOT NULL RETURNING key`,
+      [lapsed],
+    )).rows as { key: string }[];
+    for (const { key } of unticked) {
+      await c.query(`INSERT INTO golive_events (id, step_key, action, actor_id, note, at) VALUES ($1, $2, 'unticked', NULL, NULL, $3)`, [uuidv7(), key, now]);
+    }
     const auto = STEPS.filter((s) => s.mode !== 'confirm' && holds[s.key]).map((s) => s.key);
     // A skip (logos) gives way to Kainow's own tick once the condition holds.
     const ticked = (await c.query(
@@ -114,18 +132,6 @@ export async function refreshChecklist(db: Pool, now: Date): Promise<void> {
     )).rows as { key: string }[];
     for (const { key } of ticked) {
       await c.query(`INSERT INTO golive_events (id, step_key, action, actor_id, note, at) VALUES ($1, $2, 'ticked', NULL, NULL, $3)`, [uuidv7(), key, now]);
-    }
-    // Kainow also unticks step 8 when the drill no longer counts (a new key, folder or source area), and step 13 when
-    // the updater has not run on a release for 24 hours.
-    for (const key of UNTICKABLE) {
-      if (holds[key]) continue;
-      const unticked = await c.query(
-        `UPDATE golive_steps SET ticked_by = NULL, ticked_at = NULL, skipped = false, note = NULL WHERE key = $1 AND ticked_at IS NOT NULL`,
-        [key],
-      );
-      if ((unticked.rowCount ?? 0) > 0) {
-        await c.query(`INSERT INTO golive_events (id, step_key, action, actor_id, note, at) VALUES ($1, $2, 'unticked', NULL, NULL, $3)`, [uuidv7(), key, now]);
-      }
     }
     const done = (await c.query(`SELECT count(*)::int AS n FROM golive_steps WHERE key = ANY($1::text[]) AND ticked_at IS NOT NULL`, [[...CLOSING_KEYS]])).rows[0].n;
     if (done === CLOSING_KEYS.length) {
