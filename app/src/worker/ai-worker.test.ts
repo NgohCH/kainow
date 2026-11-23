@@ -280,7 +280,8 @@ describe('worker start', () => {
     assert.ok(!('openAiApiKey' in loadWorkerConfig({ DATABASE_URL: 'postgres://x', LOG_SIGN_IN_CODES: 'true', OPENAI_API_KEY: `sk-test-${'x'.repeat(40)}` })));
     const source = readFileSync(resolve(__dirname, '..', '..', 'src', 'worker', 'main.ts'), 'utf8');
     assert.ok(!/OpenAiModelClient|AnthropicModelClient|OPENAI_API_KEY|openAiApiKey/.test(source), 'main builds no model client and reads no AI key');
-    assert.match(source, /factory: realClientFactory/);
+    // The real factory unless this is a load-test installation (KAINOW_LOAD_TEST=1, 10b).
+    assert.match(source, /const factory: ModelClientFactory = loadTest \?\? realClientFactory;/);
 
     // Started without OPENAI_API_KEY against a database that refuses connections, it fails to start without the old warning.
     const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot, DATABASE_URL: 'postgres://nobody:nothing@127.0.0.1:1/none', LOG_SIGN_IN_CODES: 'true' };

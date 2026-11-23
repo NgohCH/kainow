@@ -183,9 +183,11 @@ describe('protective read-only mode in the API', { skip: SKIP_NO_DB }, () => {
     assert.ok(routes.length > 150, `found ${routes.length} routes`);
     const unsafe = routes.filter((r) => !['GET', 'HEAD', 'OPTIONS'].includes(r.method));
     assert.ok(!unsafe.some((r) => r.method === 'ALL'), 'no @All route');
-    // The allow-list is exactly sign-in, sign-out, Resume and the release check.
+    // The allow-list is exactly sign-in, sign-out, Resume, the release check and cancelling an update (M7).
     assert.deepEqual(unsafe.filter((r) => r.allowed).map((r) => `${r.method} ${r.path}`).sort(), [
       'POST /admin/operations/resume',
+      // Cancelling an approved update stays possible while the mode is on (M7).
+      'POST /admin/updates/:id/cancel',
       // The release check only reads and records its own row; it runs in protective mode too (10b spec 6.2).
       'POST /admin/updates/check',
       'POST /auth/logout',

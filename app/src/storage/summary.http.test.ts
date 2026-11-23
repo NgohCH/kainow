@@ -84,7 +84,7 @@ describe('go-live storage step and storage summary', { skip: SKIP_NO_DB }, () =>
     assert.equal(skipped.status, 200, JSON.stringify(skipped.body));
     const s = step(skipped.body, 'storage');
     assert.deepEqual([s.done, s.skipped, s.note], [true, true, 'Later']);
-    assert.equal(skipped.body.steps.length, 12);
+    assert.equal(skipped.body.steps.length, 13); // 10b added the updater step
     assert.deepEqual([...CLOSING_KEYS], ['department', 'users', 'project']);
   });
 

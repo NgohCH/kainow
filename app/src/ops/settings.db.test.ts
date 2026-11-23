@@ -101,7 +101,7 @@ describe('operations schema and settings', { skip: SKIP_NO_DB }, () => {
     const { rows } = await pool.query(`SELECT protective, reason, since FROM operations_state`);
     assert.equal(rows.length, 1);
     assert.equal(rows[0].protective, false);
-    await raises(`UPDATE operations_state SET reason = 'update'`);
+    await raises(`UPDATE operations_state SET reason = 'bogus'`);
     await raises(`INSERT INTO operations_state (id) VALUES (false)`);
   });
 
