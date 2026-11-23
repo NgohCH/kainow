@@ -25,6 +25,7 @@ export class UsersController {
       email: field(body, 'email'),
       displayName: field(body, 'displayName'),
       actorUserId: req.auth?.user.id ?? null,
+      requireEligibleDomain: true,
     });
     return { user };
   }
