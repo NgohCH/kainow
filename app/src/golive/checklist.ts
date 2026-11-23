@@ -2,6 +2,7 @@
 import type { Pool, PoolClient } from 'pg';
 import { uuidv7 } from '../common/uuid7';
 import { backupsStepHolds } from '../ops/drill-again';
+import { KEY_LOADED_EVERYWHERE_SQL } from '../quarantine/key-status';
 
 export type StepMode = 'auto' | 'confirm' | 'auto_or_skip';
 
@@ -50,6 +51,22 @@ export const INFORMATION: ReadonlyArray<{ key: string; text: string; explanation
  * show go-live without them.
  */
 export const CLOSING_KEYS: readonly string[] = STEPS.filter((s) => s.mode !== 'auto_or_skip').map((s) => s.key);
+
+/**
+ * Conditions that hold up closing but are not steps: Kainow checks them itself, nobody ticks them, and they are not part
+ * of the count of 12. The protected key (second review, G05 option A): api and worker may start without it, but go-live
+ * is not recorded until both hold the same key, so AI keys, quarantined originals and the protected source area can be
+ * opened, and restored from a backup.
+ */
+export const CLOSING_REQUIREMENTS: ReadonlyArray<{ key: string; text: string; explanation: string; link: string }> = [
+  {
+    key: 'protected_key',
+    text: 'Install the protected key on both api and worker, and keep its recovery copy',
+    explanation:
+      'Without it AI keys cannot be saved, quarantined originals cannot be cleaned or restored, and a restored backup cannot open them. Create the key, mount it on api and worker, restart both, and keep a recovery copy apart from the backups.',
+    link: 'INSTALL.md, the section on Protected key',
+  },
+];
 export const MSG = {
   autoStep: 'Kainow ticks this step itself.',
   testEmailFirst: 'Send a test email first, then check it arrived.',
@@ -84,14 +101,15 @@ export async function conditions(db: Db): Promise<Record<string, boolean>> {
         OR EXISTS (SELECT 1 FROM project_transitions WHERE to_status = 'active')) AS project,
       -- Connection checked (the Administrator's last "Check connection" succeeded) and a source area approved.
       (EXISTS (SELECT 1 FROM storage_settings WHERE last_check_state = 'connected')
-        AND EXISTS (SELECT 1 FROM storage_destinations WHERE purpose = 'source_area' AND status = 'approved')) AS storage`);
+        AND EXISTS (SELECT 1 FROM storage_destinations WHERE purpose = 'source_area' AND status = 'approved')) AS storage,
+      ${KEY_LOADED_EVERYWHERE_SQL} AS protected_key`);
   // Step 8 (spec 10a 8.1): a passed full drill of a successful set, and no reason to drill again.
   return { ...(rows[0] as Record<string, boolean>), backups: await backupsStepHolds(db) };
 }
 
 /**
  * Ticks every automatic step whose condition holds, withdraws an automatic closing-step tick whose condition has lapsed,
- * then closes the checklist when every step in CLOSING_KEYS is done.
+ * then closes the checklist when every step in CLOSING_KEYS is done and every CLOSING_REQUIREMENTS condition holds.
  * Safe to run at any time and from several places at once; does nothing once the checklist is closed.
  */
 export async function refreshChecklist(db: Pool, now: Date): Promise<void> {
@@ -127,7 +145,7 @@ export async function refreshChecklist(db: Pool, now: Date): Promise<void> {
       await c.query(`INSERT INTO golive_events (id, step_key, action, actor_id, note, at) VALUES ($1, $2, 'ticked', NULL, NULL, $3)`, [uuidv7(), key, now]);
     }
     const done = (await c.query(`SELECT count(*)::int AS n FROM golive_steps WHERE key = ANY($1::text[]) AND ticked_at IS NOT NULL`, [[...CLOSING_KEYS]])).rows[0].n;
-    if (done === CLOSING_KEYS.length) {
+    if (done === CLOSING_KEYS.length && CLOSING_REQUIREMENTS.every((r) => holds[r.key])) {
       await c.query(`UPDATE golive_checklist SET closed_at = $1 WHERE id = 1`, [now]);
       await c.query(`INSERT INTO golive_events (id, step_key, action, actor_id, note, at) VALUES ($1, NULL, 'closed', NULL, NULL, $2)`, [uuidv7(), now]);
     }

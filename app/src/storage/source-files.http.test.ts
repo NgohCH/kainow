@@ -48,7 +48,7 @@ describe('source downloads from storage and the source check', { skip: SKIP_NO_D
 
   /** An uploaded note stored in the source area (its bytes are out of the database). */
   async function storedUpload(name = 'Site notes.txt', bytes = BYTES): Promise<{ sourceId: string; versionId: string; fileId: string; itemId: string }> {
-    const { source, version } = await notes().createSource({ projectId: project, content: { file: { originalname: name, buffer: bytes } }, actorUserId: pmId });
+    const { source, version } = await notes().createSource({ projectId: project, content: { file: { originalname: name, buffer: bytes } }, actorUserId: pmId, reauthorise: async () => undefined });
     await storeSourceVersion(deps(), version.id);
     const f = (await rows(`SELECT f.id, f.item_id FROM stored_files f JOIN source_versions v ON f.id = v.original_stored_file_id WHERE v.id = $1`, [version.id]))[0];
     return { sourceId: source.id, versionId: version.id, fileId: f.id, itemId: f.item_id };
@@ -106,7 +106,7 @@ describe('source downloads from storage and the source check', { skip: SKIP_NO_D
   });
 
   test('download from the database still works while the bytes are there', async () => {
-    const { source } = await notes().createSource({ projectId: project, content: { file: { originalname: 'Pending.txt', buffer: BYTES } }, actorUserId: pmId });
+    const { source } = await notes().createSource({ projectId: project, content: { file: { originalname: 'Pending.txt', buffer: BYTES } }, actorUserId: pmId, reauthorise: async () => undefined });
     assert.equal((await download(source.id)).text, BYTES.toString('utf8'));
   });
 
@@ -147,7 +147,7 @@ describe('source downloads from storage and the source check', { skip: SKIP_NO_D
     const opened = await openOriginal(deps(), versionId);
     assert.ok(opened && 'bytes' in opened);
     assert.equal(sha(opened.bytes), sha(BYTES));
-    const { version } = await notes().createSource({ projectId: project, content: { file: { originalname: 'Waiting.txt', buffer: BYTES } }, actorUserId: pmId });
+    const { version } = await notes().createSource({ projectId: project, content: { file: { originalname: 'Waiting.txt', buffer: BYTES } }, actorUserId: pmId, reauthorise: async () => undefined });
     assert.equal(await openOriginal(deps(), version.id), null);
   });
 

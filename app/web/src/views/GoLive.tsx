@@ -166,6 +166,21 @@ export function GoLive() {
               <Step key={s.key} s={s} closed={!!data.closedAt} onAction={(k, a, n) => void act(k, a, n)} busy={busy} />
             ))}
           </ol>
+          {data.waitingFor && data.waitingFor.length > 0 && (
+            <section aria-labelledby="golive-waiting-heading" className="golive-info">
+              <h2 id="golive-waiting-heading">Also needed before the checklist closes</h2>
+              <p className="meta">Kainow checks these itself. They are not steps and cannot be ticked.</p>
+              <ul className="plain">
+                {data.waitingFor.map((i) => (
+                  <li key={i.key}>
+                    <p><strong>{i.text}</strong></p>
+                    <p>{i.explanation}</p>
+                    <p>See {i.link}.</p>
+                  </li>
+                ))}
+              </ul>
+            </section>
+          )}
           {data.information && data.information.length > 0 && (
             <section aria-labelledby="golive-info-heading" className="golive-info">
               <h2 id="golive-info-heading">For information</h2>

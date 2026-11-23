@@ -21,6 +21,8 @@ export interface GoLive {
   closedAt: string | null;
   steps: GoLiveStep[];
   notDoneAtClose: string[];
+  /** Conditions Kainow checks itself that still hold up closing; not steps, nobody ticks them (the protected key). */
+  waitingFor?: Array<{ key: string; text: string; explanation: string; link: string }>;
   /** Items that are shown for information and are not steps: they cannot be ticked and never hold up closing. */
   information?: Array<{ key: string; text: string; explanation: string; link: string }>;
 }
@@ -31,7 +33,7 @@ export interface GoLiveSummary {
   total: number;
 }
 
-export const CLOSING_RULE = 'The checklist closes by itself once every step except the optional ones (logos, storage) is done, including the safeguards in steps 3 to 8 and the first project launch.';
+export const CLOSING_RULE = 'The checklist closes by itself once every step except the optional ones (logos, storage) is done, including the safeguards in steps 3 to 8 and the first project launch, and once the protected key is installed on api and worker.';
 
 /** A day such as "11 Nov 2026", in UTC+8. */
 export function dayText(iso: string): string {

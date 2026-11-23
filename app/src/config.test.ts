@@ -128,8 +128,23 @@ test('with no email settings and no development logging, the worker refuses to s
 
 test('the worker reads APP_URL with the same default and trimming as the API', () => {
   assert.equal(loadWorkerConfig(base).appUrl, 'http://localhost:3000');
-  assert.equal(loadWorkerConfig({ ...base, APP_URL: 'https://kainow.example.org//' }).appUrl, 'https://kainow.example.org');
-  assert.equal(loadWorkerConfig({ ...base, APP_URL: 'https://kainow.example.org' }).appUrl, loadConfig({ ...base, APP_URL: 'https://kainow.example.org' }).appUrl);
+  // A server address needs a real sender: logged codes are refused there (second review, M1b).
+  const smtp = { ...base, LOG_SIGN_IN_CODES: undefined, SMTP_URL: 'smtp://mail.example.org', SMTP_FROM: 'a@example.org' };
+  assert.equal(loadWorkerConfig({ ...smtp, APP_URL: 'https://kainow.example.org//' }).appUrl, 'https://kainow.example.org');
+  assert.equal(loadWorkerConfig({ ...smtp, APP_URL: 'https://kainow.example.org' }).appUrl, loadConfig({ ...smtp, APP_URL: 'https://kainow.example.org' }).appUrl);
+});
+
+// Second review (M1b): NODE_ENV comes from .env, so development mode alone must not let a shared server log codes.
+test('outside production the log provider is allowed only when APP_URL is this computer', () => {
+  for (const nodeEnv of [undefined, 'development', 'test']) {
+    for (const appUrl of ['https://kainow.example.org', 'http://10.0.0.5:3000', 'http://kainow.local', 'http://localhost.example.org', 'not a url']) {
+      assert.throws(() => loadConfig({ ...base, NODE_ENV: nodeEnv, APP_URL: appUrl }), /APP_URL is not this computer/, `${nodeEnv} ${appUrl}`);
+      assert.throws(() => loadWorkerConfig({ ...base, NODE_ENV: nodeEnv, APP_URL: appUrl }), /APP_URL is not this computer/, `${nodeEnv} ${appUrl}`);
+    }
+    for (const appUrl of [undefined, 'http://localhost:3000', 'http://kainow.localhost:3000', 'http://127.0.0.1:8080', 'http://[::1]:3000']) {
+      assert.equal(loadConfig({ ...base, NODE_ENV: nodeEnv, APP_URL: appUrl }).email.provider, 'log', `${nodeEnv} ${appUrl}`);
+    }
+  }
 });
 
 test('the protected key file path is optional and trimmed, for the API and the worker', () => {

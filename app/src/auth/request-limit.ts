@@ -27,8 +27,32 @@ export const DEFAULT_SIGN_IN_LIMITS: SignInLimits = {
 
 export const TOO_MANY_REQUESTS = 'Too many sign-in requests. Wait a minute and try again.';
 
-/** Beyond this many tracked addresses in one minute, a new address is refused: the overall limit is then being hit anyway. */
+/**
+ * Memory bound: beyond this many tracked addresses in one minute, further new addresses share one bucket instead of being
+ * refused outright (second review, M1c), so filling the table cannot by itself shut out new callers.
+ */
 const MAX_TRACKED_ADDRESSES = 10_000;
+const OVERFLOW_BUCKET = 'overflow';
+
+/**
+ * The unit an address is limited by (second review, M1c). One IPv6 subscriber usually holds a whole /64, so each
+ * address in it would otherwise get its own limit: IPv6 is counted per /64. IPv4 (also written as ::ffff:a.b.c.d) is
+ * counted per address. Anything unparseable is counted as given.
+ */
+export function limitKey(address: string): string {
+  const a = address.trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/%.*$/, '');
+  const mapped = /^::ffff:(\d{1,3}(?:\.\d{1,3}){3})$/.exec(a);
+  if (mapped) return mapped[1];
+  if (!a.includes(':')) return a;
+  const halves = a.split('::');
+  if (halves.length > 2) return a;
+  const head = halves[0] ? halves[0].split(':') : [];
+  const tail = halves.length === 2 && halves[1] ? halves[1].split(':') : [];
+  if (tail.some((g) => g.includes('.'))) tail.splice(-1, 1, '0', '0'); // an embedded IPv4 tail is two groups, outside the /64 anyway
+  const groups = halves.length === 2 ? [...head, ...Array(Math.max(0, 8 - head.length - tail.length)).fill('0'), ...tail] : head;
+  if (groups.length !== 8 || groups.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return a;
+  return `${groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, '')).join(':')}::/64`;
+}
 
 const minuteOf = (now: Date): number => Math.floor(now.getTime() / 60_000);
 
@@ -44,7 +68,10 @@ export class WindowLimiter {
     private readonly clock: () => Date,
   ) {}
 
-  /** Counts one request and says whether it is refused. A refused request is not counted. */
+  /**
+   * Counts one request and says whether it is refused. A refused request is not counted. The overall limit is a circuit
+   * breaker for the whole process: a matching per-address limit at the reverse proxy keeps one caller from using it up.
+   */
   take(address: string): Refusal {
     const w = minuteOf(this.clock());
     if (w !== this.window) {
@@ -53,10 +80,13 @@ export class WindowLimiter {
       this.perAddress.clear();
     }
     if (this.overall >= this.limits.overall) return 'overall';
-    const used = this.perAddress.get(address);
-    if (used === undefined && this.perAddress.size >= MAX_TRACKED_ADDRESSES) return 'overall';
-    if ((used ?? 0) >= this.limits.perAddress) return 'address';
-    this.perAddress.set(address, (used ?? 0) + 1);
+    let key = limitKey(address);
+    if (!this.perAddress.has(key) && this.perAddress.size >= MAX_TRACKED_ADDRESSES) key = OVERFLOW_BUCKET;
+    const used = this.perAddress.get(key);
+    // The shared overflow bucket gets the room of many addresses: it is only reached under a flood the overall limit caps.
+    const limit = key === OVERFLOW_BUCKET ? this.limits.perAddress * 10 : this.limits.perAddress;
+    if ((used ?? 0) >= limit) return 'address';
+    this.perAddress.set(key, (used ?? 0) + 1);
     this.overall += 1;
     return null;
   }
