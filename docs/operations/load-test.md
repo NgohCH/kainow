@@ -156,6 +156,8 @@ None.
 
 #### Conditions of this run
 
+**Accepted by the Product Owner for now (23 November 2026, D126).** The run below had the API and worker on the host rather than in containers. It is to be repeated in full with every service in containers during sub-project 11 (Acceptance), on a virtual machine of the size Kainow will recommend. A cloud installation is a virtual machine running the Docker Compose installation (D126); managed container services are not supported in V1.0.
+
 - The API and the worker ran as Node processes on the PC (built from this branch, `node dist/main.js` and `node dist/worker/main.js`); PostgreSQL 16 ran in Docker Desktop, in a container **shared with other development sessions**, which were running their own test suites (migrations and database creation) during the run. A throwaway database was seeded for the run and dropped afterwards.
 - No expected refusal happened: each project has one virtual Owner (who decides its proposals) and one virtual Project Manager (who changes its tasks), so two people never raced for the same item. The refusal path is counted but was not exercised.
 - `pg_stat_statements` is not loaded on that database server, so the slowest statements are not available.

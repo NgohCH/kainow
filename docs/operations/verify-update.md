@@ -15,6 +15,8 @@ Everything here is test data. Use `example.org` addresses. Never use a real inst
 
 **Not run (23 November 2026): no WSL2 distribution or Linux VM on the development PC.** `wsl -l -v` lists only `docker-desktop`, Docker Desktop's own internal distribution, which is not usable for this. Every figure in the results table below is therefore "not run".
 
+**Deferred by the Product Owner (23 November 2026):** installing a distribution to run this check is optional and not for now. The end-to-end update stays unverified until it is run.
+
 To run it, the Product Owner must choose to install a distribution (this changes the PC, so it is the PO's decision):
 
 ```

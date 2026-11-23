@@ -265,6 +265,10 @@ describe('installing an update (database)', { skip: SKIP_NO_DB }, () => {
     assert.equal(await count(`SELECT count(*)::int AS n FROM audit_events WHERE action = 'ops.update_failed'`), 1);
     assert.equal(await count(`SELECT count(*)::int AS n FROM notifications WHERE kind = 'update_failed'`), 1);
     assert.ok(!runner.lines('docker').some((l) => l.endsWith('stop api worker')));
+    // Kainow was never stopped: everyone warned of the outage gets the "update cancelled" email (PO, 23 November 2026).
+    const mail = (await pool.query(`SELECT to_address, subject FROM email_outbox WHERE kind = 'update_cancelled'`)).rows;
+    assert.equal(mail.length, await count(`SELECT count(*)::int AS n FROM users WHERE status = 'active'`));
+    assert.ok(mail.length > 0);
   });
 
   test('a cancel during the re-check wins: nothing is installed', async () => {
@@ -433,6 +437,8 @@ describe('installing an update (database)', { skip: SKIP_NO_DB }, () => {
     assert.equal(head, 'v1.0.0');
     assert.ok(runner.lines('docker').some((l) => l.endsWith('up -d --no-deps api worker')));
     assert.deepEqual((await steps(u.id)).slice(-2), ['switch_code:failed', 'go_back:passed']);
+    // Kainow was stopped, so the outage happened: no "update cancelled" email.
+    assert.equal(await count(`SELECT count(*)::int AS n FROM email_outbox WHERE kind = 'update_cancelled'`), 0);
   });
 
   test('a row still preparing more than 60 minutes after its start ends failed_before_install build_timeout and notifies', async () => {

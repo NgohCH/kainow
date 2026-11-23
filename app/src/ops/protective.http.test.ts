@@ -188,7 +188,7 @@ describe('protective read-only mode in the API', { skip: SKIP_NO_DB }, () => {
       'POST /admin/operations/resume',
       // Cancelling an approved update stays possible while the mode is on (M7).
       'POST /admin/updates/:id/cancel',
-      // The release check only reads and records its own row; it runs in protective mode too (10b spec 6.2).
+      // The release check runs in protective mode too, recording what it finds and sending release_available (10b spec 6.2, amended).
       'POST /admin/updates/check',
       'POST /auth/logout',
       'POST /auth/logout-all',

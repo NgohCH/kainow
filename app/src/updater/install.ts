@@ -839,8 +839,12 @@ export function pgInstallStore(pool: Pool): InstallStore {
         if (end.state === 'refused') await auditUpdateRefused(c, audit);
         else await auditUpdateFailed(c, audit);
         await notifyAdmins(c, { kind: end.state === 'refused' ? 'update_refused' : 'update_failed', summary: end.summary, link: LINK, now, urgent: true });
-        // M1: ended at the re-check, nothing was stopped: everyone was told of an outage that will not come.
-        if (from === 'ready') await mailUpdateEnded(c, id, now);
+        // M1: ended before Kainow was stopped (at the re-check, or going back from e.g. backup_failed): everyone was told
+        // of an outage that will not come, so they get the "update cancelled" email. Once api and worker were stopped the
+        // outage happened, so no cancellation is sent (PO, 23 November 2026).
+        const stopped =
+          from === 'installing' && ((await c.query(`SELECT 1 FROM update_steps WHERE update_id = $1 AND step = 'stop'`, [id])).rowCount ?? 0) > 0;
+        if (!stopped) await mailUpdateEnded(c, id, now);
         return true;
       }),
     succeed: (id, stepId, tag, now) =>

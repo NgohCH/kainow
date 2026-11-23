@@ -23,8 +23,9 @@ export interface ScheduleDeps {
   /** The ops part of the sweep (runOpsSweep), run alone while protective mode is on; Sweep.runIfDue runs it otherwise. */
   opsSweep?: () => Promise<void>;
   /**
-   * The daily release check (10b spec 6.2) at 03:`minute` UTC+8. NOT paused in protective mode: it reads a public list and
-   * writes only its own diagnostic row, so Administrators can learn of a fix while Kainow is read-only.
+   * The daily release check (10b spec 6.2) at 03:`minute` UTC+8. NOT paused in protective mode: it reads a public list and,
+   * in protective mode too, records its result and the releases it saw and sends the release_available notice, so
+   * Administrators can learn of a fix while Kainow is read-only (spec 6.2 as amended by the PO, 23 November 2026).
    */
   releaseCheck?: { minute: number; run(): Promise<void> };
   /** Fixed messages only; never an error object or message. */
