@@ -46,7 +46,9 @@ export class AuthGuard implements CanActivate {
     // request that could change something asks, so reads never wait on the state.
     if (changes) {
       const allowed = this.reflector.getAllAndOverride<boolean | undefined>(ALLOWED_WHEN_PROTECTIVE_KEY, [context.getHandler(), context.getClass()]);
-      if (!allowed && (await this.operations.isProtective())) throw protectiveRefusal();
+      if (!allowed && (await this.operations.isProtective())) {
+        throw protectiveRefusal((await this.operations.current()).reason);
+      }
     }
     // Until the organisation is set up, only sign-in, setup and onboarding answer. Someone not signed in is told to
     // sign in first, as before; the setup state is no one else's business.

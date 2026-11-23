@@ -4,6 +4,8 @@
  */
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
+import { sendDueReminders } from '../updater/people-mail';
+import { endMissedWindows } from '../updater/window-sweep';
 import { closeEpisode, openEpisode } from './alerts';
 import { OPS_FAILURES } from './common';
 import { notifyAdmins } from './notify';
@@ -179,13 +181,25 @@ async function checkStorageReadings(pool: Pool, now: Date): Promise<void> {
 
 async function expireDiagnostics(pool: Pool, now: Date): Promise<void> {
   const { diagnosticRetentionDays } = await loadOpsSettings(pool);
-  await pool.query('DELETE FROM storage_readings WHERE at < $1', [before(now, diagnosticRetentionDays * DAY_MS)]);
+  const cutoff = before(now, diagnosticRetentionDays * DAY_MS);
+  await pool.query('DELETE FROM storage_readings WHERE at < $1', [cutoff]);
+  // Release checks (10b): rows that first found a tag stay as the record of when it appeared.
+  await pool.query(
+    `DELETE FROM release_checks rc WHERE rc.at < $1 AND NOT EXISTS (
+       SELECT 1 FROM releases_seen s WHERE rc.outcome = 'found' AND s.tag = rc.newest_tag AND s.first_seen_at = rc.at)`,
+    [cutoff],
+  );
+  // Updater ticks: the newest one always stays, so the Operations page can say when the updater last ran.
+  await pool.query(
+    `DELETE FROM updater_ticks WHERE at < $1 AND id <> (SELECT id FROM updater_ticks ORDER BY at DESC, id DESC LIMIT 1)`,
+    [cutoff],
+  );
 }
 
 /** Runs every step even when one fails, then reports the first failure (the caller logs a fixed message). */
 export async function runOpsSweep(pool: Pool, now: Date): Promise<void> {
   let failure: unknown;
-  for (const step of [markInterruptedRuns, checkBackupTarget, checkStorageReadings, expireDiagnostics]) {
+  for (const step of [markInterruptedRuns, checkBackupTarget, checkStorageReadings, expireDiagnostics, endMissedWindows, sendDueReminders]) {
     try {
       await step(pool, now);
     } catch (err) {

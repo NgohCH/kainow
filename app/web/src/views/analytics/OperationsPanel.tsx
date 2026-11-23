@@ -9,7 +9,7 @@ export function OperationsPanelView({ data, csv }: { data: OperationsPanelData; 
   const locations = s.storage.locations.map((l) => l.location);
   return (
     <>
-      <StatusStrip status={{ backups: s.backups, lastDrill: s.lastDrill, storage: s.storage, protective: s.protective }} />
+      <StatusStrip status={{ backups: s.backups, lastDrill: s.lastDrill, storage: s.storage, protective: s.protective, updates: s.updates }} />
       <div className="grid-2">
         <section aria-labelledby="opsp-backups">
           <h3 id="opsp-backups">Backup runs in the period</h3>
@@ -25,6 +25,16 @@ export function OperationsPanelView({ data, csv }: { data: OperationsPanelData; 
             <li>Started: {data.period.drills.total}</li>
             <li>Passed: {data.period.drills.passed}</li>
             <li>Failed: {data.period.drills.failed}</li>
+          </ul>
+        </section>
+        <section aria-labelledby="opsp-updates">
+          <h3 id="opsp-updates">Updates starting in the period</h3>
+          <ul className="plain">
+            <li>Updates: {data.period.updates.total}</li>
+            <li>Succeeded: {data.period.updates.succeeded}</li>
+            <li>Failed: {data.period.updates.failed}</li>
+            <li>Cancelled: {data.period.updates.cancelled}</li>
+            <li>Not finished: {data.period.updates.open}</li>
           </ul>
         </section>
       </div>

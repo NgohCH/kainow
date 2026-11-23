@@ -17,6 +17,34 @@ The PowerShell lines in this guide were run in Windows PowerShell 5.1 on 8 Novem
 
 ## Install
 
+### Get the code at a signed release
+
+A real installation runs a **release**: a tag `vX.Y.Z` signed with the Product Owner's release key (decision D119; how releases are made: `docs/operations/releasing.md`). The updater (see "Updates") installs only signed releases, and refuses a folder that is not at one (`not_on_release`).
+
+**No release has been published yet.** The first release, `v1.0.0`, comes after the go-live history rewrite; until then there is no tag to check out and no key to compare, and installations run from a plain clone as before. Once releases exist, on the server:
+
+1. Clone the product repository and check out the latest release (its name is on the repository's GitHub releases page):
+
+   ```
+   git clone https://github.com/<owner>/<repository>.git /opt/kainow
+   cd /opt/kainow
+   git -c advice.detachedHead=false checkout --detach vX.Y.Z
+   ```
+
+2. Compare the key in `release/release-signers` with the release key published here and on the release's GitHub page. **Release key: not yet published** (it is created before `v1.0.0`; this line will then show the key and its `SHA256:` fingerprint). If they differ, stop: do not install. Then make the installation's own trusted copy, which is kept outside git and which the updater checks every release against:
+
+   ```
+   cp release/release-signers release-signers
+   ```
+
+3. Verify the tag against it. The output must say `Good "git" signature for kainow-release`:
+
+   ```
+   git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=release-signers verify-tag vX.Y.Z
+   ```
+
+Then continue with step 1 below. **An installation made before the first release** keeps working. To let the updater take it over, put it on a release tag once, from the Kainow folder: `git fetch --tags origin` and `git -c advice.detachedHead=false checkout --detach vX.Y.Z` (as in step 1, so that `release/release-signers` is the release's own file), then steps 2 and 3 above, then `docker compose up -d --build`. Move any change you made to `compose.yaml` into `compose.override.yaml` first (see "Local changes" below), because the checkout needs a clean folder.
+
 1. **Make your settings file.** In this folder (the one with `compose.yaml`):
 
    ```
@@ -38,6 +66,7 @@ The PowerShell lines in this guide were run in Windows PowerShell 5.1 on 8 Novem
      ```
    - Email (sign-in codes and reminders): either the four Microsoft 365 variables (see "Microsoft 365 email" below), or `SMTP_URL` and `SMTP_FROM`, or, for a trial on your own computer only, uncomment both `NODE_ENV=development` and `LOG_SIGN_IN_CODES=true` to read codes from the log. Kainow refuses to start with `LOG_SIGN_IN_CODES` when `NODE_ENV=production` (the default), whatever `APP_URL` says, and in any mode when `APP_URL` is not this computer (`localhost` or `127.0.0.1`): anyone who can read the log could otherwise sign in as anyone. Before real use, set up email and remove both lines.
    - No AI key goes in `.env`. The worker does not read `OPENAI_API_KEY` or any provider key from its environment. AI keys are entered later, per project, in Kainow itself (see "Set up AI" below), and are stored encrypted with the protected key.
+   - On a server that will take updates, the four updater lines `KAINOW_INSTALL_DIR`, `KAINOW_UID`, `KAINOW_GID` and `DOCKER_GID` (see "Updates"). Nothing else needs them. Leave `KAINOW_RELEASE_REPO` and `KAINOW_RELEASE_API` unset.
 
 2. **Build and start.**
 
@@ -84,6 +113,16 @@ The PowerShell lines in this guide were run in Windows PowerShell 5.1 on 8 Novem
 
    After the first project, anyone with an account can create projects and becomes their Project Manager.
 
+### Local changes: `compose.override.yaml`
+
+**Never edit `compose.yaml`.** An update replaces it, and the updater refuses a folder whose tracked files were changed (`local_changes`). Put every local change in `compose.override.yaml` in the same folder instead: Docker Compose reads it on its own, it is not tracked by git (`.gitignore`), and the updater checks every new release against it before anything stops. `compose.override.example.yaml` holds the usual changes (the protected key on `api`, `worker` and `ops`, and the backup key on `ops`):
+
+```
+cp compose.override.example.yaml compose.override.yaml
+```
+
+Keep only the parts you need: a mount whose key file does not exist yet makes Docker create an empty folder in its place, so remove the backup-key line until the key exists ("Backups", step 2) and the protected-key lines until that key exists ("Protected key"). For another port, set `KAINOW_PORT` in `.env` rather than changing `ports` (the notice page after a failed update follows it too). Check the result with `docker compose config -q`, which prints nothing when the files are valid. (Do not run `docker compose config` without `-q` where others can see the screen or a log: it prints the settings from `.env`, passwords included.)
+
 ## Check that it works
 
 1. Sign in as the administrator. Until AI is set up (see "Set up AI" below) the top bar says that AI spending is not set up; after the organisation limits are saved it shows your remaining allowance.
@@ -110,8 +149,11 @@ Cross-project search adds migration 0019, which creates the `pg_trgm` extension.
 | Read the logs | `docker compose logs -f api worker` |
 | Stop (keeps your data) | `docker compose stop` |
 | Start again | `docker compose up -d` |
-| Update to a newer copy of the code | `git pull` then `docker compose up -d --build` |
+| Approve updates on the Operations page | an Enterprise Administrator, in Kainow (see "Updates"); the updater installs them |
 | Change a setting in `.env` | edit it, then `docker compose up -d` |
+| Change the Compose setup | edit `compose.override.yaml` (never `compose.yaml`), then `docker compose up -d` |
+
+**How many people at once?** A repeatable load test for 200 registered people with 10 at once, and its latest result, is in `docs/operations/load-test.md`. Run it only on a test installation, never on the live one: it refuses any database that is not its own seeded test organisation.
 
 ## Backups
 
@@ -144,7 +186,7 @@ npm run backup-key -- --create ../secrets/kainow-backup.key
 
 It refuses to overwrite an existing file and prints only the path and a short key id, never the key. If you created it as a user other than uid 1000, make it readable by the container: `sudo chown 1000 ../secrets/kainow-backup.key`.
 
-Then, in `compose.yaml`, uncomment the backup key line under the `ops` service (`./secrets/kainow-backup.key:/run/secrets/kainow-backup.key:ro`). The key is mounted into `ops` only, never into `api` or `worker`. If the protected key is in use (the protected source area, AI keys or quarantined originals), uncomment **both** protected-key lines under `ops` in `compose.yaml`, exactly as they appear there: in `environment`, `KAINOW_PROTECTED_KEY_FILE: /run/secrets/kainow-protected.key`, and in `volumes`, `./secrets/kainow-protected.key:/run/secrets/kainow-protected.key:ro`. With only the mount, `ops` does not know where the key is: the drill reports sealed values as Not tested and `restore` thinks the key is missing.
+Then mount it into `ops` through `compose.override.yaml` (see "Local changes: `compose.override.yaml`"; never edit `compose.yaml`): keep the backup-key line under `ops` in `volumes`, `./secrets/kainow-backup.key:/run/secrets/kainow-backup.key:ro`, as `compose.override.example.yaml` has it. The key is mounted into `ops` only, never into `api` or `worker`. If the protected key is in use (the protected source area, AI keys or quarantined originals), keep **both** protected-key lines under `ops` as well: in `environment`, `KAINOW_PROTECTED_KEY_FILE: /run/secrets/kainow-protected.key`, and in `volumes`, `./secrets/kainow-protected.key:/run/secrets/kainow-protected.key:ro`. With only the mount, `ops` does not know where the key is: the drill reports sealed values as Not tested and `restore` thinks the key is missing.
 
 **Once the protected source area is in use, the protected key is required in `ops`.** The source area is in use as soon as one is approved on **System Settings › Storage** (or files are stored in one). Every backup then also copies the source files: it downloads them through the storage connection, whose client secret is sealed with the protected key, so without the key in `ops` a backup fails with `protected_key_missing`. For the same reason `ops` then needs outbound HTTPS access to Microsoft Graph and its sign-in service, as `worker` has: the provided Compose network allows it; if the server's firewall limits outbound traffic, allow it for `ops` too.
 
@@ -158,7 +200,7 @@ With Kainow running (`docker compose up -d`):
 docker compose --profile ops run --rm ops node dist/ops/backup-cli.js --kind manual
 ```
 
-The first run builds the `ops` image, which takes a few minutes. It prints `run <id> succeeded`, or `run <id> failed <code>` with a fixed explanation. Exit code 0 means succeeded, 1 refused or failed, 2 wrong usage. Output never contains a key, a secret, file content or a database password.
+The first run builds the `ops` image, which takes a few minutes. It prints `run <id> succeeded`, or `run <id> failed <code>` with a fixed explanation. Exit code 0 means succeeded, 1 refused or failed, 2 wrong usage, 3 another backup, restore drill or restore holds the backup lock, so nothing was done (run it again once that one has finished; the updater's pre-update backup waits and retries on this code by itself, every minute for up to 30 minutes). Output never contains a key, a secret, file content or a database password.
 
 ### 4. Schedule it
 
@@ -290,7 +332,7 @@ A plain dump holds everything (notes, original files, proposals, decisions, the 
 
 For a real disaster: the server or the database is lost and you need Kainow back from the backup folder. A restore goes into a **new, empty installation only**; it never overwrites a database, and a failed live database is replaced by a new installation. You need the backup folder, the backup key's recovery copy and (if AI keys, quarantined originals or the source area were in use) the protected key's recovery copy. Try the steps on a spare machine before you need them.
 
-1. **Start the new installation's settings.** Make a new Compose project as in "Going live" (steps 1 and 2: stop the old installation, name a new project in `.env`). In `.env` set `KAINOW_BACKUP_DIR` to the backup folder. Put the recovery copies of the backup key (and the protected key) in `secrets/`, and uncomment their mounts under `ops` in `compose.yaml` (`./secrets/kainow-backup.key:/run/secrets/kainow-backup.key:ro`, and `./secrets/kainow-protected.key:/run/secrets/kainow-protected.key:ro`). For the protected key, also uncomment the `environment` line `KAINOW_PROTECTED_KEY_FILE: /run/secrets/kainow-protected.key` under `ops`; without it `restore` reports that no protected key is mounted.
+1. **Start the new installation's settings.** Make a new Compose project as in "Going live" (steps 1 and 2: stop the old installation, name a new project in `.env`). In `.env` set `KAINOW_BACKUP_DIR` to the backup folder. Put the recovery copies of the backup key (and the protected key) in `secrets/`, and mount them under `ops` in `compose.override.yaml` (copy `compose.override.example.yaml`, see "Local changes"): `./secrets/kainow-backup.key:/run/secrets/kainow-backup.key:ro`, and `./secrets/kainow-protected.key:/run/secrets/kainow-protected.key:ro`. For the protected key, also keep the `environment` line `KAINOW_PROTECTED_KEY_FILE: /run/secrets/kainow-protected.key` under `ops`; without it `restore` reports that no protected key is mounted.
 2. **Start only the database:**
 
    ```
@@ -333,6 +375,178 @@ docker compose exec -T db psql -U kainow -d postgres -c "DROP DATABASE kainow WI
 
 **Run this only in the new installation's own project folder** (check `docker compose ls` and `COMPOSE_PROJECT_NAME` in `.env` first): it deletes the whole database of that project, and a wrong folder would destroy a live installation. (If the project's database name or user differ in `compose.yaml`, use those.) This is the only supported repair: the restore itself refuses a database that already holds tables.
 
+## Updates
+
+An Enterprise Administrator approves each release in Kainow, and the **updater** installs it at the approved time (decisions D119–D123). Nothing is installed without an approval, an approval covers one release only, and only a release signed with the release key is installed. **Status: written on 23 November 2026 against the code and its automated tests. A real update has not yet been run end to end on a Linux server.**
+
+**What the updater can do.** The updater is a one-shot container (the Compose service `updater`, profile `updater`) that the server's cron starts every five minutes; it does its work and exits, and `docker compose up` never starts it. **It holds the Docker socket, which is root-equivalent control of this server**: anything that controls Docker can take over the machine. That is why it is never left running, has no ports, holds no keys and no email settings, and acts only on an update an Enterprise Administrator approved, for the exact release and commit approved, after checking the release's signature against this installation's own `release-signers` file. It runs as the owner of the Kainow folder, which it sees at the same path as on the server. If you do not want any container to have that power, do not schedule it (see "Turning the updater off") and update by hand.
+
+### 1. Fill in the updater's settings
+
+The updater needs four lines in `.env`; nothing else uses them. In the Kainow folder (the one with `compose.yaml`), on the server, this prints them (it prints no secret):
+
+```
+echo "KAINOW_INSTALL_DIR=$(pwd -P)"
+echo "KAINOW_UID=$(stat -c %u .)"
+echo "KAINOW_GID=$(stat -c %g .)"
+echo "DOCKER_GID=$(stat -c %g /var/run/docker.sock)"
+```
+
+- `KAINOW_INSTALL_DIR`: the folder's absolute path. The updater sees the folder at this same path, so the `docker compose` commands it runs resolve the same files, project name and `.env` as yours.
+- `KAINOW_UID` and `KAINOW_GID`: the user and group that own the folder (if you own it, `id -u` and `id -g` give the same). The updater runs git and Docker as this user, so it never leaves files in the folder that you cannot change.
+- `DOCKER_GID`: the group that owns the Docker socket, which lets the updater use Docker.
+
+Add the four printed lines to `.env`. While any is unset, only `updater` runs fail; every other command works as before. Also check that the installation's trusted `release-signers` file is in the folder ("Install", "Get the code at a signed release") and that the folder is at a release tag: the updater refuses otherwise (`not_on_release`).
+
+Try one tick by hand. The first run builds the `updater` image, which takes a few minutes; with nothing approved it does nothing and exits with code 0:
+
+```
+docker compose --profile updater run --rm updater node dist/updater/updater-cli.js tick
+```
+
+### 2. Schedule it
+
+Add this line to the same crontab as the backup lines ("Backups", step 4), exactly as given. `/opt/kainow` is a placeholder: use the folder that holds `compose.yaml`, the same path as `KAINOW_INSTALL_DIR`.
+
+```
+# Updater: checks for an approved update every five minutes
+*/5 * * * * cd /opt/kainow && docker compose --profile updater run --rm updater node dist/updater/updater-cli.js tick >> /var/log/kainow-ops.log 2>&1
+```
+
+Each tick does at most one thing (prepare an approved update, start a due one, or nothing) and records that it ran. A tick that finds another still running exits at once. Exit code 0 means done (including nothing to do), 1 a step failed or the database could not be reached, 2 wrong usage or a setting missing.
+
+**Being told when an update fails.** After a failed update the updater sends no email (it holds no email settings). It writes a line ending `See INSTALL.md, 'After a failed update'.` to the log, and repeats it once a day until `recover` has run. With the line above, cron mails nothing: watch the log. To have that line mailed to you, put `MAILTO=you@example.org` above the crontab lines (the server needs a working mail command) and use this form of the line instead, which still writes everything to the log but prints, and so mails, only that line:
+
+```
+*/5 * * * * cd /opt/kainow && docker compose --profile updater run --rm updater node dist/updater/updater-cli.js tick 2>&1 | tee -a /var/log/kainow-ops.log | grep -F -e "After a failed update" -e "could not reach the database"
+```
+
+The second pattern also mails a tick that could not reach the database (`The updater could not reach the database.`): the database itself cannot record or tell anyone about that tick.
+
+Once a tick on a release tag has been recorded in the last 24 hours, Kainow ticks go-live step 13, **Schedule the updater** (`updates`). It unticks it again when no tick has been recorded for 24 hours.
+
+### 3. How an update goes
+
+1. **A new release.** Kainow checks the product's GitHub repository for newer release tags once a day; an Enterprise Administrator can also choose **Check now** on the Operations page (at most once a minute). A newer release sends one notice to every Enterprise Administrator, by email and in Kainow. Checking downloads and installs nothing.
+2. **Approval.** On the Operations page, **Updates**, an Enterprise Administrator chooses **Approve update** for that release, with a start time (at least 15 minutes and at most 30 days ahead, in UTC+8), the expected length (5 to 240 minutes, 30 by default) and a reason. It is refused while another update is open, while Kainow is read-only, for a release not newer than the running one, while a failed update still needs recovery, and while no successful backup is younger than 24 hours ("Updates are refused until a backup succeeds. See Backups above."). It can be cancelled or moved, with a reason, until it starts.
+3. **Warning.** Every Active person is emailed when the update is approved (and when it is moved or cancelled), and again 24 hours before it starts if it was approved more than 24 hours ahead. Everyone sees a banner with the time and the expected length until it starts.
+4. **Preparing**, at the first tick after approval, while Kainow keeps running: the folder must be clean and at the running release; the disk holding it must have at least 4 GB free above the safe floor; the release is fetched and its signature, tag name, commit and version checked; the new release is checked against your `.env` and `compose.override.yaml` (`docker compose config -q`), the database service must be unchanged, every `kainow-` image of the new release must carry its own version (so building it can never overwrite the running version's images), and the new images are built beside the running ones. Preparing may take up to 60 minutes. Any failure here ends the update with nothing changed; the Enterprise Administrators are told, and everyone who was warned is emailed that the update is cancelled.
+5. **Installing**, at the first tick at or after the start time: Kainow goes read-only ("Kainow is being updated. You can read; changes are paused until the update finishes."), takes a `pre_update` backup (waiting, every minute for up to 30 minutes, if another backup holds the lock), stops `api` and `worker`, switches the folder to the new release, migrates the database, starts the new version and checks its health within 10 minutes. Only when every check passes does it end the read-only mode and record the update as succeeded. People are cut off from the moment `api` stops until the new version is healthy. The switch also records the release as a local tag (`vX.Y.Z`, the signed tag object that was verified), so the folder is on a release tag for the next update.
+
+   If the updater could not start the update within an hour of its start time (the server was off, or the cron line is missing), the update is not installed: it ends as failed before installing with `window_missed`, nothing is changed, the Enterprise Administrators are told, and everyone who was warned is emailed that it is cancelled. Kainow's worker ends such an update by itself too (its regular sweep), so it does not wait for the updater. To install the release, approve it again for a new time.
+6. **If it fails before the migration starts**, Kainow goes back to the previous version and normal use by itself, and the Enterprise Administrators are told why. **If the migration or anything after it fails**, Kainow stays stopped behind a notice page and waits for you: see "After a failed update".
+
+Every step, and why an update stopped, is shown on the Operations page, as fixed text and never raw command output (that goes to the log only, with the database password masked). The two refusals you can fix on the server: `local_changes` (a tracked file in the folder was changed: move the change into `compose.override.yaml` or `.env` and undo it with `git checkout -- <file>`) and `not_on_release` (the folder is not at the running release's tag: see "Install", "An installation made before the first release").
+
+### If the release key was lost or replaced
+
+Normally the key changes through releases: a release signed with the old key adds the new one, and the updater copies the release's `release/release-signers` over the trusted file only after that release verified against it. If the Product Owner lost the key, or this installation fell behind a rotation, releases signed with the new key are refused (`signature_invalid`) until you replace the trusted `release-signers` file by hand. In the Kainow folder, with `vX.Y.Z` the first release signed with the new key:
+
+1. Take the new file from that release, without checking it out:
+
+   ```
+   git fetch --tags origin
+   git show vX.Y.Z:release/release-signers > release-signers.tmp
+   ```
+
+2. Show its keys' fingerprints and compare each with the key published in this guide ("Install", "Get the code at a signed release", as the guide reads in that release) **and** on that release's GitHub page. Both must match; if either differs, stop and delete `release-signers.tmp`:
+
+   ```
+   grep -v '^#' release-signers.tmp | awk '{print $3, $4}' | ssh-keygen -lf -
+   ```
+
+3. Keep a copy of the old file outside the folder, then replace it:
+
+   ```
+   cp release-signers ~/release-signers.old
+   mv release-signers.tmp release-signers
+   ```
+
+4. Verify the release against the new file. The output must say `Good "git" signature for kainow-release`; if it does not, put the old file back (`cp ~/release-signers.old release-signers`):
+
+   ```
+   git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=release-signers verify-tag vX.Y.Z
+   ```
+
+The Operations page shows the new key's fingerprint after the next updater tick. An update already refused for the signature must be approved again.
+
+### Turning the updater off
+
+Remove its crontab line. Nothing else ever starts the updater, so it then has no access to anything. An approved update is then never installed: cancel it on the Operations page. Go-live step 13 unticks itself after 24 hours.
+
+### Updating by hand
+
+Without the updater, follow the same steps yourself, in the Kainow folder, at a time you have announced. Replace `vX.Y.Z` with the release, and keep the previous tag's name (`git describe --tags --exact-match`) in case you need to go back:
+
+```
+git fetch --tags origin
+git -c gpg.format=ssh -c gpg.ssh.allowedSignersFile=release-signers verify-tag vX.Y.Z
+docker compose stop api worker
+docker compose --profile ops run --rm ops node dist/ops/backup-cli.js --kind pre_update
+git -c advice.detachedHead=false checkout --detach vX.Y.Z
+cp release/release-signers release-signers
+docker compose --profile ops --profile updater build
+docker compose up -d
+```
+
+Stop if `verify-tag` does not say `Good "git" signature for kainow-release`, or if the backup does not print `succeeded`: start the previous version again with `docker compose up -d`. If the release has a file `release/requirements.json` (`git show vX.Y.Z:release/requirements.json`), follow its note first. Stopping `api` before the backup means nothing can be saved after it. `docker compose up -d` runs `migrate` before `api` starts; if `migrate` fails, **do not start the previous version on that database**: the database must go back to the backup you just took. In this order: `docker compose stop api worker`; check out the previous tag again (`git -c advice.detachedHead=false checkout --detach <previous tag>`, and put its `release/release-signers` back as `release-signers`), so the restore runs on the previous version's images; keep the failed database under another name and create an empty `kainow` (as `recover` does: `docker compose exec -T db psql -U kainow -d postgres -c "ALTER DATABASE kainow RENAME TO kainow_failed_YYYYMMDD_manual" -c "CREATE DATABASE kainow"`); then restore the set the pre-update backup printed into that empty database, as in "Restore from a backup" step 3, and start Kainow with `docker compose up -d`.
+
+## After a failed update
+
+When the database migration of an update, or anything after it, fails, Kainow stays stopped. Nothing is restored automatically (D123).
+
+**What people see.** Kainow's address shows one fixed page (served by the `notice` service, status 503): "Kainow is unavailable after a failed update. Nothing you saved before the update started has been lost. Please contact your Administrator." The folder is already back at the previous release; the database is as the failed migration left it.
+
+**What the server operator sees.** In `/var/log/kainow-ops.log` (and by mail, if you set that up in "Updates", step 2), repeated once a day:
+
+```
+The update to vX.Y.Z failed after the database migration started. Kainow is stopped and shows a notice page. Run: docker compose --profile updater run --rm updater node dist/updater/updater-cli.js recover. See INSTALL.md, 'After a failed update'.
+```
+
+(If instead the update failed before the migration but going back to the previous version did not pass its health checks, the line says so; recovery is the same command, without a restore.)
+
+**Before you run it**, check that the database service is running (`docker compose ps db`), that the backup folder is reachable, and that the backup key (and the protected key, if used) are still mounted in `ops` by `compose.override.yaml`: the restore needs them. It also needs free space on the database disk for the restored copy beside the kept failed one.
+
+**Run the recovery command** in the Kainow folder:
+
+```
+docker compose --profile updater run --rm updater node dist/updater/updater-cli.js recover
+```
+
+It shows what it will do and asks you to type `yes` (`recover --yes` skips the question). After a failed migration it:
+
+1. stops the notice page and Kainow;
+2. **keeps the failed database** under the name `kainow_failed_<YYYYMMDD>_<first 8 characters of the update id>` and creates an empty `kainow` database (nothing is dropped);
+3. checks that the folder is at the previous release;
+4. restores the update's own pre-update backup with the previous version (the same restore as in "Restore from a backup");
+5. records the update as recovered and gives every Enterprise Administrator an urgent notice, by email and in Kainow;
+6. starts Kainow on the previous version, waits for its health checks, and prints the restore's message and then `Kainow is back on vA.B.C. Review and choose Resume on the Operations page.`
+
+**Nothing saved is lost**: from just before the pre-update backup started, Kainow refused every change, so the backup holds everything people saved. The restore has the side effects of any restore: Kainow starts read-only, everyone is signed out, and emails and jobs that were queued are not sent ("Not sent — restored from backup", "Not run — restored from backup"; see "What the restore does not repeat"). An Enterprise Administrator signs in, checks, and chooses **Resume normal use** on the Operations page, with a reason.
+
+When no migration ran, `recover` skips the rename and the restore: it starts the previous version, waits for its health checks, ends the update's read-only mode and prints `Kainow is back on vA.B.C.`
+
+**If `recover` stops with a message**, it changes nothing further, and the message says what to do; you can run it again, and it carries on from where it stopped (for example from the restore, once the failed database is already set aside). The common ones: "An updater tick is running; try again in a minute."; "The Kainow folder is not at vA.B.C. Check it out (…) and run recover again."; "The restore did not finish …": fix what the restore's messages name (the backup folder, a key, free space), and recreate the empty database first if it says so. **Never drop a `kainow_failed_…` database to make `recover` go on**: it is the failed database, kept for investigation.
+
+**If Kainow is still unhealthy after `recover`** ("Kainow vA.B.C did not start or did not pass its health checks within 10 minutes; the notice page is shown again."):
+
+- If no migration had run, the update is still waiting for recovery: find and fix the cause (below), then run `recover` again.
+- After a restore, the update is already recorded as recovered, so `recover` answers that there is nothing to recover. Find the cause with `docker compose ps` and `docker compose logs --tail 200 api worker` (and the free space on the Operations page's last reading or `df -h`). Once it is fixed, stop the notice page and start Kainow; it starts read-only, and an Administrator resumes as above:
+
+  ```
+  docker compose --profile updater stop notice
+  docker compose up -d
+  ```
+
+  If it still does not start, restore into a new installation as in "Restore from a backup", with `--set` naming the pre-update backup set that `recover` printed.
+
+**Removing the kept failed database.** Once the organisation is satisfied that nothing in it is needed, drop it by hand, in the installation's own project folder. List it, then drop it by its exact name; this cannot be undone:
+
+```
+docker compose exec -T db psql -U kainow -d postgres -Atc "SELECT datname FROM pg_database WHERE datname LIKE 'kainow_failed_%'"
+docker compose exec -T db dropdb -U kainow kainow_failed_YYYYMMDD_xxxxxxxx
+```
+
 ## Set up AI
 
 AI runs only through a model the Administrator has approved and a connection that belongs to one project. Nothing is sent until all of this is done. Each step is a screen in Kainow; every change asks for a short reason and is kept in the history.
@@ -357,7 +571,7 @@ A request must fit every limit that applies (organisation and project, monthly, 
 When someone reports a pasted password or key, Kainow removes it from every copy in Kainow and keeps the originals encrypted, apart from the database. The encryption key is a 32-byte file that you create once and keep outside the database and its backups.
 
 1. Create it (on Mac or Linux, or inside the app folder): `npm run protected-key -- --create ./secrets/kainow-protected.key`. It refuses to overwrite an existing file and prints only the file path and a short key id, never the key.
-2. Mount it read-only for both `api` and `worker` and set `KAINOW_PROTECTED_KEY_FILE` to its path inside the container: the commented lines in `compose.yaml` show both. Then run `docker compose up -d` again.
+2. Mount it read-only for `api`, `worker` and `ops` and set `KAINOW_PROTECTED_KEY_FILE` to its path inside the container, in `compose.override.yaml` (never in `compose.yaml`): `compose.override.example.yaml` has both lines for each of the three services (see "Local changes"). Then run `docker compose up -d` again.
 3. **Keep a recovery copy apart from the database backups** (for example on a locked USB drive or in your password manager's secure files). A backup of the database alone cannot give the originals back, and the key alone gives nothing; losing the key means quarantined originals can never be restored. Never email the key or put it in the repository.
 
 **In production with AI, require the key.** Add `KAINOW_REQUIRE_PROTECTED_KEY=true` to `.env`. Then `api` and `worker` refuse to start when the key file is not set, missing, unreadable or the wrong length, instead of starting without it. Before go-live, prove the recovery copy works: on a separate, fresh installation, restore the latest database backup, mount the recovery copy of the key, and check that a project's AI connection opens and a quarantined original can be restored.
@@ -465,7 +679,7 @@ The command refuses, and changes nothing, when the reason is missing, when Kaino
 - Backups are real and checked: a daily encrypted copy of the database goes to a folder apart from the installation, every run is recorded in Kainow, and a failed or missing backup is never shown as healthy (see "Backups"). The restore drill proves a backup restores: it decrypts, matches every table's row count, checks the files and the protected key, and times the restore against the 4-hour target. A restore into a new installation is described under "Restore from a backup". Both are only as good as the schedule you set up and the key recovery copies you keep.
 - Kainow stops accepting changes before the database disk fills (protective read-only mode, see "Disk space and protective read-only mode"). That safe floor has not yet been verified on a real disk.
 - Up to 24 hours of work can be lost in a disaster (the backup interval), and access changes made after the backup are not restored: after a restore, check People, grants and Administrators before resuming.
-- Updates are manual (`git pull`, rebuild) until sub-project 10b brings the in-app updater. Take a backup first: `docker compose --profile ops run --rm ops node dist/ops/backup-cli.js --kind manual`.
+- Updates install only a release signed with the release key, only after an Enterprise Administrator approved that exact release, and only after a pre-update backup succeeded (see "Updates"). The updater that installs them has root-equivalent control of the server through the Docker socket; it runs only when cron starts it, and removing its crontab line turns it off. A failed update is never restored silently: the server operator runs `recover` ("After a failed update").
 
 ## Microsoft 365 email
 

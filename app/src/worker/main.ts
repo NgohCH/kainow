@@ -5,7 +5,9 @@ import { AnalysisTick } from '../analysis/tick';
 import { bossAnalysisQueue } from '../analysis/queue';
 import { AssistRunner } from '../assist/assist-runner';
 import { ExtractionRunner } from '../extraction/runner';
-import { realClientFactory } from '../ai/client-factory';
+import { type ModelClientFactory, realClientFactory } from '../ai/client-factory';
+import { loadTestClientFactory } from '../loadtest/fake-ai';
+import { assertLoadDatabase } from '../loadtest/guard';
 import { SpendService } from '../spend/spend.service';
 import { type AppConfig, loadWorkerConfig } from '../config';
 import { AI_CONCURRENCY, registerAiWorker } from './ai-worker';
@@ -22,6 +24,8 @@ import { reportKeyStatus } from '../quarantine/key-status';
 import { loadRequiredProtectedKey } from '../quarantine/protected-key';
 import { OperationsState } from '../ops/state';
 import { runOpsSweep } from '../ops/sweep-ops';
+import { runningVersion } from '../common/version';
+import { checkReleases } from '../updater/release-check';
 import { QUEUES, startQueues } from './queues';
 import { registerSchedules } from './schedules';
 import { DbStorageConnectorFactory } from '../storage/connector-factory';
@@ -56,20 +60,28 @@ async function main(): Promise<void> {
   // Kainow's own reports of a secret found in stored text (history spec 7.1): the runners open the case themselves.
   const access = new ProjectAccess(pool, clock);
   const quarantine = new CasesService(pool, clock, key, { appUrl: config.appUrl } as AppConfig, nudge, access, new AudienceService(pool, clock, access));
+  // A load-test installation only (KAINOW_LOAD_TEST=1, docs/operations/load-test.md): AI calls go to the local fake
+  // provider, and the worker refuses to start on a database that is not the seeded load-test organisation.
+  const loadTest = loadTestClientFactory(process.env);
+  if (loadTest) {
+    await assertLoadDatabase(pool);
+    console.warn('LOAD TEST: every AI call goes to the local fake provider named in KAINOW_LOAD_TEST_AI_URL.');
+  }
+  const factory: ModelClientFactory = loadTest ?? realClientFactory;
   // No model client is built here: each attempt builds the client for its project connection, opening that connection's
   // key with the protected key (spec 6.3). Without the protected key every AI request ends blocked protected_key_missing.
   const extraction = new ExtractionRunner({
     pool,
     spend,
-    factory: realClientFactory,
+    factory,
     key,
     clock,
     log: (m) => console.error(m),
     quarantine,
   });
-  const minutes = new MinutesRunner({ pool, spend, factory: realClientFactory, key, clock, quarantine, log: (m) => console.error(m) });
+  const minutes = new MinutesRunner({ pool, spend, factory, key, clock, quarantine, log: (m) => console.error(m) });
   const analysisRunner = new AnalysisRunner({ pool, clock, extraction, minutes, quarantine, log: (m) => console.error(m) });
-  const assist = new AssistRunner({ pool, spend, factory: realClientFactory, key, clock, quarantine, log: (m) => console.error(m) });
+  const assist = new AssistRunner({ pool, spend, factory, key, clock, quarantine, log: (m) => console.error(m) });
 
   // Protective read-only mode (spec 7.3): every handler asks first; the answer is cached for 5 s, so Resume in the API
   // is seen here within 5 s.
@@ -107,7 +119,18 @@ async function main(): Promise<void> {
     sendOutbox: () => sendStorageOutbox(pool, boss),
     daily: () => runStorageDaily(storageDeps, (m) => storageLog.warn(m)),
   };
-  await registerSchedules(boss, { sweep, dispatcher, analysis, quarantine: quarantineJob, storage, operations, opsSweep: () => runOpsSweep(pool, clock()) });
+  // The daily release check runs at a minute fixed per installation (from the organisation name), so installations do
+  // not all call GitHub together. Before onboarding the minute is 0; it moves once a name is saved and the worker restarts.
+  const minuteRow = (await pool.query(`SELECT ((hashtext(name)::bigint % 60) + 60) % 60 AS minute FROM organisation WHERE id = 1`)).rows[0] as
+    | { minute: number }
+    | undefined;
+  const releaseCheck = {
+    minute: minuteRow?.minute ?? 0,
+    run: async () => {
+      await checkReleases({ pool, fetch, repo: config.release.repo, api: config.release.api, runningVersion: runningVersion(), now: clock() }, 'daily');
+    },
+  };
+  await registerSchedules(boss, { sweep, dispatcher, analysis, quarantine: quarantineJob, storage, operations, opsSweep: () => runOpsSweep(pool, clock()), releaseCheck });
   console.log(`kainow worker started (at most ${AI_CONCURRENCY} AI jobs at once in this process; the AI places setting is the real limit)`);
 
   const stop = async (): Promise<void> => {

@@ -91,6 +91,18 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['ops.restored_from_backup', 'Kainow was restored from a backup set into a new installation (operator command): the set, its time and the reason; queued emails, jobs and AI work were ended, not repeated.'],
     ['ops.source_files_restored', 'restore-source-files put stored source files that were missing from the source area back from the backup folder (operator command); counts only.'],
   ]),
+  ...audit('Operations', ADMIN, 'update', [
+    ['ops.update_approved', 'An Enterprise Administrator approved an update to a signed release, with a reason, a start time and an expected length.'],
+    ['ops.update_rescheduled', 'An Enterprise Administrator changed the start time or expected length of an approved update, with a reason.'],
+    ['ops.update_cancelled', 'An Enterprise Administrator cancelled an approved update before it started, with a reason.'],
+  ]),
+  ...audit('Operations', SYSTEM, 'update', [
+    ['ops.release_available', 'The release check found a signed release newer than the running one; the tag only.'],
+    ['ops.update_refused', 'The updater refused an approved update (for example the tag or its signature no longer matched); a fixed failure code.'],
+    ['ops.update_succeeded', 'An update was installed and Kainow passed its health checks; versions only.'],
+    ['ops.update_failed', 'An update failed, before or after the migration; a fixed failure code.'],
+    ['ops.update_recovered', 'The server operator recovered from a failed update by restoring its pre-update backup (operator command); no secrets.'],
+  ]),
   ...audit('Projects', PERSON, 'project', [
     ['project.created', 'A project was created as a draft.'],
     ['project.edited', 'A project’s details were edited.'],
@@ -340,6 +352,15 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
   ...group('operations_state_changes', 'Operations', SYSTEM, 'protective mode', [
     ['entered', 'Kainow entered protective (read-only) mode, with the reason and detail.'],
     ['resumed', 'An Enterprise Administrator resumed normal use after protective mode, with a reason.'],
+  ]),
+  ...group('update_changes', 'Operations', ADMIN, 'update', [
+    ['approved', 'An update to a signed release was approved, with a reason, a start time and an expected length.'],
+    ['rescheduled', 'An approved update’s start time or expected length was changed.'],
+    ['cancelled', 'An approved update was cancelled before it started, with a reason.'],
+  ]),
+  ...group('update_changes', 'Operations', SYSTEM, 'update', [
+    ['state_changed', 'An update moved to another state (preparing, ready, installing, succeeded, failed, recovered); states only.'],
+    ['reminded', 'The day-before email about an approved update was sent.'],
   ]),
   ...group('resource_line_events', 'Resources', PERSON, 'resource line', [
     ['created', 'A resource line was added to a project.'],

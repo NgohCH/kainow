@@ -1,4 +1,4 @@
-// The go-live checklist (spec §4): the 12 steps, the automatic checks and the closing rule (tightened by review G01).
+// The go-live checklist (spec §4): the 13 steps, the automatic checks and the closing rule (tightened by review G01).
 import type { Pool, PoolClient } from 'pg';
 import { uuidv7 } from '../common/uuid7';
 import { backupsStepHolds } from '../ops/drill-again';
@@ -14,7 +14,7 @@ export interface StepDef {
   mode: StepMode;
 }
 
-/** Order and keys are fixed; positions 1 to 12 follow this order. */
+/** Order and keys are fixed; positions 1 to 13 follow this order. */
 export const STEPS: readonly StepDef[] = [
   { key: 'organisation', mode: 'auto', link: '#/organisation', text: 'Register your organisation: its name and email domains', explanation: "Kainow needs the organisation's name and email domains before anyone can be invited." },
   { key: 'logos', mode: 'auto_or_skip', link: '#/organisation', text: "Upload your organisation's logos (optional)", explanation: 'Logos appear on sign-in and on exported documents. Upload one, or confirm that you are skipping it.' },
@@ -28,7 +28,10 @@ export const STEPS: readonly StepDef[] = [
   { key: 'users', mode: 'auto', link: '#/', text: 'Admit real users', explanation: 'At least one person who is not an Enterprise Administrator has accepted their invitation and is Active.' },
   { key: 'project', mode: 'auto', link: '#/', text: 'Launch the first real project', explanation: 'A real project has reached Active. The checklist closes once every step except the optional ones (logos, storage) is done.' },
   { key: 'storage', mode: 'auto_or_skip', link: '#/storage', text: 'Connect storage and approve the source area', explanation: 'Kainow keeps source files and filed outputs in your own SharePoint or OneDrive. Connect it and approve the source area, or skip this step.' },
+  { key: 'updates', mode: 'auto', link: 'INSTALL.md, the section on Updates', text: 'Schedule the updater', explanation: 'Kainow ticks this once the updater has run in the last 24 hours on a release.' },
 ];
+
+const UPDATER_TICK_WINDOW_MS = 24 * 60 * 60_000;
 
 export const TOTAL = STEPS.length;
 
@@ -87,8 +90,8 @@ export async function custodianRecorded(db: Db): Promise<boolean> {
   return rowCount === 1;
 }
 
-/** Which automatic conditions hold now. */
-export async function conditions(db: Db): Promise<Record<string, boolean>> {
+/** Which automatic conditions hold at `now`. */
+export async function conditions(db: Db, now: Date = new Date()): Promise<Record<string, boolean>> {
   const { rows } = await db.query(`
     SELECT
       EXISTS (SELECT 1 FROM organisation WHERE registered_at IS NOT NULL) AS organisation,
@@ -102,7 +105,11 @@ export async function conditions(db: Db): Promise<Record<string, boolean>> {
       -- Connection checked (the Administrator's last "Check connection" succeeded) and a source area approved.
       (EXISTS (SELECT 1 FROM storage_settings WHERE last_check_state = 'connected')
         AND EXISTS (SELECT 1 FROM storage_destinations WHERE purpose = 'source_area' AND status = 'approved')) AS storage,
-      ${KEY_LOADED_EVERYWHERE_SQL} AS protected_key`);
+      ${KEY_LOADED_EVERYWHERE_SQL} AS protected_key,
+      -- Step 13 (10b spec 10): the updater ran in the last 24 hours, in a folder on a release tag.
+      EXISTS (SELECT 1 FROM updater_ticks WHERE at > $1 AND running_tag IS NOT NULL) AS updates`,
+    [new Date(now.getTime() - UPDATER_TICK_WINDOW_MS)],
+  );
   // Step 8 (spec 10a 8.1): a passed full drill of a successful set, and no reason to drill again.
   return { ...(rows[0] as Record<string, boolean>), backups: await backupsStepHolds(db) };
 }
@@ -121,9 +128,9 @@ export async function refreshChecklist(db: Pool, now: Date): Promise<void> {
       await c.query('COMMIT');
       return;
     }
-    const holds = await conditions(c);
+    const holds = await conditions(c, now);
     // An automatic tick in the closing set is withdrawn when its condition no longer holds (review G01): for example the
-    // second Administrator was disabled after Kainow ticked the step, or step 8's drill no longer counts (spec 10a 8.1). Read in this transaction, under the checklist lock,
+    // second Administrator was disabled after Kainow ticked the step, or step 8's drill no longer counts (spec 10a 8.1), or the updater has not run on a release for 24 hours (step 13, 10b). Read in this transaction, under the checklist lock,
     // so the close below rests on the current state and not on an old tick.
     const lapsed = STEPS.filter((s) => s.mode === 'auto' && CLOSING_KEYS.includes(s.key) && !holds[s.key]).map((s) => s.key);
     const unticked = (await c.query(

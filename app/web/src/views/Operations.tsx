@@ -3,13 +3,30 @@ import { ApiError, api, isProtectiveRefusal } from '../api.ts';
 import { formatWhen, plural } from '../format.ts';
 import { reasonProblem } from '../leadership.ts';
 import {
+  APPROVAL_HINT,
+  CHANGEABLE_UPDATE_STATES,
+  RELEASE_CHECK_NOTE,
+  type UpdateState,
+  type UpdateStatusWord,
+  type UpdateStep,
+  type UpdateView,
+  type UpdatesData,
+  type UpdatesSummary,
+  approvalFormProblem,
+  checkWords,
+  inputFromStart,
+  protectiveWords,
+  soonestStartValue,
+  startFromInput,
+  stepOutcomeWords,
+  stepWords,
+  updateStatusWord,
   type BackupRun,
   type Drill,
   type GrowthRow,
   KIND_WORDS,
   type OperationsView,
   type OpsSettingsValues,
-  PROTECTIVE_TEXT,
   type Protective,
   type ResumeChecks,
   SETTING_ROWS,
@@ -49,8 +66,8 @@ function Word({ tone, children }: { tone: Tone; children: string }) {
 
 const when = (iso: string | null) => (iso ? formatWhen(iso) : 'Never');
 
-/** Backups, last drill, the disks and protective mode: a word and a time each. Shared with the analytics panel. */
-export function StatusStrip({ status }: { status: Pick<OperationsView, 'storage' | 'protective'> & { backups: Pick<OperationsView['backups'], 'status' | 'lastSuccess' | 'lastAttempt'>; lastDrill: Drill | null } }) {
+/** Backups, last drill, the disks, protective mode and updates: a word and a time each. Shared with the analytics panel. */
+export function StatusStrip({ status }: { status: Pick<OperationsView, 'storage' | 'protective'> & { backups: Pick<OperationsView['backups'], 'status' | 'lastSuccess' | 'lastAttempt'>; lastDrill: Drill | null; updates?: UpdatesSummary } }) {
   const drill = status.lastDrill;
   const drillTone: Tone = !drill ? 'none' : drill.outcome === 'passed' ? 'good' : drill.outcome === 'failed' ? 'bad' : 'warn';
   const items: Array<{ label: string; tone: Tone; word: string; time: string }> = [
@@ -75,9 +92,10 @@ export function StatusStrip({ status }: { status: Pick<OperationsView, 'storage'
     {
       label: 'Protective mode',
       tone: status.protective.on ? ('bad' as const) : ('good' as const),
-      word: status.protective.on ? 'On (read-only)' : 'Off',
+      word: status.protective.on ? (status.protective.reason === 'update' ? 'On (updating)' : 'On (read-only)') : 'Off',
       time: status.protective.on && status.protective.since ? `Since ${when(status.protective.since)}` : 'Normal use',
     },
+    ...(status.updates ? [updatesTile(status.updates)] : []),
   ];
   return (
     <ul className="plain ops-strip" aria-label="Status summary">
@@ -349,11 +367,12 @@ function ResumeForm({ onDone }: { onDone: () => void }) {
 
 function ProtectiveBlock({ p, onDone }: { p: Protective; onDone: () => void }) {
   if (!p.on) return <p>Protective mode is off. Kainow is in normal use.</p>;
+  const words = protectiveWords(p);
   return (
     <>
-      <p role="status"><strong>{PROTECTIVE_TEXT}</strong></p>
+      <p role="status"><strong>{words.text}</strong></p>
       <ul className="plain">
-        <li>Why: {p.reason === 'restored_from_backup' ? 'Kainow was restored from a backup.' : 'Free space on the database disk fell below the safe floor.'}</li>
+        <li>Why: {words.why}</li>
         <li>Since: {when(p.since)}</li>
       </ul>
       {p.reason === 'restored_from_backup' && (
@@ -362,7 +381,343 @@ function ProtectiveBlock({ p, onDone }: { p: Protective; onDone: () => void }) {
           {p.setName ? ` (${p.setName})` : ''}. Everything after that time is lost, including access changes: check People, grants and Administrators before resuming. Queued emails and jobs were not sent.
         </p>
       )}
-      <ResumeForm onDone={onDone} />
+      {/* Update maintenance is ended only by the updater (spec 7.1): no Resume. */}
+      {words.canResume ? <ResumeForm onDone={onDone} /> : <p className="hint">Resume is not offered while Kainow is being updated.</p>}
+    </>
+  );
+}
+
+// --- Updates (10b spec 6, 11) ---
+
+const updateTone = (w: UpdateStatusWord): Tone => (w === 'Up to date' ? 'good' : w === 'Update failed' ? 'bad' : 'warn');
+const stateTone = (s: UpdateState): Tone =>
+  s === 'succeeded' ? 'good' : s === 'cancelled' ? 'none' : ['refused', 'failed_before_install', 'failed_after_migration', 'failed_needs_attention', 'recovered'].includes(s) ? 'bad' : 'warn';
+const stepTone = (o: UpdateStep['outcome']): Tone => (o === 'passed' ? 'good' : o === 'failed' ? 'bad' : o === 'skipped' ? 'none' : 'warn');
+
+/** The Updates tile of the status strip. */
+function updatesTile(u: UpdatesSummary): { label: string; tone: Tone; word: string; time: string } {
+  const word = updateStatusWord(u);
+  const checked = u.lastCheckAt ? `Checked ${when(u.lastCheckAt)}` : 'Never checked';
+  const time =
+    word === 'Update scheduled' && u.startsAt
+      ? `v${u.latestToVersion ?? ''} starts ${when(u.startsAt)}`
+      : word === 'Update failed' && u.latestToVersion
+        ? `v${u.latestToVersion}`
+        : word === 'Update available' && u.available
+          ? `${u.available} · ${checked}`
+          : checked;
+  return { label: 'Updates', tone: updateTone(word), word, time };
+}
+
+/** Start time (UTC+8), expected length and reason, checked as typed with the server's bounds. Used to approve and to change the time. */
+function WindowForm({ label, submitLabel, initial, onSubmit, onClose }: {
+  label: string;
+  submitLabel: string;
+  initial?: { startsAt: string; expectedMinutes: number };
+  onSubmit: (body: { startsAt: string; expectedMinutes: number; reason: string }) => Promise<void>;
+  onClose: () => void;
+}) {
+  const [startsAt, setStartsAt] = useState(initial ? inputFromStart(initial.startsAt) : '');
+  const [minutes, setMinutes] = useState<number>(initial?.expectedMinutes ?? 30);
+  const [reason, setReason] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [touched, setTouched] = useState(false);
+  const problem = approvalFormProblem({ startsAt, expectedMinutes: minutes, reason }, new Date());
+  const id = label.toLowerCase().replace(/[^a-z]+/g, '-');
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setTouched(true);
+    setError(null);
+    const p = approvalFormProblem({ startsAt, expectedMinutes: minutes, reason }, new Date());
+    if (p) return setError(p);
+    setBusy(true);
+    try {
+      await onSubmit({ startsAt: startFromInput(startsAt).toISOString(), expectedMinutes: minutes, reason: reason.trim() });
+    } catch (err) {
+      // The form keeps what was typed; the server's own words (for example no backup in 24 hours).
+      setError(isProtectiveRefusal(err) ? err.message : errText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="panel stack" onSubmit={submit} aria-label={label}>
+      <div className="stack">
+        <label htmlFor={`${id}-start`}>Start (UTC+8)</label>
+        <div className="inline-form">
+          <input id={`${id}-start`} type="datetime-local" required value={startsAt} aria-describedby={`${id}-start-hint`} onChange={(e) => setStartsAt(e.target.value)} />
+          <button type="button" onClick={() => setStartsAt(soonestStartValue(new Date()))}>As soon as possible</button>
+        </div>
+        <p id={`${id}-start-hint`} className="hint">At least 15 minutes from now and no more than 30 days ahead.</p>
+      </div>
+      <div className="stack">
+        <label htmlFor={`${id}-minutes`}>Expected length</label>
+        <div className="inline-form">
+          <input id={`${id}-minutes`} type="number" inputMode="numeric" step={1} min={5} max={240} required value={Number.isNaN(minutes) ? '' : minutes} aria-describedby={`${id}-minutes-hint`} onChange={(e) => setMinutes(e.target.value === '' ? NaN : Number(e.target.value))} />
+          <span>minutes</span>
+        </div>
+        <p id={`${id}-minutes-hint`} className="hint">From 5 to 240 minutes. Everyone is told this length.</p>
+      </div>
+      <label>
+        Reason
+        <textarea required rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
+      </label>
+      {touched && problem && !error && <p role="alert" className="error">{problem}</p>}
+      {error && <p role="alert" className="error">{error}</p>}
+      <div className="inline-form">
+        <button className="primary" disabled={busy}>{submitLabel}</button>
+        <button type="button" className="quiet" onClick={onClose}>Close</button>
+      </div>
+    </form>
+  );
+}
+
+function CancelUpdateForm({ id, onDone, onClose }: { id: string; onDone: () => void; onClose: () => void }) {
+  const [reason, setReason] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    const p = reasonProblem(reason);
+    if (p) return setError(p);
+    setBusy(true);
+    try {
+      await api.post(`/admin/updates/${id}/cancel`, { reason: reason.trim() });
+      onDone();
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <form className="panel stack" onSubmit={submit} aria-label="Cancel the update">
+      <label>
+        Reason for cancelling
+        <textarea required rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
+      </label>
+      <p className="hint">Everyone is emailed that the update is cancelled.</p>
+      {error && <p role="alert" className="error">{error}</p>}
+      <div className="inline-form">
+        <button className="primary" disabled={busy}>Cancel the update</button>
+        <button type="button" className="quiet" onClick={onClose}>Keep it</button>
+      </div>
+    </form>
+  );
+}
+
+function StepsTable({ steps }: { steps: UpdateStep[] }) {
+  if (steps.length === 0) return null;
+  return (
+    <div className="table-scroll">
+      <table className="table">
+        <caption>Steps, in order</caption>
+        <thead>
+          <tr>
+            <th scope="col">Step</th>
+            <th scope="col">Result</th>
+            <th scope="col">Started</th>
+            <th scope="col">Why it failed</th>
+          </tr>
+        </thead>
+        <tbody>
+          {steps.map((s, i) => (
+            <tr key={`${s.step}-${i}`}>
+              <th scope="row">{stepWords(s.step)}</th>
+              <td data-label="Result"><Word tone={stepTone(s.outcome)}>{stepOutcomeWords(s.outcome)}</Word></td>
+              <td data-label="Started">{formatWhen(s.startedAt)}</td>
+              <td data-label="Why it failed">{s.failureText ?? ''}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function CurrentUpdate({ u, onChanged }: { u: UpdateView; onChanged: () => void }) {
+  const [open, setOpen] = useState<'time' | 'cancel' | null>(null);
+  const changeable = CHANGEABLE_UPDATE_STATES.includes(u.state);
+  const done = () => {
+    setOpen(null);
+    window.dispatchEvent(new Event('operations-changed'));
+    onChanged();
+  };
+  return (
+    <div className="stack">
+      <h3>Current update: v{u.toVersion}</h3>
+      <p><Word tone={stateTone(u.state)}>{u.stateWords}</Word></p>
+      <ul className="plain">
+        <li>From v{u.fromVersion} to v{u.toVersion}</li>
+        <li>Starts: {formatWhen(u.startsAt)}, for about {plural(u.expectedMinutes, 'minute')}</li>
+        <li>Approved by {u.approvedBy.name} on {formatWhen(u.approvedAt)}. Reason: {u.reason}</li>
+        {u.failureText && <li className="error">Failure: {u.failureText}</li>}
+      </ul>
+      <StepsTable steps={u.steps} />
+      {u.releaseNotes !== null ? (
+        <section aria-labelledby="upd-notes">
+          <h4 id="upd-notes">Release notes (from the signed release)</h4>
+          <p className="summary-text">{u.releaseNotes || 'The release has no notes.'}</p>
+        </section>
+      ) : (
+        <p className="hint">Release notes show here once the release&apos;s signature has been checked.</p>
+      )}
+      {changeable && open === null && (
+        <div className="inline-form">
+          <button type="button" onClick={() => setOpen('time')}>Change time</button>
+          <button type="button" onClick={() => setOpen('cancel')}>Cancel the update</button>
+        </div>
+      )}
+      {changeable && open === 'time' && (
+        <WindowForm
+          label="Change the update time"
+          submitLabel="Save the new time"
+          initial={{ startsAt: u.startsAt, expectedMinutes: u.expectedMinutes }}
+          onSubmit={async (b) => {
+            await api.post(`/admin/updates/${u.id}/reschedule`, b);
+            done();
+          }}
+          onClose={() => setOpen(null)}
+        />
+      )}
+      {changeable && open === 'cancel' && <CancelUpdateForm id={u.id} onDone={done} onClose={() => setOpen(null)} />}
+    </div>
+  );
+}
+
+function UpdateHistory({ history }: { history: UpdateView[] }) {
+  if (history.length === 0) return <p className="empty">No update has been approved yet.</p>;
+  return (
+    <div className="table-scroll">
+      <table className="table">
+        <caption>The last {plural(history.length, 'update')}, newest first</caption>
+        <thead>
+          <tr>
+            <th scope="col">Version</th>
+            <th scope="col">Outcome</th>
+            <th scope="col">Start</th>
+            <th scope="col">Finished</th>
+            <th scope="col">Why it failed</th>
+          </tr>
+        </thead>
+        <tbody>
+          {history.map((u) => (
+            <tr key={u.id}>
+              <th scope="row">v{u.fromVersion} to v{u.toVersion}</th>
+              <td data-label="Outcome"><Word tone={stateTone(u.state)}>{u.stateWords}</Word>{u.cancelReason && <span className="meta"> Reason: {u.cancelReason}</span>}</td>
+              <td data-label="Start">{formatWhen(u.startsAt)}</td>
+              <td data-label="Finished">{u.finishedAt ? formatWhen(u.finishedAt) : 'Not finished'}</td>
+              <td data-label="Why it failed">{u.failureText ?? ''}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+/** Operations → Updates: the running version, release checks, the newest release to approve, the current update and history. */
+function UpdatesSection({ onChanged }: { onChanged: () => void }) {
+  const [data, setData] = useState<UpdatesData | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [checkNote, setCheckNote] = useState<string | null>(null);
+  const [checking, setChecking] = useState(false);
+  const [approving, setApproving] = useState(false);
+
+  const load = useCallback(() => {
+    api.get<UpdatesData>('/admin/updates').then(
+      (r) => {
+        setData(r);
+        setError(null);
+      },
+      (e) => setError(errText(e)),
+    );
+  }, []);
+  useEffect(load, [load]);
+
+  async function checkNow() {
+    setChecking(true);
+    setCheckNote(null);
+    try {
+      await api.post('/admin/updates/check', {});
+      setCheckNote('Checked.');
+      load();
+      onChanged();
+    } catch (err) {
+      setCheckNote(errText(err));
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  if (!data) return error ? <p role="alert" className="error">{error}</p> : <p className="loading">Loading</p>;
+  const c = data.lastCheck;
+  const canApprove = !!data.available && !data.current && !data.needsRecovery;
+  return (
+    <>
+      {data.needsRecovery && (
+        <p role="alert" className="error">
+          <strong>Update failed. </strong>
+          The last update failed after the database update started. The server operator must run the recovery command (INSTALL.md, &quot;After a failed update&quot;). No new update can be approved until then.
+        </p>
+      )}
+      <ul className="plain">
+        <li>Running version: v{data.running}</li>
+        <li>Release key fingerprint: {data.keyFingerprint ?? 'Not reported yet'}</li>
+        <li>
+          Last release check: {c.latest ? `${formatWhen(c.latest.at)}, ` : ''}
+          {c.latest?.outcome === 'failed' ? <Word tone="bad">{checkWords(c.latest)}</Word> : checkWords(c.latest)}
+        </li>
+      </ul>
+      {c.stale && (
+        <p role="status">
+          <Word tone="warn">Not checked for 3 days</Word> No release check has succeeded for 3 days. Kainow cannot learn of fixes until one does.
+        </p>
+      )}
+      <div className="inline-form">
+        <button type="button" onClick={checkNow} disabled={checking}>Check now</button>
+        {checkNote && <span role="status">{checkNote}</span>}
+      </div>
+
+      <h3>Available</h3>
+      {data.available ? (
+        <div className="stack">
+          <p>
+            <Word tone="warn">{`Kainow ${data.available.tag} is available`}</Word>{' '}
+            <a href={data.available.releaseUrl} target="_blank" rel="noopener noreferrer">Release page on GitHub (opens in a new tab)</a>
+          </p>
+          <p className="hint">{RELEASE_CHECK_NOTE}</p>
+          {canApprove && !approving && <button type="button" className="primary" onClick={() => setApproving(true)}>Approve update</button>}
+          {canApprove && approving && (
+            <>
+              <p>{APPROVAL_HINT}</p>
+              <WindowForm
+                label="Approve update"
+                submitLabel={`Approve ${data.available.tag}`}
+                onSubmit={async (b) => {
+                  await api.post('/admin/updates', { ...b, tag: data.available?.tag });
+                  setApproving(false);
+                  window.dispatchEvent(new Event('operations-changed'));
+                  load();
+                  onChanged();
+                }}
+                onClose={() => setApproving(false)}
+              />
+            </>
+          )}
+        </div>
+      ) : (
+        <p>No newer release has been found. Kainow v{data.running} is up to date as far as the last check knows.</p>
+      )}
+
+      {data.current && <CurrentUpdate u={data.current} onChanged={() => { load(); onChanged(); }} />}
+
+      <h3>History</h3>
+      <UpdateHistory history={data.history} />
     </>
   );
 }
@@ -497,7 +852,7 @@ export function Operations() {
       {!data && !error && <p className="loading">Loading</p>}
       {data && (
         <>
-          <StatusStrip status={{ backups: data.backups, lastDrill: data.drills.last, storage: data.storage, protective: data.protective }} />
+          <StatusStrip status={{ backups: data.backups, lastDrill: data.drills.last, storage: data.storage, protective: data.protective, updates: data.updates }} />
 
           <section className="panel stack" aria-labelledby="ops-backups">
             <h2 id="ops-backups">Backups</h2>
@@ -512,6 +867,11 @@ export function Operations() {
             </ul>
             {data.backups.drillAgain && <p role="status">{data.backups.drillAgain}</p>}
             <RunsTable runs={data.backups.runs} />
+          </section>
+
+          <section className="panel stack" aria-labelledby="ops-updates">
+            <h2 id="ops-updates">Updates</h2>
+            <UpdatesSection onChanged={load} />
           </section>
 
           <section className="panel stack" aria-labelledby="ops-drills">

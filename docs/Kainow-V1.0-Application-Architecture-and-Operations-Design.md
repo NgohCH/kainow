@@ -76,6 +76,8 @@ A worker crash can leave an uncertain external outcome. A queue completion/lease
 
 Every release installation requires explicit Enterprise Administrator approval. A release-specific scheduled installation is allowed; future releases are not implicitly authorised. Release integrity/authenticity checks, compatibility validation, maintenance/quiescence, backup verification, migration handling and post-update health checks require a concrete design before enabling updates. Database rollback cannot be assumed safe merely because an older application image exists.
 
+**Designed in sub-project 10b (D119–D123; `docs/superpowers/specs/2026-11-22-v1-operations-10b-design.md`):** releases are tags signed with the Product Owner's SSH release key and verified against each installation's own trusted signers file; an updater container started by cron (the only part that controls Docker) prepares and builds an approved release while the running version continues, then at the approved time enters maintenance, takes a pre-update backup, migrates, restarts and checks health. A failure before the migration returns to the previous version by itself; after it, Kainow stays behind a notice page until the server operator's `recover` restores the pre-update backup with the previous version (no automatic database rollback). Operator steps: INSTALL.md "Updates" and "After a failed update".
+
 The accepted defaults are daily encrypted backups, 30-day backup retention and 24-hour/4-hour recovery targets. These are to be verified on documented supported infrastructure, not guaranteed by choosing containers or PostgreSQL. A successful backup must contain the recoverable records and have a verified integrity/completion outcome. Restore testing, including actual protected-credential recovery and external-reference consistency, is required.
 
 Backup expiry does not purge indefinitely retained product history from the live authoritative dataset. The no-permanent-deletion product rule remains intact. Backup expiry is rotation of recovery copies under the accepted 30-day policy.
@@ -84,6 +86,8 @@ Backup expiry does not purge indefinitely retained product history from the live
 
 Assess 200 registered/10 concurrently active users with reading, discussion, task updates, approvals and dashboards, plus separate queued AI activity. Report latency, errors, queue wait/execution times and database behaviour. The detailed workload mix, duration and thresholds beyond existing first-use targets require an assessment specification; do not invent a hardware guarantee.
 
+**Assessed in sub-project 10b:** `docs/operations/load-test.md` holds the repeatable load test (seed, mixed workload, aims) and its first result, measured on the development PC and recorded as no hardware guarantee.
+
 Increasing capacity may use more resources or worker replicas with shared authoritative data. Global AI limits, cost reservations, job ownership, scheduled work and permission checks must continue to work across replicas. Single-host Docker Compose does not itself establish high availability or automatic scaling. Support for a later developer-hosted service remains a separate decision; one organisation per installation still applies.
 
 ## 9. What is left to the technical design
@@ -91,7 +95,7 @@ Increasing capacity may use more resources or worker replicas with shared author
 - Pin supported Node.js, NestJS, React, PostgreSQL and pg-boss versions, image/CPU/runtime matrix and applicable dependency notices.
 - Define exact data contracts, database/RLS roles and policies, transactions, source/file storage, encryption and credential/key recovery.
 - Specify internal module interfaces, permissions/event IDs, job failure/reconciliation contracts and distributed concurrency enforcement.
-- Design the approved updater's trust boundary, migration/maintenance/recovery procedure, backup completeness validation and actual cloud/runtime configuration.
+- Design the approved updater's trust boundary, migration/maintenance/recovery procedure, backup completeness validation and actual cloud/runtime configuration. (Updater and its trust boundary: designed in sub-project 10b, see §7; backup completeness: sub-project 10a.)
 - Define workload/latency expectations, the analytics metric catalogue, interface layouts and verification evidence.
 
 These are required downstream work, not permission to reopen accepted requirements. No product code, deployment, backup/restore, load or security tests were executed to prepare this document. See the [Remaining Design and Verification Register](Kainow-V1.0-Remaining-Design-and-Verification-Register.md).

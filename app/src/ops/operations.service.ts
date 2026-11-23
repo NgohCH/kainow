@@ -7,14 +7,17 @@
 import { Inject, Injectable } from '@nestjs/common';
 import type { Pool } from 'pg';
 import { CLOCK, type Clock } from '../auth/tokens';
+import { runningVersion } from '../common/version';
 import { PG_POOL } from '../db/database.module';
 import { BOSS_SCHEMA } from '../worker/queues';
 import { OPS_FAILURES, codeMigrationLevel, currentMigrationLevel } from './common';
 import { DRILL_AGAIN_TEXT, drillAgainReason } from './drill-again';
 import { type StorageLevel, levelFor } from './levels';
-import { PROTECTIVE_BANNER } from './protective';
+import { PROTECTIVE_BANNER, UPDATE_BANNER } from './protective';
 import { type OpsSettings, loadOpsSettings } from './settings';
 import { type BackupStatus, INTERRUPTED_AFTER_MS, type RunRow, backupStatus } from './status';
+import { latestCheck, newestAvailable } from '../updater/release-check';
+import { OPEN_STATES, type UpdateState } from '../updater/states';
 
 const UTC8_MS = 8 * 3_600_000;
 /** No reading for this long makes a location's level Unknown (spec 7.2). */
@@ -107,7 +110,7 @@ export interface OperationsView {
   growth: GrowthRow[];
   protective: {
     on: boolean;
-    reason: 'low_space' | 'restored_from_backup' | null;
+    reason: 'low_space' | 'restored_from_backup' | 'update' | null;
     /** When the mode started (after a restore: the restore time). */
     since: Date | null;
     /** After a restore only: the time of the backup set that was restored, and its name. Otherwise null. */
@@ -121,6 +124,22 @@ export interface OperationsView {
     lastSweepAt: Date | null;
     queues: { name: string; queued: number; active: number; failed24h: number }[];
   };
+  /** The status strip's Updates item (10b spec 11); the web words it. */
+  updates: UpdatesSummary;
+}
+
+/** What the status strip needs to say Up to date / Update available / scheduled / failed / Not checked for 3 days. */
+export interface UpdatesSummary {
+  /** The latest update's state (newest approval first), null when there has been none. */
+  latestState: UpdateState | null;
+  latestToVersion: string | null;
+  /** The latest update's start time while it is open (approved, preparing, ready or installing). */
+  startsAt: Date | null;
+  /** The newest release tag newer than the running version that any check found. */
+  available: string | null;
+  lastCheckAt: Date | null;
+  /** Three days without a successful release check. */
+  stale: boolean;
 }
 
 export interface GrowthRow {
@@ -131,7 +150,7 @@ export interface GrowthRow {
   totalBytes: number | null;
 }
 
-export type BannerView = { protective: boolean; admin?: { backups: BackupStatus; storage: StorageLevel; text: string; link: string } };
+export type BannerView = { protective: boolean; reason?: 'update'; text?: string; admin?: { backups: BackupStatus; storage: StorageLevel; text: string; link: string } };
 
 const num = (v: unknown): number | null => (v === null || v === undefined ? null : Number(v));
 const SEVERITY: Record<StorageLevel, number> = { normal: 0, unknown: 1, warning: 2, critical: 3 };
@@ -208,15 +227,34 @@ export class OperationsService {
   async view(): Promise<OperationsView> {
     const now = this.clock();
     const settings = await loadOpsSettings(this.pool);
-    const [backups, drills, storage, growth, protective, health] = await Promise.all([
+    const [backups, drills, storage, growth, protective, health, updates] = await Promise.all([
       this.backups(now, settings),
       this.drills(),
       this.storage(now, settings),
       this.growth(now),
       this.protective(),
       this.health(now),
+      this.updates(now),
     ]);
-    return { backups, drills, storage, growth, protective, health };
+    return { backups, drills, storage, growth, protective, health, updates };
+  }
+
+  /** The Updates item of the status strip: the latest update, the newest release available and the last check. */
+  async updates(now: Date = this.clock()): Promise<UpdatesSummary> {
+    const [latest, available, check] = await Promise.all([
+      this.pool.query(`SELECT state, to_version, starts_at FROM updates ORDER BY approved_at DESC, id DESC LIMIT 1`),
+      newestAvailable(this.pool, runningVersion()),
+      latestCheck(this.pool, now),
+    ]);
+    const u = latest.rows[0] as { state: UpdateState; to_version: string; starts_at: Date } | undefined;
+    return {
+      latestState: u?.state ?? null,
+      latestToVersion: u?.to_version ?? null,
+      startsAt: u && OPEN_STATES.includes(u.state) ? u.starts_at : null,
+      available: available?.tag ?? null,
+      lastCheckAt: check.latest?.at ?? null,
+      stale: check.stale,
+    };
   }
 
   /** Backup status and the last success/attempt, without the run tables (for the banner and the analytics panel). */
@@ -336,7 +374,7 @@ export class OperationsService {
       since: r?.since ?? null,
       setTime: restored ? str(r.detail.setTime) : null,
       setName: restored ? str(r.detail.setName) : null,
-      text: PROTECTIVE_BANNER,
+      text: r?.protective === true && r?.reason === 'update' ? UPDATE_BANNER : PROTECTIVE_BANNER,
     };
   }
 
@@ -363,8 +401,11 @@ export class OperationsService {
 
   /** The banner: protective mode for everyone; backup and storage warnings for Enterprise Administrators only. */
   async banner(isAdmin: boolean): Promise<BannerView> {
-    const protective = (await this.protective()).on;
-    if (!isAdmin) return { protective };
+    const p = await this.protective();
+    const protective = p.on;
+    // Update maintenance carries its own banner text; other protective reasons keep the web's own wording.
+    const update = protective && p.reason === 'update' ? { reason: 'update' as const, text: UPDATE_BANNER } : {};
+    if (!isAdmin) return { protective, ...update };
     const now = this.clock();
     const settings = await loadOpsSettings(this.pool);
     const [backup, storage] = await Promise.all([this.backupSummary(now), this.storage(now, settings)]);
@@ -380,6 +421,6 @@ export class OperationsService {
     if (worst === 'critical') parts.push('Storage: a disk is at its critical level.');
     else if (worst === 'warning') parts.push('Storage: a disk is at its warning level.');
     else if (worst === 'unknown') parts.push('Storage: no recent reading for a disk.');
-    return { protective, admin: { backups: backup.status, storage: worst, text: parts.join(' '), link: OPERATIONS_LINK } };
+    return { protective, ...update, admin: { backups: backup.status, storage: worst, text: parts.join(' '), link: OPERATIONS_LINK } };
   }
 }

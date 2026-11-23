@@ -43,7 +43,7 @@ describe('golive-init', { skip: SKIP_NO_DB }, () => {
   test('prepares an empty database: migrations, notices start, one setup invitation; a second run is refused', async () => {
     const sent = await goliveInit(pool, config, sender, config.migrationsDir, now, person);
     assert.equal(sent.email, person.email);
-    assert.equal((await pool.query('SELECT count(*)::int AS n FROM golive_steps')).rows[0].n, 12);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM golive_steps')).rows[0].n, 13);
     const nf = (await pool.query('SELECT notices_from FROM notification_settings WHERE id = 1')).rows[0].notices_from;
     assert.equal(new Date(nf).getTime(), now.getTime());
     assert.equal(sender.setupInvitations.length, 1);
@@ -87,7 +87,7 @@ describe('golive-init', { skip: SKIP_NO_DB }, () => {
         '(under Docker Compose: docker compose run --rm api node dist/users/setup-invite-cli.js first.admin@example.org "First Admin")',
     );
     assert.ok(!err.message.includes('secret-value-123'), 'the cause is never printed');
-    assert.equal((await pool.query('SELECT count(*)::int AS n FROM golive_steps')).rows[0].n, 12);
+    assert.equal((await pool.query('SELECT count(*)::int AS n FROM golive_steps')).rows[0].n, 13);
     const nf = (await pool.query('SELECT notices_from FROM notification_settings WHERE id = 1')).rows[0].notices_from;
     assert.equal(new Date(nf).getTime(), now.getTime());
     assert.equal((await pool.query(`SELECT count(*)::int AS n FROM setup_invitations`)).rows[0].n, 1, 'the invitation is kept');

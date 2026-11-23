@@ -49,14 +49,14 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     assert.equal((await t.anonymous('GET', '/go-live')).status, 401);
   });
 
-  test('the page lists the 12 steps in order with text, explanation and link', async () => {
+  test('the page lists the 13 steps in order with text, explanation and link', async () => {
     const body = await get();
-    assert.deepEqual(body.steps.map((s: any) => s.key), ['organisation', 'logos', 'second_admin', 'recovery', 'mailbox', 'test_email', 'calendar', 'backups', 'department', 'users', 'project', 'storage']);
-    assert.deepEqual(body.steps.map((s: any) => s.position), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]);
+    assert.deepEqual(body.steps.map((s: any) => s.key), ['organisation', 'logos', 'second_admin', 'recovery', 'mailbox', 'test_email', 'calendar', 'backups', 'department', 'users', 'project', 'storage', 'updates']);
+    assert.deepEqual(body.steps.map((s: any) => s.position), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13]);
     assert.equal(step(body, 'organisation').text, 'Register your organisation: its name and email domains');
     assert.equal(step(body, 'organisation').link, '#/organisation');
     assert.ok(body.steps.every((s: any) => s.explanation.length > 0 && s.explanation.length <= 160));
-    assert.deepEqual(body.steps.map((s: any) => s.mode), ['auto', 'auto_or_skip', 'auto', 'confirm', 'confirm', 'confirm', 'confirm', 'auto', 'auto', 'auto', 'auto', 'auto_or_skip']);
+    assert.deepEqual(body.steps.map((s: any) => s.mode), ['auto', 'auto_or_skip', 'auto', 'confirm', 'confirm', 'confirm', 'confirm', 'auto', 'auto', 'auto', 'auto', 'auto_or_skip', 'auto']);
     assert.deepEqual([body.closedAt, body.notDoneAtClose], [null, []]);
   });
 
@@ -65,7 +65,7 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(body.information.map((i: any) => [i.key, i.text, i.link]), [
       ['ai', 'AI: at least one approved model; projects need their own connection and limits before AI runs', '#/ai'],
     ]);
-    assert.equal(body.steps.length, 12);
+    assert.equal(body.steps.length, 13);
     assert.ok(!body.steps.some((s: any) => s.key === 'ai'));
   });
 
@@ -94,7 +94,7 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     body = await get();
     for (const k of ['second_admin', 'department', 'logos']) assert.deepEqual([k, step(body, k).done, step(body, k).tickedBy], [k, true, 'kainow']);
     assert.equal(body.steps.filter((s: any) => s.done).length, 4, 'with the organisation');
-    assert.deepEqual((await admin.request('GET', '/go-live/summary')).body, { open: true, done: 4, total: 12 });
+    assert.deepEqual((await admin.request('GET', '/go-live/summary')).body, { open: true, done: 4, total: 13 });
   });
 
   test('a disabled second Administrator does not count', async () => {
@@ -269,7 +269,10 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     );
     assert.equal(step(await get(), 'backups').done, true, 'Kainow ticks step 8 after a passed drill');
   };
-  /** The safeguards (steps 3 to 8): second Administrator, recovery, mailbox, test email, calendar and backups (by a drill). */
+  /** Step 13 (10b): the updater ran in the last 24 hours on a release; Kainow ticks it on the next refresh. */
+  const updaterRan = () =>
+    t.pool.query(`INSERT INTO updater_ticks (id, at, did, running_tag, key_fingerprint) VALUES ($1, now(), 'nothing', 'v1.0.0', NULL)`, [uuidv7()]);
+  /** The safeguards (steps 3 to 8, and 13): second Administrator, recovery, mailbox, test email, calendar, backups (by a drill) and the updater. */
   const completeSafeguards = async () => {
     await seedUser(t.pool, 'second@example.org', 'enterprise_administrator');
     await recordCustodian();
@@ -278,6 +281,7 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
       assert.equal((await admin.request('POST', `/go-live/steps/${key}/tick`, {})).status, 200, key);
     }
     await passDrill();
+    await updaterRan();
     await keyOn('api', 'key-1');
     await keyOn('worker', 'key-1');
   };
@@ -354,6 +358,7 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
       assert.equal((await admin.request('POST', `/go-live/steps/${key}/tick`, {})).status, 200, key);
     }
     await passDrill();
+    await updaterRan();
     await keyOn('api', 'key-1');
     await keyOn('worker', 'key-1');
     await reachLaunch();
@@ -375,6 +380,7 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     await queueTestEmail('sent');
     for (const key of ['recovery', 'mailbox', 'test_email']) await admin.request('POST', `/go-live/steps/${key}/tick`, {});
     await passDrill();
+    await updaterRan();
     await t.pool.query(`UPDATE users SET status = 'disabled' WHERE id = $1`, [second]);
     const last = await admin.request('POST', '/go-live/steps/calendar/tick', {});
     assert.equal(last.status, 200);
@@ -392,6 +398,7 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     await queueTestEmail('sent');
     for (const key of ['recovery', 'mailbox', 'test_email']) await admin.request('POST', `/go-live/steps/${key}/tick`, {});
     await passDrill();
+    await updaterRan();
     const other = await t.pool.connect();
     try {
       await other.query('BEGIN');
@@ -430,6 +437,7 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     await queueTestEmail('sent');
     for (const key of ['recovery', 'mailbox', 'test_email']) await admin.request('POST', `/go-live/steps/${key}/tick`, {});
     await passDrill();
+    await updaterRan();
     await keyOn('api', 'key-1');
     await keyOn('worker', 'key-1');
     assert.equal((await get()).closedAt, null, 'step 8 alone does not close it');
@@ -456,7 +464,7 @@ describe('go-live checklist', { skip: SKIP_NO_DB }, () => {
     const closed = (await t.pool.query(`SELECT closed_at FROM golive_checklist`)).rows[0].closed_at;
     assert.ok(closed);
     const ticked = (await t.pool.query(`SELECT key FROM golive_steps WHERE ticked_at IS NOT NULL AND ticked_by IS NULL ORDER BY position`)).rows.map((r) => r.key);
-    assert.deepEqual(ticked, ['organisation', 'second_admin', 'backups', 'department', 'users', 'project']);
+    assert.deepEqual(ticked, ['organisation', 'second_admin', 'backups', 'department', 'users', 'project', 'updates']);
   });
 
   test('refreshing at the same moment from several places ticks each step once', async () => {

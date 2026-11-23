@@ -18,6 +18,7 @@ import { readReason } from '../common/reason';
 import { uuidv7 } from '../common/uuid7';
 import { codeMigrationLevel, currentMigrationLevel } from './common';
 import { notifyAdmins } from './notify';
+import { UPDATE_CODE } from './protective';
 import { type OpsSettings, loadOpsSettings } from './settings';
 
 type Db = Pick<Pool | PoolClient, 'query'>;
@@ -36,6 +37,7 @@ const LINK = '#/admin/operations';
 export const RESUME_TEXT = {
   notProtective: 'Kainow is not in protective mode.',
   checksFailed: 'Kainow cannot resume normal use yet: some checks did not pass.',
+  updateInProgress: 'Kainow is being updated. Only the update can end read-only mode; it does so when it finishes.',
   resumed: 'Kainow is back to normal use: an Enterprise Administrator ended protective read-only mode.',
 } as const;
 
@@ -95,6 +97,7 @@ export async function resume(pool: Pool, actorId: string, reasonIn: unknown, now
         | { protective: boolean; reason: string | null; since: Date | null }
         | undefined;
       if (!state?.protective) throw new ConflictException({ code: 'not_protective', message: RESUME_TEXT.notProtective });
+      if (state.reason === 'update') throw new ConflictException({ code: UPDATE_CODE, message: RESUME_TEXT.updateInProgress });
       const checks = await resumeChecks(client, now, await loadOpsSettings(client), opts.codeLevel);
       const failing = checks.filter((c) => !c.ok).map((c) => c.name);
       if (failing.length > 0) throw new ConflictException({ code: 'resume_checks_failed', message: RESUME_TEXT.checksFailed, failing });

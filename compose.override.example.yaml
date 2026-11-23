@@ -1,0 +1,35 @@
+# Local changes to Kainow's Compose setup (INSTALL.md). Copy this file to compose.override.yaml and keep only the parts
+# you need; Docker Compose reads compose.override.yaml on its own, next to compose.yaml.
+#
+# Never edit compose.yaml itself: an update replaces it, and the updater refuses a folder whose tracked files were
+# changed (local_changes). compose.override.yaml is not tracked (.gitignore), so it survives updates, and the updater
+# checks every new release against it before anything stops.
+#
+# Paths are relative to the Kainow folder. The key files are created as INSTALL.md describes; never commit them.
+
+services:
+  # Protected key for quarantined credentials (INSTALL.md, "Protected key"). Optional: without it, cleaning waits.
+  # Create it with `npm run protected-key -- --create <path>`. It goes on api, worker and ops alike.
+  api:
+    environment:
+      KAINOW_PROTECTED_KEY_FILE: /run/secrets/kainow-protected.key
+    volumes:
+      - ./secrets/kainow-protected.key:/run/secrets/kainow-protected.key:ro
+    # A different port on this computer: set KAINOW_PORT in .env instead (the notice page after a failed update
+    # follows it too). To replace the published address altogether, list it with !override, for example:
+    # ports: !override
+    #   - "127.0.0.1:8080:3000"
+
+  worker:
+    environment:
+      KAINOW_PROTECTED_KEY_FILE: /run/secrets/kainow-protected.key
+    volumes:
+      - ./secrets/kainow-protected.key:/run/secrets/kainow-protected.key:ro
+
+  ops:
+    environment:
+      KAINOW_PROTECTED_KEY_FILE: /run/secrets/kainow-protected.key
+    volumes:
+      # Backup key (INSTALL.md, "Backups"; create it with `npm run backup-key -- --create <path>`). Backups need it.
+      - ./secrets/kainow-backup.key:/run/secrets/kainow-backup.key:ro
+      - ./secrets/kainow-protected.key:/run/secrets/kainow-protected.key:ro

@@ -6,7 +6,7 @@
  * paths or connection strings. The last output line is `run <id> succeeded` or `run <id> failed <code>`.
  */
 import type { ChildProcess } from 'node:child_process';
-import { createReadStream, createWriteStream, existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { createReadStream, createWriteStream, existsSync, readdirSync, statSync } from 'node:fs';
 import { mkdir, rename, rm, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Readable, Writable } from 'node:stream';
@@ -14,6 +14,7 @@ import { pipeline } from 'node:stream/promises';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { uuidv7 } from '../common/uuid7';
+import { runningVersion } from '../common/version';
 import {
   type FailureCode,
   OPS_FAILURES,
@@ -126,15 +127,6 @@ function classify(err: unknown, stage: Stage, backupDir: string): FailureCode {
 export function setStamp(d: Date): string {
   const iso = d.toISOString();
   return `${iso.slice(0, 13)}${iso.slice(14, 16)}Z`;
-}
-
-function kainowVersion(): string {
-  try {
-    const pkg = JSON.parse(readFileSync(join(__dirname, '..', '..', 'package.json'), 'utf8')) as { version?: string };
-    return pkg.version ?? 'unknown';
-  } catch {
-    return 'unknown';
-  }
 }
 
 function parseArgs(argv: string[]): { kind: BackupKind; newKey: boolean } | null {
@@ -304,8 +296,9 @@ export async function runBackup(argv: string[], deps: BackupDeps): Promise<numbe
   try {
     const result = await withBackupLock(deps.pool, () => backupLocked(args.kind, args.newKey, deps));
     if (result === 'busy') {
+      // A distinct code: the updater waits and retries on it (10b spec 5.5 step 3).
       deps.err(BACKUP_TEXT.busy);
-      return 1;
+      return 3;
     }
     return result;
   } catch {
@@ -469,7 +462,7 @@ async function backupLocked(kind: BackupKind, newKey: boolean, deps: BackupDeps)
       startedAt: startedAt.toISOString(),
       finishedAt: finishedAt.toISOString(),
       keyId: key.id,
-      kainowVersion: kainowVersion(),
+      kainowVersion: runningVersion(),
       migrationLevel,
       databaseBytes: dump.bytes,
       fileCount: manifest.sourceFiles.length,

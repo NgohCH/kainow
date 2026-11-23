@@ -172,14 +172,14 @@ describe('operations API', { skip: SKIP_NO_DB }, () => {
     await protective(true);
     const m = await member.request('GET', '/operations/banner');
     assert.equal(m.status, 200);
-    assert.deepEqual(m.body, { protective: true });
+    assert.deepEqual(m.body, { protective: true, scheduled: null });
     const a = await admin.request('GET', '/operations/banner');
     assert.equal(a.body.protective, true);
     assert.equal(a.body.admin.backups, 'target_exceeded');
     assert.match(a.body.admin.text, /^Backups: 24-hour recovery target exceeded\. Last successful backup \d{1,2} [A-Z][a-z]{2} \d\d:\d\d\./);
     assert.equal(a.body.admin.link, '#/admin/operations');
     await protective(false);
-    assert.deepEqual((await member.request('GET', '/operations/banner')).body, { protective: false });
+    assert.deepEqual((await member.request('GET', '/operations/banner')).body, { protective: false, scheduled: null });
   });
 
   test('banner: an administrator with healthy backups and normal storage has empty text; critical storage shows', async () => {
@@ -187,11 +187,97 @@ describe('operations API', { skip: SKIP_NO_DB }, () => {
     await reading('database_disk', 50);
     await reading('backup_disk', 50);
     let a = await admin.request('GET', '/operations/banner');
-    assert.deepEqual(a.body.admin, { backups: 'healthy', storage: 'normal', text: '', link: '#/admin/operations' });
+    assert.deepEqual(a.body.admin, { backups: 'healthy', storage: 'normal', text: '', link: '#/admin/operations', recovery: null });
     await reading('backup_disk', 95);
     a = await admin.request('GET', '/operations/banner');
     assert.equal(a.body.admin.storage, 'critical');
     assert.match(a.body.admin.text, /Storage: a disk is at its critical level\./);
+  });
+
+  /** An update row as the updater leaves it (approved by the administrator). */
+  async function update(o: { state: string; startsAt: Date; approvedAt?: Date; toVersion?: string }) {
+    const approver = (await t.pool.query(`SELECT id FROM users WHERE email = 'admin@example.org'`)).rows[0].id;
+    const v = o.toVersion ?? '1.0.0';
+    await t.pool.query(
+      `INSERT INTO updates (id, from_version, to_version, tag, commit, state, starts_at, expected_minutes, approved_by, approved_at, reason)
+       VALUES ($1, '0.0.0', $2, $3, $4, $5, $6, 30, $7, $8, 'Routine update')`,
+      [uuidv7(), v, `v${v}`, 'c'.repeat(40), o.state, o.startsAt, approver, o.approvedAt ?? hoursAgo(1)],
+    );
+  }
+  const check = (at: Date, outcome: 'found' | 'none_newer' | 'failed', tag: string | null = null) =>
+    t.pool.query(`INSERT INTO release_checks (id, at, trigger, outcome, failure_code, newest_tag, newest_commit) VALUES ($1, $2, 'daily', $3, $4, $5, $6)`, [
+      uuidv7(),
+      at,
+      outcome,
+      outcome === 'failed' ? 'unreachable' : null,
+      tag,
+      tag ? 'c'.repeat(40) : null,
+    ]);
+
+  test('status strip Updates item: up to date, available, scheduled, failed, not checked for 3 days', async () => {
+    const strip = async () => (await admin.request('GET', '/admin/operations')).body.updates;
+    // No check and no update yet.
+    assert.deepEqual(await strip(), { latestState: null, latestToVersion: null, startsAt: null, available: null, lastCheckAt: null, stale: false });
+    await check(hoursAgo(2), 'none_newer');
+    let u = await strip();
+    assert.equal(u.available, null);
+    assert.equal(u.stale, false);
+    assert.equal(u.lastCheckAt, hoursAgo(2).toISOString());
+    // A newer release was found.
+    await check(hoursAgo(1), 'found', 'v1.0.0');
+    await t.pool.query(`INSERT INTO releases_seen (tag, commit, first_seen_at, notified_at) VALUES ('v1.0.0', $1, $2, $2)`, ['c'.repeat(40), hoursAgo(1)]);
+    u = await strip();
+    assert.equal(u.available, 'v1.0.0');
+    // Approved: scheduled, with its start.
+    const startsAt = new Date(t.clock.now().getTime() + 48 * 3_600_000);
+    await update({ state: 'approved', startsAt });
+    u = await strip();
+    assert.equal(u.latestState, 'approved');
+    assert.equal(u.startsAt, startsAt.toISOString());
+    // Failed: the start is no longer reported, the state is.
+    await t.pool.query(`UPDATE updates SET state = 'failed_before_install', failure_code = 'build_failed', finished_at = $1`, [t.clock.now()]);
+    u = await strip();
+    assert.equal(u.latestState, 'failed_before_install');
+    assert.equal(u.latestToVersion, '1.0.0');
+    assert.equal(u.startsAt, null);
+    // Three days of failed checks after the last success.
+    await t.pool.query(`DELETE FROM release_checks`);
+    await check(hoursAgo(80), 'none_newer');
+    await check(hoursAgo(1), 'failed');
+    assert.equal((await strip()).stale, true);
+  });
+
+  test('banner: the scheduled update for everyone; the failed-update warning for an administrator only', async () => {
+    const startsAt = new Date(t.clock.now().getTime() + 48 * 3_600_000);
+    await update({ state: 'approved', startsAt });
+    const m = await member.request('GET', '/operations/banner');
+    assert.equal(m.body.scheduled.startsAt, startsAt.toISOString());
+    assert.equal(m.body.scheduled.expectedMinutes, 30);
+    assert.match(m.body.scheduled.text, /^Kainow will be unavailable on [A-Z][a-z]{2} \d{1,2} [A-Z][a-z]{2} from \d\d:\d\d for about 30 minutes for an update\.$/);
+    assert.equal(m.body.admin, undefined);
+    await t.pool.query(`UPDATE updates SET state = 'failed_after_migration', failure_code = 'migration_failed', finished_at = $1`, [t.clock.now()]);
+    const a = await admin.request('GET', '/operations/banner');
+    assert.equal(a.body.scheduled, null);
+    assert.equal(
+      a.body.admin.recovery,
+      "The update to v1.0.0 failed. Kainow is on the notice page for everyone else; the server operator must run the recovery command (INSTALL.md, 'After a failed update').",
+    );
+    assert.deepEqual((await member.request('GET', '/operations/banner')).body, { protective: false, scheduled: null });
+  });
+
+  test('analytics: updates by outcome for the period, and the Updates item in the status', async () => {
+    await update({ state: 'succeeded', startsAt: hoursAgo(50), approvedAt: hoursAgo(80), toVersion: '0.1.0' });
+    await update({ state: 'failed_before_install', startsAt: hoursAgo(30), approvedAt: hoursAgo(70), toVersion: '0.2.0' });
+    await update({ state: 'cancelled', startsAt: hoursAgo(20), approvedAt: hoursAgo(60), toVersion: '0.2.0' });
+    await update({ state: 'recovered', startsAt: hoursAgo(10), approvedAt: hoursAgo(50), toVersion: '0.3.0' });
+    await update({ state: 'succeeded', startsAt: hoursAgo(24 * 200), approvedAt: hoursAgo(24 * 201), toVersion: '0.0.1' }); // outside the period
+    const r = await admin.request('GET', '/admin/analytics?panel=operations');
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    assert.deepEqual(r.body.data.period.updates, { total: 4, succeeded: 1, failed: 2, cancelled: 1, open: 0 });
+    assert.equal(r.body.data.status.updates.latestState, 'recovered'); // newest approval first
+    const csv = await admin.raw('GET', '/admin/analytics/export?panel=operations');
+    assert.match(csv.text, /Updates in the period.*Failed.*2/);
+    assert.match(csv.text, /Updates.*Latest update/);
   });
 
   test('banner needs a session', async () => {

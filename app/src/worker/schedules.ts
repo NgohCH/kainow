@@ -22,6 +22,12 @@ export interface ScheduleDeps {
   operations?: ProtectiveCheck;
   /** The ops part of the sweep (runOpsSweep), run alone while protective mode is on; Sweep.runIfDue runs it otherwise. */
   opsSweep?: () => Promise<void>;
+  /**
+   * The daily release check (10b spec 6.2) at 03:`minute` UTC+8. NOT paused in protective mode: it reads a public list and,
+   * in protective mode too, records its result and the releases it saw and sends the release_available notice, so
+   * Administrators can learn of a fix while Kainow is read-only (spec 6.2 as amended by the PO, 23 November 2026).
+   */
+  releaseCheck?: { minute: number; run(): Promise<void> };
   /** Fixed messages only; never an error object or message. */
   log?: (message: string) => void;
 }
@@ -36,6 +42,7 @@ export const STORAGE_DAILY_FAILED = 'The daily storage tick failed; it will run 
 const DAILY_0230 = '30 2 * * *';
 const UTC8 = 'Asia/Kuala_Lumpur';
 export const QUARANTINE_FAILED = 'Cleaning the quarantine cases waiting for the protected key failed; it will run again on the next tick.';
+export const RELEASE_CHECK_FAILED = 'The daily release check failed; it will run again tomorrow.';
 export const OPS_SWEEP_FAILED = 'The operations checks failed; they will run again on the next tick.';
 
 /**
@@ -113,6 +120,18 @@ export async function registerSchedules(boss: PgBoss, deps: ScheduleDeps): Promi
         await storage.daily();
       } catch {
         log(STORAGE_DAILY_FAILED);
+      }
+    });
+  }
+  const releaseCheck = deps.releaseCheck;
+  if (releaseCheck) {
+    const minute = Math.min(59, Math.max(0, Math.trunc(releaseCheck.minute)));
+    await boss.schedule(QUEUES.releaseCheck, `${minute} 3 * * *`, null, { key: 'tick', singletonKey: 'tick', tz: UTC8, retryLimit: 0 });
+    await boss.work(QUEUES.releaseCheck, { localConcurrency: 1 }, async () => {
+      try {
+        await releaseCheck.run();
+      } catch {
+        log(RELEASE_CHECK_FAILED);
       }
     });
   }

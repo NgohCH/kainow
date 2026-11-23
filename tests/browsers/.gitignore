@@ -1,0 +1,3 @@
+# Screenshots of each run (results/<date>/); the results/<date>.md report is committed.
+results/*/
+node_modules/

@@ -263,11 +263,11 @@ export function App() {
   useEffect(() => applyAppearance(prefs), [prefs]);
   const savePrefs = saver.save;
 
-  // A designated security reviewer gets the Security review page; anyone else is refused, so the link stays hidden.
+  // A designated security reviewer gets the Security review page; for anyone else the link stays hidden.
   const [reviewer, setReviewer] = useState(false);
   useEffect(() => {
     if (!user) return setReviewer(false);
-    api.get('/security/cases').then(() => setReviewer(true), () => setReviewer(false));
+    api.get<{ reviewer: boolean }>('/security/me').then((r) => setReviewer(r.reviewer), () => setReviewer(false));
   }, [user]);
 
   // "Leadership" shows only for someone holding an Active leadership grant.

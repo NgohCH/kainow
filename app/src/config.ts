@@ -33,6 +33,8 @@ export interface AppConfig extends DatabaseConfig {
   appUrl: string;
   /** File holding the protected key (32 bytes); null means quarantine cleaning waits for it. */
   protectedKeyFile: string | null;
+  /** Where the release check looks for new releases (10b spec 6.2). */
+  release: ReleaseSource;
   /** KAINOW_REQUIRE_PROTECTED_KEY=true: refuse to start unless the protected key loads. */
   requireProtectedKey: boolean;
   /** Request limits on the public sign-in steps (review G03). */
@@ -139,6 +141,21 @@ function appUrlFrom(env: NodeJS.ProcessEnv): string {
   return (env.APP_URL || 'http://localhost:3000').replace(/\/+$/, '');
 }
 
+/** Where the release check reads the tags list. Both default in code; installations leave them unset. */
+export interface ReleaseSource {
+  repo: string;
+  api: string;
+}
+export const DEFAULT_RELEASE_REPO = 'NgohCH/kainow';
+export const DEFAULT_RELEASE_API = 'https://api.github.com';
+
+export function releaseSourceFrom(env: NodeJS.ProcessEnv): ReleaseSource {
+  return {
+    repo: env.KAINOW_RELEASE_REPO?.trim() || DEFAULT_RELEASE_REPO,
+    api: (env.KAINOW_RELEASE_API?.trim() || DEFAULT_RELEASE_API).replace(/\/+$/, ''),
+  };
+}
+
 function protectedKeyFileFrom(env: NodeJS.ProcessEnv): string | null {
   return env.KAINOW_PROTECTED_KEY_FILE?.trim() || null;
 }
@@ -190,6 +207,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): AppConfig {
     ...protectedKeySettings(env),
     signInLimits: { ...DEFAULT_SIGN_IN_LIMITS },
     trustProxyHops,
+    release: releaseSourceFrom(env),
   };
 }
 
@@ -205,8 +223,9 @@ export interface WorkerConfig extends DatabaseConfig {
   appUrl: string;
   protectedKeyFile: string | null;
   requireProtectedKey: boolean;
+  release: ReleaseSource;
 }
 
 export function loadWorkerConfig(env: NodeJS.ProcessEnv = process.env): WorkerConfig {
-  return { ...loadDatabaseConfig(env), email: loadEmailConfig(env), appUrl: appUrlFrom(env), ...protectedKeySettings(env) };
+  return { ...loadDatabaseConfig(env), email: loadEmailConfig(env), appUrl: appUrlFrom(env), ...protectedKeySettings(env), release: releaseSourceFrom(env) };
 }

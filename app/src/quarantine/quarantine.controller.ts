@@ -123,6 +123,13 @@ export class SecurityController {
     return this.security.undesignate(who(req), userId, { reason: field(body, 'reason') });
   }
 
+  /** → { reviewer }: whether the signed-in person is a designated security reviewer (the header's Security review link). */
+  @Get('me')
+  @AnySignedInUser()
+  me(@Req() req: HttpRequest) {
+    return this.security.me(who(req));
+  }
+
   /** → { cases }: every case by reference, project and kind, with disclosures; for a security reviewer. */
   @Get('cases')
   @AnySignedInUser()

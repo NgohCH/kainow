@@ -15,11 +15,17 @@ export const PROTECTIVE_MESSAGE = 'Kainow is read-only for now to protect your d
 /** The banner for everyone while the mode is on (spec 7.3, "Everyone else"); shown by the web (Task 12). */
 export const PROTECTIVE_BANNER = 'Kainow is read-only for now to protect your data. You can read everything; changes are paused.';
 
+/** Update maintenance (10b, spec 7.1): the same read-only mode, with its own refusal and banner; only the updater ends it. */
+export const UPDATE_CODE = 'update_in_progress';
+export const UPDATE_MESSAGE = 'Kainow is being updated. Nothing you have saved is affected; try again in a few minutes.';
+export const UPDATE_BANNER = 'Kainow is being updated. You can read; changes are paused until the update finishes.';
+
 /** Methods that never change anything, and so are never refused. */
 export const SAFE_METHODS: ReadonlySet<string> = new Set(['GET', 'HEAD', 'OPTIONS']);
 
-/** The refusal: 503 with `{ code: 'protective_read_only', message }`. */
-export function protectiveRefusal(): ServiceUnavailableException {
+/** The refusal: 503 with `{ code: 'protective_read_only', message }`, or `update_in_progress` while an update runs. */
+export function protectiveRefusal(reason?: string | null): ServiceUnavailableException {
+  if (reason === 'update') return new ServiceUnavailableException({ code: UPDATE_CODE, message: UPDATE_MESSAGE });
   return new ServiceUnavailableException({ code: PROTECTIVE_CODE, message: PROTECTIVE_MESSAGE });
 }
 

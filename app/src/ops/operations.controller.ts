@@ -5,6 +5,8 @@ import type { HttpRequest } from '../auth/auth.guard';
 import { can } from '../auth/permissions';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { PG_POOL } from '../db/database.module';
+import { recoveryWarning, scheduledBanner } from '../updater/updates.service';
+import { UPDATE_BANNER } from './protective';
 import { OperationsService } from './operations.service';
 import { OPS_BOUNDS, loadOpsSettings } from './settings';
 import { OpsSettingsService } from './settings.service';
@@ -80,11 +82,18 @@ export class OperationsController {
     return resume(this.pool, who(req).id, body(b).reason, this.now(), { state: this.state });
   }
 
-  /** Any signed-in person: protective mode. Enterprise Administrators also get the backup and storage warning. */
+  /**
+   * Any signed-in person: protective mode and the scheduled update (10b, from approval until it starts).
+   * Enterprise Administrators also get the backup and storage warning.
+   */
   @Get('operations/banner')
   @AnySignedInUser()
-  banner(@Req() req: HttpRequest) {
-    return this.operations.banner(can(who(req).role, 'operations.view'));
+  async banner(@Req() req: HttpRequest) {
+    const isAdmin = can(who(req).role, 'operations.view');
+    const [b, s, recovery] = await Promise.all([this.operations.banner(isAdmin), scheduledBanner(this.pool, this.now()), isAdmin ? recoveryWarning(this.pool) : null]);
+    const scheduled = s ? { startsAt: s.startsAt, expectedMinutes: s.expectedMinutes, text: s.text } : null;
+    // Enterprise Administrators also get the failed-update warning (10b spec 11), shown at the top of every page.
+    return b.admin ? { ...b, admin: { ...b.admin, recovery }, scheduled } : { ...b, scheduled };
   }
 
   /** Before sign-in: only whether protective mode is on, for the sign-in page text. */
@@ -92,6 +101,7 @@ export class OperationsController {
   @Public()
   @BeforeSetup()
   async publicState() {
-    return { protective: await this.state.isProtective() };
+    const s = await this.state.current();
+    return s.protective && s.reason === 'update' ? { protective: true, reason: 'update', text: UPDATE_BANNER } : { protective: s.protective };
   }
 }

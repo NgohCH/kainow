@@ -84,10 +84,10 @@ describe('go-live storage step and storage summary', { skip: SKIP_NO_DB }, () =>
     assert.equal(skipped.status, 200, JSON.stringify(skipped.body));
     const s = step(skipped.body, 'storage');
     assert.deepEqual([s.done, s.skipped, s.note], [true, true, 'Later']);
-    assert.equal(skipped.body.steps.length, 12);
-    // Optional (auto_or_skip) steps never hold the checklist open; every other step does (review G01).
+    assert.equal(skipped.body.steps.length, 13); // 10b added the updater step
+    // Optional (auto_or_skip) steps never hold the checklist open; every other step does (review G01), the updater too.
     assert.ok(!CLOSING_KEYS.includes('storage'));
-    assert.deepEqual([...CLOSING_KEYS], ['organisation', 'second_admin', 'recovery', 'mailbox', 'test_email', 'calendar', 'backups', 'department', 'users', 'project']);
+    assert.deepEqual([...CLOSING_KEYS], ['organisation', 'second_admin', 'recovery', 'mailbox', 'test_email', 'calendar', 'backups', 'department', 'users', 'project', 'updates']);
   });
 
   test('skip route refuses steps that cannot be skipped and an automatic tick', async () => {

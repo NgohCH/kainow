@@ -487,6 +487,11 @@ export class SecurityService {
     return out;
   }
 
+  /** Whether this person is a designated security reviewer: a plain answer for anyone signed in, never a refusal. */
+  async me(user: AuthUser): Promise<{ reviewer: boolean }> {
+    return { reviewer: (await this.person(this.pool, user.id))?.reviewer === true };
+  }
+
   /** Every case, for a security reviewer choosing what to ask for: references, disclosures and whether they hold a grant. */
   async cases(user: AuthUser): Promise<{ cases: SecurityCase[] }> {
     const me = await this.reviewer(this.pool, user);
