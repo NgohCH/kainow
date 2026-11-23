@@ -136,6 +136,10 @@ describe('recover in the databases (spec 5.9, Review Focus 5)', { skip: SKIP_NO_
 
   before(async () => {
     restored = new Pool({ connectionString: testDatabaseUrl() });
+    // The set-aside database is made on first use (CI starts with only the test database).
+    const failedName = decodeURIComponent(new URL(failedUrl()!).pathname.slice(1));
+    const exists = await restored.query(`SELECT 1 FROM pg_database WHERE datname = $1`, [failedName]);
+    if (exists.rowCount === 0) await restored.query(`CREATE DATABASE "${failedName.replace(/"/g, '""')}"`);
     failed = new Pool({ connectionString: failedUrl() });
     for (const p of [restored, failed]) {
       await resetPublicSchema(p);
