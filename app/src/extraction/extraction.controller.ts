@@ -96,7 +96,10 @@ export class ExtractionController {
     return this.extraction.setMeetingDate(id, versionNumber(n), bodyOf(body).meetingDate, who(req).id);
   }
 
-  /** Replace a proposal's wording: { sourceVersionId, text, owner?, due?, dueEarliest?, dueLatest?, dueEvent?, ignoreModelEvent? }. Sends it back to review. */
+  /**
+   * Replace a proposal's wording and correct its type: { sourceVersionId, text, owner?, due?, dueEarliest?, dueLatest?, dueEvent?,
+   * ignoreModelEvent?, kind?, reason? } (reason required when kind changes, D130). Sends it back to review.
+   */
   @Post('extractions/:runId/items/:itemId/edit')
   @AnySignedInUser()
   @HttpCode(200)
@@ -106,7 +109,11 @@ export class ExtractionController {
     return this.extraction.edit(
       runId,
       uuid(itemId),
-      { sourceVersionId: b.sourceVersionId, text: b.text, owner: b.owner, due: b.due, dueEarliest: b.dueEarliest, dueLatest: b.dueLatest, dueEvent: b.dueEvent, ignoreModelEvent: b.ignoreModelEvent },
+      {
+        sourceVersionId: b.sourceVersionId, text: b.text, owner: b.owner, due: b.due,
+        dueEarliest: b.dueEarliest, dueLatest: b.dueLatest, dueEvent: b.dueEvent, ignoreModelEvent: b.ignoreModelEvent,
+        kind: b.kind, reason: b.reason,
+      },
       who(req).id,
     );
   }

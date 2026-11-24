@@ -171,6 +171,7 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
   ...audit('Proposals and changes', PERSON, 'project', [
     ['proposal.submitted', 'A person submitted a proposal.'],
     ['proposal.edited', 'A proposal was edited before review.'],
+    ['proposal.corrected', 'A reviewer corrected an AI proposal (type, wording, owner or due).'],
     ['proposal.approved', 'A proposal was approved.'],
     ['proposal.rejected', 'A proposal was rejected.', ['trends.proposals_rejected']],
     ['review_flag.cleared', 'A review flag on a record was cleared.'],

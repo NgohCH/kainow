@@ -11,6 +11,9 @@ import { notHeldSql, refuseHeld } from '../history/deleted-sql';
 import { QUOTE_CHANGED_TEXT, quoteChangedItems } from '../quarantine/clean';
 import { possibleCopyLabelSql } from '../quarantine/labels';
 import { locateQuote } from '../notes/text';
+import { activeMembershipSql } from '../projects/access-sql';
+import { ROLE_LABEL } from '../projects/matrix';
+import { type ProjectRole, todayUtc8 } from '../projects/membership';
 import { type DueReading, type ReviewerDue, isCalendarDate, readDue } from './due';
 import { EXTRACTION_QUEUE, type ExtractionQueue } from './queue';
 
@@ -31,10 +34,35 @@ export const NEEDS_DATE_MESSAGE = 'This action needs a due date, a date range or
 type Queryable = Pick<Pool, 'query'>;
 
 /** The latest reviewer edit of item i, joined as e. */
-const LATEST_EDIT = `LEFT JOIN LATERAL (
-  SELECT id, text, owner, due, due_earliest, due_latest, due_event, ignore_model_event
+export const LATEST_EDIT = `LEFT JOIN LATERAL (
+  SELECT id, kind, text, owner, due, due_earliest, due_latest, due_event, ignore_model_event
     FROM extraction_item_edits WHERE item_id = i.id ORDER BY edited_at DESC, id DESC LIMIT 1
 ) e ON true`;
+
+/**
+ * The type in force of item i with its latest edit e (D130): the latest edit's when set, else the model's. Edits
+ * written before 0036 have no kind; they never changed it.
+ */
+export const KIND_IN_FORCE = 'COALESCE(e.kind, i.kind)';
+
+export const PROPOSAL_KINDS = ['decision', 'action', 'question', 'risk'] as const;
+export type ProposalKind = (typeof PROPOSAL_KINDS)[number];
+export const MAX_CORRECTION_REASON = 500;
+export const REASON_NEEDED = 'Give a reason for changing the type.';
+
+/** One reviewer correction of a proposal as everyone sees it (D130), newest first. */
+export interface Correction {
+  at: string;
+  by: string;
+  role: string | null;
+  changed: Array<'type' | 'text' | 'owner' | 'due'>;
+  from: { kind: string };
+  to: { kind: string };
+  reason: string | null;
+}
+
+/** Fixed role order: the first Active role in it names the editor. */
+const ROLE_ORDER = Object.keys(ROLE_LABEL) as ProjectRole[];
 
 /** What a due reading is worked out from, for item i with its latest edit e. */
 const DUE_COLUMNS = `CASE WHEN e.id IS NULL THEN i.due ELSE e.due END AS due, i.due_event AS "dueEvent",
@@ -228,11 +256,11 @@ export class ExtractionService {
     if (!run.rows[0]) throw new NotFoundException();
     const meeting = await this.meetingDateFor(this.pool, runId);
     const items = await this.pool.query(
-      `SELECT i.id, i.position, i.kind,
+      `SELECT i.id, i.position, ${KIND_IN_FORCE} AS kind,
               COALESCE(e.text, i.text) AS text,
               CASE WHEN e.id IS NULL THEN i.owner ELSE e.owner END AS owner,
               ${DUE_COLUMNS}, i.alternatives,
-              e.id IS NOT NULL AS edited, i.text AS "originalText", i.owner AS "originalOwner", i.due AS "originalDue",
+              e.id IS NOT NULL AS edited, i.kind AS "originalKind", i.text AS "originalText", i.owner AS "originalOwner", i.due AS "originalDue",
               i.quote, i.quote_start AS "quoteStart", i.quote_end AS "quoteEnd",
               i.quote_matches AS "quoteMatches", i.review_status AS "reviewStatus",
               i.chosen_occurrence AS "chosenOccurrence",
@@ -247,10 +275,19 @@ export class ExtractionService {
         WHERE i.run_id = $1 AND ${notHeldSql('i')} ORDER BY i.position`,
       [runId],
     );
-    const shaped = items.rows.map(({ originalText, originalOwner, originalDue, reviewerEarliest, reviewerLatest, reviewerEvent, reviewerIgnoreEvent, ...item }) => {
+    const corrections = await this.correctionsOf(items.rows);
+    const model: string | null = run.rows[0].modelId ?? null;
+    const shaped = items.rows.map(({ originalKind, originalText, originalOwner, originalDue, reviewerEarliest, reviewerLatest, reviewerEvent, reviewerIgnoreEvent, ...item }) => {
       const dueRow = { due: item.due, dueEvent: item.dueEvent, reviewerEarliest, reviewerLatest, reviewerEvent, reviewerIgnoreEvent };
-      const withDue = { ...item, reviewerDue: reviewerDueOf(dueRow), dueReading: dueReadingOf(dueRow, meeting.meetingDate), approvedWithoutRecord: item.reviewStatus === 'approved' && item.record === null };
-      return item.edited ? { ...withDue, original: { text: originalText, owner: originalOwner, due: originalDue } } : withDue;
+      return {
+        ...item,
+        reviewerDue: reviewerDueOf(dueRow),
+        dueReading: dueReadingOf(dueRow, meeting.meetingDate),
+        approvedWithoutRecord: item.reviewStatus === 'approved' && item.record === null,
+        // The model's own proposal is kept beside every correction (D130).
+        original: { kind: originalKind, text: originalText, owner: originalOwner, due: originalDue, model },
+        corrections: corrections.get(item.id) ?? [],
+      };
     });
     const itemIds = shaped.map((i) => i.id);
     const [flags, evidence, quoteChanged] = await Promise.all([itemSourceFlags(this.pool, itemIds), itemDiscussionEvidence(this.pool, itemIds), quoteChangedItems(this.pool, itemIds)]);
@@ -267,6 +304,61 @@ export class ExtractionService {
     // A quote whose message is now hidden or deleted reaches no one (the places above carry labels, not text).
     const items2 = placed.map((i) => (i.sourceFlag ? { ...i, quote: null as string | null, quoteMasked: i.sourceFlag } : i));
     return { run: run.rows[0], source: src.rows[0], items: items2 };
+  }
+
+  /**
+   * Every reviewer correction of these items, newest first, each naming its editor, the editor's project role today
+   * (the first Active one in the fixed order, else null), the fields it changed against what was in force before it,
+   * the type before and after, and the reason given. `items` carry the model's own kind, text, owner and due.
+   */
+  private async correctionsOf(items: Array<{ id: string; originalKind: string; originalText: string; originalOwner: string | null; originalDue: string | null }>): Promise<Map<string, Correction[]>> {
+    const out = new Map<string, Correction[]>();
+    if (items.length === 0) return out;
+    const { rows } = await this.pool.query(
+      `SELECT e.item_id AS "itemId", e.edited_at AS at, u.display_name AS by, e.kind, e.reason, e.text, e.owner, e.due,
+              to_char(e.due_earliest, 'YYYY-MM-DD') AS "dueEarliest", to_char(e.due_latest, 'YYYY-MM-DD') AS "dueLatest",
+              e.due_event AS "dueEvent", e.ignore_model_event AS "ignoreModelEvent",
+              (SELECT m.role FROM memberships m
+                WHERE m.project_id = s.project_id AND m.user_id = e.edited_by AND ${activeMembershipSql('m', '$2')}
+                ORDER BY array_position($3::text[], m.role) LIMIT 1) AS role
+         FROM extraction_item_edits e
+         JOIN users u ON u.id = e.edited_by
+         JOIN extraction_items i ON i.id = e.item_id
+         JOIN source_versions v ON v.id = i.source_version_id
+         JOIN sources s ON s.id = v.source_id
+        WHERE e.item_id = ANY($1::uuid[])
+        ORDER BY e.item_id, e.edited_at, e.id`,
+      [items.map((i) => i.id), todayUtc8(this.now()), ROLE_ORDER],
+    );
+    const model = new Map(items.map((i) => [i.id, i]));
+    type State = { kind: string; text: string; owner: string | null; due: string | null; dates: string };
+    const datesOf = (r: { dueEarliest: string | null; dueLatest: string | null; dueEvent: string | null; ignoreModelEvent: boolean | null }) =>
+      JSON.stringify([r.dueEarliest ?? null, r.dueLatest ?? null, r.dueEvent ?? null, r.ignoreModelEvent === true]);
+    const before = new Map<string, State>();
+    for (const r of rows) {
+      const m = model.get(r.itemId) as (typeof items)[number];
+      const prev = before.get(r.itemId) ?? { kind: m.originalKind, text: m.originalText, owner: m.originalOwner, due: m.originalDue, dates: datesOf({ dueEarliest: null, dueLatest: null, dueEvent: null, ignoreModelEvent: false }) };
+      // An edit written before 0036 has no kind: it kept the one in force.
+      const next: State = { kind: r.kind ?? prev.kind, text: r.text, owner: r.owner, due: r.due, dates: datesOf(r) };
+      const changed: Correction['changed'] = [];
+      if (next.kind !== prev.kind) changed.push('type');
+      if (next.text !== prev.text) changed.push('text');
+      if (next.owner !== prev.owner) changed.push('owner');
+      if (next.due !== prev.due || next.dates !== prev.dates) changed.push('due');
+      const list = out.get(r.itemId) ?? [];
+      list.unshift({
+        at: new Date(r.at).toISOString(),
+        by: r.by,
+        role: r.role ? ROLE_LABEL[r.role as ProjectRole] : null,
+        changed,
+        from: { kind: prev.kind },
+        to: { kind: next.kind },
+        reason: r.reason ?? null,
+      });
+      out.set(r.itemId, list);
+      before.set(r.itemId, next);
+    }
+    return out;
   }
 
   /** The due inputs of one item as they stand now (wording, model's event, latest reviewer due). */
@@ -420,8 +512,8 @@ export class ExtractionService {
       throw new BadRequestException('sourceVersionId is required: the version the reviewer was looking at');
     }
     const found = await client.query(
-      `SELECT i.id, i.source_version_id, i.quote_matches, i.review_status, i.kind, r.status AS run_status, i.held_case_id
-         FROM extraction_items i JOIN extraction_runs r ON r.id = i.run_id
+      `SELECT i.id, i.source_version_id, i.quote_matches, i.review_status, ${KIND_IN_FORCE} AS kind, r.status AS run_status, i.held_case_id
+         FROM extraction_items i JOIN extraction_runs r ON r.id = i.run_id ${LATEST_EDIT}
         WHERE i.id = $1 AND i.run_id = $2 FOR UPDATE OF i`,
       [itemId, runId],
     );
@@ -497,7 +589,7 @@ export class ExtractionService {
   async approvedItem(client: Queryable, runId: string, itemId: string): Promise<ApprovedItem> {
     const row = (
       await client.query(
-        `SELECT i.id, i.kind, COALESCE(e.text, i.text) AS text, CASE WHEN e.id IS NULL THEN i.owner ELSE e.owner END AS owner,
+        `SELECT i.id, ${KIND_IN_FORCE} AS kind, COALESCE(e.text, i.text) AS text, CASE WHEN e.id IS NULL THEN i.owner ELSE e.owner END AS owner,
                 ${DUE_COLUMNS}, i.quote
            FROM extraction_items i ${LATEST_EDIT} WHERE i.id = $1`,
         [itemId],
@@ -509,18 +601,28 @@ export class ExtractionService {
 
   /**
    * Replaces the wording of one proposal (text, owner, due; the body is the complete new wording, a blank
-   * owner or due clears it). The model's own wording is kept and returned as `original`. The quote and where
-   * it sits never change. A decision made on the old wording is withdrawn: the proposal goes back to review.
+   * owner or due clears it), and may correct its type (D130), with a reason required when the type changes.
+   * The model's own proposal is kept and returned as `original`. The quote and where it sits never change.
+   * A decision made on the old wording is withdrawn: the proposal goes back to review.
    */
   async edit(
     runId: string,
     itemId: string,
-    input: { sourceVersionId: unknown; text: unknown; owner?: unknown; due?: unknown; dueEarliest?: unknown; dueLatest?: unknown; dueEvent?: unknown; ignoreModelEvent?: unknown },
+    input: {
+      sourceVersionId: unknown; text: unknown; owner?: unknown; due?: unknown; dueEarliest?: unknown; dueLatest?: unknown; dueEvent?: unknown; ignoreModelEvent?: unknown;
+      kind?: unknown; reason?: unknown;
+    },
     actorUserId: string,
   ) {
     if (typeof input.sourceVersionId !== 'string' || input.sourceVersionId === '') {
       throw new BadRequestException('sourceVersionId is required: the version the reviewer was looking at');
     }
+    if (input.kind !== undefined && !PROPOSAL_KINDS.includes(input.kind as ProposalKind)) {
+      throw new BadRequestException('kind must be "decision", "action", "question" or "risk"');
+    }
+    const sentKind = input.kind as ProposalKind | undefined;
+    // Trimmed: a blank reason is no reason.
+    const reason = cleanWording(input.reason, 'reason', MAX_CORRECTION_REASON, false);
     const text = cleanWording(input.text, 'text', MAX_PROPOSAL_TEXT, true);
     const owner = cleanWording(input.owner, 'owner', MAX_PROPOSAL_FIELD, false);
     const due = cleanWording(input.due, 'due', MAX_PROPOSAL_FIELD, false);
@@ -536,9 +638,11 @@ export class ExtractionService {
         [itemId],
       );
       const found = await client.query(
-        `SELECT i.id, i.source_version_id, i.review_status, r.status AS run_status, i.held_case_id
+        `SELECT i.id, i.source_version_id, i.review_status, r.status AS run_status, i.held_case_id, s.project_id
            FROM extraction_items i
            JOIN extraction_runs r ON r.id = i.run_id
+           JOIN source_versions v ON v.id = i.source_version_id
+           JOIN sources s ON s.id = v.source_id
           WHERE i.id = $1 AND i.run_id = $2 FOR UPDATE OF i`,
         [itemId, runId],
       );
@@ -549,7 +653,7 @@ export class ExtractionService {
       await this.refuseIfAuthorised(client, itemId);
       // The wording in force is read after the lock, in its own statement, so a concurrent edit is seen.
       const current = await client.query(
-        `SELECT COALESCE(e.text, i.text) AS text, CASE WHEN e.id IS NULL THEN i.owner ELSE e.owner END AS owner, ${DUE_COLUMNS}
+        `SELECT ${KIND_IN_FORCE} AS kind, COALESCE(e.text, i.text) AS text, CASE WHEN e.id IS NULL THEN i.owner ELSE e.owner END AS owner, ${DUE_COLUMNS}
            FROM extraction_items i ${LATEST_EDIT} WHERE i.id = $1`,
         [itemId],
       );
@@ -558,7 +662,10 @@ export class ExtractionService {
       if (item.source_version_id !== input.sourceVersionId) {
         throw new ConflictException('This proposal is for a different version of the notes than the one you reviewed');
       }
-      const changed: string[] = (['text', 'owner', 'due'] as const).filter((f) => ({ text, owner, due })[f] !== item[f]);
+      // Every new edit row records the type in force after it; a change of type needs a reason (D130).
+      const kind: ProposalKind = sentKind ?? item.kind;
+      if (kind !== item.kind && reason === null) throw new BadRequestException(REASON_NEEDED);
+      const changed: string[] = (['kind', 'text', 'owner', 'due'] as const).filter((f) => ({ kind, text, owner, due })[f] !== item[f]);
       const before: FullReviewerDue = {
         earliest: item.reviewerEarliest ?? null,
         latest: item.reviewerLatest ?? null,
@@ -576,9 +683,9 @@ export class ExtractionService {
       }
       if (changed.length === 0) throw new ConflictException('Nothing was changed');
       await client.query(
-        `INSERT INTO extraction_item_edits (id, item_id, text, owner, due, due_earliest, due_latest, due_event, ignore_model_event, edited_by, edited_at)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-        [uuidv7(), itemId, text, owner, due, dates.earliest, dates.latest, dates.event, dates.ignoreModelEvent, actorUserId, at],
+        `INSERT INTO extraction_item_edits (id, item_id, text, owner, due, due_earliest, due_latest, due_event, ignore_model_event, edited_by, edited_at, kind, reason)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+        [uuidv7(), itemId, text, owner, due, dates.earliest, dates.latest, dates.event, dates.ignoreModelEvent, actorUserId, at, kind, reason],
       );
       if (item.review_status !== 'pending') {
         await client.query(
@@ -610,6 +717,17 @@ export class ExtractionService {
         subjectType: 'extraction_item',
         subjectId: itemId,
         detail: { runId, sourceVersionId: item.source_version_id, previousStatus: item.review_status, changed },
+      });
+      // The correction itself (D130): who, which project and which fields, in the history's own words; never the
+      // wording or the reason.
+      const fields = [...new Set(changed.map((f) => (f === 'kind' ? 'type' : f === 'due_dates' ? 'due' : f)))];
+      await writeAudit(client, {
+        at,
+        action: 'proposal.corrected',
+        actorUserId,
+        subjectType: 'extraction_item',
+        subjectId: itemId,
+        detail: { projectId: item.project_id, runId, fields },
       });
       await client.query('COMMIT');
     } catch (err) {

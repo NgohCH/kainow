@@ -184,7 +184,7 @@ const CURRENT_TEXT: Record<ItemKind, string> = {
   question: `SELECT concat_ws(E'\\n', q.text, (SELECT string_agg(a.answer, E'\\n' ORDER BY a.id) FROM question_answers a WHERE a.question_id = q.id)) AS text FROM questions q WHERE q.id = $1`,
   risk: `SELECT concat_ws(E'\\n', description, mitigation) AS text FROM risks WHERE id = $1`,
   proposal: `SELECT concat_ws(E'\\n', i.text, i.owner, i.due, i.due_event, i.quote, array_to_string(i.alternatives, E'\\n'),
-                     (SELECT string_agg(concat_ws(E'\\n', e.text, e.owner, e.due, e.due_event), E'\\n' ORDER BY e.edited_at, e.id) FROM extraction_item_edits e WHERE e.item_id = i.id)) AS text
+                     (SELECT string_agg(concat_ws(E'\\n', e.text, e.owner, e.due, e.due_event, e.reason), E'\\n' ORDER BY e.edited_at, e.id) FROM extraction_item_edits e WHERE e.item_id = i.id)) AS text
                FROM extraction_items i WHERE i.id = $1`,
   human_proposal: `SELECT concat_ws(E'\\n', text, owner, due) AS text FROM human_proposals WHERE id = $1`,
   answer: `SELECT concat_ws(E'\\n', question, answer_markdown) AS text FROM ai_answers WHERE request_id = $1`,

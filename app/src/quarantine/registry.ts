@@ -268,7 +268,8 @@ const TABLES: TableDef[] = [
     from: 'extraction_item_edits t JOIN extraction_items i ON i.id = t.item_id JOIN source_versions v ON v.id = i.source_version_id JOIN sources s ON s.id = v.source_id',
     project: `s.project_id ${P}`,
     owner: { kind: `'proposal'`, id: 't.item_id' },
-    text: ['text', 'owner', 'due', 'due_event'],
+    // The reason a reviewer gave for correcting the type (D130) is their own typed text.
+    text: ['text', 'owner', 'due', 'due_event', 'reason'],
     items: { proposal: `t.item_id ${P}` },
   },
   {
@@ -1019,6 +1020,7 @@ export const NO_USER_TEXT: Readonly<Record<string, string>> = {
   'email_outbox.status': ENUM,
   'email_outbox.to_address': IDENTITY,
   'email_preferences.choice': ENUM,
+  'extraction_item_edits.kind': ENUM,
   'extraction_items.kind': ENUM,
   'extraction_items.review_status': ENUM,
   'extraction_runs.failure_code': ENUM,
@@ -1060,6 +1062,7 @@ export const NO_USER_TEXT: Readonly<Record<string, string>> = {
   'notification_triggers.record_kind': ENUM,
   'notifications.kind': ENUM,
   'notifications.link': 'an in-app route built from ids',
+  'organisation.colour': 'a lower-case #rrggbb colour, held to that form by a CHECK constraint (0036)',
   'organisation.name': ORG,
   'organisation.recovery_custodian_contact': ORG,
   'organisation.recovery_custodian_name': ORG,
