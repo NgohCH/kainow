@@ -3,7 +3,7 @@
 **Date:** 24 November 2026
 **Status:** Draft for the Product Owner's approval
 **Branch:** `TheLord/subproject-11-acceptance-24e07c` (worktree), cut from `main` at 2046ba8
-**Decisions:** D127 (v0.1 test release), D128 (navigation, Settings hub and page pattern), D129 (colour schemes and organisation colour), D130 (correcting a proposal's type, with a reason and a named history), D131 (stage templates)
+**Decisions:** D127 (v0.1 test release), D128 (navigation, Settings hub and page pattern), D129 (colour schemes and organisation colour), D130 (correcting a proposal's type, with a reason and a named history), D131 (stage templates), D132 (timeline bars)
 **Configuration Catalogue:** C111 (personal colour scheme), C112 (organisation colour), C113 (stage templates; refines C09)
 **Migrations:** 0036 (`0036_interface.sql`), 0037 (`0037_stage_templates.sql`)
 
@@ -301,3 +301,25 @@ WCAG 2.2 AA remains the target; the full audit is in 11b. 11a must not regress a
 **Data handling.** Template, stage and substage names are text people type: they are registered with the credential-quarantine scanner like other names, and are never sent to an AI provider beyond the project context that already includes the current stage.
 
 **Configuration Catalogue C113** (refines C09): stage templates; seven starter templates; Enterprise Administrator manages templates with a reason; Project Manager, Owner or Sponsor add, reorder or retire the project's own stages with a reason; default template General.
+
+## 15. Timeline bars (D132)
+
+**Why.** On 24 November 2026 the Product Owner asked whether projects have a Gantt chart. A Gantt chart stays outside V1.0 (Intent Card, "Outside V1.0"; tasks have only a due date, no start date or dependencies). The Product Owner chose a light, read-only "timeline bars" view for each project before v0.1, built only from dates Kainow already records.
+
+**What it shows.** On the project's Timeline tab, above the existing list, a "Bars" view for the same date window the tab already uses (default three months back to six months ahead, UTC+8):
+
+- a date axis with month marks and a "Today" line;
+- one horizontal bar per stage period that overlaps the window, from its start to its end, or to today while it is the current stage; the current stage's bar is marked "Current" with the symbol and word, not by colour alone; a stage that started before the window starts at the window's edge with a "continues from <date>" note;
+- markers on a separate row for: task due dates (grouped per day with a count, e.g. "3 tasks due"), risk review dates, resources needed by, and the planned end; each marker has its symbol and words;
+- nothing is drawn for dates Kainow does not record (no task start dates, no durations, no dependencies, no forecasting, no dragging).
+
+**Rules.**
+- Read-only. It changes nothing and offers no rescheduling.
+- Same audience as the Timeline list: the bars never show anything the list would not.
+- Every bar and marker has its values in text: the existing month-by-month list stays below as the equivalent, and the drawing has a short text summary for screen readers ("Build: 21 Oct 2026 to today, 34 days, current. 12 tasks due in the window."). The drawing itself is hidden from screen readers to avoid reading everything twice.
+- Works at 375 px: the drawing scrolls sideways inside its own box (the page itself never does) and the list below stays readable.
+- Personal "hide kinds" choices on the Timeline (existing preferences) apply to the markers too.
+
+**Data.** From the timeline response the tab already loads. If a stage period that started before the window and is still open (or ended inside the window) is not available from the lines, the timeline response gains `stagePeriods: { stage, substage, startedOn, endedOn | null }[]` for every period overlapping the window; no other server change.
+
+**Decision Register D132** as above. No configuration entry (nothing to set).

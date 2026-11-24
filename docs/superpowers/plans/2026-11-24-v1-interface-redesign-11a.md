@@ -15,7 +15,7 @@
 - No new npm dependency in `app/web` or `app` (approach A).
 - No change to any permission predicate, lifecycle rule or audience rule. Every existing route (`#/…` address) keeps working.
 - No real organisation name or domain anywhere: dummy data uses "Example Organisation", `example.org`; the default scheme is named "Red".
-- Next free numbers: decisions D127–D131, catalogue C111–C113, migrations `0036_interface.sql` and `0037_stage_templates.sql`.
+- Next free numbers: decisions D127–D132, catalogue C111–C113, migrations `0036_interface.sql` and `0037_stage_templates.sql`.
 - Every colour lives in a token block in `app/web/src/styles.css`, mirrored in `app/web/src/prefs.ts` and contrast-checked in `prefs.test.ts`: text 4.5:1, edges/symbols/focus outline 3:1.
 - State and attention colours never change with the scheme; every one is shown with its symbol and word (spec §5.1 table, copied into `ui/meanings.ts`).
 - AI proposals keep the dashed outline and "AI proposed" label in every scheme and theme.
@@ -391,6 +391,20 @@
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: `npm test`, `npm run build`; on the demo installation as PM: add "Fieldwork", move to it, see the stage flow; as a Member the Stages box is read-only.**
 - [ ] **Step 5: Commit** `feat(web): project stages box, stage changes and stage flow from the project's own stages`.
+
+### Task 25: Timeline bars (D132)
+
+**Files:** Create `app/web/src/ui/TimelineBars.tsx`, `app/web/src/ui/timelineBars.ts`, `app/web/src/ui/timelineBars.test.ts`; Modify `app/web/src/views/Timeline.tsx`, `styles.css`; only if needed `app/src/dashboards/timeline.service.ts`, `timeline.ts` and `timeline.http.test.ts` (add `stagePeriods`); `tests/a11y/audit.mjs` (add the Timeline with bars at 1200 and 375 px); `docs/Kainow-V1.0-Consolidated-Product-Specification-and-Decision-Register.md` (D132 row).
+
+**Interfaces:**
+- `barsLayout(input: { from: string; to: string; today: string; periods: { stage: string; substage: string | null; startedOn: string; endedOn: string | null }[]; lines: TimelineLine[]; hiddenKinds: TimelineKind[] }): { months: { label: string; atPct: number }[]; todayPct: number | null; bars: { stage: string; startPct: number; endPct: number; current: boolean; clippedStart: string | null; days: number; text: string }[]; markers: { kind: TimelineKind; day: string; atPct: number; count: number; text: string }[]; summary: string }` — positions as percentages of the window; bars clipped to the window; markers grouped per day and kind; hidden kinds left out; `summary` is the screen-reader text of spec §15.
+- `TimelineBars({ layout })` renders the drawing (`aria-hidden`) plus the visible-to-screen-readers summary; inside a `Box` titled "Bars".
+
+- [ ] **Step 1: Tests** `timelineBars.test.ts`: a General project in Execution since 21 Oct 2026 with window 24 Aug 2026–24 May 2027 and today 24 Nov 2026 gives a current Execution bar from its start to today's position, earlier stages as closed bars, month marks in order; a period starting before the window is clipped with `clippedStart` set; three tasks due on one day give one marker with count 3; a hidden kind gives no marker; an empty project gives no bars and a summary saying "No stages recorded in this window."; percentages stay within 0–100.
+- [ ] **Step 2: Run, expect FAIL.**
+- [ ] **Step 3: Implement** (server `stagePeriods` only if the lines cannot give overlapping periods; then add its HTTP test: an open period that began before the window is returned).
+- [ ] **Step 4: `npm test`, `npm run build` (and the server timeline tests if changed); on the demo at 1280 and 375 px check the bars on a General project and on "Demo research check"; run the a11y audit's Timeline states.**
+- [ ] **Step 5: Commit** `feat(web): timeline bars view (D132)`.
 
 ### Task 24: Accessibility pass, browser smoke, walkthrough and documents
 
