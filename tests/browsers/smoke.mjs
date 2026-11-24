@@ -106,11 +106,12 @@ const STEPS = [
     }
     await page.getByLabel('Sign-in code').fill(code);
     await page.getByRole('button', { name: 'Sign in', exact: true }).click();
-    await page.getByRole('heading', { name: 'My Projects', level: 1 }).waitFor();
+    // Home: its heading is a greeting ("Good morning, Load"), and the side menu marks Home as the current page.
+    await page.getByRole('heading', { name: /^Good (morning|afternoon|evening)/, level: 1 }).waitFor();
   }],
-  ['My Projects', async (page) => {
-    await page.getByRole('link', { name: 'All projects and new project' }).click();
-    await page.getByRole('heading', { name: 'Project list', level: 1 }).waitFor();
+  ['Projects', async (page) => {
+    await menuLink(page, 'Projects');
+    await page.getByRole('heading', { name: 'Projects', level: 1 }).waitFor();
     await page.getByRole('link', { name: new RegExp('^' + escape(WORK_PROJECT)) }).first().waitFor();
   }],
   ['Open a project', async (page) => {
@@ -119,57 +120,69 @@ const STEPS = [
     await page.getByRole('heading', { name: 'About', level: 2 }).waitFor();
   }],
   ['Work tab', async (page) => {
-    await page.getByRole('link', { name: 'Work', exact: true }).click();
+    await projectTab(page, 'Work');
     await page.getByRole('heading', { name: 'Tasks', level: 2 }).waitFor();
   }],
   ['Save a task progress change from the Work list', async (page) => {
     // A task the signed-in person may act on: block an In progress one with a reason, or (when none is left) unblock a
-    // Blocked one with how it was resolved. Either is a saved progress change.
-    await page.locator('li.work-item').first().waitFor();
-    const withButton = (label) => page.locator('li.work-item').filter({ has: page.getByRole('button', { name: label, exact: true }) });
+    // Blocked one with how it was resolved. Either is a saved progress change. Tasks are rows of the Tasks table.
+    const rows = page.getByRole('table', { name: /^Tasks/ }).locator('tbody tr');
+    await rows.first().waitFor();
+    const withButton = (label) => rows.filter({ has: page.getByRole('button', { name: label, exact: true }) });
     const [action, prompt, note, after] = (await withButton('Block').count()) > 0
       ? ['Block', 'Why is it blocked?', 'Waiting for the browser smoke run', 'Blocked']
       : ['Unblock', 'How was it resolved?', 'Resolved during the browser smoke run', 'In Progress'];
-    const title = (await withButton(action).first().locator('strong').first().textContent()).trim();
-    const task = page.locator('li.work-item').filter({ has: page.locator('strong', { hasText: exactly(title) }) });
+    const id = await withButton(action).first().getAttribute('id');
+    const task = page.locator(`tr[id="${id}"]`);
     await task.scrollIntoViewIfNeeded();
     await task.getByRole('button', { name: action, exact: true }).click();
     await task.getByLabel(prompt).fill(note);
     await task.getByRole('form', { name: `${action} task` }).getByRole('button', { name: action, exact: true }).click();
     await page.getByRole('status').filter({ hasText: `${action}: done.` }).waitFor();
-    await task.getByText(after, { exact: true }).waitFor();
+    await task.getByText(after, { exact: true }).first().waitFor();
   }],
   ['Post a discussion comment', async (page, run) => {
-    await page.getByRole('link', { name: 'Notes & discussion' }).click();
-    await page.getByRole('heading', { name: 'Notes & discussion', level: 2 }).waitFor();
-    await page.locator('a[href*="/threads/"]').first().click();
+    await projectTab(page, 'Discussion');
+    await page.getByRole('heading', { name: 'Discussion', level: 2 }).waitFor();
+    await page.locator('main a[href*="/threads/"]').first().click();
     const text = `Smoke run comment, ${run.browser} at ${run.size}, ${new Date().toISOString()}`;
     await page.getByLabel('Write a message').fill(text);
     await page.getByRole('button', { name: 'Post', exact: true }).click();
     await page.getByRole('region', { name: 'Messages' }).getByText(text).waitFor();
   }],
   ['Open a note', async (page) => {
-    await page.getByRole('link', { name: 'Notes & discussion' }).click();
-    const note = page.locator('a[href^="#/notes/"]').first();
-    const name = (await note.textContent()).replace(/Notes ·.*$/, '').trim();
+    // A thread is its own page (outside the project's tabs), so go back to the project first.
+    await openProject(page, WORK_PROJECT);
+    await projectTab(page, 'Notes');
+    const note = page.locator('main a[href^="#/notes/"]').first();
+    const name = (await note.locator('strong').first().textContent()).trim();
     await note.click();
     await page.getByRole('heading', { name, level: 1 }).waitFor();
   }],
   ['Review screen with a proposal', async (page, run) => {
-    // The AI review screen (#/runs/:id) needs a finished run; with DATABASE_URL the run inserts one (review-run.mjs) on
-    // "Meeting notes 6.1" in Load Project 06, where the Administrator is the Owner.
+    // The AI review screen (#/runs/:id, inside the project) needs a finished run; with DATABASE_URL the run inserts one
+    // (review-run.mjs) on "Meeting notes 6.1" in Load Project 06, where the Administrator is the Owner.
     if (!DATABASE_URL) throw new NotChecked('DATABASE_URL not set, so no AI run to review');
     const { runId, decisions } = await createReviewRun(DATABASE_URL, 1);
     run.decision = decisions[0];
     await openProject(page, REVIEW_NOTE_PROJECT);
-    await page.getByRole('link', { name: 'Notes & discussion' }).click();
-    await page.getByRole('heading', { name: 'Notes & discussion', level: 2 }).waitFor();
-    await page.locator('a[href^="#/notes/"]').filter({ hasText: new RegExp('^' + escape(REVIEW_NOTE) + '(?!\d)') }).first().click();
+    await projectTab(page, 'Notes');
+    await page.locator('main a[href^="#/notes/"]').filter({ has: page.locator('strong', { hasText: exactly(REVIEW_NOTE) }) }).first().click();
     await page.getByRole('heading', { name: REVIEW_NOTE, level: 1 }).waitFor();
     await page.locator(`a[href="#/runs/${runId}"]`).click();
-    await page.getByRole('heading', { name: 'Review proposals', level: 1 }).waitFor();
-    await page.getByRole('region', { name: 'Source text' }).waitFor();
-    await reviewCard(page, run.decision).getByRole('button', { name: 'Authorise', exact: true }).waitFor();
+    await page.getByRole('heading', { name: 'Review proposals' }).waitFor();
+    const card = reviewCard(page, run.decision);
+    await card.getByRole('button', { name: 'Authorise', exact: true }).waitFor();
+    // Below 900 px the notes open in their own view from each proposal ("Show in the notes"), with a way back.
+    const showNotes = card.getByRole('button', { name: /^Show in the notes/ });
+    if (await showNotes.isVisible()) {
+      await showNotes.click();
+      await page.getByRole('region', { name: 'Source text' }).waitFor();
+      await page.getByRole('button', { name: /^Back to proposal/ }).click();
+      await card.getByRole('button', { name: 'Authorise', exact: true }).waitFor();
+    } else {
+      await page.getByRole('region', { name: 'Source text' }).waitFor();
+    }
   }],
   ['Approve a proposal', async (page, run) => {
     if (!run.decision) throw new NotChecked('the review screen step was not checked');
@@ -180,12 +193,12 @@ const STEPS = [
     await card.getByRole('link', { name: 'Authorised: see the Work tab' }).waitFor();
   }],
   ["Authorise a person's proposal", async (page) => {
-    // People's proposals (Notes & discussion › Proposals from people). Each journey authorises one decision; when a project
-    // has none left waiting, the next project in the list is used.
+    // People's proposals (the project's Proposals tab › Proposals from people). Each journey authorises one decision; when
+    // a project has none left waiting, the next project in the list is used.
     let item = null;
     for (const project of REVIEW_PROJECTS) {
       await openProject(page, project);
-      await page.getByRole('link', { name: 'Notes & discussion' }).click();
+      await projectTab(page, 'Proposals');
       await page.getByRole('heading', { name: 'Proposals from people', level: 2 }).waitFor();
       await page.locator('section[aria-labelledby="human-proposals-heading"] li.work-item').first().waitFor();
       if ((await pendingDecision(page).count()) > 0) {
@@ -202,40 +215,54 @@ const STEPS = [
     await page.locator('li.work-item').filter({ has: page.locator('strong', { hasText: exactly(text) }) }).getByText('authorised (see the Work tab)').waitFor();
   }],
   ['Personal dashboard', async (page) => {
-    await page.getByRole('link', { name: 'My Projects', exact: true }).first().click();
+    await menuLink(page, 'Home');
     await page.getByRole('heading', { name: 'Needs you', level: 2 }).waitFor();
     await page.getByRole('heading', { name: 'My tasks', level: 2 }).waitFor();
   }],
   ['Project dashboard', async (page) => {
-    await page.getByRole('link', { name: 'All projects and new project' }).click();
-    await page.getByRole('heading', { name: 'Project list', level: 1 }).waitFor();
+    await menuLink(page, 'Projects');
+    await page.getByRole('heading', { name: 'Projects', level: 1 }).waitFor();
     await page.getByRole('link', { name: new RegExp('^' + escape(WORK_PROJECT)) }).first().click();
     await page.getByRole('heading', { name: 'Figures', level: 2 }).waitFor();
     await page.locator('section[aria-labelledby="figures-heading"] a').first().waitFor();
   }],
   ['Analytics as Administrator', async (page) => {
-    await page.getByRole('link', { name: 'Analytics', exact: true }).click();
+    await menuLink(page, 'Analytics');
     await page.getByRole('heading', { name: 'Analytics', level: 1 }).waitFor();
     await page.getByRole('heading', { name: 'Saved views', level: 2 }).waitFor();
   }],
   ['Operations page', async (page) => {
-    await page.getByRole('link', { name: 'Operations', exact: true }).click();
+    await menuLink(page, 'Operations');
     await page.getByRole('heading', { name: 'Operations', level: 1 }).waitFor();
-    await page.getByRole('heading', { name: 'Backups', level: 2, exact: true }).waitFor();
+    await page.getByRole('heading', { name: 'Backups', level: 3, exact: true }).waitFor();
   }],
   ['Sign out', async (page) => {
+    // Sign out is in the person menu (the button with the person's name).
+    await page.locator('#person-menu-button').click();
     await page.getByRole('button', { name: 'Sign out', exact: true }).click();
     await page.getByText('Sign in to Kainow').waitFor();
     await page.getByLabel('Work email').waitFor();
   }],
 ];
 
-/** From any page: My Projects, the project list, then the project. Each click waits for the page it opens. */
+/** A side-menu link. Below 900 px the side menu is closed behind the top bar's Menu button, so that is opened first. */
+async function menuLink(page, name) {
+  const toggle = page.locator('#menu-toggle');
+  if (await toggle.isVisible()) {
+    if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
+  }
+  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: new RegExp('^' + escape(name)) }).click();
+}
+
+/** A project's binder tab (the project's section navigation). */
+async function projectTab(page, name) {
+  await page.locator('nav.binder-tabs').getByRole('link', { name: new RegExp('^' + escape(name) + '(\\s*\\d|$)') }).click();
+}
+
+/** From any page: Projects in the side menu, then the project. Each click waits for the page it opens. */
 async function openProject(page, project) {
-  await page.getByRole('link', { name: 'My Projects', exact: true }).first().click();
-  await page.getByRole('heading', { name: 'My Projects', level: 1 }).waitFor();
-  await page.getByRole('link', { name: 'All projects and new project' }).click();
-  await page.getByRole('heading', { name: 'Project list', level: 1 }).waitFor();
+  await menuLink(page, 'Projects');
+  await page.getByRole('heading', { name: 'Projects', level: 1 }).waitFor();
   await page.getByRole('link', { name: new RegExp('^' + escape(project)) }).first().click();
   await page.getByRole('heading', { name: project, level: 1 }).waitFor();
 }

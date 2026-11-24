@@ -97,21 +97,21 @@ On an iPhone the menu at the top of every page is long: scroll up to see it.
 | # | What to do | What should appear | As expected / what happened |
 |---|---|---|---|
 | 1 | Open Safari and type the address from Part A (for example `http://192.168.1.23:3312`). | "Example Organisation", "Sign in to Kainow" and a **Work email** box. | |
-| 2 | Type `load-001@example.org` in **Work email** and tap **Email me a sign-in code**. Look in the PowerShell window on the PC for the last line `load-001@example.org: NNNNNN`. Type those 6 digits in **Sign-in code** and tap **Sign in**. | A page titled **My Projects**. (If no code appears, wait one minute and tap **Use a different email**, then ask again.) | |
-| 3 | Scroll down and tap **All projects and new project**. | **Project list**, with Load Project 01 near the top. | |
-| 4 | Tap **Load Project 01**. | The title **Load Project 01** and a section **About**. | |
-| 5 | Tap **Work** (in the row of tabs under the title). | A section **Tasks** with a list of tasks. | |
-| 6 | Find a task that has a **Block** button (an "In Progress" task). Tap **Block**, type `Waiting for the Safari check` in **Why is it blocked?**, and tap the **Block** button under it. | "Block: done." at the top of the list, and that task now shows **Blocked**. | |
-| 7 | Tap **Notes & discussion**, then the first discussion (for example "The survey plan, part 3"). Type `Safari check comment` in **Write a message** and tap **Post**. | Your comment appears at the end of the messages, with your name (Load Person 001). | |
-| 8 | Tap **Notes & discussion** again (or go back), then tap the first note (for example "Meeting notes 1.8"). | The note's title as the page heading and the text of the notes. | |
-| 9 | Tap **My Projects** (top menu), **All projects and new project**, then **Load Project 06**, then **Notes & discussion**, then the note **Meeting notes 6.1**. Under **Proposals from this version**, tap **Review**. | **Review proposals**: the notes on one side, and on the other three decisions found in them (for example "Review the … figures before the next meeting"), each with the passage it quotes. Tapping a decision highlights its passage in the notes. A red box asking for the meeting date is expected; leave it. | |
+| 2 | Type `load-001@example.org` in **Work email** and tap **Email me a sign-in code**. Look in the PowerShell window on the PC for the last line `load-001@example.org: NNNNNN`. Type those 6 digits in **Sign-in code** and tap **Sign in**. | Home: a greeting ("Good morning, Load" or similar) and **Needs you**. (If no code appears, wait one minute and tap **Use a different email**, then ask again.) | |
+| 3 | Tap **Projects** in the side menu (on an iPhone or a narrow iPad window, tap **Menu** at the top left first). | **Projects**, with Load Project 01 in the table. | |
+| 4 | Tap **Load Project 01**. | The title **Load Project 01**, a row of tabs under it, and a box **About**. | |
+| 5 | Tap the **Work** tab. | A box **Tasks** with a table of tasks. | |
+| 6 | Find a task that has a **Block** button (an "In Progress" task). Tap **Block**, type `Waiting for the Safari check` in **Why is it blocked?**, and tap the **Block** button under it. | "Block: done." and that task now shows **Blocked**. | |
+| 7 | Tap the **Discussion** tab, then the first discussion (for example "The survey plan, part 3"). Type `Safari check comment` in **Write a message** and tap **Post**. | Your comment appears at the end of the messages, with your name (Load Person 001). | |
+| 8 | Go back to Load Project 01 (**Projects**, then **Load Project 01**), tap the **Notes** tab, then the first note (for example "Meeting notes 1.8"). | The note's title as the page heading and the text of the notes. | |
+| 9 | Tap **Projects**, then **Load Project 06**, the **Notes** tab, then the note **Meeting notes 6.1**. Under **Proposals from this version**, tap **Review**. | **Review proposals** inside the project: three decisions found in the notes (for example "Review the … figures before the next meeting"), each with the passage it quotes, and the notes beside them (on an iPhone, tap **Show in the notes** under a decision, then **Back to proposal**). A red box asking for the meeting date is expected; leave it. | |
 | 10 | On a decision that still has an **Authorise** button, tap **Authorise**. A form opens; tap the **Authorise** button at its foot. | That decision now shows **Authorised: see the Work tab**, and the count at the top says one more approved. | |
-| 11 | Tap **My Projects** (top menu), **All projects and new project**, then **Load Project 06**, then **Notes & discussion**. Scroll down to **Proposals from people**. On one "Proposed: change the …" proposal, tap **Authorise**, then the **Authorise** button at the foot of the form. | "Authorised: it is now on the Work tab.", and that proposal now says "authorised (see the Work tab)". | |
-| 12 | Tap **My Projects** in the top menu. | Your dashboard: **Needs you** and **My tasks**, with tasks grouped by Overdue, Due in the next 7 days and Later. | |
-| 13 | Tap **All projects and new project**, then **Load Project 01**. | The project page with **Figures** (numbers of tasks, decisions, questions, risks). | |
-| 14 | Tap **Analytics** in the top menu. | **Analytics**, with **Saved views** and charts or figures under it. | |
-| 15 | Tap **Operations** in the top menu. | **Operations**, with **Backups** ("No backup yet" is expected on this test copy). | |
-| 16 | Tap **Sign out** (top right; on an iPhone, at the end of the top menu). | The sign-in page again ("Sign in to Kainow"). | |
+| 11 | Tap **Projects**, then **Load Project 06**, then the **Proposals** tab. Scroll down to **Proposals from people**. On one "Proposed: change the …" proposal, tap **Authorise**, then the **Authorise** button at the foot of the form. | "Authorised: it is now on the Work tab.", and that proposal now says "authorised (see the Work tab)". | |
+| 12 | Tap **Home** in the side menu. | **Needs you** (boxes for Overdue, Blocked and so on) and **My tasks**, with tasks grouped by Overdue, Due in the next 7 days and Later. | |
+| 13 | Tap **Projects**, then **Load Project 01**. | The project's Overview, with **Figures** (numbers of tasks, decisions, questions, risks). | |
+| 14 | Tap **Analytics** in the side menu. | **Analytics**, with **Saved views** and charts or figures under it. | |
+| 15 | Tap **Operations** in the side menu. | **Operations**, with a **Backups** box ("No backup yet" is expected on this test copy). | |
+| 16 | Tap the button with your name (top right), then **Sign out**. | The sign-in page again ("Sign in to Kainow"). | |
 
 Also try, on the iPhone or iPad: turn the device sideways on one or two pages, and pinch to zoom. Note anything that does not fit or cannot be reached.
 
