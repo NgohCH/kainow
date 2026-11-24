@@ -11,6 +11,8 @@ import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/
 import { archiveState } from '../projects/archive';
 import type { GrantRow } from '../projects/grants';
 import { type ProjectStatus, decide } from '../projects/matrix';
+import { addWorkingDays } from '../notifications/calendar';
+import { type Effective, loadEffectiveMany } from '../notifications/settings';
 import { neededByPassedSql } from '../resources/line-sql';
 import { membershipState, todayUtc8 } from '../projects/membership';
 import { loadAccessSettings } from '../organisation/access-settings';
@@ -20,7 +22,9 @@ import { type ProjectMeasures, loadProjectMeasures } from './measures';
 import { archivedAmong, groupBy, loadProjectContexts } from './project-contexts';
 import { shown } from './project-dashboard.service';
 
-export type NeedsYouKind = 'approval' | 'minutes' | 'question' | 'copies' | 'deadline_review' | 'resources';
+export type NeedsYouKind =
+  | 'approval' | 'minutes' | 'question' | 'copies' | 'deadline_review' | 'resources'
+  | 'overdue' | 'blocked' | 'due_soon' | 'risk_review';
 
 export interface NeedsYouItem {
   kind: NeedsYouKind;
@@ -99,6 +103,9 @@ const addDays = (day: string, n: number): string => new Date(Date.parse(`${day}T
 const daysBetween = (from: string, to: string): number => Math.round((Date.parse(`${to}T00:00:00Z`) - Date.parse(`${from}T00:00:00Z`)) / 86_400_000);
 const iso = (v: Date | string | null): string | null => (v === null ? null : new Date(v).toISOString());
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
+/** A due or review date as the instant it begins, 00:00 UTC+8. */
+const dayStart = (day: string): string => new Date(`${day}T00:00:00+08:00`).toISOString();
+const recordLink = (projectId: string, id: string) => `#/projects/${projectId}/work/${id}`;
 
 
 /** Where an approval is acted on in the web app. */
@@ -205,6 +212,18 @@ export class PersonalDashboardService {
         [readableIds, user.id, opts.showCompleted, addDays(today, -COMPLETED_DAYS)],
       )
     ).rows as Array<{ id: string; title: string; projectId: string; dueOn: string; status: TaskStatus; deadlineReviewRequired: boolean; completedOn: string | null }>;
+    // The last day of "due soon" in each project: seven days on by the project's calendar (working or calendar days).
+    const calendars = await loadEffectiveMany(this.pool, readableIds);
+    const soonEnds = new Map(readableIds.map((id) => [id, addWorkingDays((calendars.get(id) as Effective).cal, today, DUE_SOON_DAYS)]));
+    const taskNeeds: NeedsYouItem[] = [];
+    const taskItem = (kind: 'overdue' | 'due_soon' | 'blocked', r: { id: string; title: string; projectId: string; dueOn: string }): NeedsYouItem => ({
+      kind,
+      projectId: r.projectId,
+      projectName: nameOf(r.projectId),
+      label: r.title,
+      since: dayStart(r.dueOn),
+      link: recordLink(r.projectId, r.id),
+    });
     for (const r of taskRows) {
       const row: MyTask = { id: r.id, title: r.title, projectId: r.projectId, projectName: nameOf(r.projectId), dueOn: r.dueOn, status: r.status };
       if (r.status === 'completed') {
@@ -212,6 +231,8 @@ export class PersonalDashboardService {
         continue;
       }
       const ind = taskIndicators({ status: r.status, dueOn: r.dueOn, parentDueOn: null, assigneeActive: true, invitationStatus: null, today, deadlineReviewRequired: r.deadlineReviewRequired });
+      if (ind.overdue) taskNeeds.push(taskItem('overdue', r));
+      else if (!ind.deadlineReviewRequired && r.dueOn >= today && r.dueOn <= (soonEnds.get(r.projectId) as string)) taskNeeds.push(taskItem('due_soon', r));
       if (ind.deadlineReviewRequired) myTasks.awaitingReview.push(row);
       else if (ind.overdue) myTasks.overdue.push({ ...row, overdueDays: daysBetween(r.dueOn, today) });
       else if (r.dueOn <= soonEnd) myTasks.dueSoon.push(row);
@@ -229,6 +250,9 @@ export class PersonalDashboardService {
       ...(await this.copies(readable.map((c) => c.ctx), nameOf)),
       ...(await this.deadlineReviews(readable.map((c) => c.ctx), nameOf)),
       ...(await this.resourcesPastNeededBy(readable.map((c) => c.ctx), today, nameOf)),
+      ...taskNeeds,
+      ...(await this.blocked(user, readable.map((c) => c.ctx))).map((r) => taskItem('blocked', r)),
+      ...(await this.riskReviews(user, readableIds, soonEnds, nameOf)),
     ];
     needsYou.sort((a, b) => {
       if (a.since !== b.since) return a.since === null ? 1 : b.since === null ? -1 : a.since.localeCompare(b.since);
@@ -377,6 +401,46 @@ export class PersonalDashboardService {
       since: iso(r.since),
       link: `#/projects/${r.projectId}/deadline-review`,
     }));
+  }
+
+  /** Blocked tasks: the viewer's own, and every Blocked task where they are PM or a Deputy. */
+  private async blocked(user: AuthUser, ctxs: ProjectContext[]): Promise<Array<{ id: string; title: string; projectId: string; dueOn: string }>> {
+    const managed = ctxs.filter((c) => preparesDeadlineReview(c.roles)).map((c) => c.project.id);
+    return (
+      await this.pool.query(
+        `SELECT t.id, ${shown('t', 'task', 'title')} AS title, t.project_id AS "projectId", to_char(t.due_on, 'YYYY-MM-DD') AS "dueOn"
+           FROM tasks t
+          WHERE t.project_id = ANY($1::uuid[]) AND t.status = 'blocked' AND ${liveRecordSql('t')}
+            AND (t.assignee_id = $2 OR t.project_id = ANY($3::uuid[]))
+          ORDER BY t.due_on, t.id`,
+        [ctxs.map((c) => c.project.id), user.id, managed],
+      )
+    ).rows;
+  }
+
+  /** Reviews of the viewer's unresolved risks due by the end of the project's "due soon" days, missed reviews included. */
+  private async riskReviews(user: AuthUser, ids: string[], soonEnds: Map<string, string>, nameOf: (id: string) => string): Promise<NeedsYouItem[]> {
+    const latest = [...soonEnds.values()].reduce((a, b) => (a > b ? a : b));
+    const rows = (
+      await this.pool.query(
+        `SELECT r.id, ${shown('r', 'risk', 'description')} AS description, r.project_id AS "projectId", to_char(r.review_on, 'YYYY-MM-DD') AS "reviewOn"
+           FROM risks r
+          WHERE r.project_id = ANY($1::uuid[]) AND r.responsible_id = $2 AND r.status <> 'resolved' AND r.review_on IS NOT NULL
+            AND r.review_on <= $3::date AND ${liveRecordSql('r')}
+          ORDER BY r.review_on, r.id`,
+        [ids, user.id, latest],
+      )
+    ).rows as Array<{ id: string; description: string; projectId: string; reviewOn: string }>;
+    return rows
+      .filter((r) => r.reviewOn <= (soonEnds.get(r.projectId) as string))
+      .map((r) => ({
+        kind: 'risk_review' as const,
+        projectId: r.projectId,
+        projectName: nameOf(r.projectId),
+        label: r.description,
+        since: dayStart(r.reviewOn),
+        link: recordLink(r.projectId, r.id),
+      }));
   }
 
   /** Needed lines past their needed-by date, as a count per project (PM or Deputy). */

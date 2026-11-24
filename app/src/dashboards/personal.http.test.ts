@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import { uuidv7 } from '../common/uuid7';
-import { POSSIBLE_COPY_TEXT } from '../quarantine/labels';
+import { POSSIBLE_COPY_TEXT, UNDER_REVIEW_TEXT } from '../quarantine/labels';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
@@ -279,6 +279,119 @@ describe('personal dashboard endpoint', { skip: SKIP_NO_DB }, () => {
     await t.pool.query(`INSERT INTO project_archive_events (id, project_id, kind, actor_id, reason, at) VALUES ($1, $2, 'archived', $3, 'Tidy', '2026-11-03T02:00:00Z')`, [uuidv7(), closed, ids.pm]);
     assert.deepEqual((await me('pm')).projects.map((p) => p.name), ['Harbour works']);
     assert.deepEqual((await me('pm', '?includeArchived=1')).projects.map((p) => p.name), ['Harbour works', 'Old works']);
+  });
+
+  async function risk(o: { description: string; responsible: string | null; reviewOn: string | null; status?: string }): Promise<string> {
+    const proposal = uuidv7();
+    await t.pool.query(
+      `INSERT INTO human_proposals (id, project_id, kind, text, proposed_by, proposed_at, review_status, reviewed_by, reviewed_at)
+       VALUES ($1, $2, 'risk', 'Proposed', $3, now(), 'approved', $3, now())`,
+      [proposal, projectId, ids.pm],
+    );
+    const id = uuidv7();
+    await t.pool.query(
+      `INSERT INTO risks (id, project_id, description, severity, responsible_id, review_on, status, origin_proposal_id, authorised_by, authorised_at)
+       VALUES ($1, $2, $3, 'medium', $4, $5, $6, $7, $8, now())`,
+      [id, projectId, o.description, o.responsible, o.reviewOn, o.status ?? 'open', proposal, ids.pm],
+    );
+    return id;
+  }
+  async function holdRecord(table: 'tasks' | 'risks', kind: 'task' | 'risk', id: string, state: 'held' | 'cleaned'): Promise<void> {
+    const caseId = uuidv7();
+    await t.pool.query(
+      `INSERT INTO quarantine_cases (id, project_id, item_kind, item_id, reason, marked_length, state, waiting_for_key, reported_at, cleaned_at)
+       VALUES ($1, $2, $3, $4, 'Reported', 8, $5, $6, now(), CASE WHEN $5 = 'cleaned' THEN now() END)`,
+      [caseId, projectId, kind, id, state, state === 'held'],
+    );
+    await t.pool.query(`UPDATE ${table} SET held_case_id = $2 WHERE id = $1`, [id, caseId]);
+  }
+  /** 00:00 UTC+8 on the date, as an ISO instant. */
+  const midnight = (day: string) => new Date(`${day}T00:00:00+08:00`).toISOString();
+
+  test('overdue, blocked and due-soon tasks need their assignee; a Blocked task also needs the PM', async () => {
+    const overdue = await task({ title: 'Overdue', dueOn: '2026-11-05', status: 'in_progress' });
+    const blocked = await task({ title: 'Blocked', dueOn: '2026-11-30', status: 'blocked' });
+    const today = await task({ title: 'Due today', dueOn: '2026-11-09' });
+    // Monday 9 November: seven working days on is Wednesday 18 November.
+    await task({ title: 'Due in seven working days', dueOn: '2026-11-18' });
+    await task({ title: 'Due in eight working days', dueOn: '2026-11-19' });
+    await task({ title: 'Marked', dueOn: '2026-11-03', review: true });
+    await task({ title: 'Done', dueOn: '2026-11-04', status: 'completed', completedAt: '2026-11-04T02:00:00Z' });
+    await task({ title: 'Cancelled', dueOn: '2026-11-04', status: 'cancelled' });
+    await task({ title: 'Owner blocked', assignee: ids.owner, dueOn: '2026-11-30', status: 'blocked' });
+    const gone = await task({ title: 'Deleted', dueOn: '2026-11-04', status: 'blocked' });
+    await t.pool.query(`UPDATE tasks SET deleted_at = now(), deleted_by = $2, delete_reason = 'Entered in error' WHERE id = $1`, [gone, ids.pm]);
+
+    const mem = await me('mem');
+    assert.deepEqual(kinds(mem, 'overdue'), [
+      { kind: 'overdue', projectId, projectName: 'Harbour works', label: 'Overdue', since: midnight('2026-11-05'), link: `#/projects/${projectId}/work/${overdue}` },
+    ]);
+    assert.deepEqual(kinds(mem, 'blocked'), [
+      { kind: 'blocked', projectId, projectName: 'Harbour works', label: 'Blocked', since: midnight('2026-11-30'), link: `#/projects/${projectId}/work/${blocked}` },
+    ]);
+    const soon = kinds(mem, 'due_soon');
+    assert.deepEqual(soon.map((n) => n.label), ['Due today', 'Due in seven working days']);
+    assert.deepEqual(soon[0], { kind: 'due_soon', projectId, projectName: 'Harbour works', label: 'Due today', since: midnight('2026-11-09'), link: `#/projects/${projectId}/work/${today}` });
+
+    // The PM sees every Blocked task of the project; the Owner and a Sponsor only their own.
+    const pm = await me('pm');
+    assert.deepEqual(kinds(pm, 'blocked').map((n) => n.label), ['Blocked', 'Owner blocked']);
+    assert.deepEqual([kinds(pm, 'overdue'), kinds(pm, 'due_soon')], [[], []], "not the PM's own tasks");
+    assert.deepEqual(kinds(await me('owner'), 'blocked').map((n) => n.label), ['Owner blocked']);
+    assert.deepEqual(kinds(await me('sponsor'), 'blocked'), []);
+    await t.pool.query(`INSERT INTO memberships (id, project_id, user_id, role, starts_on) VALUES ($1, $2, $3, 'deputy_pm', '2026-11-01')`, [uuidv7(), projectId, ids.sponsor2]);
+    assert.deepEqual(kinds(await me('sponsor2'), 'blocked').map((n) => n.label), ['Blocked', 'Owner blocked'], 'a Deputy PM too');
+  });
+
+  test('due soon follows the project calendar', async () => {
+    await task({ title: 'Due Monday next', dueOn: '2026-11-16' });
+    await task({ title: 'Due Tuesday next', dueOn: '2026-11-17' });
+    assert.deepEqual(kinds(await me('mem'), 'due_soon').map((n) => n.label), ['Due Monday next', 'Due Tuesday next'], 'working days');
+    await t.pool.query(`INSERT INTO project_notification_settings (project_id, day_counting) VALUES ($1, 'calendar')`, [projectId]);
+    assert.deepEqual(kinds(await me('mem'), 'due_soon').map((n) => n.label), ['Due Monday next'], 'calendar days');
+  });
+
+  test('risk reviews due within 7 days need the risk owner', async () => {
+    const soon = await risk({ description: 'Crane may fail', responsible: ids.mem, reviewOn: '2026-11-12' });
+    await risk({ description: 'Missed review', responsible: ids.mem, reviewOn: '2026-11-02', status: 'mitigating' });
+    await risk({ description: 'Review later', responsible: ids.mem, reviewOn: '2026-11-19' });
+    await risk({ description: 'Resolved', responsible: ids.mem, reviewOn: '2026-11-12', status: 'resolved' });
+    await risk({ description: 'No review date', responsible: ids.mem, reviewOn: null, status: 'accepted' });
+    await risk({ description: "Someone else's", responsible: ids.owner, reviewOn: '2026-11-12' });
+    const mem = kinds(await me('mem'), 'risk_review');
+    assert.deepEqual(mem.map((n) => n.label), ['Missed review', 'Crane may fail']);
+    assert.deepEqual(mem[1], {
+      kind: 'risk_review', projectId, projectName: 'Harbour works', label: 'Crane may fail', since: midnight('2026-11-12'), link: `#/projects/${projectId}/work/${soon}`,
+    });
+    assert.deepEqual(kinds(await me('pm'), 'risk_review'), [], 'the PM does not own them');
+    assert.deepEqual(kinds(await me('owner'), 'risk_review').map((n) => n.label), ["Someone else's"]);
+  });
+
+  test('a cleaned held task or risk shows its held label; an uncleaned one is absent', async () => {
+    const cleanedTask = await task({ title: 'Secret overdue text', dueOn: '2026-11-05' });
+    const heldTask = await task({ title: 'Secret blocked text', status: 'blocked' });
+    const cleanedRisk = await risk({ description: 'Secret risk text', responsible: ids.mem, reviewOn: '2026-11-12' });
+    await holdRecord('tasks', 'task', cleanedTask, 'cleaned');
+    await holdRecord('tasks', 'task', heldTask, 'held');
+    await holdRecord('risks', 'risk', cleanedRisk, 'cleaned');
+    const body = await me('mem');
+    assert.deepEqual(kinds(body, 'overdue').map((n) => n.label), [UNDER_REVIEW_TEXT]);
+    assert.deepEqual(kinds(body, 'blocked'), []);
+    assert.deepEqual(kinds(body, 'risk_review').map((n) => n.label), [UNDER_REVIEW_TEXT]);
+    assert.ok(!JSON.stringify(body).includes('Secret'), 'no held text anywhere');
+  });
+
+  test('an On Hold member gets none of the task and risk kinds for that project', async () => {
+    await task({ title: 'Overdue', dueOn: '2026-11-05' });
+    await task({ title: 'Blocked', status: 'blocked' });
+    await task({ title: 'Due soon', dueOn: '2026-11-10' });
+    await risk({ description: 'Crane may fail', responsible: ids.mem, reviewOn: '2026-11-12' });
+    assert.equal((await me('mem')).needsYou.length, 4);
+    await t.pool.query(`UPDATE memberships SET held_at = now(), held_by = $2, hold_reason = 'Checking' WHERE project_id = $1 AND user_id = $3`, [projectId, ids.owner, ids.mem]);
+    assert.deepEqual((await me('mem')).needsYou, []);
+    assert.equal(kinds(await me('pm'), 'blocked').length, 1, 'the PM still sees the Blocked task');
+    await t.pool.query(`UPDATE memberships SET held_at = now(), held_by = $2, hold_reason = 'Checking' WHERE project_id = $1 AND user_id = $3`, [projectId, ids.owner, ids.pm]);
+    assert.deepEqual(kinds(await me('pm'), 'blocked'), [], 'nor for a held PM');
   });
 
   test('Nothing needs you right now when empty', async () => {

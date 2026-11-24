@@ -264,7 +264,7 @@ describe('dashboard leak suites', { skip: SKIP_NO_DB }, () => {
     name: 'personal dashboard',
     questionStatus: 'answered',
     textOf: ['task', 'question'],
-    contributes: { task: ['overdue', 'eligible', 'myOverdue'], question: ['openQuestions', 'needsYou'], risk: ['significantRisks'] },
+    contributes: { task: ['overdue', 'eligible', 'myOverdue', 'needsOverdue'], question: ['openQuestions', 'needsYou'], risk: ['significantRisks'] },
     async read() {
       const body = await ok(mem.request('GET', '/dashboard/me'));
       const row = body.projects.find((x: any) => x.id === p);
@@ -276,6 +276,7 @@ describe('dashboard leak suites', { skip: SKIP_NO_DB }, () => {
           myOverdue: body.myTasks.overdue.length,
           openQuestions: row.expanded.openQuestions,
           needsYou: body.needsYou.filter((n: any) => n.kind === 'question').length,
+          needsOverdue: body.needsYou.filter((n: any) => n.kind === 'overdue').length,
           significantRisks: row.expanded.significantRisks,
         },
       };
@@ -551,6 +552,49 @@ describe('dashboard leak suites', { skip: SKIP_NO_DB }, () => {
         assertNoContent(text, 'the export audit event');
         for (const k of KINDS) assert.ok(!text.includes(MARK[k]));
         assert.ok(!text.includes('Harbour works'));
+      }
+    });
+  });
+
+  describe('Needs you: overdue, blocked, due soon and risk review', () => {
+    const NEW_KINDS = ['overdue', 'blocked', 'due_soon', 'risk_review'];
+    const newKinds = async (c: Client) => (await ok(c.request('GET', '/dashboard/me'))).needsYou.filter((n: any) => NEW_KINDS.includes(n.kind));
+    async function seedNeeds(): Promise<void> {
+      await addTask(p, `Service the ${MARK.task} pump`);
+      await addTask(p, `Blocked ${MARK.task} winch`, { status: 'blocked', dueOn: '2026-11-30' });
+      await addTask(p, `Soon ${MARK.task} hoist`, { dueOn: '2026-11-10' });
+      await addRisk(p, `The ${MARK.risk} crane may fail`, '2026-11-12');
+    }
+
+    test('the assignee and risk owner get each kind; the PM gets the Blocked task', async () => {
+      await seedNeeds();
+      assert.deepEqual((await newKinds(mem)).map((n: any) => n.kind).sort(), ['blocked', 'due_soon', 'overdue', 'risk_review']);
+      assert.deepEqual((await newKinds(pm)).map((n: any) => n.kind), ['blocked']);
+    });
+
+    test('a removed member gets none of them, and no text', async () => {
+      await seedNeeds();
+      assert.equal((await newKinds(mem)).length, 4);
+      await t.pool.query(`UPDATE memberships SET revoked_at = now(), revoked_by = $2 WHERE project_id = $1 AND user_id = $3`, [p, pmId, memId]);
+      const body = await ok(mem.request('GET', '/dashboard/me'));
+      assert.deepEqual(body.needsYou.filter((n: any) => n.projectId === p), []);
+      assert.ok(!json(body).includes(MARK.task) && !json(body).includes(MARK.risk));
+    });
+
+    test('an Audit grant holder and a leadership summary holder get none of them, and no text', async () => {
+      await seedNeeds();
+      const auditorId = await seedUser(t.pool, 'auditor@example.org');
+      await t.pool.query(
+        `INSERT INTO access_grants (id, project_id, user_id, kind, purpose, scope, starts_on, expires_on, requested_by, requested_at, decision, decided_by, decided_at)
+         VALUES ($1, $2, $3, 'audit', 'Annual audit', 'Everything', '2026-11-01', '2026-12-31', $4, now(), 'approved', $5, now())`,
+        [uuidv7(), p, auditorId, pmId, adminId],
+      );
+      const auditor = await t.signIn('auditor@example.org');
+      assert.equal((await auditor.request('GET', `/records/tasks/${(await t.pool.query(`SELECT id FROM tasks WHERE project_id = $1 LIMIT 1`, [p])).rows[0].id}`)).status, 200, 'the holder reads the records');
+      for (const c of [auditor, leader]) {
+        const body = await ok(c.request('GET', '/dashboard/me'));
+        assert.deepEqual(body.needsYou, []);
+        assert.ok(!json(body).includes(MARK.task) && !json(body).includes(MARK.risk));
       }
     });
   });

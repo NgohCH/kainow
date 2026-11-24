@@ -74,6 +74,15 @@ export const SUMMARY_LIST_LABEL = 'Shareable summary';
 export const SUMMARY_APPROVED_LABEL = 'Summary approved for sharing';
 export const FROM_RESTRICTED_LABEL = 'From a restricted source';
 
+/**
+ * SQL: source `s` (its audience joined as `a`) is in the viewer's notes list (`GET projects/:projectId/notes`): not
+ * Deleted or held, a published note, minutes or shown summary, and an audience the viewer is in. `user` and `today`
+ * are SQL parameters. Everything listed or counted beside the notes list (the Proposals tab) uses this same filter.
+ */
+export const listedSourceSql = (s: string, a: string, user: string, today: string): string =>
+  `${liveSourceSql(s)} AND ${s}.kind IN ('notes', 'minutes', 'summary') AND ${s}.publication = 'published'
+   AND ${summaryShownSql(s, { user, today })} AND ${audienceVisibleSql(a, user, today)}`;
+
 /** What a plain-notes submission adds to creating a source (spec 5.4). */
 export interface SubmissionInput {
   submittedBy: string;
@@ -373,8 +382,7 @@ export class NotesService {
               CASE WHEN s.kind = 'minutes' THEN $4::text WHEN s.kind = 'summary' THEN $5::text END AS label,
               max(v.version_no)::int AS "latestVersion", count(v.id)::int AS "versionCount", ${possibleCopyLabelSql('source', 's.id')}
          FROM sources s JOIN source_versions v ON v.source_id = s.id JOIN audiences a ON a.id = s.audience_id
-        WHERE ${liveSourceSql('s')} AND s.project_id = $1 AND s.kind IN ('notes', 'minutes', 'summary') AND s.publication = 'published'
-          AND ${summaryShownSql('s', { user: '$2', today: '$3' })} AND ${audienceVisibleSql('a', '$2', '$3')}
+        WHERE s.project_id = $1 AND ${listedSourceSql('s', 'a', '$2', '$3')}
         GROUP BY s.id ORDER BY s.created_at DESC, s.id DESC`,
       [projectId, userId, this.access.today(), MINUTES_LABEL, SUMMARY_LIST_LABEL],
     );

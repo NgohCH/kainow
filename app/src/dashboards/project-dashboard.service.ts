@@ -4,7 +4,8 @@ import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { PG_POOL } from '../db/database.module';
 import { liveRecordSql } from '../history/deleted-sql';
 import { type FinanceSummary, financeSummaryFor } from '../finance/finance.service';
-import { ProjectAccess } from '../projects/access.service';
+import { waitingProposals } from '../extraction/extraction.service';
+import { ProjectAccess, canReadContent } from '../projects/access.service';
 import { POSSIBLE_COPY_TEXT, UNDER_REVIEW_TEXT, possibleCopySql } from '../quarantine/labels';
 import { neededByPassedSql, overlappingLineSql } from '../resources/line-sql';
 import { LINE_STATUSES, type LineStatus } from '../resources/vocabulary';
@@ -29,6 +30,8 @@ export interface ProjectDashboard {
   resources: { byStatus: Record<LineStatus, number>; neededByPassed: number; overlapping: number };
   /** Figures only for financial-detail readers (the Resources tab's finance block). */
   finance: FinanceSummary;
+  /** Proposals waiting for review that the viewer may read (the Proposals tab's badge, 11a spec 6.3); 0 without content access. */
+  proposals: { waiting: number };
   computedAt: string;
   coverage: string;
 }
@@ -119,6 +122,7 @@ export class ProjectDashboardService {
       risks: { significant: risks },
       resources: { byStatus, neededByPassed, overlapping },
       finance: await financeSummaryFor(this.pool, ctx, projectId),
+      proposals: { waiting: canReadContent(ctx) ? await waitingProposals(this.pool, projectId, user.id, ctx.today) : 0 },
       computedAt: now.toISOString(),
       coverage: COVERAGE_NOTE,
     };

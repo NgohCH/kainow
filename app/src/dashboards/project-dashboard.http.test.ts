@@ -129,6 +129,64 @@ describe('project dashboard endpoint', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(r.body.questions.oldestOpen.map((q: { text: string }) => q.text), ['Q1', 'Q2', 'Q3', 'Q4', 'Q5']);
   });
 
+  /** A note by the PM with a succeeded run holding `n` pending proposals; returns what deciding them needs. */
+  async function noteWithRun(title: string, n: number): Promise<{ runId: string; versionId: string; audienceId: string; itemIds: string[] }> {
+    const created = await people.pm.request('POST', `/projects/${projectId}/notes`, { title, text: `Notes for ${title}.` });
+    assert.equal(created.status, 201, JSON.stringify(created.body));
+    const versionId = created.body.version.id as string;
+    const audienceId = (await t.pool.query(`SELECT audience_id FROM sources WHERE id = $1`, [created.body.source.id])).rows[0].audience_id as string;
+    const runId = uuidv7();
+    await t.pool.query(
+      `INSERT INTO extraction_runs (id, source_version_id, requested_by, status, item_count, unlocated_count, created_at, finished_at) VALUES ($1, $2, $3, 'succeeded', $4, 0, now(), now())`,
+      [runId, versionId, ids.pm, n],
+    );
+    const itemIds: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const id = uuidv7();
+      await t.pool.query(
+        `INSERT INTO extraction_items (id, run_id, source_version_id, position, kind, text, quote, quote_start, quote_end, quote_matches, created_at)
+         VALUES ($1, $2, $3, $4, 'decision', 'Proposed', 'Notes', 0, 5, 1, now())`,
+        [id, runId, versionId, i],
+      );
+      itemIds.push(id);
+    }
+    return { runId, versionId, audienceId, itemIds };
+  }
+  const waiting = async (person: string): Promise<number> => {
+    const r = await get(person);
+    assert.equal(r.status, 200, JSON.stringify(r.body));
+    return r.body.proposals.waiting as number;
+  };
+
+  test('waiting proposals: pending extraction items and human proposals, none once decided', async () => {
+    assert.equal(await waiting('mem'), 0);
+    const run = await noteWithRun('Weekly', 2);
+    const proposed = await people.mem.request('POST', `/projects/${projectId}/proposals`, { kind: 'risk', text: 'The crane may fail' });
+    assert.equal(proposed.status, 201, JSON.stringify(proposed.body));
+    assert.deepEqual([await waiting('mem'), await waiting('pm'), await waiting('auditor')], [3, 3, 3]);
+
+    for (const itemId of run.itemIds) {
+      const r = await people.pm.request('POST', `/extractions/${run.runId}/items/${itemId}/review`, { decision: 'rejected', sourceVersionId: run.versionId });
+      assert.equal(r.status, 200, JSON.stringify(r.body));
+    }
+    const rejected = await people.pm.request('POST', `/proposals/${proposed.body.proposal.id}/reject`, { reason: 'Already covered' });
+    assert.equal(rejected.status, 200, JSON.stringify(rejected.body));
+    assert.deepEqual([await waiting('mem'), await waiting('pm')], [0, 0]);
+  });
+
+  test("a Restricted note's proposals are counted for its audience only", async () => {
+    const mem2 = await seedUser(t.pool, 'mem2@example.com');
+    await t.pool.query(`INSERT INTO memberships (id, project_id, user_id, role, starts_on) VALUES ($1, $2, $3, 'member', '2026-11-01')`, [uuidv7(), projectId, mem2]);
+    people.mem2 = await t.signIn('mem2@example.com');
+    await noteWithRun('Weekly', 1);
+    const closed = await noteWithRun('Personnel', 2);
+    const narrowed = await people.pm.request('PUT', `/audiences/${closed.audienceId}`, { mode: 'restricted', namedUserIds: [ids.mem], reason: 'Personnel matters' });
+    assert.equal(narrowed.status, 200, JSON.stringify(narrowed.body));
+    assert.deepEqual([await waiting('pm'), await waiting('mem')], [3, 3], 'the PM and the named member');
+    assert.equal(await waiting('mem2'), 1, 'a member outside the audience');
+    assert.equal(await waiting('auditor'), 1, 'an Audit grant holder outside the audience');
+  });
+
   test('audit grant holder sees figures', async () => {
     await invite('Ada Invitee');
     const r = await get('auditor');

@@ -9,7 +9,8 @@ import { PROPOSAL_REJECTED_REASON, lockPendingAuthorisation, rejectPendingAuthor
 import { PG_POOL } from '../db/database.module';
 import { notHeldSql, refuseHeld } from '../history/deleted-sql';
 import { QUOTE_CHANGED_TEXT, quoteChangedItems } from '../quarantine/clean';
-import { possibleCopyLabelSql } from '../quarantine/labels';
+import { POSSIBLE_COPY_TEXT, possibleCopyLabelSql, possibleCopySql } from '../quarantine/labels';
+import { listedSourceSql } from '../notes/notes.service';
 import { locateQuote } from '../notes/text';
 import { activeMembershipSql } from '../projects/access-sql';
 import { ROLE_LABEL } from '../projects/matrix';
@@ -147,7 +148,57 @@ const REQUESTER_LABEL = `${triggerLabelSql(
   `(SELECT display_name FROM users WHERE id = r.requested_by)`,
 )} AS "requestedByLabel"`;
 
-export const SUMMARY_NOT_EVIDENCE = 'A shareable summary is never used as evidence, so it cannot be analysed for proposals.';
+/** One extraction run as the project's Proposals tab lists it (11a spec 6.3). */
+export interface ProposalRun {
+  runId: string;
+  sourceId: string;
+  /** The note's title, or the possible-copy label while the note is one (as the notes list shows it). */
+  sourceTitle: string;
+  versionNo: number;
+  finishedAt: string;
+  /** Proposals still waiting for review; held proposals are left out of both counts, as the review screen leaves them out. */
+  waiting: number;
+  total: number;
+}
+
+/** Succeeded runs with proposals, of the project's notes in the viewer's notes list (its permission and audience filter). */
+const LISTED_RUN_ITEMS = `extraction_runs r JOIN source_versions v ON v.id = r.source_version_id JOIN sources s ON s.id = v.source_id
+  JOIN audiences a ON a.id = s.audience_id JOIN extraction_items i ON i.run_id = r.id AND ${notHeldSql('i')}
+ WHERE r.status = 'succeeded' AND s.project_id = $1 AND ${listedSourceSql('s', 'a', '$2', '$3')}`;
+
+/**
+ * The Proposals tab's runs, newest first (`GET /projects/:projectId/proposal-runs`). The caller has checked `note.view`;
+ * runs of notes outside the viewer's audience are neither listed nor counted.
+ */
+export async function proposalRuns(db: Queryable, projectId: string, userId: string, today: string): Promise<ProposalRun[]> {
+  const { rows } = await db.query(
+    `SELECT r.id AS "runId", s.id AS "sourceId",
+            CASE WHEN ${possibleCopySql('source', 's.id')} THEN '${POSSIBLE_COPY_TEXT}' ELSE s.title END AS "sourceTitle",
+            v.version_no AS "versionNo", COALESCE(r.finished_at, r.created_at) AS "finishedAt",
+            (count(*) FILTER (WHERE i.review_status = 'pending'))::int AS waiting, count(*)::int AS total
+       FROM ${LISTED_RUN_ITEMS}
+      GROUP BY r.id, s.id, v.version_no
+      ORDER BY COALESCE(r.finished_at, r.created_at) DESC, r.id DESC`,
+    [projectId, userId, today],
+  );
+  return rows.map((r) => ({ ...r, finishedAt: (r.finishedAt as Date).toISOString() }));
+}
+
+/**
+ * Proposals waiting for review that the viewer may read (the project dashboard's `proposals.waiting`): pending
+ * extraction proposals of notes in their notes list, plus pending people's proposals. The caller decides whether the
+ * viewer may read project content at all.
+ */
+export async function waitingProposals(db: Queryable, projectId: string, userId: string, today: string): Promise<number> {
+  const { rows } = await db.query(
+    `SELECT (SELECT count(*) FROM ${LISTED_RUN_ITEMS} AND i.review_status = 'pending')::int
+          + (SELECT count(*) FROM human_proposals h WHERE h.project_id = $1 AND h.review_status = 'pending' AND ${notHeldSql('h')})::int AS n`,
+    [projectId, userId, today],
+  );
+  return rows[0].n as number;
+}
+
+export const SUMMARY_NOT_EVIDENCE ='A shareable summary is never used as evidence, so it cannot be analysed for proposals.';
 
 @Injectable()
 export class ExtractionService {

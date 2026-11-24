@@ -7,7 +7,7 @@ import type { AuthUser } from '../auth/tokens';
 import { AudienceService } from '../discussion/audience.service';
 import { ProjectAccess } from '../projects/access.service';
 import { type ProjectAction, decide } from '../projects/matrix';
-import { ExtractionService } from './extraction.service';
+import { ExtractionService, proposalRuns } from './extraction.service';
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const uuid = (v: string): string => (UUID.test(v) ? v : fail());
@@ -43,6 +43,18 @@ export class ExtractionController {
       [runId],
     );
     return this.forSource(req, rows[0].sourceId, action);
+  }
+
+  /**
+   * The project's extraction runs for the Proposals tab (11a spec 6.3): read-only, with the notes list's permission and
+   * source-audience filter, so a Restricted note's runs are not listed outside its audience. Served beside
+   * `GET projects/:id/proposals` (the people's proposals), whose address was already taken.
+   */
+  @Get('projects/:projectId/proposal-runs')
+  @AnySignedInUser()
+  async runs(@Param('projectId') projectId: string, @Req() req: HttpRequest) {
+    const ctx = await this.access.authorize(who(req), 'note.view', uuid(projectId));
+    return { runs: await proposalRuns(this.pool, ctx.project.id, who(req).id, ctx.today) };
   }
 
   /** Asks the AI to propose decisions, actions, questions and risks from one exact version. Returns at once (202). */
