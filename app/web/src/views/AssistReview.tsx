@@ -135,7 +135,7 @@ export function AssistReview({ projectId, roles }: { projectId: string; roles: s
   if (answerActions.length === 0 && summaryActions.length === 0)
     return (
       <p className="empty">
-        Nothing here is for your role to review. A summary you drafted is opened from the <a href={`#/projects/${projectId}/notes`}>note or meeting</a> it came from.
+        Nothing here is for your role to review. A summary you drafted is opened from the <a href={`#/projects/${projectId}/notes`}>note</a> or <a href={`#/projects/${projectId}/discussion`}>meeting</a> it came from.
       </p>
     );
 

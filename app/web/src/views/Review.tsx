@@ -9,6 +9,7 @@ import { waitingLine, type RequestView } from '../changes.ts';
 import { KIND_LABEL, plural } from '../format.ts';
 import { REVIEW_STATUS_LABEL } from '../records.ts';
 import { canMarkByOffset, evidenceView, occurrenceChoiceText } from '../discussion.ts';
+import { reviewOwnsKey } from '../reviewKeys.ts';
 import { buildSegments, contextAround, markedSpan } from '../segments.ts';
 import { type EditFields, blocksApproval, dueLine, editFormFrom, formatDay } from '../due.ts';
 
@@ -76,6 +77,7 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
     },
     [view, runId, pick, reloadRequests],
   );
+  const root = useRef<HTMLDivElement>(null);
   const marks = useRef(new Map<string, HTMLElement>());
   const cards = useRef(new Map<string, HTMLElement>());
 
@@ -185,8 +187,9 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
   // j and k move between proposals, a approves and r rejects the one in focus.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      const t = e.target as HTMLElement;
-      if (e.metaKey || e.ctrlKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+      // Inside the project shell the Ask panel can sit over the review: its keys, and any outside the review, are not shortcuts.
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (!reviewOwnsKey(e.target as HTMLElement | null, root.current, document.body, document.querySelector('.ask-panel') !== null)) return;
       const idx = items.findIndex((i) => i.id === selected);
       if (e.key === 'j' && idx < items.length - 1) select(items[idx + 1].id, true);
       else if (e.key === 'k' && idx > 0) select(items[idx - 1].id, true);
@@ -206,7 +209,7 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
   const status = (id: string) => byId.get(id)?.reviewStatus ?? 'pending';
 
   return (
-    <div className="review">
+    <div className="review" ref={root}>
       <p><a href={`#/notes/${view.source.sourceId}/v/${view.source.versionNo}`}>Back to {view.source.title}</a></p>
       <div className="row">
         <h2>Review proposals</h2>

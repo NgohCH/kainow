@@ -149,6 +149,7 @@ export function Notes({
   canAdd,
   canSubmit,
   addRequest = 0,
+  onAddHandled,
 }: {
   projectId: string;
   /** Project Manager, Deputy, Owner or Sponsor: notes are imported straight away. */
@@ -157,6 +158,8 @@ export function Notes({
   canSubmit: boolean;
   /** Goes up each time "Add notes" is chosen in the project header: the form opens with focus in it. */
   addRequest?: number;
+  /** Called once the form has opened for that request, so a later visit to the tab does not open it again. */
+  onAddHandled?: () => void;
 }) {
   const { items, error } = useItems(projectId, NOTE_KINDS);
   const [adding, setAdding] = useState(addRequest > 0);
@@ -164,10 +167,13 @@ export function Notes({
   useEffect(() => {
     if (addRequest > 0) setAdding(true);
   }, [addRequest]);
-  // Chosen from the header: the form is open and its first field has focus.
+  // Chosen from the header: the form is open and its first field has focus; then the request is spent.
   useEffect(() => {
-    if (addRequest > 0 && adding) form.current?.querySelector<HTMLElement>('select, input, textarea')?.focus();
-  }, [addRequest, adding]);
+    if (addRequest > 0 && adding) {
+      form.current?.querySelector<HTMLElement>('select, input, textarea')?.focus();
+      onAddHandled?.();
+    }
+  }, [addRequest, adding, onAddHandled]);
 
   return (
     <section aria-labelledby="notes-heading">

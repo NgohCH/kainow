@@ -63,7 +63,6 @@ import { type Act, ArchivePanel, DepartmentMove, GrantsSection, HandoverForm, Ho
 
 /** What the address shows: a tab's key (`resources/report` sits under Resources), or `run`, one run's review under Proposals. */
 export type ProjectView = 'overview' | 'resources' | 'resources/report' | 'people' | 'discussion' | 'notes' | 'proposals' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | 'timeline' | 'outputs' | 'run';
-type Tab = ProjectView;
 
 /** What the binder tabs' badges and lifecycle tabs need. */
 interface TabCounts { waiting: number; overdue: number; mayPrepare: boolean; deadlineTasks: number }
@@ -71,7 +70,7 @@ const NO_COUNTS: TabCounts = { waiting: 0, overdue: 0, mayPrepare: false, deadli
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
-export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsReady, onPrefs }: { projectId: string; tab: Tab; meId: string; itemId?: string; runId?: string; prefs: Prefs; prefsReady: boolean; onPrefs: (next: Prefs) => Promise<void> }) {
+export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsReady, onPrefs }: { projectId: string; tab: ProjectView; meId: string; itemId?: string; runId?: string; prefs: Prefs; prefsReady: boolean; onPrefs: (next: Prefs) => Promise<void> }) {
   const [project, setProject] = useState<Project | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
@@ -159,7 +158,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
   // Members read the notes; so does an Audit or Oversight grant holder, read-only.
   const contentAllowed = roles.length > 0 || project.access !== null;
   // A person's proposal used to be linked as notes/<id>; it now sits on the Proposals tab.
-  const view: Tab = tab === 'notes' && itemId ? 'proposals' : tab;
+  const view: ProjectView = tab === 'notes' && itemId ? 'proposals' : tab;
   const current = tabForHash(tab, itemId);
   const tabs = projectTabs({
     roles,
@@ -301,7 +300,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
           memberships={project.memberships}
         />
       )}
-      {view === 'notes' && contentAllowed && <Notes projectId={project.id} canAdd={canAddNotes} canSubmit={canSubmitNotes} addRequest={addNotes} />}
+      {view === 'notes' && contentAllowed && <Notes projectId={project.id} canAdd={canAddNotes} canSubmit={canSubmitNotes} addRequest={addNotes} onAddHandled={() => setAddNotes(0)} />}
       {view === 'proposals' && contentAllowed && (
         <ProjectProposals
           projectId={project.id}
