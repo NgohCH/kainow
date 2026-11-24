@@ -167,6 +167,7 @@ describe('analytics definitions and CSV export', { skip: SKIP_NO_DB }, () => {
     const row = csv.find((r) => r[0] === 'Project' && r[1] === 'Alpha works') as string[];
     assert.equal(row[col('Owning department')], 'Alpha Unit');
     assert.equal(row[col('Status')], 'Active');
+    assert.equal(row[col('Stage template')], 'General');
     assert.equal(row[col('Stage')], pr.stage.stage);
     assert.equal(row[col('Days in stage')], String(pr.stage.days));
     assert.equal(row[col('Completed tasks')], String(pr.completion.done));

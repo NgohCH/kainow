@@ -6,7 +6,7 @@ import { PROJECT_STATUSES } from './matrix';
 const ok = { allowed: true };
 const base = (over: Partial<TransitionRequest>): TransitionRequest => ({
   from: 'draft', to: 'planned', roles: [], isAdmin: false, reason: 'Because', outcome: null, stage: null,
-  missingAccepted: [], missingActive: [], separationOk: true, ...over,
+  stages: ['Initiation', 'Planning', 'Execution', 'Review & Acceptance', 'Closure'], missingAccepted: [], missingActive: [], separationOk: true, ...over,
 });
 
 const ALLOWED: Array<[TransitionRequest['from'], TransitionRequest['to'], Partial<TransitionRequest>]> = [
@@ -74,4 +74,13 @@ test('moving to Planned needs accepted roles, not active ones; deferring and clo
   assert.deepEqual(checkTransition(base({ from: 'draft', to: 'planned', roles: ['pm'], missingActive: ['a Project Manager'] })), ok);
   assert.deepEqual(checkTransition(base({ from: 'active', to: 'deferred', roles: ['pm'], missingAccepted: ['a Project Manager'], missingActive: ['a Project Manager'] })), ok);
   assert.deepEqual(checkTransition(base({ from: 'active', to: 'closed', roles: ['owner'], outcome: 'abandoned', missingActive: ['a Project Manager'] })), ok);
+});
+
+test("resuming or reopening continues in one of the project's own active stages (D131)", () => {
+  const stages = ['Proposal', 'Literature review', 'Data collection'];
+  assert.deepEqual(checkTransition(base({ from: 'closed', to: 'active', roles: ['owner'], stage: 'Data collection', stages })), ok);
+  assert.deepEqual(checkTransition(base({ from: 'deferred', to: 'active', roles: ['pm'], stage: 'Execution', stages })), {
+    allowed: false,
+    reason: 'Choose the stage to continue in.',
+  });
 });

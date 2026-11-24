@@ -11,6 +11,7 @@ import { SpendSettingsService } from '../spend/spend.settings';
 import { KEY_A, seedAiConnection, seedAiModel, seedProjectAllowance } from '../testing/ai-connections';
 import { CaptureSender } from '../testing/fakes';
 import { ADMIN_EMAIL, LOAD_DOMAIN, LOAD_ORGANISATION } from './guard';
+import { GENERAL_TEMPLATE_ID } from '../projects/stage-templates';
 
 export { ADMIN_EMAIL, LOAD_DOMAIN, LOAD_ORGANISATION, assertLoadDatabase } from './guard';
 
@@ -105,6 +106,11 @@ function seedSql(people: number, projects: number, now: Date): string[] {
     SELECT ${project('p')}, 'Load Project ' || lpad((p + 1)::text, 2, '0'), 'Deliver the ' || (ARRAY[${SEARCH_WORDS.map((w) => `'${w}'`).join(', ')}])[p % ${SEARCH_WORDS.length} + 1] || ' work of load project ' || (p + 1),
            md5('load-dept-' || (p % ${DEPARTMENTS.length}))::uuid, (${NOW})::date + (60 + p * 5), 'active', ${user('1')}, ${NOW} - interval '45 days'
       FROM generate_series(0, ${projects - 1}) p`);
+  // Each project's own copy of General's stages (D131), as creating a project gives it.
+  sql.push(`UPDATE projects SET stage_template_id = '${GENERAL_TEMPLATE_ID}' WHERE stage_template_id IS NULL`);
+  sql.push(`INSERT INTO project_stages (id, project_id, position, name, substages, status, added_by, added_at)
+    SELECT md5('load-pstage-' || p || '-' || s.position)::uuid, ${project('p')}, s.position, s.name, s.substages, 'active', ${user('1')}, ${NOW} - interval '45 days'
+      FROM generate_series(0, ${projects - 1}) p CROSS JOIN stage_template_stages s WHERE s.template_id = '${GENERAL_TEMPLATE_ID}'`);
   sql.push(`INSERT INTO project_stage_periods (id, project_id, stage, started_at, ended_at, started_by)
     SELECT md5('load-stage-a-' || p)::uuid, ${project('p')}, 'Initiation', ${NOW} - interval '45 days', ${NOW} - interval '30 days' + (p % 7) * interval '1 day', ${user('1')}
       FROM generate_series(0, ${projects - 1}) p`);

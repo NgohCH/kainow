@@ -92,12 +92,9 @@ describe('stage templates over HTTP', { skip: SKIP_NO_DB }, () => {
   });
 
   test("changing a template replaces its name, description and stages, never a project's copy; audit has both versions", async () => {
-    const projectId = await seedProject(t.pool, { members: [{ userId: memberId, role: 'pm' }] });
-    await t.pool.query(
-      `INSERT INTO project_stages (id, project_id, position, name, substages, added_at) VALUES (gen_random_uuid(), $1, 1, 'Discovery', '{}', now())`,
-      [projectId],
-    );
     const software = await byName('Software development');
+    // The project's own copy, taken from the template when the project was made.
+    const projectId = await seedProject(t.pool, { members: [{ userId: memberId, role: 'pm' }], stageTemplateId: software.id });
     const next = { name: 'Software delivery', description: '', stages: [{ name: 'Discovery', substages: ['Interviews'] }, { name: 'Build', substages: [] }], reason };
     const res = await admin.request('PUT', `/stage-templates/${software.id}`, next);
     assert.equal(res.status, 200);
@@ -114,8 +111,8 @@ describe('stage templates over HTTP', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(audit[0].detail.next, { name: 'Software delivery', description: null, stages: next.stages });
     assert.equal(audit[0].detail.reason, reason);
     assert.deepEqual(
-      (await t.pool.query(`SELECT name, substages FROM project_stages WHERE project_id = $1`, [projectId])).rows,
-      [{ name: 'Discovery', substages: [] }],
+      (await t.pool.query(`SELECT name, substages FROM project_stages WHERE project_id = $1 ORDER BY position`, [projectId])).rows,
+      software.stages,
       'the project keeps its copy',
     );
     assert.equal((await admin.request('PUT', `/stage-templates/00000000-0000-4000-8000-000000000000`, next)).status, 404);

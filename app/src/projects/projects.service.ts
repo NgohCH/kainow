@@ -1,5 +1,5 @@
 import { liveRecordRefSql, liveRecordSql } from '../history/deleted-sql';
-import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { readReason, refuseSecretsIn } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
@@ -18,19 +18,34 @@ import { loadArchiveState } from './archive';
 import { DepartmentTransferService } from './department-transfer.service';
 import { OrganisationService } from './organisation.service';
 import { grantState } from './grants';
-import { type ClosureOutcome, STAGES, checkTransition } from './lifecycle';
+import { type ClosureOutcome, checkTransition } from './lifecycle';
 import { type MembershipRow, membershipState, requiredRolesCheck, separationCheck } from './membership';
 import { type ProjectStatus, PROJECT_STATUSES } from './matrix';
+import { TEMPLATE_LIMITS } from './stage-templates';
+import { refuseSecrets } from '../discussion/messages';
 
+/** One of a project's own stages (D131): a copy of its template's stage, or one the project added. */
+export interface ProjectStage {
+  id: string;
+  name: string;
+  substages: string[];
+  status: 'active' | 'retired';
+}
 
-/** The documents' optional default substages; projects may leave them unused. */
-export const SUBSTAGES: Readonly<Record<string, readonly string[]>> = {
-  Initiation: ['Define Purpose', 'Identify Participants', 'Confirm Accountability'],
-  Planning: ['Define Scope', 'Break Down Work', 'Identify Resources', 'Approve Plan'],
-  Execution: ['In Progress', 'Monitoring & Follow-up'],
-  'Review & Acceptance': ['Review Deliverables', 'Resolve Outstanding Items', 'Confirm Acceptance'],
-  Closure: ['Record Outcome', 'Handover', 'Close Project'],
-};
+/** The project's stages in their order, retired ones in their place. */
+async function loadStages(db: Pool | PoolClient, projectId: string): Promise<ProjectStage[]> {
+  return (await db.query(`SELECT id, name, substages, status FROM project_stages WHERE project_id = $1 ORDER BY position, id`, [projectId])).rows;
+}
+
+const NOT_OFFERED = 'Choose a type of project that is still offered.';
+
+/** A stage or substage name: trimmed, 1 to 80 characters, credential-checked. */
+function readStageName(input: unknown, refusal: string): string {
+  const name = typeof input === 'string' ? input.normalize('NFC').trim() : '';
+  if (name === '' || name.length > TEMPLATE_LIMITS.nameChars) throw new BadRequestException(refusal);
+  refuseSecrets(name);
+  return name;
+}
 
 const OUTCOMES: readonly ClosureOutcome[] = ['delivered', 'partially_delivered', 'abandoned'];
 
@@ -109,18 +124,29 @@ export class ProjectsService {
         throw new ForbiddenException('Your email domain is no longer eligible; ask an Administrator.');
       }
       const d = await this.cleanDetails(client, input);
+      const templateId = await this.chooseTemplate(client, input.stageTemplateId);
       id = uuidv7(at.getTime());
       await client.query(
-        `INSERT INTO projects (id, name, purpose, owning_department_id, planned_end, status, created_by, created_at)
-         VALUES ($1, $2, $3, $4, $5, 'draft', $6, $7)`,
-        [id, d.name, d.purpose, d.owningDepartmentId, d.plannedEnd, user.id, at],
+        `INSERT INTO projects (id, name, purpose, owning_department_id, planned_end, status, created_by, created_at, stage_template_id)
+         VALUES ($1, $2, $3, $4, $5, 'draft', $6, $7, $8)`,
+        [id, d.name, d.purpose, d.owningDepartmentId, d.plannedEnd, user.id, at, templateId],
       );
       for (const dep of d.contributingDepartmentIds) {
         await client.query(`INSERT INTO project_departments (project_id, department_id) VALUES ($1, $2)`, [id, dep]);
       }
+      // The project keeps its own copy of the template's stages (spec 14): later template edits never reach it.
+      const stages = (
+        await client.query<{ name: string; substages: string[] }>(`SELECT name, substages FROM stage_template_stages WHERE template_id = $1 ORDER BY position, id`, [templateId])
+      ).rows;
+      for (const [i, s] of stages.entries()) {
+        await client.query(
+          `INSERT INTO project_stages (id, project_id, position, name, substages, status, added_by, added_at) VALUES ($1, $2, $3, $4, $5, 'active', $6, $7)`,
+          [uuidv7(at.getTime()), id, i + 1, s.name, s.substages, user.id, at],
+        );
+      }
       await client.query(
-        `INSERT INTO project_stage_periods (id, project_id, stage, started_at, started_by) VALUES ($1, $2, 'Initiation', $3, $4)`,
-        [uuidv7(at.getTime()), id, at, user.id],
+        `INSERT INTO project_stage_periods (id, project_id, stage, started_at, started_by) VALUES ($1, $2, $3, $4, $5)`,
+        [uuidv7(at.getTime()), id, stages[0].name, at, user.id],
       );
       // The administrator who creates the first project appoints its roles; anyone else becomes its first PM.
       if (!first) {
@@ -132,7 +158,7 @@ export class ProjectsService {
           [uuidv7(at.getTime()), m, today, user.id, at],
         );
       }
-      await writeAudit(client, { at, action: 'project.created', actorUserId: user.id, subjectType: 'project', subjectId: id, detail: { first } });
+      await writeAudit(client, { at, action: 'project.created', actorUserId: user.id, subjectType: 'project', subjectId: id, detail: { first, stageTemplateId: templateId } });
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
@@ -141,6 +167,24 @@ export class ProjectsService {
       client.release();
     }
     return this.detail(user, id);
+  }
+
+  /**
+   * The active template a new project copies: the one asked for, else the active template named General, else the first
+   * active one. Its row is locked so it cannot be retired or changed while it is copied.
+   */
+  private async chooseTemplate(db: PoolClient, requested: unknown): Promise<string> {
+    if (requested === undefined || requested === null || requested === '') {
+      const { rows } = await db.query(
+        `SELECT id FROM stage_templates WHERE status = 'active' ORDER BY (lower(name) = 'general') DESC, position, id LIMIT 1 FOR SHARE`,
+      );
+      if (!rows[0]) throw new BadRequestException(NOT_OFFERED);
+      return rows[0].id;
+    }
+    if (typeof requested !== 'string' || !UUID.test(requested)) throw new BadRequestException(NOT_OFFERED);
+    const { rowCount } = await db.query(`SELECT 1 FROM stage_templates WHERE id = $1 AND status = 'active' FOR SHARE`, [requested]);
+    if (!rowCount) throw new BadRequestException(NOT_OFFERED);
+    return requested;
   }
 
   /** The person's own projects; for an administrator also every project's name, status and role holders. */
@@ -221,8 +265,10 @@ export class ProjectsService {
     const p = (
       await this.pool.query(
         `SELECT p.id, p.name, p.purpose, to_char(p.planned_end, 'YYYY-MM-DD') AS "plannedEnd", p.status, p.closure_outcome AS "closureOutcome",
-                p.created_at AS "createdAt", json_build_object('id', d.id, 'name', d.name) AS "owningDepartment"
-           FROM projects p JOIN departments d ON d.id = p.owning_department_id WHERE p.id = $1`,
+                p.created_at AS "createdAt", json_build_object('id', d.id, 'name', d.name) AS "owningDepartment",
+                CASE WHEN t.id IS NULL THEN NULL ELSE json_build_object('id', t.id, 'name', t.name) END AS "stageTemplate"
+           FROM projects p JOIN departments d ON d.id = p.owning_department_id LEFT JOIN stage_templates t ON t.id = p.stage_template_id
+          WHERE p.id = $1`,
         [id],
       )
     ).rows[0];
@@ -264,6 +310,7 @@ export class ProjectsService {
       contributingDepartments: contributing,
       stage: stagePeriods.find((s) => s.endedAt === null) ?? null,
       stagePeriods,
+      stages: await loadStages(this.pool, id),
       transitions,
       memberships: ctx.rows.map((m) => ({
         id: m.id,
@@ -414,6 +461,7 @@ export class ProjectsService {
         reason,
         outcome,
         stage,
+        stages: (await loadStages(client, id)).filter((s) => s.status === 'active').map((s) => s.name),
         missingAccepted: requiredRolesCheck(ctx.rows, ctx.today, 'accepted').missing,
         missingActive: requiredRolesCheck(ctx.rows, ctx.today, 'active').missing,
         separationOk: separationCheck(ctx.rows, ctx.today).ok,
@@ -495,14 +543,16 @@ export class ProjectsService {
 
   async changeStage(user: AuthUser, id: string, input: Record<string, unknown>) {
     const stage = optionalText(input.stage);
-    if (stage === null || !STAGES.includes(stage)) throw new BadRequestException('Choose a stage.');
     const substage = optionalText(input.substage);
-    if (substage !== null && !SUBSTAGES[stage].includes(substage)) throw new BadRequestException(`Choose a substage of ${stage}.`);
     const at = this.now();
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
       await this.access.authorize(user, 'project.stage', id, client, true);
+      // Any of the project's own active stages may be next (stages are not sequential, C09).
+      const chosen = (await loadStages(client, id)).find((s) => s.status === 'active' && s.name === stage);
+      if (stage === null || !chosen) throw new BadRequestException('Choose a stage.');
+      if (substage !== null && !chosen.substages.includes(substage)) throw new BadRequestException(`Choose a substage of ${stage}.`);
       refuseSecretsIn(input.reason);
       await this.startStage(client, id, stage, substage, optionalText(input.reason), user.id, at);
       await writeAudit(client, { at, action: 'project.stage', actorUserId: user.id, subjectType: 'project', subjectId: id, detail: { stage, substage } });
@@ -514,6 +564,93 @@ export class ProjectsService {
       client.release();
     }
     return this.detail(user, id);
+  }
+
+  /** `{ name, substages?, position, reason }`: a new active stage at `position` (1 = first) in the project's list. */
+  async addStage(user: AuthUser, id: string, input: Record<string, unknown>) {
+    const name = readStageName(input.name, `Give the stage a name of 1 to ${TEMPLATE_LIMITS.nameChars} characters.`);
+    const rawSubs = input.substages === undefined || input.substages === null ? [] : input.substages;
+    if (!Array.isArray(rawSubs)) throw new BadRequestException(`Give the substages of ${name} as a list.`);
+    if (rawSubs.length > TEMPLATE_LIMITS.substagesPerStage) throw new BadRequestException(`A stage can have at most ${TEMPLATE_LIMITS.substagesPerStage} substages.`);
+    const substages = rawSubs.map((x) => readStageName(x, `Give each substage a name of 1 to ${TEMPLATE_LIMITS.nameChars} characters.`));
+    if (new Set(substages.map((x) => x.toLowerCase())).size !== substages.length) throw new BadRequestException('Substage names must differ within a stage.');
+    const position = input.position;
+    const reason = readReason(input.reason, 'a reason', { max: TEMPLATE_LIMITS.reasonChars });
+    return this.changeStages(user, id, async (c, stages, at) => {
+      if (typeof position !== 'number' || !Number.isInteger(position) || position < 1 || position > stages.length + 1) {
+        throw new BadRequestException(`Choose a place from 1 to ${stages.length + 1}.`);
+      }
+      if (stages.some((s) => s.name.toLowerCase() === name.toLowerCase())) throw new BadRequestException('This project already has a stage with that name.');
+      const stageId = uuidv7(at.getTime());
+      await c.query(
+        `INSERT INTO project_stages (id, project_id, position, name, substages, status, added_by, added_at) VALUES ($1, $2, $3, $4, $5, 'active', $6, $7)`,
+        [stageId, id, position, name, substages, user.id, at],
+      );
+      const order = stages.map((s) => s.id);
+      order.splice(position - 1, 0, stageId);
+      await this.writeOrder(c, order);
+      return { action: 'project.stage_added', detail: { stage: name, substages, position, reason } };
+    });
+  }
+
+  /** `{ ids, reason }`: every one of the project's stages (retired ones too), once, in the new order. */
+  async reorderStages(user: AuthUser, id: string, input: Record<string, unknown>) {
+    const ids = input.ids;
+    const reason = readReason(input.reason, 'a reason', { max: TEMPLATE_LIMITS.reasonChars });
+    return this.changeStages(user, id, async (c, stages) => {
+      const known = new Set(stages.map((s) => s.id));
+      if (!Array.isArray(ids) || ids.length !== stages.length || new Set(ids).size !== ids.length || !ids.every((x) => known.has(x))) {
+        throw new BadRequestException('List every stage of the project once.');
+      }
+      await this.writeOrder(c, ids as string[]);
+      const nameOf = new Map(stages.map((s) => [s.id, s.name]));
+      return { action: 'project.stages_reordered', detail: { previous: stages.map((s) => s.name), next: (ids as string[]).map((x) => nameOf.get(x)), reason } };
+    });
+  }
+
+  /** Retires a stage so it can no longer be chosen, or brings it back; past periods keep its name either way. */
+  async setStageStatus(user: AuthUser, id: string, stageId: string, status: 'active' | 'retired', input: Record<string, unknown>) {
+    const reason = readReason(input.reason, 'a reason', { max: TEMPLATE_LIMITS.reasonChars });
+    return this.changeStages(user, id, async (c, stages, at) => {
+      const stage = stages.find((s) => s.id === stageId);
+      if (!stage) throw new NotFoundException('That stage is not in this project.');
+      if (stage.status === status) throw new ConflictException(status === 'retired' ? 'That stage is already retired.' : 'That stage is not retired.');
+      if (status === 'retired') {
+        const current = (await c.query(`SELECT stage FROM project_stage_periods WHERE project_id = $1 AND ended_at IS NULL`, [id])).rows[0]?.stage;
+        if (current === stage.name) throw new ConflictException('This is the current stage. Move to another stage first.');
+      }
+      await c.query(`UPDATE project_stages SET status = $2, retired_by = $3, retired_at = $4 WHERE id = $1`, [
+        stageId, status, status === 'retired' ? user.id : null, status === 'retired' ? at : null,
+      ]);
+      return { action: status === 'retired' ? 'project.stage_retired' : 'project.stage_restored', detail: { stage: stage.name, reason } };
+    });
+  }
+
+  /** Delegated to the Project Manager, Owner and Sponsors while the project is open; each change is audited with its reason. */
+  private async changeStages(
+    user: AuthUser,
+    id: string,
+    fn: (c: PoolClient, stages: ProjectStage[], at: Date) => Promise<{ action: string; detail: Record<string, unknown> }>,
+  ) {
+    const at = this.now();
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await this.access.authorize(user, 'project.stages', id, client, true);
+      const { action, detail } = await fn(client, await loadStages(client, id), at);
+      await writeAudit(client, { at, action, actorUserId: user.id, subjectType: 'project', subjectId: id, detail });
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+    return this.detail(user, id);
+  }
+
+  private async writeOrder(c: PoolClient, ids: string[]) {
+    for (const [i, stageId] of ids.entries()) await c.query(`UPDATE project_stages SET position = $2 WHERE id = $1`, [stageId, i + 1]);
   }
 
   private async startStage(db: PoolClient, id: string, stage: string, substage: string | null, reason: string | null, userId: string, at: Date) {

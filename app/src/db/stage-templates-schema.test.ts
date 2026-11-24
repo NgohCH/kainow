@@ -7,10 +7,18 @@ import { Pool } from 'pg';
 import { loadDatabaseConfig } from '../config';
 import { uuidv7 } from '../common/uuid7';
 import { GENERAL_TEMPLATE_ID, STARTER_TEMPLATES } from '../projects/stage-templates';
-import { STAGES } from '../projects/lifecycle';
-import { SUBSTAGES } from '../projects/projects.service';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { runMigrations } from './migrate';
+
+/** The five stages and substages every project had before 0037 (the removed STAGES and SUBSTAGES constants). */
+const SUBSTAGES: Readonly<Record<string, readonly string[]>> = {
+  Initiation: ['Define Purpose', 'Identify Participants', 'Confirm Accountability'],
+  Planning: ['Define Scope', 'Break Down Work', 'Identify Resources', 'Approve Plan'],
+  Execution: ['In Progress', 'Monitoring & Follow-up'],
+  'Review & Acceptance': ['Review Deliverables', 'Resolve Outstanding Items', 'Confirm Acceptance'],
+  Closure: ['Record Outcome', 'Handover', 'Close Project'],
+};
+const STAGES = Object.keys(SUBSTAGES);
 
 const migrationsDir = loadDatabaseConfig({ DATABASE_URL: 'x' }).migrationsDir;
 

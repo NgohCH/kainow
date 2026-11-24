@@ -13,6 +13,7 @@ export type ProjectAction =
   | 'note.view'
   | 'project.edit'
   | 'project.stage'
+  | 'project.stages'
   | 'note.import'
   | 'extraction.run'
   | 'proposal.edit'
@@ -83,6 +84,12 @@ export const PROJECT_MATRIX: Readonly<Record<ProjectAction, MatrixRow>> = {
     refusal: "Only the Project Manager, Owner or a Sponsor can change the project's details, and not while it is Deferred or Closed.",
   },
   'project.stage': { roles: ['pm'], states: ['active'], refusal: 'Only the Project Manager can change the stage, and only while the project is Active.' },
+  // The project's own list of stages (D131): a delegated setting like the output and finance settings.
+  'project.stages': {
+    roles: ['pm', 'owner', 'sponsor'],
+    states: OPEN,
+    refusal: "Only the Project Manager, the Owner or a Sponsor can change the project's stages, and not while the project is Deferred or Closed.",
+  },
   'note.import': { roles: ['pm', 'deputy_pm', 'owner', 'sponsor'], states: OPEN, refusal: IMPORT },
   'extraction.run': { roles: ['pm', 'deputy_pm', 'owner', 'sponsor'], states: OPEN, refusal: IMPORT },
   'proposal.edit': { roles: ['pm', 'owner', 'sponsor'], states: OPEN, refusal: EDIT_PROPOSALS },

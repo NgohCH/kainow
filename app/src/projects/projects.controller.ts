@@ -108,4 +108,36 @@ export class ProjectsController {
   stage(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest) {
     return this.projects.changeStage(who(req), id, body(b));
   }
+
+  /** { name, substages?, position, reason } — the project's own stages (D131): Project Manager, Owner or Sponsor. */
+  @Post(':id/stages')
+  @AnySignedInUser()
+  @HttpCode(200)
+  addStage(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest) {
+    return this.projects.addStage(who(req), id, body(b));
+  }
+
+  /** { ids, reason } — every stage of the project, once, in the new order. */
+  @Post(':id/stages/order')
+  @AnySignedInUser()
+  @HttpCode(200)
+  orderStages(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest) {
+    return this.projects.reorderStages(who(req), id, body(b));
+  }
+
+  /** { reason } — not the current stage. */
+  @Post(':id/stages/:stageId/retire')
+  @AnySignedInUser()
+  @HttpCode(200)
+  retireStage(@Param('id') id: string, @Param('stageId') stageId: string, @Body() b: unknown, @Req() req: HttpRequest) {
+    return this.projects.setStageStatus(who(req), id, stageId, 'retired', body(b));
+  }
+
+  /** { reason } */
+  @Post(':id/stages/:stageId/restore')
+  @AnySignedInUser()
+  @HttpCode(200)
+  restoreStage(@Param('id') id: string, @Param('stageId') stageId: string, @Body() b: unknown, @Req() req: HttpRequest) {
+    return this.projects.setStageStatus(who(req), id, stageId, 'active', body(b));
+  }
 }
