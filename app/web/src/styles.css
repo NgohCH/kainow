@@ -884,3 +884,31 @@ button.stat-tile[aria-pressed="true"] { border-color: var(--accent); box-shadow:
 .settings-current .model-list { margin-top: 0.5rem; }
 .settings-current .facts { margin: 0; }
 .data-table-wrap + .data-table-wrap, .stat-grid + .data-table-wrap, .inline-form + .data-table-wrap { margin-top: 1rem; }
+
+/* Project overview, Work and Timeline (Task 16, spec 7.5, 7.6) */
+.overview-top { display: grid; gap: 0 1rem; grid-template-columns: minmax(0, 1fr); }
+@media (min-width: 1000px) { .overview-top { grid-template-columns: minmax(0, 2fr) minmax(0, 3fr); align-items: start; } }
+.overview-side { min-width: 0; }
+.overview-boxes { display: grid; gap: 0 1rem; grid-template-columns: repeat(auto-fill, minmax(min(100%, 18rem), 1fr)); align-items: start; }
+.overview-top .box, .overview-boxes .box, .work-details, .change-request { overflow-wrap: anywhere; min-width: 0; }
+.overview-boxes .facts, .overview-side .facts { grid-template-columns: minmax(6rem, max-content) minmax(0, 1fr); margin-top: 0.6rem; }
+.overview-boxes .box-title, .overview-figures .box-title { font-size: 15px; }
+.label-stack { display: flex; flex-wrap: wrap; gap: 0.25rem 0.4rem; }
+.work-title { display: block; }
+.work-title.depth-1 { padding-left: 1.2rem; }
+.work-title.depth-2 { padding-left: 2.4rem; }
+.work-parent { display: block; font-weight: 400; }
+.work-details > :first-child { margin-top: 0; }
+.work-details .quote { margin: 0.35rem 0; font-size: 0.95em; }
+.work-details .history { margin: 0.35rem 0 0 1.2rem; padding: 0; color: var(--muted); }
+.data-table td.cell-wide { min-width: 16rem; }
+.data-table tr.found { outline: 3px solid var(--accent); outline-offset: -3px; }
+.form-box-title { font-weight: 600; margin: 0; }
+.change-form.box, .authorise-form.box { margin: 0.6rem 0 0; max-width: 36rem; }
+.change-request.box { margin: 0.6rem 0; }
+.change-request .settings-box-head .box-title { font-size: 15px; }
+@media (max-width: 700px) {
+  .data-table tbody td.cell-wide { display: block; min-width: 0; }
+  .data-table tbody td.cell-wide::before { display: block; margin-bottom: 0.25rem; }
+  .work-title.depth-1, .work-title.depth-2 { padding-left: 0; }
+}

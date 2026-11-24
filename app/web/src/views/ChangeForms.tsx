@@ -29,7 +29,12 @@ export interface WorkContext {
 export type Submit = (terms: Record<string, unknown>) => Promise<boolean>;
 const FINISHED = ['completed', 'cancelled'];
 
-function Form({ label, children, onSubmit, onCancel, action }: { label: string; children: ReactNode; onSubmit: () => Promise<boolean>; onCancel: () => void; action: string }) {
+const NEEDS_AUTHORISATION = 'Nothing changes until the change is authorised. It waits under Waiting for authorisation until then.';
+
+/** A proposal form in its own box: what it proposes, what follows from sending it, the fields, then send or cancel. */
+function Form({ label, children, onSubmit, onCancel, action, consequence = NEEDS_AUTHORISATION }: {
+  label: string; children: ReactNode; onSubmit: () => Promise<boolean>; onCancel: () => void; action: string; consequence?: string;
+}) {
   const [busy, setBusy] = useState(false);
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -41,7 +46,9 @@ function Form({ label, children, onSubmit, onCancel, action }: { label: string; 
     }
   }
   return (
-    <form className="inline-form stack change-form" onSubmit={submit} aria-label={label}>
+    <form className="box stack change-form" onSubmit={submit} aria-label={label}>
+      <p className="form-box-title">{label}</p>
+      <p className="meta">{consequence}</p>
       {children}
       <div className="decision">
         <button className="primary" disabled={busy}>{action}</button>
@@ -188,7 +195,11 @@ export function FollowUpForm({ task, onSubmit, onCancel }: { task: WorkTask; onS
   const [owner, setOwner] = useState('');
   const [due, setDue] = useState('');
   return (
-    <Form label={`Propose a follow-up to ${task.title}`} action="Propose follow-up" onCancel={onCancel} onSubmit={() => onSubmit({ text, ...(owner ? { owner } : {}), ...(due ? { due } : {}) })}>
+    <Form
+      label={`Propose a follow-up to ${task.title}`}
+      action="Propose follow-up"
+      consequence="It becomes a people's proposal; an Owner or Sponsor can authorise it from the Proposals tab."
+      onCancel={onCancel} onSubmit={() => onSubmit({ text, ...(owner ? { owner } : {}), ...(due ? { due } : {}) })}>
       <label>What should follow <textarea required rows={2} maxLength={2000} value={text} onChange={(e) => setText(e.target.value)} /></label>
       <label>Who (optional) <input maxLength={200} value={owner} onChange={(e) => setOwner(e.target.value)} /></label>
       <label>By when (optional) <input maxLength={200} value={due} onChange={(e) => setDue(e.target.value)} /></label>

@@ -22,7 +22,9 @@ export function Bars({ items, caption }: { items: BarItem[]; caption: string }) 
           </li>
         ))}
       </ul>
-      <table className="visually-hidden">
+      {/* The wrapper hides the table: a table cannot be narrower than its content, so hiding the table itself widened the page. */}
+      <div className="visually-hidden">
+      <table>
         <caption>{caption}</caption>
         <thead>
           <tr>
@@ -39,6 +41,7 @@ export function Bars({ items, caption }: { items: BarItem[]; caption: string }) 
           ))}
         </tbody>
       </table>
+      </div>
       {missing.length > 0 && (
         <ul className="plain bars-missing">
           {missing.map((i, n) => (

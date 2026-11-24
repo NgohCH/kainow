@@ -113,7 +113,9 @@ export function AuthoriseForm({
   }
 
   return (
-    <form className="panel stack authorise-form" onSubmit={submit} aria-label="Authorise this proposal">
+    <form className="box stack authorise-form" onSubmit={submit} aria-label="Authorise this proposal">
+      <p className="form-box-title">Authorise this proposal</p>
+      <p className="meta">Authorising makes it a record on the Work tab. Where the project needs more than one approval, it waits for the others first.</p>
       {kind === 'action' && (
         <>
           {owner && <p className="meta">The notes name: {owner}</p>}

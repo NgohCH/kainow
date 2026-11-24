@@ -2,6 +2,7 @@
  * Display helpers for authorised records (sub-project 2a). The server decides every change and returns
  * `mayAct`; these only label states and help a reviewer turn written names and dues into choices.
  */
+import type { Meaning } from './ui/meanings.ts';
 
 export type TaskStatus = 'not_started' | 'in_progress' | 'blocked' | 'completed' | 'cancelled';
 export type TaskAction = 'start' | 'block' | 'unblock' | 'complete' | 'reopen';
@@ -24,6 +25,19 @@ export const DECISION_STATUS_LABEL: Record<string, string> = { active: 'Active',
 /** A proposal's review state, as the review screen words it. */
 export const REVIEW_STATUS_LABEL = { pending: 'Not reviewed', approved: 'Approved', rejected: 'Rejected' } as const;
 export const SEVERITY_LABEL: Record<Severity, string> = { low: 'Low', medium: 'Medium', high: 'High', critical: 'Critical' };
+
+/** How each record state looks on the Work tab and the Overview: symbol, word and colour from the one table of meanings. */
+export const TASK_STATUS_MEANING: Record<TaskStatus, Meaning> = {
+  not_started: 'draft',
+  in_progress: 'dueSoon',
+  blocked: 'blocked',
+  completed: 'ok',
+  cancelled: 'off',
+};
+export const QUESTION_STATUS_MEANING: Record<QuestionStatus, Meaning> = { open: 'review', answered: 'ok', resolved: 'closed', withdrawn: 'off' };
+export const RISK_STATUS_MEANING: Record<RiskStatus, Meaning> = { open: 'attention', mitigating: 'dueSoon', resolved: 'ok', accepted: 'closed' };
+/** Decisions: Active, or no longer in force (Superseded, Withdrawn and any other state). */
+export const decisionMeaning = (status: string): Meaning => (status === 'active' ? 'active' : 'off');
 
 export const TASK_ACTION_LABEL: Record<TaskAction, string> = { start: 'Start', block: 'Block', unblock: 'Unblock', complete: 'Complete', reopen: 'Reopen' };
 /** What each task change asks for (start asks for nothing). */

@@ -2,8 +2,8 @@ import type { NeedsYouItem } from '../dashboard.ts';
 import { groupAttention } from './attention.ts';
 import { meaningVar, StatusLabel } from './StatusLabel.tsx';
 
-/** The Needs you queue: boxes grouped by urgency, each with what, where and a link. */
-export function AttentionQueue({ items, empty }: { items: NeedsYouItem[]; empty: string }) {
+/** The Needs you queue: boxes grouped by urgency, each with what, where and a link. Inside one project, `inProject` leaves out the where. */
+export function AttentionQueue({ items, empty, inProject }: { items: NeedsYouItem[]; empty: string; inProject?: boolean }) {
   const groups = groupAttention(items);
   if (groups.length === 0) return <p className="attention-empty">{empty}</p>;
   return (
@@ -18,7 +18,7 @@ export function AttentionQueue({ items, empty }: { items: NeedsYouItem[]; empty:
             {g.items.map((i, n) => (
               <li key={`${i.kind}-${i.projectId}-${n}`}>
                 <a href={i.link} className="attention-what">{i.label}{i.count && i.count > 1 ? ` (${i.count})` : ''}</a>
-                <span className="attention-where">{i.projectName}</span>
+                {!inProject && <span className="attention-where">{i.projectName}</span>}
               </li>
             ))}
           </ul>

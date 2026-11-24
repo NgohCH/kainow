@@ -3,6 +3,8 @@ import { ApiError, api } from '../api.ts';
 import { type CurrentView, type RequestView, approvalsLine, kindLabel, termsRows, waitingLine } from '../changes.ts';
 import { formatWhen } from '../format.ts';
 import { approvalNoticeFor } from '../outputs.ts';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
+import type { Meaning } from '../ui/meanings.ts';
 import { AddSubtaskForm, AmendForm, CancelForm, SupersedeForm, type WorkContext, WithdrawForm } from './ChangeForms.tsx';
 
 /** A project's waiting change requests (newest first), reloaded on demand. Failing to load them leaves the list empty. */
@@ -36,6 +38,14 @@ function currentFor(request: RequestView, work?: WorkContext): CurrentView {
     ...(decision ? { statement: decision.statement } : {}),
   };
 }
+
+/** The request's state as a label: waiting, authorised, rejected or withdrawn. */
+const STATE: Record<string, { meaning: Meaning; word: string }> = {
+  pending: { meaning: 'review', word: 'Waiting for authorisation' },
+  authorised: { meaning: 'ok', word: 'Authorised' },
+  rejected: { meaning: 'failing', word: 'Rejected' },
+  withdrawn: { meaning: 'off', word: 'Withdrawn' },
+};
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 
@@ -103,8 +113,14 @@ export function ChangeRequestPanel({ request, work, onChanged, projectId }: { re
   }
 
   return (
-    <article className="panel change-request" aria-label={`${kindLabel(request.kind)}, proposed by ${request.submittedBy}`}>
-      <h3>{kindLabel(request.kind)}</h3>
+    <article
+      className={`box change-request edge-left m-${STATE[request.status]?.meaning ?? 'review'}`}
+      aria-label={`${kindLabel(request.kind)}, proposed by ${request.submittedBy}`}
+    >
+      <div className="settings-box-head">
+        <h3 className="box-title">{kindLabel(request.kind)}</h3>
+        {STATE[request.status] && <StatusLabel meaning={STATE[request.status].meaning} word={STATE[request.status].word} />}
+      </div>
       <p className="meta">
         Proposed by {request.submittedBy}, {formatWhen(request.submittedAt)}
         {request.batchId ? ' · part of a group of changes' : ''}

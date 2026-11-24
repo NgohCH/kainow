@@ -19,8 +19,16 @@ import {
   transitionsFor,
 } from '../projects.ts';
 import { go } from '../App.tsx';
-import type { ProjectDashboard } from '../dashboard.ts';
+import { type NeedsYouItem, type PersonalDashboard, type ProjectDashboard, dayLabel, plannedEndLabel } from '../dashboard.ts';
+import { todayUtc8 } from '../changes.ts';
+import { TASK_STATUS_LABEL, TASK_STATUS_MEANING, type TaskStatus } from '../records.ts';
+import { addDays, dueWithin, projectAttention, projectStageNames, stageSteps, taskStatusParts } from '../overview.ts';
+import { AttentionQueue } from '../ui/AttentionQueue.tsx';
 import { BinderTabs } from '../ui/BinderTabs.tsx';
+import { Box } from '../ui/Box.tsx';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { StackedBar } from '../ui/StackedBar.tsx';
+import { StageFlow } from '../ui/StageFlow.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
 import { projectMeaning } from '../ui/meanings.ts';
 import { projectTabs, tabForHash } from '../ui/projectTabs.ts';
@@ -45,7 +53,7 @@ import { ProjectAi } from './ProjectAi.tsx';
 import { mayViewAiTab, mayViewAiUsage } from '../ai.ts';
 import { ProjectCalendarProvider } from './ProjectCalendar.tsx';
 import { DeletedItemsList } from './DeletedItems.tsx';
-import { ProjectFigures } from './ProjectFigures.tsx';
+import { ProjectFigures, type DashboardState, useProjectDashboard } from './ProjectFigures.tsx';
 import { Timeline } from './Timeline.tsx';
 import type { Prefs } from '../prefs.ts';
 import { DeletionDelegationPanel } from './DeleteRestore.tsx';
@@ -380,12 +388,14 @@ function Overview({ project, act, contentAllowed }: { project: Project; act: Act
     api.get<{ tasks: unknown[] }>(`/projects/${project.id}/deadline-review`).then((r) => setMarkedTasks(r.tasks.length), () => setMarkedTasks(0));
   }, [project.id, project.status, isPmOrDeputy]);
   const flags = project.openReviewFlags ?? 0;
+  const dashboard = useProjectDashboard(project.id, contentAllowed);
 
   return (
     <>
-      <section aria-labelledby="about-heading">
-        <div className="row">
-          <h2 id="about-heading">About</h2>
+      <OverviewGlance project={project} contentAllowed={contentAllowed} dashboard={dashboard} />
+      <section aria-labelledby="about-heading" className="box">
+        <div className="settings-box-head">
+          <h2 id="about-heading" className="box-title">About</h2>
           {canEdit && (
             <button className="quiet" onClick={() => setEditing((e) => !e)} aria-expanded={editing}>
               {editing ? 'Close' : 'Edit details'}
@@ -417,11 +427,11 @@ function Overview({ project, act, contentAllowed }: { project: Project; act: Act
           </dl>
         )}
       </section>
-      {contentAllowed && <ProjectFigures projectId={project.id} canReadWork={contentAllowed} />}
+      {contentAllowed && <ProjectFigures projectId={project.id} canReadWork={contentAllowed} state={dashboard} />}
 
       {atClosure && (atClosure.kept.length > 0 || atClosure.unresolved.length > 0) && (
-        <section aria-labelledby="at-closure-heading">
-          <h2 id="at-closure-heading">At closure</h2>
+        <section aria-labelledby="at-closure-heading" className="box">
+          <h2 id="at-closure-heading" className="box-title">At closure</h2>
           {atClosure.kept.length > 0 && (
             <>
               <h3>Tasks kept outstanding</h3>
@@ -449,8 +459,8 @@ function Overview({ project, act, contentAllowed }: { project: Project; act: Act
       )}
 
       {(options.length > 0 || canStage) && (
-        <section aria-labelledby="change-heading">
-          <h2 id="change-heading">Change the project</h2>
+        <section aria-labelledby="change-heading" className="box">
+          <h2 id="change-heading" className="box-title">Change the project</h2>
           <div className="decision">
             {options.map((o) =>
               o.to === 'closed' ? (
@@ -475,8 +485,8 @@ function Overview({ project, act, contentAllowed }: { project: Project; act: Act
       )}
 
       {(closure?.mayPrepare || markedTasks > 0 || flags > 0 || (isOS && closable)) && (
-        <section aria-labelledby="records-heading">
-          <h2 id="records-heading">Closing and reviews</h2>
+        <section aria-labelledby="records-heading" className="box">
+          <h2 id="records-heading" className="box-title">Closing and reviews</h2>
           {flags > 0 && (
             <p className="review-flags">
               {flags} {flags === 1 ? 'item is' : 'items are'} flagged for review after a decision changed. <a href={`#/projects/${project.id}/work`}>Open Work</a>
@@ -513,8 +523,8 @@ function Overview({ project, act, contentAllowed }: { project: Project; act: Act
 
       {isEmailManager && project.status === 'active' && <DigestSend projectId={project.id} onSent={() => setDeliveriesKey((n) => n + 1)} />}
       {isEmailManager && (
-        <section aria-labelledby="deliveries-heading">
-          <h2 id="deliveries-heading">Email delivery</h2>
+        <section aria-labelledby="deliveries-heading" className="box">
+          <h2 id="deliveries-heading" className="box-title">Email delivery</h2>
           <DeliveryHistory path={`/projects/${project.id}/deliveries`} reloadKey={deliveriesKey} />
         </section>
       )}
@@ -522,8 +532,8 @@ function Overview({ project, act, contentAllowed }: { project: Project; act: Act
       <ArchivePanel project={project} act={act} />
       <DepartmentMove project={project} act={act} />
 
-      <section aria-labelledby="history-heading">
-        <h2 id="history-heading">History</h2>
+      <section aria-labelledby="history-heading" className="box">
+        <h2 id="history-heading" className="box-title">History</h2>
         <h3>Stages</h3>
         <ul className="plain">
           {project.stagePeriods.map((s, i) => (
@@ -553,6 +563,121 @@ function Overview({ project, act, contentAllowed }: { project: Project; act: Act
         )}
       </section>
     </>
+  );
+}
+
+/** A task as the Overview reads it from `GET /projects/:id/records`. */
+interface OverviewTask { id: string; title: string; dueOn: string; status: TaskStatus; assignee: { displayName: string } }
+
+/**
+ * The top of the Overview (spec 7.5): on the left what needs this person's attention in this project; on the right the
+ * stage flow, the task-status split and the tasks due in the next 14 days.
+ */
+function OverviewGlance({ project, contentAllowed, dashboard }: { project: Project; contentAllowed: boolean; dashboard: DashboardState }) {
+  const [attention, setAttention] = useState<NeedsYouItem[] | null>(null);
+  const [attentionError, setAttentionError] = useState<string | null>(null);
+  const [tasks, setTasks] = useState<OverviewTask[] | null>(null);
+  const [tasksError, setTasksError] = useState<string | null>(null);
+  useEffect(() => {
+    let stale = false;
+    setAttention(null);
+    setAttentionError(null);
+    api.get<PersonalDashboard>('/dashboard/me?includeArchived=1&showCompleted=0').then(
+      (r) => !stale && setAttention(projectAttention(r.needsYou, project.id)),
+      (e: Error) => !stale && setAttentionError(e.message),
+    );
+    return () => {
+      stale = true;
+    };
+  }, [project.id]);
+  useEffect(() => {
+    if (!contentAllowed) return;
+    let stale = false;
+    setTasks(null);
+    setTasksError(null);
+    api.get<{ tasks: OverviewTask[] }>(`/projects/${project.id}/records`).then(
+      (r) => !stale && setTasks(r.tasks),
+      (e: Error) => !stale && setTasksError(e.message),
+    );
+    return () => {
+      stale = true;
+    };
+  }, [project.id, contentAllowed]);
+
+  const today = todayUtc8();
+  const steps = stageSteps(projectStageNames(), project.stage, project.status);
+  const cancelled = (tasks ?? []).filter((t) => t.status === 'cancelled').length;
+  const due = dueWithin(tasks ?? [], today, 14);
+  const plannedEnd = dashboard.d ? plannedEndLabel(dashboard.d.measures.plannedEnd) : null;
+  const dueColumns: Column<OverviewTask>[] = [
+    { key: 'task', header: 'Task', sortValue: (t) => t.title.toLowerCase(), cell: (t) => <a href={`#/projects/${project.id}/work/${t.id}`}>{t.title}</a> },
+    { key: 'due', header: 'Due', sortValue: (t) => t.dueOn, cell: (t) => (t.dueOn === today ? `Today, ${dayLabel(t.dueOn)}` : dayLabel(t.dueOn)) },
+    { key: 'assignee', header: 'Assignee', sortValue: (t) => t.assignee.displayName.toLowerCase(), cell: (t) => t.assignee.displayName },
+    { key: 'status', header: 'Status', sortValue: (t) => TASK_STATUS_LABEL[t.status], cell: (t) => <StatusLabel meaning={TASK_STATUS_MEANING[t.status]} word={TASK_STATUS_LABEL[t.status]} /> },
+  ];
+
+  return (
+    <div className="overview-top">
+      <Box title="Needs attention in this project">
+        {attentionError ? (
+          <p role="alert" className="error">{attentionError}</p>
+        ) : attention === null ? (
+          <p className="loading">Loading</p>
+        ) : (
+          <AttentionQueue items={attention} empty="Nothing in this project needs you now." inProject />
+        )}
+      </Box>
+      <div className="overview-side">
+        <Box title="Stage">
+          <StageFlow stages={steps} />
+          <dl className="facts">
+            {project.stage?.substage && (
+              <>
+                <dt>Substage</dt>
+                <dd>{project.stage.substage}</dd>
+              </>
+            )}
+            <dt>Planned end</dt>
+            <dd>
+              {project.plannedEnd ? dayLabel(project.plannedEnd) : 'Not set'}
+              {project.plannedEnd && plannedEnd && <span className="meta"> ({plannedEnd})</span>}
+            </dd>
+          </dl>
+        </Box>
+        {contentAllowed && (
+          <Box title="Tasks">
+            {tasksError ? (
+              <p role="alert" className="error">{tasksError}</p>
+            ) : tasks === null ? (
+              <p className="loading">Loading</p>
+            ) : (
+              <>
+                <StackedBar parts={taskStatusParts(tasks)} />
+                {cancelled > 0 && <p className="meta">{cancelled} cancelled, not counted.</p>}
+                <p className="meta"><a href={`#/projects/${project.id}/work`}>Open Work</a></p>
+              </>
+            )}
+          </Box>
+        )}
+        {contentAllowed && (
+          <Box title="Due in the next 14 days">
+            {tasksError ? (
+              <p className="meta">Not available: the tasks could not be read.</p>
+            ) : (
+              <DataTable
+                caption={`Unfinished tasks due by ${dayLabel(addDays(today, 14))}`}
+                columns={dueColumns}
+                rows={due}
+                rowKey={(t) => t.id}
+                loading={tasks === null}
+                empty="No unfinished task is due in the next 14 days."
+                initialSort={{ key: 'due', dir: 'asc' }}
+              />
+            )}
+          </Box>
+        )}
+      </div>
+    </div>
   );
 }
 

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import {
   type ProjectTimeline,
+  type TimelineItem,
   type TimelineLine,
   TIMELINE_KIND_LABELS,
   dayLabel,
@@ -10,14 +11,16 @@ import {
   withTodayMarker,
 } from '../dashboard.ts';
 import { setHidden, type Prefs, type TimelineKind } from '../prefs.ts';
+import { Box } from '../ui/Box.tsx';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
 
 const KINDS = Object.keys(TIMELINE_KIND_LABELS) as TimelineKind[];
 
 type TaskDetail = { done: number; tasks: { id: string; title: string; status: string }[] };
 type RiskDetail = { risks: { id: string; description: string; severity: string }[] };
 
-/** One dated line. A due-date or risk-review line opens to list its items. */
-function Line({ line, projectId }: { line: TimelineLine; projectId: string }) {
+/** What one dated line records. A due-date or risk-review line opens to list its items. */
+function LineWhat({ line, projectId }: { line: TimelineLine; projectId: string }) {
   const [open, setOpen] = useState(false);
   const detail = line.detail as (Partial<TaskDetail> & Partial<RiskDetail> & { durationDays?: number }) | undefined;
   const items =
@@ -28,29 +31,26 @@ function Line({ line, projectId }: { line: TimelineLine; projectId: string }) {
         : [];
   const done = line.kind === 'tasks_due' && typeof detail?.done === 'number' && detail.done > 0 ? `${detail.done} done` : null;
   return (
-    <li className="timeline-line">
-      <span className="timeline-day">{dayLabel(line.day)}</span>
-      <span className="timeline-body">
-        {items.length > 0 ? (
-          <button type="button" className="quiet" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
-            {line.label}
-          </button>
-        ) : line.kind === 'resource_needed_by' ? (
-          <a href={`#/projects/${projectId}/resources`}>{line.label}</a>
-        ) : (
-          line.label
-        )}
-        {typeof detail?.durationDays === 'number' && <span className="meta"> ({detail.durationDays} {detail.durationDays === 1 ? 'day' : 'days'})</span>}
-        {done && <span className="meta"> ({done})</span>}
-        {open && (
-          <ul className="plain">
-            {items.map((i) => (
-              <li key={i.id}>{i.href ? <a href={i.href}>{i.text}</a> : i.text}</li>
-            ))}
-          </ul>
-        )}
-      </span>
-    </li>
+    <>
+      {items.length > 0 ? (
+        <button type="button" className="quiet" aria-expanded={open} onClick={() => setOpen((o) => !o)}>
+          {line.label}
+        </button>
+      ) : line.kind === 'resource_needed_by' ? (
+        <a href={`#/projects/${projectId}/resources`}>{line.label}</a>
+      ) : (
+        line.label
+      )}
+      {typeof detail?.durationDays === 'number' && <span className="meta"> ({detail.durationDays} {detail.durationDays === 1 ? 'day' : 'days'})</span>}
+      {done && <span className="meta"> ({done})</span>}
+      {open && (
+        <ul className="plain">
+          {items.map((i) => (
+            <li key={i.id}>{i.href ? <a href={i.href}>{i.text}</a> : i.text}</li>
+          ))}
+        </ul>
+      )}
+    </>
   );
 }
 
@@ -89,6 +89,16 @@ export function Timeline({ projectId, prefs, ready, onChange }: { projectId: str
     t.today,
   ).filter((m) => m.items.length > 0);
 
+  const columns: Column<TimelineItem>[] = [
+    {
+      key: 'day',
+      header: 'Date',
+      cell: (i) => (i.today ? <span className="timeline-today">Today, {dayLabel(t.today)}</span> : dayLabel(i.line.day)),
+    },
+    { key: 'kind', header: 'Kind', cell: (i) => (i.today ? '' : TIMELINE_KIND_LABELS[i.line.kind]) },
+    { key: 'what', header: 'What', wide: true, cell: (i) => (i.today ? <span className="meta">Earlier dates are above, later ones below.</span> : <LineWhat line={i.line} projectId={projectId} />) },
+  ];
+
   return (
     <section aria-labelledby="timeline-heading" className="timeline">
       <h2 id="timeline-heading">Timeline</h2>
@@ -105,22 +115,14 @@ export function Timeline({ projectId, prefs, ready, onChange }: { projectId: str
         ))}
       </fieldset>
       {saveError && <p role="alert" className="error">{saveError}</p>}
-      {months.map((m) => (
-        <section key={m.month} aria-labelledby={`tl-${m.month}`}>
-          <h3 id={`tl-${m.month}`}>{monthLabel(m.month)}</h3>
-          <ol className="plain timeline-list">
-            {m.items.map((i, n) =>
-              i.today ? (
-                <li key={`today-${n}`} className="timeline-today" aria-label={`Today, ${dayLabel(t.today)}`}>
-                  <strong>Today</strong> <span className="meta">{dayLabel(t.today)}</span>
-                </li>
-              ) : (
-                <Line key={`${i.line.day}-${i.line.kind}-${i.line.label}-${n}`} line={i.line} projectId={projectId} />
-              ),
-            )}
-          </ol>
-        </section>
-      ))}
+      {months.map((m) => {
+        const keys = new Map(m.items.map((i, n) => [i, i.today ? `today-${n}` : `${i.line.day}-${i.line.kind}-${i.line.label}-${n}`]));
+        return (
+          <Box key={m.month} title={monthLabel(m.month)} headingLevel={3}>
+            <DataTable caption={`Dates in ${monthLabel(m.month)}`} columns={columns} rows={m.items} rowKey={(i) => keys.get(i) ?? ''} empty="Nothing recorded this month." />
+          </Box>
+        );
+      })}
     </section>
   );
 }

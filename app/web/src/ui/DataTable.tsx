@@ -1,11 +1,16 @@
 import { useId, useMemo, useState, type ReactNode } from 'react';
 import { sortRows, type SortDir } from './table.ts';
 
-export interface Column<T> { key: string; header: string; cell: (row: T) => ReactNode; sortValue?: (row: T) => string | number }
+/** `wide` marks a cell that holds forms or long text: on narrow screens its label sits above it instead of beside it. */
+export interface Column<T> { key: string; header: string; cell: (row: T) => ReactNode; sortValue?: (row: T) => string | number; wide?: boolean }
 
-/** A semantic table: caption, column headers (a button when sortable, with aria-sort), empty and loading rows. Narrow screens stack each row into labelled pairs (data-label). */
-export function DataTable<T>({ caption, columns, rows, rowKey, empty, loading, initialSort }: {
-  caption: string; columns: Column<T>[]; rows: T[]; rowKey: (row: T) => string; empty: string; loading?: boolean;
+/**
+ * A semantic table: caption, column headers (a button when sortable, with aria-sort), empty and loading rows. Narrow
+ * screens stack each row into labelled pairs (data-label). `rowId` gives each row an id (and makes it focusable) so a
+ * link can open the page at that row.
+ */
+export function DataTable<T>({ caption, columns, rows, rowKey, rowId, empty, loading, initialSort }: {
+  caption: string; columns: Column<T>[]; rows: T[]; rowKey: (row: T) => string; rowId?: (row: T) => string; empty: string; loading?: boolean;
   initialSort?: { key: string; dir: SortDir };
 }) {
   const [sort, setSort] = useState<{ key: string; dir: SortDir } | null>(initialSort ?? null);
@@ -58,11 +63,11 @@ export function DataTable<T>({ caption, columns, rows, rowKey, empty, loading, i
           <tr className="table-note"><td colSpan={columns.length}>{empty}</td></tr>
         ) : (
           shown.map((row) => (
-            <tr key={rowKey(row)}>
+            <tr key={rowKey(row)} {...(rowId ? { id: rowId(row), tabIndex: -1 } : {})}>
               {columns.map((c, i) => (
                 i === 0
-                  ? <th key={c.key} scope="row" data-label={c.header}>{c.cell(row)}</th>
-                  : <td key={c.key} data-label={c.header}>{c.cell(row)}</td>
+                  ? <th key={c.key} scope="row" data-label={c.header} className={c.wide ? 'cell-wide' : undefined}>{c.cell(row)}</th>
+                  : <td key={c.key} data-label={c.header} className={c.wide ? 'cell-wide' : undefined}>{c.cell(row)}</td>
               ))}
             </tr>
           ))
