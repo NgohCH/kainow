@@ -3,9 +3,9 @@
 **Date:** 24 November 2026
 **Status:** Draft for the Product Owner's approval
 **Branch:** `TheLord/subproject-11-acceptance-24e07c` (worktree), cut from `main` at 2046ba8
-**Decisions:** D127 (v0.1 test release), D128 (navigation, Settings hub and page pattern), D129 (colour schemes and organisation colour), D130 (correcting a proposal's type, with a reason and a named history)
-**Configuration Catalogue:** C111 (personal colour scheme), C112 (organisation colour)
-**Migration:** 0036 (`0036_interface.sql`)
+**Decisions:** D127 (v0.1 test release), D128 (navigation, Settings hub and page pattern), D129 (colour schemes and organisation colour), D130 (correcting a proposal's type, with a reason and a named history), D131 (stage templates)
+**Configuration Catalogue:** C111 (personal colour scheme), C112 (organisation colour), C113 (stage templates; refines C09)
+**Migrations:** 0036 (`0036_interface.sql`), 0037 (`0037_stage_templates.sql`)
 
 ## 1. Why
 
@@ -31,7 +31,7 @@ Sub-project 11 (Acceptance) was split on 24 November 2026:
 **Non-goals**
 
 - No change to any permission, lifecycle rule, approval rule or what a person may see. The redesign rearranges and restyles; it grants nothing (UI rules §1).
-- No new product feature beyond the three decisions here (D128 to D130).
+- No new product feature beyond the decisions here (D128 to D131).
 - No component library or CSS framework (Product Owner chose approach A, §4).
 - No native app; responsive web as before (O15).
 
@@ -198,7 +198,7 @@ Two columns on wide screens: proposals on the left, the source notes on the righ
 | Group | Settings (existing address) |
 |---|---|
 | Organisation and people | Organisation (`#/organisation`), Administrators (`#/people`), Departments (`#/departments`), Email domains (`#/domains`), Leadership access (`#/leadership-grants`) |
-| Work rules | Approvals (`#/approvals`), Reminders and email (`#/notifications-settings`), Access and records (`#/access-settings`), Resources and finance (`#/resources-admin`), Report types (`#/report-types`) |
+| Work rules | Approvals (`#/approvals`), Reminders and email (`#/notifications-settings`), Access and records (`#/access-settings`), Resources and finance (`#/resources-admin`), Report types (`#/report-types`), Stage templates (`#/stage-templates`, new, §14) |
 | Connections | AI (`#/ai`), Email delivery (`#/deliveries`), Storage (`#/storage`) |
 | Running Kainow | Operations (`#/admin/operations`), Go-live checklist (`#/go-live`), Escalated feedback (`#/escalated-feedback`), Security review (shown only to designated reviewers, `#/security/cases`) |
 
@@ -261,6 +261,7 @@ WCAG 2.2 AA remains the target; the full audit is in 11b. 11a must not regress a
 - **D130 (correcting a proposal)** as §9.
 - **C111** personal colour scheme: Red, Teal, Blue, Plum, Slate, Organisation (when set); Light or Dark; default the installation default.
 - **C112** organisation colour: none by default; Enterprise Administrator, with a reason; contrast-checked.
+- **D131 (stage templates)** and **C113** as §14.
 
 ## 13. Left to the builder
 
@@ -268,3 +269,35 @@ WCAG 2.2 AA remains the target; the full audit is in 11b. 11a must not regress a
 - The state rule and the two or three values of each Settings box, from what each page already shows.
 - How each existing screen's content maps into boxes and tables, keeping every function.
 - The order of work (the plan): building blocks and shell first, then Home, My tasks, Reviews, Projects; then Settings and its pages; then the project page and tabs; then review and correction; then the remaining screens; then the accessibility pass and browser smoke.
+
+## 14. Stage templates (D131)
+
+**Why.** Every project today has the same five stages (Initiation, Planning, Execution, Review & Acceptance, Closure), fixed in the database. The Product Owner (24 November 2026) wants stages that fit the kind of work: software development, product sales, research, syllabus development, marketing campaigns and so on, chosen when the project is created. Configuration Catalogue C09 already intended an Enterprise Administrator base list that a project may add to or retire from; it was never built.
+
+**Templates.** A stage template is a named, ordered list of stages, each with optional substages. Kainow ships seven starter templates (exact names; substages only where given):
+
+| Template | Stages |
+|---|---|
+| General | Initiation (Define Purpose, Identify Participants, Confirm Accountability); Planning (Define Scope, Break Down Work, Identify Resources, Approve Plan); Execution (In Progress, Monitoring & Follow-up); Review & Acceptance (Review Deliverables, Resolve Outstanding Items, Confirm Acceptance); Closure (Record Outcome, Handover, Close Project) |
+| Software development | Discovery; Design; Build; Testing; Rollout; Closure |
+| Product sales | Lead generation; Qualification; Proposal; Negotiation; Closing; After-sales review |
+| Research project | Proposal; Literature review; Methods and ethics approval; Data collection; Analysis; Writing and publication; Closure |
+| Syllabus development | Needs analysis; Learning outcomes; Content design; Review and approval; Pilot delivery; Evaluation and revision |
+| Marketing campaign | Research and brief; Strategy and planning; Creative development; Launch; Monitoring and optimisation; Evaluation |
+| Event | Concept and budget; Planning and bookings; Promotion; Final preparations; Event day; Wrap-up and review |
+
+**Who manages templates.** The Enterprise Administrator, on a new setting page "Stage templates" (`#/stage-templates`, Work rules group): add a template (name, short description, stages with optional substages), change a template's stages (add, rename, reorder, remove a stage or substage), retire or bring back a template. Each change needs a reason and is recorded with the actor, previous and new values. At least one template stays active. Template names are unique among active templates (case-insensitive); stage names are unique within a template; names are 1 to 80 characters. Editing a template never changes an existing project.
+
+**Choosing at creation.** The new-project form gains "Type of project" (a dropdown of active templates, default General, each with its stages shown beside it). The project takes a **copy** of the template's stages and substages at that moment and starts in the first stage. The project records which template it came from (shown on the Overview as "Stages: Research project").
+
+**A project's own stages.** The project's Settings tab gains a "Stages" box. The Project Manager, Owner or Sponsor (the delegated-settings authorities of Q01) may add a stage (name, place in the order, optional substages), reorder stages, or retire a stage, each with a reason, recorded in project history. Renaming is not offered: a stage's name is what its past periods record. The current stage cannot be retired; a retired stage can be brought back. Stage changes and reopening (the existing "Choose the stage to continue in") offer the project's active stages and their substages. Stages remain non-sequential, as C09 says: any active stage may be chosen next.
+
+**History.** Past stage periods keep the stage and substage names they were recorded with, whatever happens later to the template or the project's list. Timeline, stage durations and figures read the periods as today.
+
+**Existing data.** Migration 0037 creates the seven templates and gives every existing project a copy of General (its current five stages), so nothing changes for projects already created. The database's fixed list of stage names is removed; the server checks a stage against the project's own list instead.
+
+**Analytics.** No measure today compares stage durations across projects; dashboards, leadership cards, analytics and CSV show each project's own current stage and days in it, unchanged. The Administrator's analytics project table gains a "Stage template" column. No cross-template comparison is introduced.
+
+**Data handling.** Template, stage and substage names are text people type: they are registered with the credential-quarantine scanner like other names, and are never sent to an AI provider beyond the project context that already includes the current stage.
+
+**Configuration Catalogue C113** (refines C09): stage templates; seven starter templates; Enterprise Administrator manages templates with a reason; Project Manager, Owner or Sponsor add, reorder or retire the project's own stages with a reason; default template General.

@@ -15,7 +15,7 @@
 - No new npm dependency in `app/web` or `app` (approach A).
 - No change to any permission predicate, lifecycle rule or audience rule. Every existing route (`#/…` address) keeps working.
 - No real organisation name or domain anywhere: dummy data uses "Example Organisation", `example.org`; the default scheme is named "Red".
-- Next free numbers: decisions D127–D130, catalogue C111–C112, migration `0036_interface.sql`.
+- Next free numbers: decisions D127–D131, catalogue C111–C113, migrations `0036_interface.sql` and `0037_stage_templates.sql`.
 - Every colour lives in a token block in `app/web/src/styles.css`, mirrored in `app/web/src/prefs.ts` and contrast-checked in `prefs.test.ts`: text 4.5:1, edges/symbols/focus outline 3:1.
 - State and attention colours never change with the scheme; every one is shown with its symbol and word (spec §5.1 table, copied into `ui/meanings.ts`).
 - AI proposals keep the dashed outline and "AI proposed" label in every scheme and theme.
@@ -28,7 +28,7 @@
 
 1. **A person with no project and no admin role** (a fresh Member) sees an empty home: the Needs you queue says "Nothing needs you" and the project table says "You are not in any project yet", no empty Administration group, and no broken badge. Pinned in Task 9 (`sideMenuGroups` test) and Task 10 (`homeEmptyCopy` test).
 2. **A saved organisation colour that later fails contrast** (e.g. the rules tighten, or a stored value is edited by hand) must never be applied: the client falls back to Red. Pinned in Task 3 (`deriveScheme rejects low contrast`) and Task 4 (`schemeFor falls back to red`).
-3. **A long project name, department list or setting value at 375 px** wraps inside its box and never pushes the page sideways. Pinned in Task 20's audit (375 px states with the 120-character dummy project name the audit creates).
+3. **A long project name, department list or setting value at 375 px** wraps inside its box and never pushes the page sideways. Pinned in Task 24's audit (375 px states with the 120-character dummy project name the audit creates).
 4. **Correcting a proposal while someone else authorises it** must be refused, not create a record of the old type. Pinned in Task 5 (`correction after authorise is refused`) and Task 5's concurrent test.
 5. **A Settings box whose source read fails** (for example storage unreachable) shows "Could not check" in the Not-in-use grey with the reason, never "Set up". Pinned in Task 6 (`summary marks a failed read as unknown`).
 
@@ -137,12 +137,13 @@
 - Modify: `app/src/app.module.ts`
 
 **Interfaces:**
-- `GET /admin/settings/summary` (Enterprise Administrator only, like the other admin routes) → `{ settings: SettingSummary[]; computedAt: string }` with `SettingSummary = { key: SettingKey; state: 'ok'|'attention'|'failing'|'off'|'unknown'; stateWord: string; values: { label: string; value: string }[] /* at most 3 */ ; note?: string }` and `SettingKey = 'organisation'|'administrators'|'departments'|'domains'|'leadership'|'approvals'|'reminders'|'access'|'resources'|'reportTypes'|'ai'|'emailDelivery'|'storage'|'operations'|'goLive'|'escalatedFeedback'|'securityReview'`.
+- `GET /admin/settings/summary` (Enterprise Administrator only, like the other admin routes) → `{ settings: SettingSummary[]; computedAt: string }` with `SettingSummary = { key: SettingKey; state: 'ok'|'attention'|'failing'|'off'|'unknown'; stateWord: string; values: { label: string; value: string }[] /* at most 3 */ ; note?: string }` and `SettingKey = 'organisation'|'administrators'|'departments'|'domains'|'leadership'|'approvals'|'reminders'|'access'|'resources'|'reportTypes'|'stageTemplates'|'ai'|'emailDelivery'|'storage'|'operations'|'goLive'|'escalatedFeedback'|'securityReview'`.
 - `rules.ts` holds one pure function per key from plain inputs to `SettingSummary` (tested without a database); the service gathers the inputs by calling the services the setting pages already use (inject them; no new SQL where a service already answers). Each gather runs in its own try/catch: a failure gives `state:'unknown', stateWord:'Could not check'` and `note` the plain reason.
 - Rules pinned by the spec: AI `values` lists approved models as `"<model id> (<Provider>)"` and the fallback; Email delivery is `failing` when any email failed in the last 24 h; Leadership access is `attention` when requests wait; Storage is `off` when no destination is approved; Operations takes the Operations page's status; Escalated feedback is `attention` when any is open; Go-live is `ok` when closed. The rest: the implementer picks two or three values each page already shows at its top, and `ok` unless the page itself shows a warning.
 - No value may contain project content (titles, wording); counts and configuration only.
+- `stageTemplates` (spec §14; its tables arrive in Task 20): until Task 20 lands, return `state:'ok'`, `values: [{label:'Templates', value:'General'}]`; Task 20 replaces it with the active template count and up to three names.
 
-- [ ] **Step 1: Tests** `rules.test.ts`: one test per rule above, including **summary marks a failed read as unknown**; `settings-summary.http.test.ts`: Administrator gets 17 entries with distinct keys in the hub order of spec §7.8; a Member and a Project Manager get 403; the AI entry names a seeded approved model; no entry's values contain a seeded project's name (leak check).
+- [ ] **Step 1: Tests** `rules.test.ts`: one test per rule above, including **summary marks a failed read as unknown**; `settings-summary.http.test.ts`: Administrator gets 18 entries with distinct keys in the hub order of spec §7.8; a Member and a Project Manager get 403; the AI entry names a seeded approved model; no entry's values contain a seeded project's name (leak check).
 - [ ] **Step 2: Run, expect FAIL.**
 - [ ] **Step 3: Implement.**
 - [ ] **Step 4: Run both test files, expect PASS.**
@@ -201,7 +202,7 @@
 - [ ] **Step 1: Tests** `menu.test.ts`: a plain Member gets Work (4 items) and Organisation (My AI use only) and no Administration (**Review Focus 1**); an Administrator gets Settings and Operations; a reviewer gets Security review; `currentMenuHref('#/deliveries') === '#/settings'`, `('#/projects/<uuid>/work') === '#/projects'`, `('#/runs/<uuid>') === '#/projects'`, `('#/my-ai-usage') === '#/my-ai-usage'`.
 - [ ] **Step 2: Run, expect FAIL.**
 - [ ] **Step 3: Implement** (side menu collapses below 900 px into a Menu disclosure button; at 375 px the top bar shows Menu, logo, a search icon button, bell and the person button only; the person menu is a disclosure with `aria-expanded`, closes on Escape and returns focus).
-- [ ] **Step 4: Run `npm test` and `npm run build`; start the demo API (see Task 20 Step 1) and check at 375 px in the browser that the top bar does not overflow (`document.documentElement.scrollWidth <= 375`).**
+- [ ] **Step 4: Run `npm test` and `npm run build`; start the demo API (see Task 24 Step 1) and check at 375 px in the browser that the top bar does not overflow (`document.documentElement.scrollWidth <= 375`).**
 - [ ] **Step 5: Commit** `feat(web): side menu shell and person menu (D128, D129)`.
 
 ### Task 10: Home, My tasks, Reviews and Projects
@@ -227,7 +228,7 @@
 - `SETTINGS_CATALOGUE: { key: SettingKey, group: 'Organisation and people'|'Work rules'|'Connections'|'Running Kainow', title: string, purpose: string, href: string, reviewerOnly?: true }[]` (spec §7.8 table, in order); `filterSettings(catalogue, query): typeof catalogue` (case-insensitive over title and purpose); `summaryCounts(summaries): { ok: number, attention: number, failing: number, off: number }` (`unknown` counts as `off`).
 - Each page uses `SettingsPage`: Organisation (glance: name, logos, colour, custodian; settings: name, logos, colour, custodian); Administrators (glance: Active / Disabled / custodian tiles and the people table; settings: invite); Departments and Domains (table with actions); Leadership access (glance: active grants, waiting requests table; settings: the grant forms).
 
-- [ ] **Step 1: Tests** `settings.test.ts`: catalogue has 17 entries, unique keys and hrefs, matches spec §7.8 order; `filterSettings(…, 'remind')` returns Reminders and email; `summaryCounts` counts `unknown` as off.
+- [ ] **Step 1: Tests** `settings.test.ts`: catalogue has 18 entries, unique keys and hrefs, matches spec §7.8 order; `filterSettings(…, 'remind')` returns Reminders and email; `summaryCounts` counts `unknown` as off.
 - [ ] **Step 2: Run, expect FAIL.**
 - [ ] **Step 3: Implement** (hub: header, counts line, search, four groups of `SettingBox`; a hub load failure shows the boxes without state and a plain error line).
 - [ ] **Step 4: Run `npm test`, `npm run build`.**
@@ -330,15 +331,76 @@
 - [ ] **Step 3: `npm test`, `npm run build`; walk each screen on the demo installation.**
 - [ ] **Step 4: Commit** `feat(web): remaining screens on the new layout`.
 
-### Task 20: Accessibility pass, browser smoke, walkthrough and documents
+### Task 20: Stage templates: migration 0037 and the template catalogue (server)
 
-**Files:** Modify `tests/a11y/audit.mjs`, `tests/a11y/README.md`, `tests/browsers/smoke.mjs`, `tests/browsers/README.md`, `docs/Kainow-V1.0-Consolidated-Product-Specification-and-Decision-Register.md` (D127–D130 rows from spec §12), `docs/Kainow-V1.0-Configuration-Catalogue.md` (C111, C112), `docs/Kainow-V1.0-Remaining-Design-and-Verification-Register.md` (R18 row: designed in 11a; the Presentation row: 375 px header overflow fixed), `app/README.md`, `CHANGELOG.md` (`## Unreleased`)
+**Files:**
+- Create: `app/migrations/0037_stage_templates.sql`, `app/src/db/stage-templates-schema.test.ts`, `app/src/projects/stage-templates.ts` (the seven starter templates as data, spec §14 table verbatim), `app/src/projects/stage-templates.service.ts`, `app/src/projects/stage-templates.controller.ts`, `app/src/projects/stage-templates.http.test.ts`
+- Modify: `app/src/db/migrate.test.ts` (REAL_FILES), `app/src/projects/projects.module.ts`, `app/src/quarantine/registry.ts` (new text columns; `project_stage_periods.stage` becomes user text, no longer ENUM), `app/src/analytics/catalogue.ts` (new audit actions), `app/src/settings-summary/rules.ts` and its tests (real `stageTemplates` rule)
+
+**Interfaces:**
+- Tables: `stage_templates (id uuid PK, name text 1–80, description text ≤ 300 NULL, status text CHECK IN ('active','retired'), position int, created_by uuid NULL, created_at, updated_by uuid NULL, updated_at)` with a unique index on `lower(name)` WHERE status = 'active' (shipped rows have NULL `created_by`, shown as "Kainow"); `stage_template_stages (id uuid PK, template_id FK, position int, name text 1–80, substages text[] NOT NULL DEFAULT '{}', unique (template_id, lower(name)))`; `project_stages (id uuid PK, project_id FK, position int, name text 1–80, substages text[] NOT NULL DEFAULT '{}', status CHECK IN ('active','retired'), added_by uuid NULL, added_at, retired_by NULL, retired_at NULL, unique (project_id, lower(name)))`; `projects.stage_template_id uuid NULL REFERENCES stage_templates`.
+- The migration seeds the seven templates (deterministic ids), copies General's five stages with their substages into `project_stages` for every existing project (active, `added_by` the project's creator, `added_at` the project's creation time), sets those projects' `stage_template_id` to General, and drops the CHECK on `project_stage_periods.stage`.
+- Routes: `GET /stage-templates` (any signed-in user: active templates with stages, for the new-project form; the Enterprise Administrator gets retired ones too with `?all=1`, plus `projectsUsing` counts); `POST /stage-templates` `{ name, description?, stages: { name, substages: string[] }[], reason }`; `PUT /stage-templates/:id` same body (replaces name, description and stage list); `POST /stage-templates/:id/retire` and `/restore` `{ reason }`. Writes: Enterprise Administrator only, reason required (1–500), audit `stage_template.created|changed|retired|restored` with previous and new values. Refusals (400, plain words): duplicate active name; duplicate stage name in a template; no stages; retiring the last active template; a name outside 1–80 characters; more than 20 stages or more than 10 substages per stage.
+
+- [ ] **Step 1: Tests**: schema test (seven templates seeded in spec §14 order, General's stages and substages exact, an existing project gets five `project_stages` rows and `stage_template_id` = General, `project_stage_periods` accepts a stage name outside the old five); HTTP tests for each route and each refusal, a Member's write gets 403, audit rows carry previous and new values; settings summary `stageTemplates` rule (active count, up to three names).
+- [ ] **Step 2: Run, expect FAIL.**
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run the new tests, `dist/db/migrate.test.js`, `dist/quarantine/registry.db.test.js`, the analytics catalogue tests, `dist/settings-summary/*.test.js`, `dist/projects/*.test.js`; expect PASS.**
+- [ ] **Step 5: Commit** `feat(projects): stage templates catalogue and migration 0037 (D131)`.
+
+### Task 21: Stage templates: projects use their own stages (server)
+
+**Files:** Modify `app/src/projects/projects.service.ts`, `projects.controller.ts`, `lifecycle.ts`, `app/src/testing/projects.ts`, `app/src/analytics/panels.service.ts` and `csv.ts` (template column), affected tests; Create `app/src/projects/project-stages.http.test.ts`
+
+**Interfaces:**
+- Project creation body gains `stageTemplateId?: string` (default: the active template named General, else the first active one); refused (400 "Choose a type of project that is still offered.") when retired or unknown. The project copies the template's stages and substages into `project_stages`, sets `stage_template_id`, and its first stage period starts in the first stage.
+- The `STAGES` and `SUBSTAGES` constants are removed. `changeStage` and the reopen transition (`lifecycle.ts:75`) check the stage and substage against the project's active `project_stages` (messages unchanged: "Choose a stage." / "Choose a substage of <stage>." / "Choose the stage to continue in."); `checkTransition` receives the project's active stage names as a parameter.
+- Project detail gains `stages: { id, name, substages: string[], status }[]` (ordered) and `stageTemplate: { id, name } | null`.
+- Routes: `POST /projects/:id/stages` `{ name, substages?: string[], position: number, reason }`; `POST /projects/:id/stages/order` `{ ids: string[], reason }`; `POST /projects/:id/stages/:stageId/retire` and `/restore` `{ reason }`. Allowed for the project's PM, Owner or Sponsor (follow how other delegated project settings check those roles); refused while the project is Closed or archived (read-only), as other project settings are. Retiring the current stage is refused ("This is the current stage. Move to another stage first."); duplicate names refused; project history records each change with its reason.
+- The Administrator's analytics project table and CSV gain "Stage template".
+
+- [ ] **Step 1: Tests**: creating with Research project starts in "Proposal" and lists its seven stages; creating with a retired template → 400; `changeStage` to "Literature review" works for that project and to "Execution" is refused; reopening a Closed Research project accepts its stages; the PM adds "Fieldwork" at position 4 and it appears in order; a Member gets 403; retiring the current stage is refused; a retired stage cannot be chosen in `changeStage` and can be restored; editing the template afterwards does not change the project's stages; the analytics CSV has the template column; existing project and lifecycle tests pass with General.
+- [ ] **Step 2: Run, expect FAIL.**
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: Run `dist/projects/*.test.js`, `dist/dashboards/*.test.js`, `dist/analytics/*.test.js`, `dist/leadership/*.test.js`; expect PASS.**
+- [ ] **Step 5: Commit** `feat(projects): projects choose a stage template and manage their own stages`.
+
+### Task 22: Stage templates: Settings page and the choice at project creation (web)
+
+**Files:** Create `app/web/src/views/StageTemplates.tsx`, `app/web/src/ui/stages.ts`, `app/web/src/ui/stages.test.ts`; Modify `App.tsx` (route `#/stage-templates`, Administrator only), `ui/settings.ts` (verify the catalogue entry's href), `ui/menu.ts` (`currentMenuHref('#/stage-templates') === '#/settings'`), `views/Projects.tsx` (new-project form: "Type of project" dropdown of active templates with the chosen template's stages listed beside it), `app/web/src/projects.ts` (remove `STAGES`/`SUBSTAGES`)
+
+**Interfaces:**
+- `validateTemplateDraft(d: { name: string, stages: { name: string, substages: string[] }[] }): string[]` (the server's refusals in plain words, shown before saving).
+- Stage templates page on `SettingsPage`: glance = table of templates (Name, Stages, Projects using it, Status); settings = Add template; each template opens an editor box (name, description, stage list with Move up / Move down buttons, add or remove a stage, substages as a list of inputs, reason); Retire / Bring back with a reason. No dragging.
+
+- [ ] **Step 1: Tests** `stages.test.ts`: `validateTemplateDraft` refuses an empty name, duplicate stage names (case-insensitive), no stages, 21 stages, an 81-character name; accepts the General template.
+- [ ] **Step 2: Run, expect FAIL.**
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: `npm test`, `npm run build`; on the demo installation (API restarted on the new server build): add a template, create a project with Research project, see its first stage.**
+- [ ] **Step 5: Commit** `feat(web): stage templates page and project type at creation`.
+
+### Task 23: Stage templates: a project's Stages box, stage changes and stage flow (web)
+
+**Files:** Modify `views/ProjectPage.tsx` (stage change and reopen forms use `project.stages`; the Overview's `StageFlow` uses the project's stages; the header shows "Stages: <template name>"), the project Settings tab view (new "Stages" box: ordered list with Move up / Move down, Add stage, Retire / Bring back, each with a reason; visible to all, editable by PM, Owner, Sponsor), `views/Timeline.tsx` if it lists stage names from the removed constant; extend `ui/stages.ts` and its test
+
+**Interfaces:**
+- `stageFlowFrom(stages: { name: string, status: 'active'|'retired' }[], periods: { stage: string, startedAt: string, endedAt: string | null }[], now: Date): { name: string, state: 'done'|'current'|'todo', days?: number }[]` (active stages in the project's order; done = before the current one in order and having a period; current = the open period, with whole days in UTC+8; todo = the rest; a current stage that is retired or not in the list still shows as current, appended in place).
+
+- [ ] **Step 1: Tests**: `stageFlowFrom` for a General project in Execution (two done, current with days, two to do), a Research project in Proposal, and a project whose current stage is retired.
+- [ ] **Step 2: Run, expect FAIL.**
+- [ ] **Step 3: Implement.**
+- [ ] **Step 4: `npm test`, `npm run build`; on the demo installation as PM: add "Fieldwork", move to it, see the stage flow; as a Member the Stages box is read-only.**
+- [ ] **Step 5: Commit** `feat(web): project stages box, stage changes and stage flow from the project's own stages`.
+
+### Task 24: Accessibility pass, browser smoke, walkthrough and documents
+
+**Files:** Modify `tests/a11y/audit.mjs`, `tests/a11y/README.md`, `tests/browsers/smoke.mjs`, `tests/browsers/README.md`, `docs/Kainow-V1.0-Consolidated-Product-Specification-and-Decision-Register.md` (D127–D131 rows from spec §12 and §14), `docs/Kainow-V1.0-Configuration-Catalogue.md` (C111, C112, C113; C09 refined by C113), `docs/Kainow-V1.0-Remaining-Design-and-Verification-Register.md` (R18 row: designed in 11a; the Presentation row: 375 px header overflow fixed), `app/README.md`, `CHANGELOG.md` (`## Unreleased`)
 
 - [ ] **Step 1: Demo installation for checks**: database `kainow_demo_sp11` on `kainow-testdb`, migrate, `npm run load-test -- --seed`, API on port 3410 with `LOG_SIGN_IN_CODES=true` (as in `docs/operations/load-test.md` steps 1–4). Rename one seeded project to a 120-character dummy name for the overflow check.
-- [ ] **Step 2: Extend `audit.mjs`** with: Settings hub; each of the 17 setting pages; My tasks; Reviews; the person menu open; the side menu collapsed and opened at 375 px; a project's binder tabs; Discussion, Notes and Proposals tabs; the review screen with the correction panel open and a Change history; the organisation colour form with a refused colour; each of Red, Teal and Dark on Home. Each state at 1200 px and 375 px. Assert `document.documentElement.scrollWidth <= innerWidth` at 375 px on every state (**Review Focus 3**).
+- [ ] **Step 2: Extend `audit.mjs`** with: Settings hub; each of the 18 setting pages; My tasks; Reviews; the person menu open; the side menu collapsed and opened at 375 px; a project's binder tabs; Discussion, Notes and Proposals tabs; the review screen with the correction panel open and a Change history; the organisation colour form with a refused colour; the Stage templates page with a template open; the new-project form's template choice; a project's Stages box; each of Red, Teal and Dark on Home. Each state at 1200 px and 375 px. Assert `document.documentElement.scrollWidth <= innerWidth` at 375 px on every state (**Review Focus 3**).
 - [ ] **Step 3: Run the audit; expect 0 violations.** Fix any violation in the owning view, re-run until clean; record the state count and date in `tests/a11y/README.md`.
 - [ ] **Step 4: Update `smoke.mjs`** for the new navigation (side menu, person menu sign-out) and run it in Chrome, Edge, Firefox and WebKit at desktop, tablet and phone sizes; record results in `tests/browsers/results/` as before.
 - [ ] **Step 5: Screenshots** of Home, Projects, a project Overview, the review screen with a correction, Settings hub, the AI page and the Administrators page, in Red, Teal and Dark at 1280 px and in Red at 375 px, saved under `docs/superpowers/screenshots/11a/` (dummy data only) for the PR.
-- [ ] **Step 6: Documents**: add D127–D130, C111–C112 and the register updates with today's date; `CHANGELOG.md` Unreleased entry for the redesign.
+- [ ] **Step 6: Documents**: add D127–D131, C111–C113 and the register updates (R14: stage catalogue designed) with today's date; `CHANGELOG.md` Unreleased entry for the redesign.
 - [ ] **Step 7: Full suites**: web `npm test` and `npm run build`; the full server suite in the background (about 40 minutes); expect all PASS.
 - [ ] **Step 8: Commit** `docs: 11a decisions, catalogue and checks; accessibility and browser runs`.
