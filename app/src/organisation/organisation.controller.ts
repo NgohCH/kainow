@@ -44,6 +44,13 @@ export class OrganisationProfileController {
     return this.organisation.setName(field(body, 'name'), actor(req));
   }
 
+  /** { colour: '#rrggbb' | null, reason } */
+  @Put('colour')
+  @RequireAction('organisation.manage')
+  async setColour(@Body() body: unknown, @Req() req: HttpRequest) {
+    return this.organisation.setColour(field(body, 'colour') ?? null, field(body, 'reason'), actor(req));
+  }
+
   @Post('finish')
   @HttpCode(200)
   @RequireAction('organisation.manage')

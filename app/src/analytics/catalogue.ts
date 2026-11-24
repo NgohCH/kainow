@@ -56,6 +56,7 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
   ...audit('Organisation', ADMIN, 'organisation', [
     ['organisation.registered', 'The organisation was registered at onboarding.'],
     ['organisation.renamed', 'The organisation name was changed.'],
+    ['organisation.colour_changed', 'The organisation colour was set or cleared.'],
     ['organisation.logo_set', 'An organisation logo was uploaded.'],
     ['organisation.logo_removed', 'An organisation logo was removed.'],
     ['organisation.recovery_custodian_changed', 'The recovery custodian was changed.'],

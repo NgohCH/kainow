@@ -5,13 +5,15 @@ import { CLOCK, type Clock } from '../auth/tokens';
 import { PG_POOL } from '../db/database.module';
 import { type Box, DEFAULT_NAME, LOGO_SHAPES, type LogoShape, PLACES, type Place, chooseLogo, defaultLogo } from './branding';
 import { loadLetterhead } from '../email/letterhead';
+import { deriveScheme } from './colour';
+import { readReason } from '../common/reason';
 import { checkLogo } from './image';
 import { PROTECTED_KEY, type ProtectedKey } from '../quarantine/protected-key';
 import { OrganisationState } from './state';
 
 export type LogoMeta = { width: number; height: number; byteSize: number; uploadedAt: Date };
 export type PlaceBranding = { url: string; width: number; height: number; isDefault: boolean };
-export type Branding = { registered: boolean; name: string; places: Record<Place, PlaceBranding> };
+export type Branding = { registered: boolean; name: string; colour: string | null; places: Record<Place, PlaceBranding> };
 /** What an email, report or other formal output carries: the name and the logo chosen for its place. */
 export type Letterhead = { name: string; registered: boolean; logo: { content: Buffer; mime: string; box: Box } };
 export type LogoImage = { content: Buffer; mime: string; version: string };
@@ -115,6 +117,28 @@ export class OrganisationProfileService {
     return { name };
   }
 
+  /** Sets or clears (null) the organisation colour. It must carry white text; every change is audited with the old and new colour and the reason. */
+  async setColour(colourIn: unknown, reasonIn: unknown, actorUserId: string): Promise<{ colour: string | null }> {
+    const reason = readReason(reasonIn, 'a reason');
+    let colour: string | null = null;
+    if (colourIn !== null) {
+      if (typeof colourIn !== 'string') throw new BadRequestException('Choose a colour, or clear it.');
+      const derived = deriveScheme(colourIn.trim());
+      if (!derived.ok) throw new BadRequestException(derived.reason);
+      colour = derived.scheme.accent;
+    }
+    const at = this.now();
+    await this.tx(async (c) => {
+      const row = (await c.query(`SELECT colour FROM organisation WHERE id = 1 FOR UPDATE`)).rows[0];
+      if (!row) throw new ConflictException('Set up the organisation first.');
+      const from = (row.colour as string | null) ?? null;
+      if (from === colour) return;
+      await c.query(`UPDATE organisation SET colour = $1, updated_by = $2, updated_at = $3 WHERE id = 1`, [colour, actorUserId, at]);
+      await writeAudit(c, { at, action: 'organisation.colour_changed', actorUserId, subjectType: 'organisation', detail: { from, to: colour, reason } });
+    });
+    return { colour };
+  }
+
   /** The recovery custodian (O07): who can restore Administrator access if every Administrator is locked out. */
   async recoveryCustodian(): Promise<RecoveryCustodian> {
     const row = (await this.pool.query(`SELECT recovery_custodian_name, recovery_custodian_contact FROM organisation WHERE id = 1`)).rows[0];
@@ -193,26 +217,26 @@ export class OrganisationProfileService {
   }
 
   /** The name and logos in use: the organisation's own only once setup is finished; Kainow's until then. */
-  private async inUse(): Promise<{ registered: boolean; name: string; uploaded: Record<LogoShape, string | null> }> {
-    const org = (await this.pool.query(`SELECT name, registered_at FROM organisation WHERE id = 1`)).rows[0];
+  private async inUse(): Promise<{ registered: boolean; name: string; colour: string | null; uploaded: Record<LogoShape, string | null> }> {
+    const org = (await this.pool.query(`SELECT name, colour, registered_at FROM organisation WHERE id = 1`)).rows[0];
     const registered = !!org?.registered_at;
     const uploaded: Record<LogoShape, string | null> = { wide: null, square: null };
     if (registered) {
       for (const r of (await this.pool.query(`SELECT shape, uploaded_at FROM organisation_logos`)).rows) uploaded[r.shape as LogoShape] = version(r.uploaded_at);
     }
-    return { registered, name: registered ? (org.name as string) : DEFAULT_NAME, uploaded };
+    return { registered, name: registered ? (org.name as string) : DEFAULT_NAME, colour: registered ? ((org.colour as string | null) ?? null) : null, uploaded };
   }
 
   /** The name and, for each place, the logo to show. Public: the sign-in page needs it before anyone signs in. */
   async branding(): Promise<Branding> {
-    const { registered, name, uploaded } = await this.inUse();
+    const { registered, name, colour, uploaded } = await this.inUse();
     const places = {} as Record<Place, PlaceBranding>;
     for (const place of PLACES) {
       const choice = chooseLogo(place, { wide: uploaded.wide !== null, square: uploaded.square !== null });
       const v = choice.isDefault ? 'default' : (uploaded[choice.shape] as string);
       places[place] = { url: `/organisation/logo/${choice.shape}?v=${v}`, ...choice.box, isDefault: choice.isDefault };
     }
-    return { registered, name, places };
+    return { registered, name, colour, places };
   }
 
   /** The image in use for a shape. Bytes, type and version come from one read, so they always match. */
