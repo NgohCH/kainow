@@ -1,7 +1,16 @@
 import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { ApiError, api, type Project } from '../api.ts';
+import { formatWhen } from '../format.ts';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
-import { TEMPLATE_LIMITS, type ProjectStage, validateTemplateDraft } from '../ui/stages.ts';
+import { TEMPLATE_LIMITS, type ProjectStage, type StageChange, stageChangeText, validateTemplateDraft } from '../ui/stages.ts';
+
+const HISTORY_COLUMNS: Column<StageChange>[] = [
+  { key: 'at', header: 'When (UTC+8)', cell: (c) => formatWhen(c.at) },
+  { key: 'actor', header: 'Who', cell: (c) => c.actor },
+  { key: 'change', header: 'Change', cell: (c) => stageChangeText(c) },
+  { key: 'reason', header: 'Reason', cell: (c) => c.reason },
+];
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 
@@ -26,7 +35,7 @@ export function StagesSummary({ project }: { project: Project }) {
 /**
  * The project's own stages (D131), in order: move one up or down, retire one or bring it back, add one. Each change
  * is saved at once with the reason written above the list and is recorded. Everyone who can read the project sees the
- * list; the Project Manager, Owner and Sponsors change it.
+ * list and its history; the Project Manager, Owner and Sponsors change it.
  */
 export function StagesEditor({ project, reload }: { project: Project; reload: () => void }) {
   const editable = stagesEditable(project);
@@ -134,6 +143,7 @@ export function StagesEditor({ project, reload }: { project: Project; reload: ()
         })}
       </ol>
       {editable && <AddStage stages={stages} busy={busy} change={change} />}
+      <DataTable caption="Change history" columns={HISTORY_COLUMNS} rows={project.stageChanges} rowKey={(c) => c.id} empty="No changes yet." />
     </div>
   );
 }
@@ -152,6 +162,7 @@ function AddStage({ stages, busy, change }: { stages: ProjectStage[]; busy: bool
     const subs = substages.split('\n').map((x) => x.trim()).filter((x) => x !== '');
     const found = validateTemplateDraft({ name: 'Stage', stages: [{ name, substages: subs }] });
     if (stages.some((s) => s.name.toLowerCase() === name.trim().toLowerCase())) found.push('This project already has a stage with that name.');
+    if (stages.filter((s) => s.status === 'active').length >= TEMPLATE_LIMITS.stages) found.push(`A project can have at most ${TEMPLATE_LIMITS.stages} stages in use. Retire one first.`);
     setProblems(found);
     if (found.length > 0) return;
     if (await change('stages', { name: name.trim(), substages: subs, position: place }, `${name.trim()} added.`, null)) {

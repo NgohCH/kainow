@@ -136,4 +136,33 @@ describe('stage templates schema (0037)', { skip: SKIP_NO_DB }, () => {
       '23514',
     );
   });
+
+  test('0038: a stage period needs a name of 1 to 80 characters', async () => {
+    const insert = (stage: string) =>
+      sqlState(pool, `INSERT INTO project_stage_periods (id, project_id, stage, started_at, ended_at, started_by) VALUES ($1, $2, $3, now(), now(), $4)`, [uuidv7(), projectId, stage, userId]);
+    assert.equal(await insert('   '), '23514');
+    assert.equal(await insert('x'.repeat(81)), '23514');
+    assert.equal(await insert('x'.repeat(80)), 'ok');
+  });
+
+  test('0038: project stage changes are append-only and name a stage unless they are a new order', async () => {
+    const stageId = (await pool.query(`SELECT id FROM project_stages WHERE project_id = $1 LIMIT 1`, [projectId])).rows[0].id as string;
+    const insert = (kind: string, stage: string | null, reason = 'Agreed') =>
+      sqlState(
+        pool,
+        `INSERT INTO project_stage_changes (id, project_id, kind, stage_id, actor_id, at, reason, previous, next) VALUES ($1, $2, $3, $4, $5, now(), $6, '[]', '[]')`,
+        [uuidv7(), projectId, kind, stage, userId, reason],
+      );
+    for (const kind of ['added', 'retired', 'restored']) {
+      assert.equal(await insert(kind, stageId), 'ok', kind);
+      assert.equal(await insert(kind, null), '23514', `${kind} needs a stage`);
+    }
+    assert.equal(await insert('reordered', null), 'ok');
+    assert.equal(await insert('reordered', stageId), '23514');
+    assert.equal(await insert('renamed', stageId), '23514');
+    assert.equal(await insert('added', stageId, '  '), '23514');
+    assert.equal(await sqlState(pool, `UPDATE project_stage_changes SET reason = 'z'`), '23001');
+    assert.equal(await sqlState(pool, `DELETE FROM project_stage_changes`), '23001');
+    assert.equal(await sqlState(pool, `TRUNCATE project_stage_changes`), '23001');
+  });
 });

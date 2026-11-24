@@ -108,12 +108,18 @@ describe("a project's own stages (D131)", { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(names(r.body.project.stages), [...RESEARCH_STAGES.slice(0, 3), 'Fieldwork', ...RESEARCH_STAGES.slice(3)]);
     assert.deepEqual(r.body.project.stages[3].substages, ['Site visits']);
     const audit = (await t.pool.query(`SELECT detail FROM audit_events WHERE action = 'project.stage_added' AND subject_id = $1`, [id])).rows;
-    assert.equal(audit.length, 1);
-    assert.equal(audit[0].detail.reason, reason);
-    assert.equal(audit[0].detail.stage, 'Fieldwork');
+    const fieldwork = r.body.project.stages[3] as Stage;
+    assert.deepEqual(audit.map((a) => a.detail), [{ stageId: fieldwork.id, position: 4 }], 'ids and counts only');
+    const [change] = r.body.project.stageChanges;
+    assert.deepEqual([change.kind, change.stage, change.reason, change.actor], ['added', 'Fieldwork', reason, 'pm']);
+    assert.deepEqual(change.previous.map((s: Stage) => s.name), RESEARCH_STAGES);
+    assert.deepEqual(change.next.map((s: Stage) => s.name), names(r.body.project.stages));
+    assert.deepEqual(change.next[3], { name: 'Fieldwork', substages: ['Site visits'], status: 'active' });
     // The new stage may be chosen, with its substage.
     const moved = await pm.request('POST', `/projects/${id}/stage`, { stage: 'Fieldwork', substage: 'Site visits' });
     assert.equal(moved.status, 200);
+    const stageAudit = (await t.pool.query(`SELECT detail FROM audit_events WHERE action = 'project.stage' AND subject_id = $1`, [id])).rows;
+    assert.deepEqual(stageAudit.map((a) => a.detail), [{ stageId: fieldwork.id }]);
     // The Owner may add one too, at the end.
     const end = await owner.request('POST', `/projects/${id}/stages`, { name: 'Archiving', position: 9, reason });
     assert.equal(end.status, 200);
@@ -132,6 +138,33 @@ describe("a project's own stages (D131)", { skip: SKIP_NO_DB }, () => {
     assert.equal((await add(pm, { name: '' })).status, 400);
     assert.equal((await add(pm, { name: 'x'.repeat(81) })).status, 400);
     assert.deepEqual(names(await stages(id)), RESEARCH_STAGES);
+  });
+
+  test('a project can have at most 20 stages in use', async () => {
+    const id = await research();
+    for (let n = RESEARCH_STAGES.length; n < 20; n += 1) {
+      assert.equal((await pm.request('POST', `/projects/${id}/stages`, { name: `Extra ${n}`, position: 1, reason })).status, 200);
+    }
+    const over = await pm.request('POST', `/projects/${id}/stages`, { name: 'One more', position: 1, reason });
+    assert.equal(over.status, 400);
+    assert.equal(over.body.message, 'A project can have at most 20 stages in use. Retire one first.');
+    // A retired stage makes room; bringing it back then needs room too.
+    const extra = (await stages(id))[0];
+    assert.equal((await pm.request('POST', `/projects/${id}/stages/${extra.id}/retire`, { reason })).status, 200);
+    assert.equal((await pm.request('POST', `/projects/${id}/stages`, { name: 'One more', position: 1, reason })).status, 200);
+    const back = await pm.request('POST', `/projects/${id}/stages/${extra.id}/restore`, { reason });
+    assert.equal(back.status, 400);
+    assert.equal(back.body.message, 'A project can have at most 20 stages in use. Retire one first.');
+  });
+
+  test('a name the database takes as the same as another (dotted capital I) is refused in words', async () => {
+    const id = await research();
+    assert.ok((await t.pool.query(`SELECT lower($1::text) = lower('I') AS same`, ['\u0130'])).rows[0].same, 'the test database lowers both to i');
+    assert.equal((await pm.request('POST', `/projects/${id}/stages`, { name: 'I', position: 1, reason })).status, 200);
+    const r = await pm.request('POST', `/projects/${id}/stages`, { name: '\u0130', position: 1, reason });
+    assert.equal(r.status, 400);
+    assert.equal(r.body.message, 'This project already has a stage with that name.');
+    assert.equal((await detail(id)).stageChanges.length, 1, 'nothing is recorded for a refused change');
   });
 
   test('stage changes are refused while the project is Closed', async () => {
@@ -167,11 +200,20 @@ describe("a project's own stages (D131)", { skip: SKIP_NO_DB }, () => {
     assert.equal((await pm.request('POST', `/projects/${id}/stage`, { stage: 'Analysis' })).status, 200);
     assert.equal((await pm.request('POST', `/projects/${id}/stages/${analysis.id}/restore`, { reason })).status, 409);
     assert.equal((await pm.request('POST', `/projects/${id}/stages/00000000-0000-4000-8000-000000000000/retire`, { reason })).status, 404);
-    const actions = (await t.pool.query(`SELECT action, detail->>'reason' AS reason FROM audit_events WHERE subject_id = $1 AND action LIKE 'project.stage\\_%' ORDER BY action`, [id])).rows;
+    const actions = (await t.pool.query(`SELECT action, detail FROM audit_events WHERE subject_id = $1 AND action LIKE 'project.stage\\_%' ORDER BY action`, [id])).rows;
     assert.deepEqual(actions, [
-      { action: 'project.stage_restored', reason },
-      { action: 'project.stage_retired', reason },
+      { action: 'project.stage_restored', detail: { stageId: analysis.id } },
+      { action: 'project.stage_retired', detail: { stageId: analysis.id } },
     ]);
+    // Newest first, readable by everyone who can see the project's stages.
+    const seen = (await member.request('GET', `/projects/${id}`)).body.project.stageChanges;
+    assert.deepEqual(
+      seen.map((c: { kind: string; stage: string; actor: string; reason: string }) => [c.kind, c.stage, c.actor, c.reason]),
+      [['restored', 'Analysis', 'owner', reason], ['retired', 'Analysis', 'pm', reason]],
+    );
+    const at = RESEARCH_STAGES.indexOf('Analysis');
+    assert.deepEqual([seen[1].previous[at].status, seen[1].next[at].status], ['active', 'retired']);
+    assert.ok(!Number.isNaN(Date.parse(seen[0].at)));
   });
 
   test('the stages are reordered with a full list of their ids', async () => {
@@ -188,7 +230,11 @@ describe("a project's own stages (D131)", { skip: SKIP_NO_DB }, () => {
     assert.equal((await pm.request('POST', `/projects/${id}/stages/order`, { ids: [...reversed.slice(1), reversed[1]], reason })).status, 400);
     assert.equal((await member.request('POST', `/projects/${id}/stages/order`, { ids: reversed, reason })).status, 403);
     const audit = (await t.pool.query(`SELECT detail FROM audit_events WHERE action = 'project.stages_reordered' AND subject_id = $1`, [id])).rows;
-    assert.deepEqual(audit.map((a) => [a.detail.previous, a.detail.next, a.detail.reason]), [[RESEARCH_STAGES, [...RESEARCH_STAGES].reverse(), reason]]);
+    assert.deepEqual(audit.map((a) => a.detail), [{ stages: 7 }]);
+    const [change] = r.body.project.stageChanges;
+    assert.deepEqual([change.kind, change.stage, change.reason, change.actor], ['reordered', null, reason, 'pm']);
+    assert.deepEqual(change.previous.map((s: Stage) => s.name), RESEARCH_STAGES);
+    assert.deepEqual(change.next.map((s: Stage) => s.name), [...RESEARCH_STAGES].reverse());
   });
 
   test("editing the template afterwards does not change the project's stages", async () => {

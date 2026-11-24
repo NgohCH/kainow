@@ -662,6 +662,7 @@ const TABLES: TableDef[] = [
   { table: 'project_stage_periods', project: `t.project_id ${P}`, text: ['stage', 'substage', 'reason'] },
   // A project's own stages (D131): names typed when a template was made or a stage added; the copy is the project's.
   { table: 'project_stages', project: `t.project_id ${P}`, text: ['name'], array: ['substages'] },
+  { table: 'project_stage_changes', project: `t.project_id ${P}`, text: ['reason'], json: ['previous', 'next'] },
   { table: 'holidays', project: `t.project_id ${P}`, text: ['name'] },
   { table: 'closure_delegations', project: `t.project_id ${P}`, text: ['reason'] },
   // AI configuration (sub-project 6). Connections belong to a project; their events and the project limit events
@@ -850,6 +851,7 @@ export const NO_USER_TEXT: Readonly<Record<string, string>> = {
   'stage_template_stages.name': 'a stage name in an Administrator-managed template: organisation-level, no project scope (spec 7.4); credential-checked when typed',
   'stage_template_stages.substages': 'substage names in an Administrator-managed template: organisation-level, no project scope (spec 7.4); credential-checked when typed',
   'project_stages.status': ENUM,
+  'project_stage_changes.kind': ENUM,
   'storage_admin_events.kind': ENUM,
   'storage_admin_events.reason': 'an Administrator designating a person: organisation-level, no project scope (spec 7.4); credential-checked when typed',
   'storage_admins.end_reason': 'an Administrator ending a designation: organisation-level, no project scope (spec 7.4); credential-checked when typed',

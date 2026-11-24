@@ -36,7 +36,6 @@ export function validateTemplateDraft(d: TemplateDraft): string[] {
   return [...new Set(problems)];
 }
 
-
 /** A template as the server lists it; `projectsUsing` only in the Administrator's full list. */
 export interface StageTemplate {
   id: string;
@@ -76,4 +75,28 @@ export function stageFlowFrom(
   return names.map((name, i): Stage =>
     i === at ? { name, state: 'current', days: daysSince(open!.startedAt, now) } : i < at && had.has(name) ? { name, state: 'done' } : { name, state: 'todo' },
   );
+}
+
+/** One recorded change to a project's own stages. */
+export interface StageChange {
+  id: string;
+  kind: 'added' | 'reordered' | 'retired' | 'restored';
+  /** The stage added, retired or brought back; null for a new order. */
+  stage: string | null;
+  actor: string;
+  at: string;
+  reason: string;
+  previous: Omit<ProjectStage, 'id'>[];
+  next: Omit<ProjectStage, 'id'>[];
+}
+
+/** What a stage change did, with the value before and after it. */
+export function stageChangeText(c: StageChange): string {
+  const order = (list: StageChange['next']) => list.map((s) => s.name).join(', ');
+  if (c.kind === 'reordered') return `New order: ${order(c.next)}. Before: ${order(c.previous)}.`;
+  if (c.kind === 'retired') return `Retired ${c.stage} (was in use).`;
+  if (c.kind === 'restored') return `Brought back ${c.stage} (was retired).`;
+  const at = c.next.findIndex((s) => s.name === c.stage);
+  const substages = c.next[at]?.substages ?? [];
+  return `Added ${c.stage}${at >= 0 ? ` at place ${at + 1} of ${c.next.length}` : ''}${substages.length > 0 ? `, with substages ${substages.join(', ')}` : ''}.`;
 }

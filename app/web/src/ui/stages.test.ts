@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { stageFlowFrom, validateTemplateDraft } from './stages.ts';
+import { type StageChange, stageChangeText, stageFlowFrom, validateTemplateDraft } from './stages.ts';
 
 const GENERAL = {
   name: 'General',
@@ -76,4 +76,18 @@ test('a current stage that is not in the list is appended; with no open period n
 test('a stage skipped on the way (no period) is still to do, not done', () => {
   const flow = stageFlowFrom(active('A', 'B', 'C'), [period('A', '2026-11-01T00:00:00Z', '2026-11-02T00:00:00Z'), period('C', '2026-11-02T00:00:00Z', null)], NOW);
   assert.deepEqual(flow.map((s) => s.state), ['done', 'todo', 'current']);
+});
+
+const listed = (...names: string[]) => names.map((name) => ({ name, substages: [], status: 'active' as const }));
+const change = (c: Partial<StageChange>): StageChange => ({ id: 'c', kind: 'added', stage: 'Fieldwork', actor: 'Load Person 001', at: '2026-11-24T04:00:00Z', reason: 'Agreed', previous: [], next: [], ...c });
+
+test('a stage change reads in words, with what was before and after', () => {
+  assert.equal(stageChangeText(change({ previous: listed('A', 'B'), next: listed('A', 'Fieldwork', 'B') })), 'Added Fieldwork at place 2 of 3.');
+  assert.equal(
+    stageChangeText(change({ next: [...listed('A'), { name: 'Fieldwork', substages: ['Site visits', 'Samples'], status: 'active' }] })),
+    'Added Fieldwork at place 2 of 2, with substages Site visits, Samples.',
+  );
+  assert.equal(stageChangeText(change({ kind: 'retired' })), 'Retired Fieldwork (was in use).');
+  assert.equal(stageChangeText(change({ kind: 'restored' })), 'Brought back Fieldwork (was retired).');
+  assert.equal(stageChangeText(change({ kind: 'reordered', stage: null, previous: listed('A', 'B'), next: listed('B', 'A') })), 'New order: B, A. Before: A, B.');
 });

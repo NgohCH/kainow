@@ -37,6 +37,43 @@ async function loadStages(db: Pool | PoolClient, projectId: string): Promise<Pro
   return (await db.query(`SELECT id, name, substages, status FROM project_stages WHERE project_id = $1 ORDER BY position, id`, [projectId])).rows;
 }
 
+/** One recorded change to a project's own stages, as everyone who can see the stages reads it. */
+export interface StageChange {
+  id: string;
+  kind: 'added' | 'reordered' | 'retired' | 'restored';
+  /** The stage added, retired or brought back; null for a new order. */
+  stage: string | null;
+  actor: string;
+  at: Date;
+  reason: string;
+  previous: Array<Omit<ProjectStage, 'id'>>;
+  next: Array<Omit<ProjectStage, 'id'>>;
+}
+
+/** The changes to the project's stages, newest first. */
+async function loadStageChanges(db: Pool | PoolClient, projectId: string): Promise<StageChange[]> {
+  return (
+    await db.query(
+      `SELECT c.id, c.kind, s.name AS stage, u.display_name AS actor, c.at, c.reason, c.previous, c.next
+         FROM project_stage_changes c JOIN users u ON u.id = c.actor_id LEFT JOIN project_stages s ON s.id = c.stage_id
+        WHERE c.project_id = $1 ORDER BY c.at DESC, c.id DESC`,
+      [projectId],
+    )
+  ).rows;
+}
+
+/** A list of stages as the history keeps it. */
+const recorded = (stages: ProjectStage[]): string => JSON.stringify(stages.map(({ name, substages, status }) => ({ name, substages, status })));
+
+const SAME_STAGE_NAME = 'This project already has a stage with that name.';
+
+/** A project has at most as many stages in use as a template may have. */
+function refuseTooManyStages(stages: ProjectStage[]): void {
+  if (stages.filter((s) => s.status === 'active').length >= TEMPLATE_LIMITS.stages) {
+    throw new BadRequestException(`A project can have at most ${TEMPLATE_LIMITS.stages} stages in use. Retire one first.`);
+  }
+}
+
 const NOT_OFFERED = 'Choose a type of project that is still offered.';
 
 /** A stage or substage name: trimmed, 1 to 80 characters, credential-checked. */
@@ -311,6 +348,7 @@ export class ProjectsService {
       stage: stagePeriods.find((s) => s.endedAt === null) ?? null,
       stagePeriods,
       stages: await loadStages(this.pool, id),
+      stageChanges: await loadStageChanges(this.pool, id),
       transitions,
       memberships: ctx.rows.map((m) => ({
         id: m.id,
@@ -555,7 +593,7 @@ export class ProjectsService {
       if (substage !== null && !chosen.substages.includes(substage)) throw new BadRequestException(`Choose a substage of ${stage}.`);
       refuseSecretsIn(input.reason);
       await this.startStage(client, id, stage, substage, optionalText(input.reason), user.id, at);
-      await writeAudit(client, { at, action: 'project.stage', actorUserId: user.id, subjectType: 'project', subjectId: id, detail: { stage, substage } });
+      await writeAudit(client, { at, action: 'project.stage', actorUserId: user.id, subjectType: 'project', subjectId: id, detail: { stageId: chosen.id } });
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
@@ -576,11 +614,12 @@ export class ProjectsService {
     if (new Set(substages.map((x) => x.toLowerCase())).size !== substages.length) throw new BadRequestException('Substage names must differ within a stage.');
     const position = input.position;
     const reason = readReason(input.reason, 'a reason', { max: TEMPLATE_LIMITS.reasonChars });
-    return this.changeStages(user, id, async (c, stages, at) => {
+    return this.changeStages(user, id, reason, async (c, stages, at) => {
       if (typeof position !== 'number' || !Number.isInteger(position) || position < 1 || position > stages.length + 1) {
         throw new BadRequestException(`Choose a place from 1 to ${stages.length + 1}.`);
       }
-      if (stages.some((s) => s.name.toLowerCase() === name.toLowerCase())) throw new BadRequestException('This project already has a stage with that name.');
+      if (stages.some((s) => s.name.toLowerCase() === name.toLowerCase())) throw new BadRequestException(SAME_STAGE_NAME);
+      refuseTooManyStages(stages);
       const stageId = uuidv7(at.getTime());
       await c.query(
         `INSERT INTO project_stages (id, project_id, position, name, substages, status, added_by, added_at) VALUES ($1, $2, $3, $4, $5, 'active', $6, $7)`,
@@ -589,7 +628,7 @@ export class ProjectsService {
       const order = stages.map((s) => s.id);
       order.splice(position - 1, 0, stageId);
       await this.writeOrder(c, order);
-      return { action: 'project.stage_added', detail: { stage: name, substages, position, reason } };
+      return { kind: 'added', stageId, action: 'project.stage_added', detail: { stageId, position } };
     });
   }
 
@@ -597,51 +636,61 @@ export class ProjectsService {
   async reorderStages(user: AuthUser, id: string, input: Record<string, unknown>) {
     const ids = input.ids;
     const reason = readReason(input.reason, 'a reason', { max: TEMPLATE_LIMITS.reasonChars });
-    return this.changeStages(user, id, async (c, stages) => {
+    return this.changeStages(user, id, reason, async (c, stages) => {
       const known = new Set(stages.map((s) => s.id));
       if (!Array.isArray(ids) || ids.length !== stages.length || new Set(ids).size !== ids.length || !ids.every((x) => known.has(x))) {
         throw new BadRequestException('List every stage of the project once.');
       }
       await this.writeOrder(c, ids as string[]);
-      const nameOf = new Map(stages.map((s) => [s.id, s.name]));
-      return { action: 'project.stages_reordered', detail: { previous: stages.map((s) => s.name), next: (ids as string[]).map((x) => nameOf.get(x)), reason } };
+      return { kind: 'reordered', stageId: null, action: 'project.stages_reordered', detail: { stages: stages.length } };
     });
   }
 
   /** Retires a stage so it can no longer be chosen, or brings it back; past periods keep its name either way. */
   async setStageStatus(user: AuthUser, id: string, stageId: string, status: 'active' | 'retired', input: Record<string, unknown>) {
     const reason = readReason(input.reason, 'a reason', { max: TEMPLATE_LIMITS.reasonChars });
-    return this.changeStages(user, id, async (c, stages, at) => {
+    return this.changeStages(user, id, reason, async (c, stages, at) => {
       const stage = stages.find((s) => s.id === stageId);
       if (!stage) throw new NotFoundException('That stage is not in this project.');
       if (stage.status === status) throw new ConflictException(status === 'retired' ? 'That stage is already retired.' : 'That stage is not retired.');
       if (status === 'retired') {
         const current = (await c.query(`SELECT stage FROM project_stage_periods WHERE project_id = $1 AND ended_at IS NULL`, [id])).rows[0]?.stage;
         if (current === stage.name) throw new ConflictException('This is the current stage. Move to another stage first.');
-      }
+      } else refuseTooManyStages(stages);
       await c.query(`UPDATE project_stages SET status = $2, retired_by = $3, retired_at = $4 WHERE id = $1`, [
         stageId, status, status === 'retired' ? user.id : null, status === 'retired' ? at : null,
       ]);
-      return { action: status === 'retired' ? 'project.stage_retired' : 'project.stage_restored', detail: { stage: stage.name, reason } };
+      return { kind: status === 'retired' ? 'retired' : 'restored', stageId, action: status === 'retired' ? 'project.stage_retired' : 'project.stage_restored', detail: { stageId } };
     });
   }
 
-  /** Delegated to the Project Manager, Owner and Sponsors while the project is open; each change is audited with its reason. */
+  /**
+   * Delegated to the Project Manager, Owner and Sponsors while the project is open. Each change is recorded in the
+   * project's stage history with its reason and the list before and after; the audit event holds ids and counts only.
+   */
   private async changeStages(
     user: AuthUser,
     id: string,
-    fn: (c: PoolClient, stages: ProjectStage[], at: Date) => Promise<{ action: string; detail: Record<string, unknown> }>,
+    reason: string,
+    fn: (c: PoolClient, stages: ProjectStage[], at: Date) => Promise<{ kind: StageChange['kind']; stageId: string | null; action: string; detail: Record<string, unknown> }>,
   ) {
     const at = this.now();
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
       await this.access.authorize(user, 'project.stages', id, client, true);
-      const { action, detail } = await fn(client, await loadStages(client, id), at);
+      const previous = await loadStages(client, id);
+      const { kind, stageId, action, detail } = await fn(client, previous, at);
+      await client.query(
+        `INSERT INTO project_stage_changes (id, project_id, kind, stage_id, actor_id, at, reason, previous, next) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [uuidv7(at.getTime()), id, kind, stageId, user.id, at, reason, recorded(previous), recorded(await loadStages(client, id))],
+      );
       await writeAudit(client, { at, action, actorUserId: user.id, subjectType: 'project', subjectId: id, detail });
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
+      // The database compares names by its own rules, which differ from JavaScript's for a few letters.
+      if ((err as { constraint?: string }).constraint === 'project_stages_name') throw new BadRequestException(SAME_STAGE_NAME);
       throw err;
     } finally {
       client.release();
