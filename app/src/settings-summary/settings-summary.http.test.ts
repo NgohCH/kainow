@@ -56,7 +56,11 @@ describe('settings summary over HTTP', { skip: SKIP_NO_DB }, () => {
       assert.notEqual(s.state, 'unknown', `${s.key} could not be read: ${s.note}`);
     }
     const byKey = Object.fromEntries(res.body.settings.map((s: any) => [s.key, s]));
-    assert.deepEqual(byKey.stageTemplates.values, [{ label: 'Templates', value: 'General' }]);
+    assert.deepEqual(byKey.stageTemplates.values, [
+      { label: 'Active', value: '7' },
+      { label: 'Templates', value: 'General, Software development, Product sales and 4 more' },
+      { label: 'Retired', value: '0' },
+    ]);
     assert.equal(byKey.storage.state, 'off');
   });
 

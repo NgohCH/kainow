@@ -12,10 +12,12 @@ import { OrganisationController } from './organisation.controller';
 import { OrganisationService } from './organisation.service';
 import { ProjectsController } from './projects.controller';
 import { ProjectsService } from './projects.service';
+import { StageTemplatesController } from './stage-templates.controller';
+import { StageTemplatesService } from './stage-templates.service';
 
 @Module({
-  controllers: [OrganisationController, ProjectsController, MembersController, InvitationsController, GrantsController],
-  providers: [ProjectAccess, OrganisationService, ProjectsService, MembershipsService, InvitationsService, HoldsService, GrantsService, DepartmentTransferService],
-  exports: [ProjectAccess, OrganisationService, InvitationsService],
+  controllers: [OrganisationController, ProjectsController, MembersController, InvitationsController, GrantsController, StageTemplatesController],
+  providers: [ProjectAccess, OrganisationService, ProjectsService, MembershipsService, InvitationsService, HoldsService, GrantsService, DepartmentTransferService, StageTemplatesService],
+  exports: [ProjectAccess, OrganisationService, InvitationsService, StageTemplatesService],
 })
 export class ProjectsModule {}

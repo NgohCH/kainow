@@ -132,9 +132,15 @@ export function reportTypesRule(i: { active: number; retired: number }): Setting
   ]);
 }
 
-/** Until the stage template tables arrive, the one built-in template is shown. */
-export function stageTemplatesRule(): SettingSummary {
-  return make('stageTemplates', 'ok', [{ label: 'Templates', value: 'General' }]);
+/** Active templates in catalogue order: the count, up to three names (then "and N more"), and the retired count. */
+export function stageTemplatesRule(i: { activeNames: string[]; retired: number }): SettingSummary {
+  const shown = i.activeNames.slice(0, 3);
+  const more = i.activeNames.length - shown.length;
+  return make('stageTemplates', 'ok', [
+    { label: 'Active', value: String(i.activeNames.length) },
+    { label: 'Templates', value: shown.length ? `${shown.join(', ')}${more > 0 ? ` and ${more} more` : ''}` : 'None' },
+    { label: 'Retired', value: String(i.retired) },
+  ]);
 }
 
 /** Approved models as "<model id> (<Provider>)"; the fallback is each project's own connection order. */

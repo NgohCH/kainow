@@ -14,6 +14,7 @@ import { AccessSettingsService } from '../organisation/access-settings.service';
 import { OrganisationProfileService } from '../organisation/organisation.service';
 import { ReportTypesService } from '../outputs/report-types.service';
 import { OrganisationService } from '../projects/organisation.service';
+import { StageTemplatesService } from '../projects/stage-templates.service';
 import { SecurityService } from '../quarantine/security.service';
 import { ResourceSettingsService } from '../resources/settings.service';
 import { StorageSummaryService } from '../storage/summary.service';
@@ -49,6 +50,7 @@ export class SettingsSummaryService {
     private readonly goLive: GoLiveService,
     private readonly feedback: FeedbackService,
     private readonly security: SecurityService,
+    private readonly stageTemplates: StageTemplatesService,
   ) {}
 
   async summary(user: AuthUser): Promise<{ settings: SettingSummary[]; computedAt: string }> {
@@ -101,7 +103,10 @@ export class SettingsSummaryService {
         const all = await this.reportTypes.list(true);
         return reportTypesRule({ active: all.filter((r) => r.status === 'active').length, retired: all.filter((r) => r.status !== 'active').length });
       }),
-      settle('stageTemplates', async () => stageTemplatesRule()),
+      settle('stageTemplates', async () => {
+        const all = await this.stageTemplates.list(true);
+        return stageTemplatesRule({ activeNames: all.filter((x) => x.status === 'active').map((x) => x.name), retired: all.filter((x) => x.status !== 'active').length });
+      }),
       settle('ai', async () => aiRule({ models: (await this.models.list()).filter((m) => m.state === 'approved') })),
       settle('emailDelivery', () => this.emailDelivery()),
       settle('storage', async () => {

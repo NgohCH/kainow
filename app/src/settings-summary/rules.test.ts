@@ -57,10 +57,20 @@ describe('settings summary rules', () => {
     assert.equal(securityReviewRule({ heldCases: 2, waitingForKey: 0 }).state, 'ok');
   });
 
-  test('stage templates show the General placeholder until the template tables arrive', () => {
-    const s = stageTemplatesRule();
+  test('stage templates show the active count and up to three names', () => {
+    const s = stageTemplatesRule({ activeNames: ['General', 'Software development', 'Product sales', 'Research project'], retired: 1 });
     assert.equal(s.state, 'ok');
-    assert.deepEqual(s.values, [{ label: 'Templates', value: 'General' }]);
+    assert.deepEqual(s.values, [
+      { label: 'Active', value: '4' },
+      { label: 'Templates', value: 'General, Software development, Product sales and 1 more' },
+      { label: 'Retired', value: '1' },
+    ]);
+    assert.deepEqual(stageTemplatesRule({ activeNames: ['General'], retired: 0 }).values, [
+      { label: 'Active', value: '1' },
+      { label: 'Templates', value: 'General' },
+      { label: 'Retired', value: '0' },
+    ]);
+    assert.equal(stageTemplatesRule({ activeNames: ['A', 'B', 'C'], retired: 0 }).values[1].value, 'A, B, C');
   });
 
   test('a box never has more than three values', () => {
