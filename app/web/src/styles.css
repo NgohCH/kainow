@@ -535,7 +535,8 @@ mark { background: var(--marker-wash); color: inherit; font-weight: 700; padding
 /* Go-live checklist */
 .golive-banner { border: 1px solid var(--rule); border-left-width: 4px; border-radius: 4px; padding: 0.6rem 0.9rem; background: var(--surface); margin: 0.75rem 0; }
 .golive-list { list-style: none; padding: 0; margin: 1rem 0; display: grid; gap: 0.75rem; }
-.golive-step { border: 1px solid var(--rule); border-radius: 4px; padding: 0.75rem 1rem; background: var(--surface); }
+.golive-step { margin: 0; }
+.golive-step .box { margin: 0; }
 .golive-step-text { font-size: 1.05rem; margin: 0 0 0.4rem; }
 .golive-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.5rem; }
 .golive-form { margin-top: 0.5rem; }
@@ -731,15 +732,6 @@ details > summary { cursor: pointer; font-weight: 600; }
 /* Operations (10a): banner, status strip, growth chart. Meaning is carried by words and marks, never by colour alone. */
 .ops-banner { background: var(--marker-wash); color: var(--ink); border-bottom: 2px solid var(--marker-ink); padding: 0.6rem 1rem; }
 .ops-banner p { margin: 0.15rem 0; }
-.ops-strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 0.75rem; margin: 1rem 0; padding: 0; }
-.ops-tile { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 0.6rem 0.8rem; display: flex; flex-direction: column; gap: 0.2rem; min-width: 0; }
-.ops-tile-label { color: var(--muted); font-size: 0.85rem; font-weight: 600; }
-.ops-word { font-weight: 600; }
-.ops-mark { display: inline-block; min-width: 1em; font-weight: 700; }
-.ops-good { color: var(--accent-deep); }
-.ops-warn { color: var(--marker-ink); }
-.ops-bad { color: var(--rust); }
-.ops-none { color: var(--muted); }
 .ops-chart { width: 100%; height: 5rem; display: block; background: var(--muted-wash); border-radius: 4px; }
 .ops-bar { fill: var(--accent); }
 .ops-gap { stroke: var(--rust); stroke-width: 2; }
