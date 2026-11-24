@@ -871,3 +871,10 @@ button.stat-tile[aria-pressed="true"] { border-color: var(--accent); box-shadow:
 .colour-swatch { display: inline-flex; align-items: center; min-width: 5.5rem; padding: 0.35rem 0.6rem; border-radius: 6px; font-size: 13px; border: 1px solid var(--muted-wash); }
 .colour-row { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; align-items: end; }
 .colour-row input[type="color"] { width: 3rem; height: 2.2rem; padding: 0; }
+
+/* Connections pages (Task 13) */
+.usage-details { margin: 1rem 0 0; }
+.usage-details > summary { cursor: pointer; font-family: var(--serif); font-size: 18px; padding: 0.3rem 0; }
+.settings-current .model-list { margin-top: 0.5rem; }
+.settings-current .facts { margin: 0; }
+.data-table-wrap + .data-table-wrap, .stat-grid + .data-table-wrap, .inline-form + .data-table-wrap { margin-top: 1rem; }

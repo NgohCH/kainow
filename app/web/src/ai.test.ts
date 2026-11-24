@@ -17,7 +17,9 @@ import {
   meterText,
   modelBody,
   modelDraft,
+  modelRows,
   moveId,
+  nearestLimit,
   orgBody,
   orgDraft,
   projectIdFromHash,
@@ -216,4 +218,32 @@ test('sources are plain words, the tab path matches the notice link, the project
   assert.equal(aiTabPath(id), `#/projects/${id}/ai`);
   assert.equal(projectIdFromHash(`#/projects/${id}/work`), id);
   assert.equal(projectIdFromHash('#/people'), null);
+});
+
+const model = (id: string, modelId: string, state: 'approved' | 'withdrawn') => ({
+  id, provider: 'openai' as const, modelId, displayName: `Name ${modelId}`, state, purposes: ['extraction' as const], restrictedOk: false, dataTerms: '',
+  prices: { inputUsdPerMillion: '1', cachedInputUsdPerMillion: '1', cacheWriteUsdPerMillion: '0', outputUsdPerMillion: '1' },
+});
+const conn = (projectName: string, modelId: string, usedMyr: string) => ({ projectName, projectId: projectName, modelId, provider: 'openai', usedMyr }) as never;
+
+test('models in use list approved models, the projects whose connections used them, and what they cost this month', () => {
+  const usage = { byConnection: [conn('Alpha', 'm1', '1.5'), conn('Beta', 'm1', '2.25'), conn('Alpha', 'm1', '1'), conn('Alpha', 'unknown', '3')] } as never;
+  const rows = modelRows([model('1', 'm1', 'approved'), model('2', 'm2', 'approved'), model('3', 'm3', 'withdrawn')], usage);
+  assert.deepEqual(rows.map((r) => [r.modelId, r.state, r.projects, r.month]), [
+    ['m1', 'approved', ['Alpha', 'Beta'], 4.75],
+    ['m2', 'approved', [], 0],
+    ['unknown', 'unlisted', ['Alpha'], 3],
+  ]);
+  assert.equal(rows[0].name, 'Name m1');
+  assert.equal(modelRows([], null).length, 0);
+});
+
+test('projects nearest their limit come first; a project with no limit saved comes last', () => {
+  const sorted = nearestLimit([
+    { projectId: 'a', name: 'A', used: 5, limit: null },
+    { projectId: 'b', name: 'B', used: 2, limit: 10 },
+    { projectId: 'c', name: 'C', used: 9, limit: 10 },
+    { projectId: 'd', name: 'D', used: 1, limit: 0 },
+  ]);
+  assert.deepEqual(sorted.map((r) => r.projectId), ['c', 'b', 'a', 'd']);
 });

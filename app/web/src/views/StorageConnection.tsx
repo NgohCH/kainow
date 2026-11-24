@@ -4,7 +4,7 @@ import { formatWhen } from '../format.ts';
 import {
   type ConnectionState, FORMAT_LABELS, SECRET_STATE_LABEL, sameItems, onOff, permissionInstructions, reasonProblem, secretProblem, storageStateLabel,
 } from '../storage.ts';
-import { Notice, ReasonAction, type SettingsView, errText } from './storageUi.tsx';
+import { ReasonAction, type SettingsView, errText } from './storageUi.tsx';
 
 function PermissionsPanel({ lookup }: { lookup: boolean }) {
   return (
@@ -22,8 +22,8 @@ function PermissionsPanel({ lookup }: { lookup: boolean }) {
   );
 }
 
-/** Tenant, application, client secret (write-only), directory lookup, scheduled checks and the connection check. */
-export function ConnectionPanel({ view, reload }: { view: SettingsView; reload: () => void }) {
+/** Tenant, application, directory lookup and scheduled checks, with the permissions the Microsoft administrator grants. */
+export function ConnectionForm({ view, reload, setNotice, close }: { view: SettingsView; reload: () => void; setNotice: (s: string | null) => void; close: () => void }) {
   const s = view.settings;
   const [tenantId, setTenantId] = useState(s.tenantId ?? '');
   const [clientId, setClientId] = useState(s.clientId ?? '');
@@ -31,22 +31,8 @@ export function ConnectionPanel({ view, reload }: { view: SettingsView; reload: 
   const [confirmed, setConfirmed] = useState(false);
   const [scheduled, setScheduled] = useState(s.scheduledChecks);
   const [reason, setReason] = useState('');
-  const [secret, setSecret] = useState('');
-  const [secretReason, setSecretReason] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const [checking, setChecking] = useState(false);
-
-  // When the saved values change (after a save) the fields follow them; the notice stays.
-  const savedKey = JSON.stringify([s.tenantId, s.clientId, s.directoryLookup, s.scheduledChecks]);
-  useEffect(() => {
-    setTenantId(s.tenantId ?? '');
-    setClientId(s.clientId ?? '');
-    setLookup(s.directoryLookup);
-    setScheduled(s.scheduledChecks);
-    setConfirmed(false);
-  }, [savedKey]);
 
   const lookupTurnedOn = lookup && !s.directoryLookup;
   const unchanged = tenantId.trim() === (s.tenantId ?? '') && clientId.trim() === (s.clientId ?? '') && lookup === s.directoryLookup && scheduled === s.scheduledChecks;
@@ -54,68 +40,26 @@ export function ConnectionPanel({ view, reload }: { view: SettingsView; reload: 
   async function save(e: FormEvent) {
     e.preventDefault();
     setError(null);
-    setNotice(null);
     const p = reasonProblem(reason);
     if (p) return setError(p);
     if (lookupTurnedOn && !confirmed) return setError('Confirm that User.ReadBasic.All has been granted before turning directory lookup on.');
     setBusy(true);
     try {
       await api.put('/admin/storage', { tenantId: tenantId.trim() || null, clientId: clientId.trim() || null, directoryLookup: lookup, scheduledChecks: scheduled, reason: reason.trim() });
-      setReason('');
-      setConfirmed(false);
       setNotice('Saved.');
       reload();
+      close();
     } catch (err) {
       setError(errText(err));
     } finally {
       setBusy(false);
-    }
-  }
-
-  async function saveSecret(e: FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setNotice(null);
-    const sp = secretProblem(secret);
-    if (sp) return setError(sp);
-    const rp = reasonProblem(secretReason);
-    if (rp) return setError(rp);
-    setBusy(true);
-    try {
-      await api.post('/admin/storage/secret', { clientSecret: secret.trim(), reason: secretReason.trim() });
-      setSecretReason('');
-      setNotice('The client secret is saved. It is never shown again.');
-      reload();
-    } catch (err) {
-      setError(errText(err));
-    } finally {
-      // The secret never stays in the page, saved or not.
-      setSecret('');
-      setBusy(false);
-    }
-  }
-
-  async function check() {
-    setError(null);
-    setNotice(null);
-    setChecking(true);
-    try {
-      const r = await api.post<{ state: ConnectionState }>('/admin/storage/check');
-      setNotice(`Connection check: ${storageStateLabel(r.state)}.`);
-      reload();
-    } catch (err) {
-      setError(errText(err));
-    } finally {
-      setChecking(false);
     }
   }
 
   return (
-    <section aria-labelledby="storage-connection" className="stack">
-      <h2 id="storage-connection">Connection</h2>
-      <Notice error={error} notice={notice} />
+    <div className="stack">
       <PermissionsPanel lookup={s.directoryLookup} />
-      <form className="panel stack" onSubmit={save} aria-label="Connection settings">
+      <form className="stack" onSubmit={save} aria-label="Connection settings">
         <label>
           Tenant ID
           <input value={tenantId} maxLength={100} autoComplete="off" onChange={(e) => setTenantId(e.target.value)} />
@@ -148,35 +92,97 @@ export function ConnectionPanel({ view, reload }: { view: SettingsView; reload: 
           Reason for the change
           <textarea required rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
         </label>
-        <button className="primary" disabled={busy || unchanged}>Save connection</button>
+        {error && <p role="alert" className="error">{error}</p>}
+        <div className="actions">
+          <button className="primary" disabled={busy || unchanged}>Save connection</button>
+          <button type="button" className="quiet" onClick={close}>Cancel</button>
+        </div>
       </form>
+    </div>
+  );
+}
 
-      <form className="panel stack" onSubmit={saveSecret} aria-label="Client secret">
-        <h3>Client secret</h3>
-        <p role="status">{SECRET_STATE_LABEL[view.secret]}</p>
-        {!view.protectedKeyLoaded && <p className="warn">Storage credentials cannot be saved until the protected key is installed. See INSTALL.md.</p>}
-        <label>
-          {view.secret === 'none' ? 'Client secret' : 'Replace the client secret'}
-          <input type="password" autoComplete="new-password" spellCheck={false} maxLength={300} value={secret} onChange={(e) => setSecret(e.target.value)} aria-describedby="secret-hint" />
-          <span id="secret-hint" className="hint">10 to 200 characters. It is stored sealed, never shown again, and cleared from this page when you save.</span>
-        </label>
-        <label>
-          Reason for the change
-          <textarea required rows={2} maxLength={1000} value={secretReason} onChange={(e) => setSecretReason(e.target.value)} />
-        </label>
+/** The client secret is write-only: it is cleared from the page whether or not it was saved. */
+export function SecretForm({ view, reload, setNotice, close }: { view: SettingsView; reload: () => void; setNotice: (s: string | null) => void; close: () => void }) {
+  const [secret, setSecret] = useState('');
+  const [secretReason, setSecretReason] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function saveSecret(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    const sp = secretProblem(secret);
+    if (sp) return setError(sp);
+    const rp = reasonProblem(secretReason);
+    if (rp) return setError(rp);
+    setBusy(true);
+    let saved = false;
+    try {
+      await api.post('/admin/storage/secret', { clientSecret: secret.trim(), reason: secretReason.trim() });
+      saved = true;
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      // The secret never stays in the page, saved or not.
+      setSecret('');
+      setBusy(false);
+    }
+    if (saved) {
+      setNotice('The client secret is saved. It is never shown again.');
+      reload();
+      close();
+    }
+  }
+
+  return (
+    <form className="stack" onSubmit={saveSecret} aria-label="Client secret">
+      {!view.protectedKeyLoaded && <p className="warn">Storage credentials cannot be saved until the protected key is installed. See INSTALL.md.</p>}
+      <label>
+        {view.secret === 'none' ? 'Client secret' : 'Replace the client secret'}
+        <input type="password" autoComplete="new-password" spellCheck={false} maxLength={300} value={secret} onChange={(e) => setSecret(e.target.value)} aria-describedby="secret-hint" />
+        <span id="secret-hint" className="hint">10 to 200 characters. It is stored sealed, never shown again, and cleared from this page when you save.</span>
+      </label>
+      <label>
+        Reason for the change
+        <textarea required rows={2} maxLength={1000} value={secretReason} onChange={(e) => setSecretReason(e.target.value)} />
+      </label>
+      {error && <p role="alert" className="error">{error}</p>}
+      <div className="actions">
         <button className="primary" disabled={busy || secret === '' || !view.protectedKeyLoaded}>Save client secret</button>
-      </form>
-
-      <div className="inline-form">
-        <button type="button" onClick={check} disabled={checking}>{checking ? 'Checking' : 'Check connection'}</button>
-        <span className="hint">Asks Microsoft for a token. No files are touched.</span>
+        <button type="button" className="quiet" onClick={close}>Cancel</button>
       </div>
-    </section>
+    </form>
+  );
+}
+
+/** Asks Microsoft for a token; no files are touched. */
+export function CheckConnection({ reload, setNotice, setError }: { reload: () => void; setNotice: (s: string | null) => void; setError: (s: string | null) => void }) {
+  const [checking, setChecking] = useState(false);
+  async function check() {
+    setError(null);
+    setNotice(null);
+    setChecking(true);
+    try {
+      const r = await api.post<{ state: ConnectionState }>('/admin/storage/check');
+      setNotice(`Connection check: ${storageStateLabel(r.state)}.`);
+      reload();
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setChecking(false);
+    }
+  }
+  return (
+    <div className="inline-form">
+      <button type="button" onClick={check} disabled={checking}>{checking ? 'Checking' : 'Check connection'}</button>
+      <span className="hint">Asks Microsoft for a token. No files are touched.</span>
+    </div>
   );
 }
 
 /** Approved formats and the switches that let projects choose for themselves. */
-export function FormatsPanel({ view, reload }: { view: SettingsView; reload: () => void }) {
+export function FormatsForm({ view, reload, setNotice, close }: { view: SettingsView; reload: () => void; setNotice: (s: string | null) => void; close: () => void }) {
   const s = view.settings;
   const [input, setInput] = useState<string[]>(s.approvedInputFormats);
   const [output, setOutput] = useState<string[]>(s.approvedOutputFormats);
@@ -185,17 +191,8 @@ export function FormatsPanel({ view, reload }: { view: SettingsView; reload: () 
   const [roles, setRoles] = useState(s.projectsMaySetExportRoles);
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const toggle = (list: string[], set: (v: string[]) => void, f: string) => set(list.includes(f) ? list.filter((x) => x !== f) : [...list, f]);
-  const savedKey = JSON.stringify([s.approvedInputFormats, s.approvedOutputFormats, s.projectsMayChangeFormats, s.projectsMayChooseDestination, s.projectsMaySetExportRoles]);
-  useEffect(() => {
-    setInput(s.approvedInputFormats);
-    setOutput(s.approvedOutputFormats);
-    setChange(s.projectsMayChangeFormats);
-    setChoose(s.projectsMayChooseDestination);
-    setRoles(s.projectsMaySetExportRoles);
-  }, [savedKey]);
   const unchanged =
     sameItems(input, s.approvedInputFormats) && sameItems(output, s.approvedOutputFormats) && change === s.projectsMayChangeFormats &&
     choose === s.projectsMayChooseDestination && roles === s.projectsMaySetExportRoles;
@@ -203,7 +200,6 @@ export function FormatsPanel({ view, reload }: { view: SettingsView; reload: () 
   async function save(e: FormEvent) {
     e.preventDefault();
     setError(null);
-    setNotice(null);
     if (input.length === 0) return setError('Keep at least one approved input format.');
     const p = reasonProblem(reason);
     if (p) return setError(p);
@@ -213,9 +209,9 @@ export function FormatsPanel({ view, reload }: { view: SettingsView; reload: () 
         approvedInputFormats: input, approvedOutputFormats: output, projectsMayChangeFormats: change,
         projectsMayChooseDestination: choose, projectsMaySetExportRoles: roles, reason: reason.trim(),
       });
-      setReason('');
       setNotice('Saved.');
       reload();
+      close();
     } catch (err) {
       setError(errText(err));
     } finally {
@@ -236,23 +232,38 @@ export function FormatsPanel({ view, reload }: { view: SettingsView; reload: () 
   );
 
   return (
-    <section aria-labelledby="storage-formats">
-      <h2 id="storage-formats">Formats and what projects may choose</h2>
-      <Notice error={error} notice={notice} />
-      <form className="panel stack" onSubmit={save} aria-label="Formats and project choices">
-        {group('Approved input formats (files people add as sources)', ['txt', 'md', 'docx', 'pdf'], input, setInput)}
-        {group('Approved output formats (files Kainow generates)', ['md', 'docx', 'pdf', 'csv'], output, setOutput)}
-        <label className="check"><input type="checkbox" checked={change} onChange={(e) => setChange(e.target.checked)} />Projects may change formats</label>
-        <label className="check"><input type="checkbox" checked={choose} onChange={(e) => setChoose(e.target.checked)} />Projects may choose their output destination</label>
-        <label className="check"><input type="checkbox" checked={roles} onChange={(e) => setRoles(e.target.checked)} />Projects may set who can export</label>
-        <p className="hint">When a switch is off, only an Administrator can change that setting for a project.</p>
-        <label>
-          Reason for the change
-          <textarea required rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
-        </label>
+    <form className="stack" onSubmit={save} aria-label="Formats and project choices">
+      {group('Approved input formats (files people add as sources)', ['txt', 'md', 'docx', 'pdf'], input, setInput)}
+      {group('Approved output formats (files Kainow generates)', ['md', 'docx', 'pdf', 'csv'], output, setOutput)}
+      <label className="check"><input type="checkbox" checked={change} onChange={(e) => setChange(e.target.checked)} />Projects may change formats</label>
+      <label className="check"><input type="checkbox" checked={choose} onChange={(e) => setChoose(e.target.checked)} />Projects may choose their output destination</label>
+      <label className="check"><input type="checkbox" checked={roles} onChange={(e) => setRoles(e.target.checked)} />Projects may set who can export</label>
+      <p className="hint">When a switch is off, only an Administrator can change that setting for a project.</p>
+      <label>
+        Reason for the change
+        <textarea required rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
+      </label>
+      {error && <p role="alert" className="error">{error}</p>}
+      <div className="actions">
         <button className="primary" disabled={busy || unchanged}>Save formats</button>
-      </form>
-    </section>
+        <button type="button" className="quiet" onClick={close}>Cancel</button>
+      </div>
+    </form>
+  );
+}
+
+/** What is saved about formats, for the box's current value. */
+export function FormatsCurrent({ view }: { view: SettingsView }) {
+  const s = view.settings;
+  const names = (l: string[]) => (l.length === 0 ? 'None' : l.map((f) => FORMAT_LABELS[f] ?? f).join(', '));
+  return (
+    <dl className="facts">
+      <div><dt>Input formats</dt><dd>{names(s.approvedInputFormats)}</dd></div>
+      <div><dt>Output formats</dt><dd>{names(s.approvedOutputFormats)}</dd></div>
+      <div><dt>Projects may change formats</dt><dd>{s.projectsMayChangeFormats ? 'Yes' : 'No'}</dd></div>
+      <div><dt>Projects may choose their output destination</dt><dd>{s.projectsMayChooseDestination ? 'Yes' : 'No'}</dd></div>
+      <div><dt>Projects may set who can export</dt><dd>{s.projectsMaySetExportRoles ? 'Yes' : 'No'}</dd></div>
+    </dl>
   );
 }
 
@@ -282,16 +293,12 @@ const ACCESS_WORDS: Record<string, string> = {
   external: 'Access was given outside Kainow',
 };
 
-/** Storage Administrators (spec 8.4): designate and end, each with a reason. */
-export function AdminsPanel({ reload, setNotice }: { reload: () => void; setNotice: (s: string | null) => void }) {
+/** Storage Administrators (spec 8.4): the list and the people who could be designated, shared by the box's value and its form. */
+export function useStorageAdmins() {
   const [admins, setAdmins] = useState<AdminRow[] | null>(null);
   const [warning, setWarning] = useState<string | null>(null);
   const [people, setPeople] = useState<Person[]>([]);
-  const [pick, setPick] = useState('');
-  const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
   const load = useCallback(() => {
     api.get<{ admins: AdminRow[]; warning: string | null }>('/admin/storage/admins').then(
       (r) => {
@@ -305,9 +312,52 @@ export function AdminsPanel({ reload, setNotice }: { reload: () => void; setNoti
   useEffect(() => {
     api.get<{ users: Person[] }>('/users').then((r) => setPeople(r.users.filter((u) => u.status === 'active')), () => setPeople([]));
   }, []);
+  return { admins, warning, people, error, load };
+}
+export type StorageAdmins = ReturnType<typeof useStorageAdmins>;
 
-  const chosen = new Set((admins ?? []).map((a) => a.userId));
-  const candidates = people.filter((p) => !chosen.has(p.id));
+/** Each designation, with its own reason box to end it. */
+export function AdminsCurrent({ a, reload, setNotice }: { a: StorageAdmins; reload: () => void; setNotice: (s: string | null) => void }) {
+  return (
+    <div className="stack">
+      <p className="meta">A storage Administrator can open the source area directly in the provider (write access). Being an Enterprise Administrator gives no such access. You cannot designate yourself.</p>
+      {a.error && <p role="alert" className="error">{a.error}</p>}
+      {a.warning && <p className="warn" role="status">{a.warning}</p>}
+      {a.admins === null && !a.error && <p className="loading">Loading</p>}
+      {a.admins && a.admins.length === 0 && <p className="meta">No storage Administrators are designated.</p>}
+      {a.admins && a.admins.length > 0 && (
+        <ul className="plain">
+          {a.admins.map((row) => (
+            <li key={row.id} className="stack">
+              <span>
+                <strong>{row.displayName}</strong>
+                <span className="meta"> · {row.email} · since {formatWhen(row.designatedAt)} · {ACCESS_WORDS[row.access] ?? 'Access state unknown'} · {row.reason}</span>
+              </span>
+              <ReasonAction
+                label={`End designation for ${row.displayName}`}
+                prompt="Reason for ending it"
+                onSend={async (r) => {
+                  await api.post(`/admin/storage/admins/${row.id}/end`, { reason: r });
+                  setNotice(`${row.displayName} is no longer a storage Administrator.`);
+                  a.load();
+                  reload();
+                }}
+              />
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+export function AdminsForm({ a, reload, setNotice, close }: { a: StorageAdmins; reload: () => void; setNotice: (s: string | null) => void; close: () => void }) {
+  const [pick, setPick] = useState('');
+  const [reason, setReason] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  const chosen = new Set((a.admins ?? []).map((x) => x.userId));
+  const candidates = a.people.filter((p) => !chosen.has(p.id));
 
   async function designate(e: FormEvent) {
     e.preventDefault();
@@ -318,11 +368,10 @@ export function AdminsPanel({ reload, setNotice }: { reload: () => void; setNoti
     setBusy(true);
     try {
       await api.post('/admin/storage/admins', { userId: pick, reason: reason.trim() });
-      setPick('');
-      setReason('');
       setNotice('Storage Administrator designated.');
-      load();
+      a.load();
       reload();
+      close();
     } catch (err) {
       setError(errText(err));
     } finally {
@@ -331,49 +380,23 @@ export function AdminsPanel({ reload, setNotice }: { reload: () => void; setNoti
   }
 
   return (
-    <section aria-labelledby="storage-admins" className="stack">
-      <h2 id="storage-admins">Storage Administrators</h2>
-      <p className="meta">A storage Administrator can open the source area directly in the provider (write access). Being an Enterprise Administrator gives no such access. You cannot designate yourself.</p>
-      {warning && <p className="warn" role="status">{warning}</p>}
-      {admins === null && !error && <p className="loading">Loading</p>}
-      {admins && admins.length === 0 && <p className="meta">No storage Administrators are designated.</p>}
-      {admins && admins.length > 0 && (
-        <ul className="plain">
-          {admins.map((a) => (
-            <li key={a.id} className="stack">
-              <span>
-                <strong>{a.displayName}</strong>
-                <span className="meta"> · {a.email} · since {formatWhen(a.designatedAt)} · {ACCESS_WORDS[a.access] ?? 'Access state unknown'} · {a.reason}</span>
-              </span>
-              <ReasonAction
-                label={`End designation for ${a.displayName}`}
-                prompt="Reason for ending it"
-                onSend={async (r) => {
-                  await api.post(`/admin/storage/admins/${a.id}/end`, { reason: r });
-                  setNotice(`${a.displayName} is no longer a storage Administrator.`);
-                  load();
-                  reload();
-                }}
-              />
-            </li>
-          ))}
-        </ul>
-      )}
-      <form className="panel stack" onSubmit={designate} aria-label="Designate a storage Administrator">
-        <label>
-          Person
-          <select value={pick} onChange={(e) => setPick(e.target.value)}>
-            <option value="">Choose a person</option>
-            {candidates.map((p) => <option key={p.id} value={p.id}>{p.displayName} ({p.email})</option>)}
-          </select>
-        </label>
-        <label>
-          Reason
-          <textarea required rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
-        </label>
-        {error && <p role="alert" className="error">{error}</p>}
+    <form className="stack" onSubmit={designate} aria-label="Designate a storage Administrator">
+      <label>
+        Person
+        <select value={pick} onChange={(e) => setPick(e.target.value)}>
+          <option value="">Choose a person</option>
+          {candidates.map((p) => <option key={p.id} value={p.id}>{p.displayName} ({p.email})</option>)}
+        </select>
+      </label>
+      <label>
+        Reason
+        <textarea required rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
+      </label>
+      {error && <p role="alert" className="error">{error}</p>}
+      <div className="actions">
         <button className="primary" disabled={busy}>Designate</button>
-      </form>
-    </section>
+        <button type="button" className="quiet" onClick={close}>Cancel</button>
+      </div>
+    </form>
   );
 }

@@ -463,3 +463,59 @@ export interface GoLiveInfo {
   explanation: string;
   link: string;
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// The AI page's at-a-glance tables
+// ---------------------------------------------------------------------------------------------------------------
+
+const num = (v: string) => Number(v);
+
+export interface ModelRow {
+  key: string;
+  name: string;
+  modelId: string;
+  provider: string;
+  roles: string;
+  projects: string[];
+  month: number;
+  state: 'approved' | 'withdrawn' | 'unlisted';
+}
+
+/** Every approved model, plus any other model used this month, with the projects whose connections used it. */
+export function modelRows(models: ModelView[], usage: OrganisationUsage | null): ModelRow[] {
+  const rows = new Map<string, ModelRow>();
+  const keyOf = (provider: string, modelId: string) => `${provider}:${modelId}`;
+  for (const m of models) {
+    rows.set(keyOf(m.provider, m.modelId), {
+      key: m.id,
+      name: m.displayName,
+      modelId: m.modelId,
+      provider: PROVIDER_NAMES[m.provider] ?? m.provider,
+      roles: m.purposes.length === 0 ? 'No kind of work' : m.purposes.map((p) => PURPOSE_LABELS[p]).join(', '),
+      projects: [],
+      month: 0,
+      state: m.state,
+    });
+  }
+  for (const c of usage?.byConnection ?? []) {
+    const k = keyOf(c.provider, c.modelId);
+    let r = rows.get(k);
+    if (!r) {
+      r = { key: k, name: c.modelId, modelId: c.modelId, provider: PROVIDER_NAMES[c.provider] ?? c.provider, roles: 'Not on the list', projects: [], month: 0, state: 'unlisted' };
+      rows.set(k, r);
+    }
+    r.month += num(c.usedMyr);
+    if (c.projectName && !r.projects.includes(c.projectName)) r.projects.push(c.projectName);
+  }
+  // A withdrawn model with no use this month is history, not "in use".
+  return [...rows.values()].filter((r) => r.state !== 'withdrawn' || r.month > 0 || r.projects.length > 0);
+}
+
+export interface Near { projectId: string; name: string; used: number; limit: number | null }
+
+/** Projects with use this month, nearest their own monthly limit first; a project with no limit saved comes last. */
+export function nearestLimit(rows: Near[]): Near[] {
+  const share = (r: Near) => (r.limit === null || r.limit <= 0 ? -1 : r.used / r.limit);
+  return [...rows].sort((a, b) => share(b) - share(a) || b.used - a.used);
+}
+
