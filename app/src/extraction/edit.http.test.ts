@@ -92,11 +92,11 @@ describe('editing proposals', { skip: SKIP_NO_DB }, () => {
     assert.equal(r.body.item.text, 'Ship on Friday 14th');
     assert.equal(r.body.item.owner, 'Ali');
     assert.equal(r.body.item.due, '2026-11-14');
-    assert.deepEqual(r.body.item.original, { text: 'We agreed to ship on Friday.', owner: null, due: null });
+    assert.deepEqual(r.body.item.original, { kind: 'decision', text: 'We agreed to ship on Friday.', owner: null, due: null, model: null });
     assert.equal(r.body.item.edited, true);
     const untouched = await get('repeated');
     assert.equal(untouched.edited, false);
-    assert.equal(untouched.original, undefined);
+    assert.deepEqual(untouched.corrections, []);
     // the model's own row is not changed
     assert.equal((await pool.query('SELECT text FROM extraction_items WHERE id = $1', [item.ok])).rows[0].text, 'We agreed to ship on Friday.');
   });

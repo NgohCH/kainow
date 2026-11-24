@@ -3,6 +3,8 @@
  * (app/src/projects/lifecycle.ts); the server still decides every change and explains any refusal.
  */
 
+import type { Meaning } from './ui/meanings.ts';
+
 export type ProjectRole = 'pm' | 'deputy_pm' | 'owner' | 'sponsor' | 'member';
 export type ProjectStatus = 'draft' | 'planned' | 'active' | 'deferred' | 'closed';
 export type MembershipState = 'scheduled' | 'active' | 'on_hold' | 'expired' | 'revoked';
@@ -11,14 +13,6 @@ export type GrantKind = 'audit' | 'oversight';
 export type ClosureOutcome = 'delivered' | 'partially_delivered' | 'abandoned';
 
 export const ROLES: readonly ProjectRole[] = ['pm', 'deputy_pm', 'owner', 'sponsor', 'member'];
-export const STAGES: readonly string[] = ['Initiation', 'Planning', 'Execution', 'Review & Acceptance', 'Closure'];
-export const SUBSTAGES: Readonly<Record<string, readonly string[]>> = {
-  Initiation: ['Define Purpose', 'Identify Participants', 'Confirm Accountability'],
-  Planning: ['Define Scope', 'Break Down Work', 'Identify Resources', 'Approve Plan'],
-  Execution: ['In Progress', 'Monitoring & Follow-up'],
-  'Review & Acceptance': ['Review Deliverables', 'Resolve Outstanding Items', 'Confirm Acceptance'],
-  Closure: ['Record Outcome', 'Handover', 'Close Project'],
-};
 
 const ROLE_LABEL: Record<ProjectRole, string> = {
   pm: 'Project Manager',
@@ -31,6 +25,12 @@ export const roleLabel = (r: ProjectRole): string => ROLE_LABEL[r];
 
 const STATE_LABEL: Record<MembershipState, string> = { scheduled: 'Starts later', active: 'Active', on_hold: 'On Hold', expired: 'Expired', revoked: 'Revoked' };
 export const membershipStateLabel = (s: MembershipState): string => STATE_LABEL[s];
+/** How a membership's state looks: On Hold asks for an investigation. */
+export const MEMBERSHIP_MEANING: Record<MembershipState, Meaning> = { scheduled: 'planned', active: 'active', on_hold: 'attention', expired: 'off', revoked: 'off' };
+/** An invitation's state: an expired one can be sent again, so it asks for attention. */
+export const INVITATION_MEANING: Record<'invited' | 'accepted' | 'declined' | 'revoked' | 'expired', Meaning> = {
+  invited: 'planned', accepted: 'ok', declined: 'off', revoked: 'off', expired: 'attention',
+};
 
 export const STATUS_LABEL: Record<ProjectStatus, string> = { draft: 'Draft', planned: 'Planned', active: 'Active', deferred: 'Deferred', closed: 'Closed' };
 export const OUTCOME_LABEL: Record<ClosureOutcome, string> = { delivered: 'Delivered', partially_delivered: 'Partially Delivered', abandoned: 'Abandoned' };
@@ -115,6 +115,9 @@ const GRANT_STATE_LABEL: Record<GrantState, string> = {
   revoked: 'Revoked',
 };
 export const grantStateLabel = (s: GrantState): string => GRANT_STATE_LABEL[s];
+export const GRANT_MEANING: Record<GrantState, Meaning> = {
+  requested: 'review', declined: 'off', scheduled: 'planned', active: 'active', suspended: 'deferred', expired: 'off', revoked: 'off',
+};
 
 export const accessLabel = (a: GrantKind): string => (a === 'audit' ? 'Audit access' : 'Oversight access');
 

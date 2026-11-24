@@ -17,9 +17,19 @@ import {
   mayRestoreSource,
 } from '../history.ts';
 import { RestoreAction } from './DeleteRestore.tsx';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
+import { PageHeader } from '../ui/PageHeader.tsx';
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 const KINDS = new Set<string>(Object.keys(KIND_NOUN));
+const kindWord = (k: DeletedKind) => KIND_NOUN[k][0].toUpperCase() + KIND_NOUN[k].slice(1);
+
+const COLUMNS: Column<DeletedItem>[] = [
+  { key: 'title', header: 'Item', sortValue: (i) => i.title.toLowerCase(), cell: (i) => <a href={i.href}>{i.title}</a> },
+  { key: 'kind', header: 'Kind', sortValue: (i) => kindWord(i.kind), cell: (i) => kindWord(i.kind) },
+  { key: 'deleted', header: 'Deleted', wide: true, cell: (i) => deletedLabel(i.deletedBy, i.deletedAt, i.deleteReason) },
+];
 
 /** The project's Deleted items, for a holder of Inspect Deleted Content (read-only; the server answers 404 to anyone else). */
 export function DeletedItemsList({ projectId }: { projectId: string }) {
@@ -29,26 +39,11 @@ export function DeletedItemsList({ projectId }: { projectId: string }) {
     listDeletedItems(projectId).then(setItems, (e) => setError(errText(e, 'Could not load the Deleted items.')));
   }, [projectId]);
   return (
-    <section aria-labelledby="deleted-items-heading">
-      <h2 id="deleted-items-heading">Deleted items</h2>
+    <section aria-labelledby="deleted-items-heading" className="box">
+      <h2 id="deleted-items-heading" className="box-title">Deleted items</h2>
       <p className="meta">Read-only. Your access includes Inspect Deleted Content for this project, and each time you open one is recorded. These items are not searched, summarised or used to answer questions.</p>
       {error && <p role="alert" className="error">{error}</p>}
-      {!items && !error && <p className="loading">Loading</p>}
-      {items && items.length === 0 && <p className="empty">Nothing is deleted at present.</p>}
-      {items && items.length > 0 && (
-        <ul className="list">
-          {items.map((i) => (
-            <li key={`${i.kind}:${i.id}`}>
-              <a href={i.href}>
-                <strong>{i.title}</strong>
-                <span className="meta">
-                  {KIND_NOUN[i.kind][0].toUpperCase() + KIND_NOUN[i.kind].slice(1)} · {deletedLabel(i.deletedBy, i.deletedAt, i.deleteReason)}
-                </span>
-              </a>
-            </li>
-          ))}
-        </ul>
-      )}
+      <DataTable caption="Items deleted from this project" columns={COLUMNS} rows={items ?? []} rowKey={(i) => `${i.kind}:${i.id}`} loading={!items && !error} empty="Nothing is deleted at present." />
     </section>
   );
 }
@@ -103,17 +98,28 @@ export function DeletedItemPage({ projectId, kind, itemId }: { projectId: string
 
   return (
     <main className="page narrow">
-      <p><a href={back}>Back to Deleted items</a></p>
-      <h1>{item.title}</h1>
-      <p className="warn" role="note">{deletedLabel(item.deletedBy, item.deletedAt, item.deleteReason)}</p>
-      <p className="meta">{KIND_NOUN[item.kind][0].toUpperCase() + KIND_NOUN[item.kind].slice(1)}. Read-only.</p>
-      <DeletedBody item={item} projectId={projectId} />
-      {restorable && (
-        <p>
-          <RestoreAction kind={restorable} id={item.id} label={item.title} onDone={done} />
+      <PageHeader
+        crumbs={[
+          { text: 'Projects', href: '#/projects' },
+          { text: project?.name ?? 'Project', href: `#/projects/${projectId}` },
+          { text: 'Deleted items', href: back },
+        ]}
+        title={item.title}
+      />
+      <div className="box edge-left m-off">
+        <p className="label-stack" role="note">
+          <StatusLabel meaning="off" word="Deleted" />
+          <span>{deletedLabel(item.deletedBy, item.deletedAt, item.deleteReason)}</span>
         </p>
-      )}
-      {item.kind === 'message' && <p className="meta">A deleted message is restored from its thread by the Project Manager or a Deputy.</p>}
+        <p className="meta">{kindWord(item.kind)}. Read-only.</p>
+        <DeletedBody item={item} projectId={projectId} />
+        {restorable && (
+          <p>
+            <RestoreAction kind={restorable} id={item.id} label={item.title} onDone={done} />
+          </p>
+        )}
+        {item.kind === 'message' && <p className="meta">A deleted message is restored from its thread by the Project Manager or a Deputy.</p>}
+      </div>
     </main>
   );
 }

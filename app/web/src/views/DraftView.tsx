@@ -26,6 +26,7 @@ import { FeedbackButton } from './Feedback.tsx';
 import { Markdown } from './Markdown.tsx';
 import { QuarantineNote, ReportSecret } from './ReportSecret.tsx';
 import { SubmitDraftAsOutput } from './ProjectOutputs.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
 
@@ -134,7 +135,7 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
     return set;
   }, [body]);
 
-  if (gone) return <p className="empty">This draft was not found.</p>;
+  if (gone) return <section className="box" aria-label="Draft"><p><a href={`#/projects/${projectId}/drafts`}>All drafts</a></p><p className="empty">This draft was not found.</p></section>;
   if (!draft) return error || loadError ? <p role="alert" className="error">{error ?? loadError}</p> : <p className="loading">Loading</p>;
 
   const isNewest = shownNo === newest?.no;
@@ -209,15 +210,20 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
   return (
     <section aria-labelledby="draft-heading">
       <p><a href={`#/projects/${projectId}/drafts`}>All drafts</a></p>
-      <h2 id="draft-heading" tabIndex={-1} ref={heading}>{draft.title}</h2>
-      <p><ReportSecret projectId={projectId} kind="report_draft" id={draftId} label="this draft" onReported={() => setTick((n) => n + 1)} /></p>
+      <div className="box">
+      <div className="settings-box-head">
+        <h2 id="draft-heading" className="box-title" tabIndex={-1} ref={heading}>{draft.title}</h2>
+        <span className="label-stack">
+          <StatusLabel meaning={draft.shared ? (draft.inReview ? 'review' : 'active') : 'draft'} word={draft.shared ? (draft.inReview ? 'Shared, waiting for review' : 'Shared') : 'Not shared'} />
+        </span>
+      </div>
       <p className="meta">
         {draft.kindLabel} · requested by {draft.requestedBy.displayName} · {formatWhen(draft.createdAt)}
         {draft.period ? ` · period ${formatDay(draft.period.from)} to ${formatDay(draft.period.to)}` : ''}
-        {draft.shared ? (draft.inReview ? ' · shared, waiting for review' : ' · shared') : ' · not shared'}
       </p>
+      <p><ReportSecret projectId={projectId} kind="report_draft" id={draftId} label="this draft" onReported={() => setTick((n) => n + 1)} /></p>
       <div className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{info}</div>
-      {active && <p className="meta" role="status">{draft.status === 'queued' ? 'Waiting to start' : 'Being drafted'}</p>}
+      {active && <p role="status"><StatusLabel meaning={draft.status === 'queued' ? 'planned' : 'active'} word={draft.status === 'queued' ? 'Waiting to start' : 'Being drafted'} /></p>}
       <QuarantineNote text={draft.quarantineLabel} />
       {draft.notice && <p className="warn" role="alert">{draft.notice}</p>}
       {(error ?? loadError) && <p role="alert" className="error">{error ?? loadError}</p>}
@@ -248,6 +254,7 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
         </>
       )}
       {draft.versions.length === 0 && !active && !draft.notice && <p className="empty">This draft has no version yet.</p>}
+      </div>
 
       {!editing && (
         <div className="actions">
@@ -267,7 +274,7 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
       {draft.canEdit && !isNewest && !editing && <p id="edit-old" className="meta">Editing starts from the newest version. Choose it in the version list to edit.</p>}
 
       {confirming && (
-        <div className="panel" role="alertdialog" onKeyDown={closeConfirm} aria-labelledby="regen-title" aria-describedby="regen-warning">
+        <div className="box change-form" role="alertdialog" onKeyDown={closeConfirm} aria-labelledby="regen-title" aria-describedby="regen-warning">
           <p id="regen-title"><strong>Make a new AI version?</strong></p>
           <p id="regen-warning" className="warn">{REGENERATE_WARNING}</p>
           <div className="actions">
@@ -278,7 +285,7 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
       )}
 
       {editing && (
-        <form className="panel stack" onSubmit={(e) => { e.preventDefault(); void save(); }} aria-label="Edit this draft">
+        <form className="box stack" onSubmit={(e) => { e.preventDefault(); void save(); }} aria-label="Edit this draft">
           {stale && <p className="warn">The current version (version {draft.current?.no}) is now shown above. Your text is kept below: look it over, then save again to base it on that version.</p>}
           <label>
             Draft text (Markdown), based on version {base}
@@ -293,7 +300,7 @@ export function DraftDetail({ projectId, draftId }: { projectId: string; draftId
       )}
 
       {comparing && draft.versions.length > 1 && (
-        <div className="panel stack" role="region" aria-label="Compare versions">
+        <div className="box stack" role="region" aria-label="Compare versions">
           <div className="actions">
             <label>
               From

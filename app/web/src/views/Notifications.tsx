@@ -9,6 +9,7 @@ import {
   type NotificationItem,
   type NotificationPage,
 } from '../notifications.ts';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
 
 const message = (e: unknown): string => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
 
@@ -34,10 +35,10 @@ function Entry({ n, onRead }: { n: NotificationItem; onRead: (id: string) => voi
     <li ref={item} tabIndex={-1} className={unread ? 'notif unread' : 'notif'}>
       <div className="notif-head">
         {unread && <span className="visually-hidden">Unread. </span>}
-        {n.urgent && <span className="notif-urgent">Urgent</span>}
+        {n.urgent && <StatusLabel meaning="overdue" word="Urgent" />}
         {!n.noAccess && n.projectName && <strong>{n.projectName}</strong>}
         <span className="meta">{formatWhen(n.createdAt)}</span>
-        {unread && <span className="meta" aria-hidden="true">Unread</span>}
+        {unread && <span className="notif-unread" aria-hidden="true">● Unread</span>}
       </div>
       <p>
         {n.noAccess || !n.link || !n.link.startsWith('#/') ? (
@@ -134,8 +135,9 @@ function EmailPreferencesSection() {
   }
 
   return (
-    <section aria-labelledby="email-prefs-heading" className="email-prefs">
-      <h2 id="email-prefs-heading">Email preferences</h2>
+    <>
+    <section aria-labelledby="email-prefs-heading" className="email-prefs box">
+      <h2 id="email-prefs-heading" className="box-title">Email preferences</h2>
       <p className="meta">Urgent notices are escalations, alerts about unavailable assignees and due dates set in the past.</p>
       {error && (
         <p role="alert" className="error">
@@ -158,8 +160,12 @@ function EmailPreferencesSection() {
               <p className="pref-status meta" role="status" aria-live="polite">{status[p.projectId] ?? ''}</p>
             </fieldset>
           ))}
-
-          <h3 ref={awayHeading} tabIndex={-1}>Away dates</h3>
+        </>
+      )}
+    </section>
+    {prefs && (
+      <section aria-labelledby="away-heading" className="box">
+          <h2 id="away-heading" className="box-title" ref={awayHeading} tabIndex={-1}>Away dates</h2>
           <p className="meta" role="status" aria-live="polite">{awayNote}</p>
           <p className="meta">No notice emails or digests are sent to you on these dates (UTC+8, both days included). They are sent after you return.</p>
           {prefs.away.length === 0 ? (
@@ -193,9 +199,9 @@ function EmailPreferencesSection() {
             {awayError && <p id="away-error" role="alert" className="error">{awayError}</p>}
             <button className="primary" disabled={busy}>Add away dates</button>
           </form>
-        </>
-      )}
-    </section>
+      </section>
+    )}
+    </>
   );
 }
 
@@ -274,11 +280,18 @@ export function Notifications() {
 
   return (
     <main className="page narrow notifications-page">
-      <h1 ref={heading} tabIndex={-1}>Notifications</h1>
+      <header className="page-header">
+        <div className="page-header-row">
+          <div>
+            <h1 ref={heading} tabIndex={-1}>Notifications</h1>
+            <p className="page-intro">{unreadCount > 0 ? `${unreadCount} unread. ` : ''}Newest first. Your email choices and away dates are below the list.</p>
+          </div>
+          <div className="page-action notif-toolbar">
+            <button type="button" onClick={() => void markAll()} disabled={marking || !anyUnread}>Mark all read</button>
+          </div>
+        </div>
+      </header>
       <p className="visually-hidden" role="status" aria-live="polite">{done}</p>
-      <div className="notif-toolbar">
-        <button type="button" onClick={() => void markAll()} disabled={marking || !anyUnread}>Mark all read</button>
-      </div>
       {error && (
         <p role="alert" className="error">
           {error} <button type="button" onClick={load}>Retry</button>

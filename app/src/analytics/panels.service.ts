@@ -25,6 +25,8 @@ export interface ProgressRow {
   departmentId: string;
   owningDepartment: string;
   status: ProjectStatus;
+  /** The stage template the project was created from (D131); null only for a project with none recorded. */
+  stageTemplate: string | null;
   stage: ProjectMeasures['stage'];
   completion: ProjectMeasures['completion'];
   onTime: ProjectMeasures['onTime'];
@@ -108,11 +110,19 @@ export class PanelsService {
     const today = todayUtc8(now);
     const projects = await this.scope(f, today);
     const measures = await loadProjectMeasures(this.pool, projects.map((p) => p.id), today, now);
+    const templates = new Map<string, string>(
+      (
+        await this.pool.query(
+          `SELECT p.id, t.name FROM projects p JOIN stage_templates t ON t.id = p.stage_template_id WHERE p.id = ANY($1::uuid[])`,
+          [projects.map((p) => p.id)],
+        )
+      ).rows.map((r) => [r.id as string, r.name as string]),
+    );
     const rows: ProgressRow[] = projects.map((p) => {
       const m = measures.get(p.id) as ProjectMeasures;
       return {
         id: p.id, name: p.name, departmentId: p.departmentId, owningDepartment: p.department, status: p.status,
-        stage: m.stage, completion: m.completion, onTime: m.onTime, plannedEnd: m.plannedEnd, overdue: m.overdue, blocked: m.blocked,
+        stageTemplate: templates.get(p.id) ?? null, stage: m.stage, completion: m.completion, onTime: m.onTime, plannedEnd: m.plannedEnd, overdue: m.overdue, blocked: m.blocked,
       };
     });
     const depts = await this.deptList(projects, f);

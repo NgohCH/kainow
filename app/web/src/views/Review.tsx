@@ -1,14 +1,16 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { QuarantineNote, ReportSecret } from './ReportSecret.tsx';
-import { ApiError, api, type Item, type Project, type Run } from '../api.ts';
+import { ApiError, api, type Item, type Kind, type Project, type Run } from '../api.ts';
 import { FeedbackButton } from './Feedback.tsx';
 import { AuthoriseForm, type Person } from './AuthoriseForm.tsx';
 import { ProjectCalendarProvider } from './ProjectCalendar.tsx';
 import { ChangeRequestPanel, pendingAuthorisation, useRequests } from './ChangeRequest.tsx';
 import { waitingLine, type RequestView } from '../changes.ts';
-import { KIND_LABEL, plural } from '../format.ts';
+import { plural } from '../format.ts';
+import { KINDS, correctionLine, kindWord, needsReason, originalLine, setAsideWarning } from '../ui/corrections.ts';
 import { REVIEW_STATUS_LABEL } from '../records.ts';
 import { canMarkByOffset, evidenceView, occurrenceChoiceText } from '../discussion.ts';
+import { reviewOwnsKey } from '../reviewKeys.ts';
 import { buildSegments, contextAround, markedSpan } from '../segments.ts';
 import { type EditFields, blocksApproval, dueLine, editFormFrom, formatDay } from '../due.ts';
 
@@ -31,8 +33,10 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
   // For a quote that repeats: the place the reviewer has picked (an index into the item's occurrences).
   const [pick, setPick] = useState<Record<string, number>>({});
   const [saving, setSaving] = useState<Set<string>>(new Set());
-  // The proposal whose wording is being edited, and what has been typed so far.
-  const [editing, setEditing] = useState<(EditFields & { id: string; focusDue: boolean }) | null>(null);
+  // The proposal being corrected, and what has been typed so far (type and reason as well as the wording, D130).
+  const [editing, setEditing] = useState<(EditFields & { id: string; focusDue: boolean; kind: Kind; reason: string }) | null>(null);
+  // Below 900 px the notes open in their own view: the proposal whose passage is being shown there.
+  const [sourceFor, setSourceFor] = useState<string | null>(null);
   // The meeting date being typed, while the banner's input is open.
   const [meetingInput, setMeetingInput] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
@@ -76,8 +80,10 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
     },
     [view, runId, pick, reloadRequests],
   );
+  const root = useRef<HTMLDivElement>(null);
   const marks = useRef(new Map<string, HTMLElement>());
   const cards = useRef(new Map<string, HTMLElement>());
+  const sourceBox = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     api.get<RunView>(`/extractions/${runId}`).then(
@@ -163,6 +169,8 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
         dueLatest: editing.dueLatest,
         dueEvent: editing.dueEvent,
         ignoreModelEvent: editing.ignoreModelEvent,
+        kind: editing.kind,
+        reason: editing.reason,
       });
       setView((v) => (v ? { ...v, items: v.items.map((i) => (i.id === id ? r.item : i)) } : v));
       setPick((p) => {
@@ -170,6 +178,8 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
         return rest;
       });
       setEditing(null);
+      // A waiting authorisation was set aside by the correction.
+      reloadRequests();
       setNotice(before && before.reviewStatus !== 'pending' ? 'Saved. The earlier decision was withdrawn, so this proposal needs review again.' : 'Saved.');
     } catch (e) {
       setError(e instanceof ApiError ? e.message : 'The change was not saved. Try again.');
@@ -180,13 +190,14 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
         return next;
       });
     }
-  }, [view, editing, saving, runId]);
+  }, [view, editing, saving, runId, reloadRequests]);
 
   // j and k move between proposals, a approves and r rejects the one in focus.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
-      const t = e.target as HTMLElement;
-      if (e.metaKey || e.ctrlKey || e.altKey || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName)) return;
+      // Inside the project shell the Ask panel can sit over the review: its keys, and any outside the review, are not shortcuts.
+      if (e.metaKey || e.ctrlKey || e.altKey) return;
+      if (!reviewOwnsKey(e.target as HTMLElement | null, root.current, document.body, document.querySelector('.ask-panel') !== null)) return;
       const idx = items.findIndex((i) => i.id === selected);
       if (e.key === 'j' && idx < items.length - 1) select(items[idx + 1].id, true);
       else if (e.key === 'k' && idx > 0) select(items[idx - 1].id, true);
@@ -198,7 +209,7 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [items, selected, current, select, decide, pick, view, requests]);
 
-  if (error && !view) return <main className="page narrow"><p role="alert" className="error">{error}</p><a href="#/">Back to notes</a></main>;
+  if (error && !view) return <p role="alert" className="error">{error}</p>;
   if (!view) return <p className="loading">Loading</p>;
 
   const counts = { pending: 0, approved: 0, rejected: 0 };
@@ -206,16 +217,16 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
   const status = (id: string) => byId.get(id)?.reviewStatus ?? 'pending';
 
   return (
-    <main className="page review">
+    <div className={`review${sourceFor ? ' showing-source' : ''}`} ref={root}>
       <p><a href={`#/notes/${view.source.sourceId}/v/${view.source.versionNo}`}>Back to {view.source.title}</a></p>
       <div className="row">
-        <h1>Review proposals</h1>
+        <h2>Review proposals</h2>
         <p className="tally" aria-live="polite">
           {counts.pending} to review, {counts.approved} approved, {counts.rejected} rejected
         </p>
       </div>
       <p className="meta">
-        From {view.source.title}, version {view.source.versionNo}. Approving a proposal confirms the quoted passage in this version says it.
+        From {view.source.title}, version {view.source.versionNo}. Approving a proposal confirms the quoted passage in this version says it.{' '}
         {view.permissions.reject ? 'Keys: j and k move, a approves, r rejects.' : 'Keys: j and k move.'}
       </p>
       {view.permissions.note && <p className="warn">{view.permissions.note}</p>}
@@ -254,60 +265,61 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
       {items.length === 0 && <p className="empty">The model found nothing to propose in this version.</p>}
 
       <div className="split review-split">
-        <section aria-label="Source text">
-          <div className="source" tabIndex={0}>
-            {segments.map((s) =>
-              s.ids.length === 0 ? (
-                <span key={s.start}>{s.text}</span>
-              ) : (
-                <mark
-                  key={s.start}
-                  ref={(el) => {
-                    for (const id of s.ids) {
-                      if (!el) marks.current.delete(id);
-                      else if (!marks.current.has(id)) marks.current.set(id, el);
-                    }
-                  }}
-                  className={`passage passage-${status(s.ids.includes(selected ?? '') ? (selected as string) : s.ids[0])}${s.ids.includes(selected ?? '') ? ' is-selected' : ''}`}
-                  onClick={() => select(s.ids.includes(selected ?? '') ? (selected as string) : s.ids[0], false)}
-                >
-                  {s.text}
-                </mark>
-              ),
-            )}
-          </div>
-        </section>
-
         <section aria-label="Proposals" className="proposals">
-          {items.map((item) => (
+          {items.map((item, n) => (
             <article
               key={item.id}
               ref={(el) => void (el ? cards.current.set(item.id, el) : cards.current.delete(item.id))}
-              className={`proposal kind-${item.kind} status-${item.reviewStatus}${item.id === selected ? ' is-selected' : ''}`}
+              className={`proposal ai-proposed kind-${item.kind} status-${item.reviewStatus}${item.id === selected ? ' is-selected' : ''}`}
               aria-current={item.id === selected ? 'true' : undefined}
             >
+              <p className="proposal-head">
+                <span className="ai-label">AI proposed</span>
+                {(item.corrections?.length ?? 0) > 0 && (
+                  <span className="changed-label">
+                    <span aria-hidden="true">✎ </span>Changed by a person
+                  </span>
+                )}
+                <span className="meta proposal-place">{n + 1} of {items.length}</span>
+              </p>
               <button className="proposal-main" onClick={() => select(item.id, true)}>
-                <span className="kind">{KIND_LABEL[item.kind]}</span>
+                <span className="kind">{kindWord(item.kind)}</span>
                 <span className="proposal-text">{item.text}</span>
                 {item.owner && <span className="meta">Owner: {item.owner}</span>}
+              </button>
+              <button
+                type="button"
+                className="link-button narrow-only"
+                onClick={() => {
+                  setSelected(item.id);
+                  setSourceFor(item.id);
+                  requestAnimationFrame(() => {
+                    const mark = marks.current.get(item.id);
+                    sourceBox.current?.focus({ preventScroll: true });
+                    (mark ?? sourceBox.current)?.scrollIntoView({ block: 'center', behavior: 'auto' });
+                  });
+                }}
+              >
+                Show in the notes<span className="visually-hidden">: proposal {n + 1} of {items.length}</span>
               </button>
               <QuarantineNote text={item.quarantineLabel} />
               {(() => {
                 const line = dueLine(item, view.run);
                 return line && <p id={`due-${item.id}`} role="note" className={line.tone === 'warn' ? 'warn due-line' : 'meta due-line'}>{line.text}</p>;
               })()}
-              {view.permissions.edit && blocksApproval(item) && editing?.id !== item.id && (
+              {view.permissions.edit && !item.record && blocksApproval(item) && editing?.id !== item.id && (
                 <button
                   type="button"
                   className="link-button"
                   onClick={() => {
                     setNotice(null);
-                    setEditing({ id: item.id, ...editFormFrom(item), focusDue: true });
+                    setEditing({ id: item.id, ...editFormFrom(item), focusDue: true, kind: item.kind, reason: '' });
                   }}
                 >
                   Add a date
                 </button>
               )}
+              {/* A question's model-given answers are kept, but shown only while the proposal is a question (spec §9). */}
               {item.kind === 'question' && item.alternatives.length > 0 && (
                 <div className="alternatives">
                   <span className="meta">Possible answers:</span>
@@ -318,20 +330,37 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                   </ul>
                 </div>
               )}
-              {item.edited && item.original && (
-                <p className="meta edited">
-                  Edited. The model said: {item.original.text}
-                  {(item.original.owner || item.original.due) && ` (${[item.original.owner && `Owner: ${item.original.owner}`, item.original.due && `Due: ${item.original.due}`].filter(Boolean).join(', ')})`}
-                </p>
+              {(item.corrections?.length ?? 0) > 0 && item.original && (
+                <div className="change-history">
+                  <h3>Change history</h3>
+                  <ol>
+                    {(item.corrections ?? []).map((c, k) => (
+                      <li key={`${c.at}-${k}`}>
+                        {correctionLine(c)}
+                        {c.reason && <span className="meta correction-reason">Reason: {c.reason}</span>}
+                      </li>
+                    ))}
+                    <li>{originalLine(item.original, view.run.finishedAt ?? view.run.createdAt)}</li>
+                  </ol>
+                </div>
               )}
               {editing?.id === item.id ? (
                 <form
-                  className="edit-form"
+                  className="edit-form correction-panel"
+                  aria-label={`Correct proposal ${n + 1} of ${items.length}`}
                   onSubmit={(e) => {
                     e.preventDefault();
                     void saveEdit();
                   }}
                 >
+                  <label>
+                    Type
+                    <select value={editing.kind} onChange={(e) => setEditing({ ...editing, kind: e.target.value as Kind })}>
+                      {KINDS.map((k) => (
+                        <option key={k} value={k}>{kindWord(k)}</option>
+                      ))}
+                    </select>
+                  </label>
                   <label>
                     Wording
                     <textarea required rows={3} maxLength={2000} value={editing.text} onChange={(e) => setEditing({ ...editing, text: e.target.value })} />
@@ -378,22 +407,49 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                       </label>
                     )}
                   </fieldset>
-                  <p className="meta">Saving sends this proposal back to review. The quoted passage does not change.</p>
+                  <label>
+                    {needsReason(item.kind, editing.kind) ? 'Reason (needed because the type changes)' : 'Reason (optional)'}
+                    <textarea
+                      rows={2}
+                      maxLength={500}
+                      required={needsReason(item.kind, editing.kind)}
+                      value={editing.reason}
+                      onChange={(e) => setEditing({ ...editing, reason: e.target.value })}
+                    />
+                  </label>
+                  {(() => {
+                    const warning = setAsideWarning(item.reviewStatus, pendingAuthorisation(requests, item.id)?.approvals.length ?? 0);
+                    return warning ? (
+                      <>
+                        <p className="warn" role="note">{warning}</p>
+                        <p className="meta">The quoted passage does not change, and the AI's original is kept.</p>
+                      </>
+                    ) : (
+                      <p className="meta">Saving sends this proposal back to review. The quoted passage does not change, and the AI's original is kept.</p>
+                    );
+                  })()}
                   <div className="decision">
-                    <button type="submit" className="approve" disabled={saving.has(item.id) || editing.text.trim() === ''}>Save</button>
+                    <button
+                      type="submit"
+                      className="approve"
+                      disabled={saving.has(item.id) || editing.text.trim() === '' || (needsReason(item.kind, editing.kind) && editing.reason.trim() === '')}
+                    >
+                      Save
+                    </button>
                     <button type="button" onClick={() => setEditing(null)}>Cancel</button>
                   </div>
                 </form>
-              ) : view.permissions.edit && (
+              ) : view.permissions.edit && !item.record && (
+                // An authorised proposal is a record now: it is changed from the Work tab, not corrected here.
                 <button
                   type="button"
                   className="link-button"
                   onClick={() => {
                     setNotice(null);
-                    setEditing({ id: item.id, ...editFormFrom(item), focusDue: false });
+                    setEditing({ id: item.id, ...editFormFrom(item), focusDue: false, kind: item.kind, reason: '' });
                   }}
                 >
-                  Edit wording
+                  Correct…<span className="visually-hidden"> proposal {n + 1} of {items.length}</span>
                 </button>
               )}
               {(() => {
@@ -509,8 +565,51 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
             </article>
           ))}
         </section>
+
+        <section aria-label="Source text" className="source-pane">
+          <div className="source" tabIndex={0} ref={sourceBox}>
+            {segments.map((s) =>
+              s.ids.length === 0 ? (
+                <span key={s.start}>{s.text}</span>
+              ) : (
+                <mark
+                  key={s.start}
+                  ref={(el) => {
+                    for (const id of s.ids) {
+                      if (!el) marks.current.delete(id);
+                      else if (!marks.current.has(id)) marks.current.set(id, el);
+                    }
+                  }}
+                  className={`passage passage-${status(s.ids.includes(selected ?? '') ? (selected as string) : s.ids[0])}${s.ids.includes(selected ?? '') ? ' is-selected' : ''}`}
+                  onClick={() => select(s.ids.includes(selected ?? '') ? (selected as string) : s.ids[0], false)}
+                >
+                  {s.text}
+                </mark>
+              ),
+            )}
+          </div>
+          {sourceFor && (
+            <p className="narrow-only source-return">
+              <button
+                type="button"
+                className="link-button"
+                onClick={() => {
+                  const id = sourceFor;
+                  setSourceFor(null);
+                  requestAnimationFrame(() => {
+                    const card = cards.current.get(id);
+                    card?.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+                    card?.querySelector<HTMLElement>('.proposal-main')?.focus();
+                  });
+                }}
+              >
+                Back to proposal {items.findIndex((i) => i.id === sourceFor) + 1} of {items.length}
+              </button>
+            </p>
+          )}
+        </section>
       </div>
-    </main>
+    </div>
   );
 }
 

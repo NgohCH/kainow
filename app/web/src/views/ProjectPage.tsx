@@ -1,32 +1,48 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
-import { ApiError, api, type Membership, type Project } from '../api.ts';
-import { formatWhen } from '../format.ts';
+import { ApiError, api, type InvitationRow, type Membership, type Project } from '../api.ts';
+import { formatWhen, plural } from '../format.ts';
 import {
   type ClosureOutcome,
   type ProjectRole,
   OUTCOME_LABEL,
-  STAGES,
   accessLabel,
   STATUS_LABEL,
-  SUBSTAGES,
   type TransitionOption,
   canManage,
   formatExpiry,
   manageableRoles,
+  INVITATION_MEANING,
+  MEMBERSHIP_MEANING,
   membershipStateLabel,
   roleLabel,
   stageDuration,
   transitionsFor,
 } from '../projects.ts';
-import { HumanProposals } from './HumanProposals.tsx';
+import { go } from '../App.tsx';
+import { type NeedsYouItem, type PersonalDashboard, type ProjectDashboard, dayLabel, plannedEndLabel } from '../dashboard.ts';
+import { todayUtc8 } from '../changes.ts';
+import { TASK_STATUS_LABEL, TASK_STATUS_MEANING, type TaskStatus } from '../records.ts';
+import { addDays, dueWithin, projectAttention, taskStatusParts } from '../overview.ts';
+import { stageFlowFrom, type ProjectStage } from '../ui/stages.ts';
+import { AttentionQueue } from '../ui/AttentionQueue.tsx';
+import { BinderTabs } from '../ui/BinderTabs.tsx';
+import { Box } from '../ui/Box.tsx';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { StackedBar } from '../ui/StackedBar.tsx';
+import { StageFlow } from '../ui/StageFlow.tsx';
+import { StatTile } from '../ui/StatTile.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
+import { projectMeaning } from '../ui/meanings.ts';
+import { projectTabs, tabForHash } from '../ui/projectTabs.ts';
+import { ProjectProposals } from './ProjectProposals.tsx';
+import { Review } from './Review.tsx';
 import { ProjectApprovals } from './ApprovalSettings.tsx';
 import { Closing, DelegationControl, type ClosedSummary, type ClosureView } from './Closing.tsx';
 import { DeadlineReview } from './DeadlineReview.tsx';
 import { AskPanel } from './AskPanel.tsx';
 import { AssistReview } from './AssistReview.tsx';
 import { Drafts } from './Drafts.tsx';
-import { mayReviewAnswers, mayReviewSummaries } from '../assist.ts';
-import { Discussion } from './Discussion.tsx';
+import { Discussion, Notes } from './Discussion.tsx';
 import { Work } from './Work.tsx';
 import { ProjectOutputs } from './ProjectOutputs.tsx';
 import { Resources } from './Resources.tsx';
@@ -34,12 +50,12 @@ import { ResourcesReport } from './ResourcesReport.tsx';
 import { DeliveryHistory } from './Deliveries.tsx';
 import { DigestSend, EscalationFlags } from './DigestSend.tsx';
 import { Feedback } from './Feedback.tsx';
-import { ProjectSettings } from './NotificationSettings.tsx';
+import { ProjectSettings } from './ProjectSettings.tsx';
 import { ProjectAi } from './ProjectAi.tsx';
 import { mayViewAiTab, mayViewAiUsage } from '../ai.ts';
 import { ProjectCalendarProvider } from './ProjectCalendar.tsx';
 import { DeletedItemsList } from './DeletedItems.tsx';
-import { ProjectFigures } from './ProjectFigures.tsx';
+import { ProjectFigures, type DashboardState, useProjectDashboard } from './ProjectFigures.tsx';
 import { Timeline } from './Timeline.tsx';
 import type { Prefs } from '../prefs.ts';
 import { DeletionDelegationPanel } from './DeleteRestore.tsx';
@@ -47,11 +63,16 @@ import { DeletionsList } from './HistoryList.tsx';
 import { CopiesAwaitingList, HeldForReviewList } from './HeldReview.tsx';
 import { type Act, ArchivePanel, DepartmentMove, GrantsSection, HandoverForm, HoldActions } from './ProjectAccessPanels.tsx';
 
-type Tab = 'overview' | 'resources' | 'resources/report' | 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | 'timeline' | 'outputs';
+/** What the address shows: a tab's key (`resources/report` sits under Resources), or `run`, one run's review under Proposals. */
+export type ProjectView = 'overview' | 'resources' | 'resources/report' | 'people' | 'discussion' | 'notes' | 'proposals' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | 'timeline' | 'outputs' | 'run';
+
+/** What the binder tabs' badges and lifecycle tabs need. */
+interface TabCounts { waiting: number; overdue: number; mayPrepare: boolean; deadlineTasks: number }
+const NO_COUNTS: TabCounts = { waiting: 0, overdue: 0, mayPrepare: false, deadlineTasks: 0 };
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
-export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, onPrefs }: { projectId: string; tab: Tab; meId: string; itemId?: string; prefs: Prefs; prefsReady: boolean; onPrefs: (next: Prefs) => Promise<void> }) {
+export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsReady, onPrefs }: { projectId: string; tab: ProjectView; meId: string; itemId?: string; runId?: string; prefs: Prefs; prefsReady: boolean; onPrefs: (next: Prefs) => Promise<void> }) {
   const [project, setProject] = useState<Project | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
@@ -63,6 +84,8 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
     wasAsking.current = asking;
   }, [asking]);
   const [notice, setNotice] = useState<string | null>(null);
+  // Goes up each time "Add notes" is chosen in the header: the Notes tab opens its form.
+  const [addNotes, setAddNotes] = useState(0);
 
   const load = useCallback(() => {
     api.get<{ project: Project }>(`/projects/${projectId}`).then(
@@ -73,6 +96,38 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
   useEffect(load, [load]);
   // A message about the last change belongs to the tab it was made on.
   useEffect(() => setNotice(null), [tab]);
+
+  // Badges and the lifecycle tabs, read again on each tab change so a finished review clears its badge.
+  const [counts, setCounts] = useState<TabCounts>(NO_COUNTS);
+  const status = project?.status;
+  const myRoles = project?.myRoles.join(',');
+  useEffect(() => {
+    if (!status || myRoles === undefined) return;
+    let stale = false;
+    const roles = myRoles ? myRoles.split(',') : [];
+    const pmOrDeputy = roles.some((r) => r === 'pm' || r === 'deputy_pm');
+    // The same reads the Overview makes: a 404 or refusal means nothing to show this person.
+    Promise.all([
+      api.get<ProjectDashboard>(`/projects/${projectId}/dashboard`).catch(() => null),
+      ['planned', 'active', 'deferred'].includes(status) && roles.length > 0
+        ? api.get<ClosureView>(`/projects/${projectId}/closure`).catch(() => null)
+        : null,
+      pmOrDeputy && ['active', 'deferred', 'closed'].includes(status)
+        ? api.get<{ tasks: unknown[] }>(`/projects/${projectId}/deadline-review`).catch(() => null)
+        : null,
+    ]).then(([dash, closure, review]) => {
+      if (stale) return;
+      setCounts({
+        waiting: dash?.proposals?.waiting ?? 0,
+        overdue: dash?.measures.overdue ?? 0,
+        mayPrepare: Boolean(closure?.mayPrepare),
+        deadlineTasks: review?.tasks.length ?? 0,
+      });
+    });
+    return () => {
+      stale = true;
+    };
+  }, [projectId, status, myRoles, tab]);
 
   /** Runs one change; shows the server's reason if it is refused, otherwise reloads the project. */
   const act = useCallback(
@@ -104,19 +159,23 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
   const roles = project.myRoles;
   // Members read the notes; so does an Audit or Oversight grant holder, read-only.
   const contentAllowed = roles.length > 0 || project.access !== null;
-  const tabs: Array<[Tab, string]> = [
-    ['overview', 'Overview'],
-    ['people', 'People'],
-    ...(contentAllowed ? ([['timeline', 'Timeline']] as Array<[Tab, string]>) : []),
-    ['resources', 'Resources'],
-    ...(contentAllowed ? ([['notes', 'Notes & discussion'], ['work', 'Work'], ['drafts', 'Drafts']] as Array<[Tab, string]>) : []),
-    ...(contentAllowed && (mayReviewAnswers(roles) || mayReviewSummaries(roles)) ? ([['review', 'Review']] as Array<[Tab, string]>) : []),
-    ...(contentAllowed ? ([['feedback', 'Feedback']] as Array<[Tab, string]>) : []),
-    ...(contentAllowed ? ([['outputs', 'Outputs']] as Array<[Tab, string]>) : []),
-    ...(project.inspectDeleted ? ([['deleted', 'Deleted items']] as Array<[Tab, string]>) : []),
-    ['settings', 'Settings'],
-    ...(mayViewAiTab(roles, project.isAdmin) ? ([['ai', 'AI']] as Array<[Tab, string]>) : []),
-  ];
+  // A person's proposal used to be linked as notes/<id>; it now sits on the Proposals tab.
+  const view: ProjectView = tab === 'notes' && itemId ? 'proposals' : tab;
+  const current = tabForHash(tab, itemId);
+  const tabs = projectTabs({
+    roles,
+    isAdmin: project.isAdmin,
+    contentAllowed,
+    inspectDeleted: Boolean(project.inspectDeleted),
+    status: project.status,
+    // Closing and Deadline review are tabs while they call for action, and while the person is on them.
+    closingNeeded: counts.mayPrepare || current === 'closing',
+    deadlineReview: counts.deadlineTasks > 0 || current === 'deadline-review',
+    deadlineTasks: counts.deadlineTasks,
+    mayViewAi: mayViewAiTab(roles, project.isAdmin),
+    waiting: counts.waiting,
+    overdue: counts.overdue,
+  });
   // The project's current people, for choosing assignees, requesters and responsible people.
   const people = [
     ...new Map(
@@ -127,50 +186,81 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
   ];
   const open = ['draft', 'planned', 'active'].includes(project.status);
   const base = `#/projects/${project.id}`;
+  // Notes are imported straight away by the managing roles; a Member submits them for one of those to publish.
+  const canAddNotes = roles.some((r) => r !== 'member') && open;
+  const canSubmitNotes = roles.length > 0 && !roles.some((r) => r !== 'member') && open;
+  const pms = project.memberships.filter((m) => m.role === 'pm' && (m.state === 'active' || m.state === 'on_hold'));
 
   return (
     <ProjectCalendarProvider projectId={project.id}>
     <main className="page">
-      <p className="no-print"><a href="#/">My Projects</a></p>
-      <div className="row">
-        <h1>{project.name}</h1>
-        <span className={`badge status-${project.status}`}>{STATUS_LABEL[project.status]}</span>
-      </div>
-      <p className="meta">
-        {project.owningDepartment.name}
-        {project.stage ? ` · ${project.stage.stage}${project.stage.substage ? `: ${project.stage.substage}` : ''} (${stageDuration(project.stage.startedAt)})` : ''}
-        {roles.length > 0
-          ? ` · You: ${roles.map(roleLabel).join(', ')}`
-          : project.access
-            ? ` · ${accessLabel(project.access)} (read-only)`
-            : project.isAdmin
-              ? ' · You manage appointments as an administrator'
-              : ''}
-        {project.archived ? ' · Archived' : ''}
-      </p>
-      {project.onHold && (
-        <p className="warn" role="status">
-          A member is On Hold — investigation needed. <a href={`#/projects/${project.id}/people`}>Open People</a>
-        </p>
-      )}
-      {project.missingAccountability && (
-        <p className="warn" role="status">
-          This project is missing {project.missingRoles.join(' and ')}. Existing work continues, but proposals cannot be approved until the role is filled.
-        </p>
-      )}
-      <EscalationFlags projectId={project.id} />
-      <nav aria-label="Project" className="tabs">
-        {tabs.map(([t, label]) => (
-          <a key={t} href={t === 'overview' ? base : `${base}/${t}`} aria-current={tab === t || (t === 'resources' && tab === 'resources/report') ? 'page' : undefined}>
-            {label}
-          </a>
-        ))}
-      </nav>
-      {contentAllowed && (
-        <p className="no-print">
-          <button type="button" ref={askButton} aria-expanded={asking} onClick={() => setAsking((v) => !v)}>Ask about this project</button>
-        </p>
-      )}
+      <header className="page-header project-header">
+        <nav aria-label="Breadcrumb" className="crumbs no-print">
+          <ol><li><a href="#/projects">Projects</a></li></ol>
+        </nav>
+        <div className="page-header-row">
+          <div className="project-title">
+            <h1>{project.name}</h1>
+            <StatusLabel meaning={projectMeaning(project.status)} word={STATUS_LABEL[project.status]} />
+            {project.archived && <StatusLabel meaning="off" word="Archived" />}
+          </div>
+          {contentAllowed && (
+            <div className="page-action decision no-print">
+              <button type="button" ref={askButton} aria-expanded={asking} onClick={() => setAsking((v) => !v)}>Ask about this project</button>
+              {(canAddNotes || canSubmitNotes) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAddNotes((n) => n + 1);
+                    if (view !== 'notes') go(`${base}/notes`);
+                  }}
+                >
+                  {canAddNotes ? 'Add notes' : 'Submit notes'}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+        <dl className="project-facts">
+          <div><dt>Owning department</dt><dd>{project.owningDepartment.name}</dd></div>
+          {project.contributingDepartments.length > 0 && (
+            <div><dt>Participating departments</dt><dd>{project.contributingDepartments.map((d) => d.name).join(', ')}</dd></div>
+          )}
+          <div><dt>Project Manager</dt><dd>{pms.length > 0 ? pms.map((m) => m.displayName).join(', ') : 'Not appointed'}</dd></div>
+          {project.stageTemplate && <div><dt>Stages</dt><dd>{project.stageTemplate.name}</dd></div>}
+          {project.stage && (
+            <div><dt>Stage</dt><dd>{`${project.stage.stage}${project.stage.substage ? `: ${project.stage.substage}` : ''} (${stageDuration(project.stage.startedAt)})`}</dd></div>
+          )}
+          {(roles.length > 0 || project.access || project.isAdmin) && (
+            <div>
+              <dt>You</dt>
+              <dd>
+                {roles.length > 0
+                  ? roles.map(roleLabel).join(', ')
+                  : project.access
+                    ? `${accessLabel(project.access)} (read-only)`
+                    : 'You manage appointments as an administrator'}
+              </dd>
+            </div>
+          )}
+        </dl>
+        {project.onHold && (
+          <p className="warn" role="status">
+            A member is On Hold — investigation needed. <a href={`#/projects/${project.id}/people`}>Open People</a>
+          </p>
+        )}
+        {project.missingAccountability && (
+          <p className="warn" role="status">
+            This project is missing {project.missingRoles.join(' and ')}. Existing work continues, but proposals cannot be approved until the role is filled.
+          </p>
+        )}
+        <EscalationFlags projectId={project.id} />
+      </header>
+      <BinderTabs
+        label="Project"
+        current={current}
+        tabs={tabs.map((t) => ({ ...t, href: t.key === 'overview' ? base : `${base}/${t.key}` }))}
+      />
       {asking && contentAllowed && (
         <AskPanel
           projectId={project.id}
@@ -179,13 +269,13 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
       )}
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
-      {tab === 'overview' && <Overview project={project} act={act} contentAllowed={contentAllowed} />}
-      {tab === 'timeline' && contentAllowed && <Timeline projectId={project.id} prefs={prefs} ready={prefsReady} onChange={onPrefs} />}
-      {tab === 'drafts' && contentAllowed && <Drafts projectId={project.id} draftId={itemId} />}
-      {tab === 'review' && contentAllowed && <AssistReview projectId={project.id} roles={roles} />}
-      {tab === 'feedback' && contentAllowed && <Feedback projectId={project.id} />}
-      {tab === 'settings' && <ProjectSettings projectId={project.id} showFinance={project.isAdmin || roles.some((r) => ['pm', 'deputy_pm', 'owner', 'sponsor'].includes(r))} />}
-      {tab === 'outputs' && contentAllowed && (
+      {view === 'overview' && <Overview project={project} act={act} contentAllowed={contentAllowed} />}
+      {view === 'timeline' && contentAllowed && <Timeline projectId={project.id} prefs={prefs} ready={prefsReady} onChange={onPrefs} />}
+      {view === 'drafts' && contentAllowed && <Drafts projectId={project.id} draftId={itemId} />}
+      {view === 'review' && contentAllowed && <AssistReview projectId={project.id} roles={roles} />}
+      {view === 'feedback' && contentAllowed && <Feedback projectId={project.id} />}
+      {view === 'settings' && <ProjectSettings project={project} reload={load} showFinance={project.isAdmin || roles.some((r) => ['pm', 'deputy_pm', 'owner', 'sponsor'].includes(r))} />}
+      {view === 'outputs' && contentAllowed && (
         <ProjectOutputs
           key={itemId ?? 'register'}
           projectId={project.id}
@@ -198,34 +288,34 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
           }}
         />
       )}
-      {tab === 'ai' && mayViewAiTab(roles, project.isAdmin) && <ProjectAi projectId={project.id} mayViewUsage={mayViewAiUsage(roles)} />}
-      {tab === 'deleted' && project.inspectDeleted && <DeletedItemsList projectId={project.id} />}
-      {tab === 'resources' && <Resources projectId={project.id} roles={roles} status={project.status} />}
-      {tab === 'resources/report' && <ResourcesReport projectId={project.id} />}
-      {tab === 'closing' && <Closing project={project} act={act} />}
-      {tab === 'deadline-review' && <DeadlineReview project={project} />}
-      {tab === 'people' && <People project={project} act={act} />}
-      {tab === 'notes' && contentAllowed && (
-        <>
-          <Discussion
-            projectId={project.id}
-            canAdd={roles.some((r) => r !== 'member') && open}
-            canSubmit={roles.length > 0 && !roles.some((r) => r !== 'member') && open}
-            canStart={roles.length > 0 && open}
-            canRestrict={roles.some((r) => r !== 'member') && open}
-            memberships={project.memberships}
-          />
-          <HumanProposals
-            projectId={project.id}
-            canPropose={roles.length > 0 && open}
-            canReview={roles.some((r) => r === 'owner' || r === 'sponsor') && ['planned', 'active'].includes(project.status)}
-            people={people}
-            meId={meId}
-            focusId={itemId}
-          />
-        </>
+      {view === 'ai' && mayViewAiTab(roles, project.isAdmin) && <ProjectAi projectId={project.id} mayViewUsage={mayViewAiUsage(roles)} />}
+      {view === 'deleted' && project.inspectDeleted && <DeletedItemsList projectId={project.id} />}
+      {view === 'resources' && <Resources projectId={project.id} roles={roles} status={project.status} />}
+      {view === 'resources/report' && <ResourcesReport projectId={project.id} />}
+      {view === 'closing' && <Closing project={project} act={act} />}
+      {view === 'deadline-review' && <DeadlineReview project={project} />}
+      {view === 'people' && <People project={project} act={act} />}
+      {view === 'discussion' && contentAllowed && (
+        <Discussion
+          projectId={project.id}
+          canStart={roles.length > 0 && open}
+          canRestrict={roles.some((r) => r !== 'member') && open}
+          memberships={project.memberships}
+        />
       )}
-      {tab === 'work' && contentAllowed && (
+      {view === 'notes' && contentAllowed && <Notes projectId={project.id} canAdd={canAddNotes} canSubmit={canSubmitNotes} addRequest={addNotes} onAddHandled={() => setAddNotes(0)} />}
+      {view === 'proposals' && contentAllowed && (
+        <ProjectProposals
+          projectId={project.id}
+          canPropose={roles.length > 0 && open}
+          canReview={roles.some((r) => r === 'owner' || r === 'sponsor') && ['planned', 'active'].includes(project.status)}
+          people={people}
+          meId={meId}
+          focusId={itemId}
+        />
+      )}
+      {view === 'run' && runId && <Review key={runId} runId={runId} meId={meId} />}
+      {view === 'work' && contentAllowed && (
         <Work
           projectId={project.id}
           people={people}
@@ -240,6 +330,34 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
     </main>
     </ProjectCalendarProvider>
   );
+}
+
+/**
+ * `#/runs/<id>` (email links point at it): the run's review inside its project, under the Proposals tab. The run says
+ * which project it belongs to; a run the person may not see shows the server's reason.
+ */
+export function RunInProject({ runId, meId, prefs, prefsReady, onPrefs }: { runId: string; meId: string; prefs: Prefs; prefsReady: boolean; onPrefs: (next: Prefs) => Promise<void> }) {
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let stale = false;
+    api.get<{ projectId: string }>(`/extractions/${runId}`).then(
+      (r) => !stale && setProjectId(r.projectId),
+      (e: Error) => !stale && setError(e.message),
+    );
+    return () => {
+      stale = true;
+    };
+  }, [runId]);
+  if (!projectId) {
+    return (
+      <main className="page narrow">
+        {error ? <p role="alert" className="error">{error}</p> : <p className="loading">Loading</p>}
+        <a href="#/projects">Projects</a>
+      </main>
+    );
+  }
+  return <ProjectPage key={projectId} projectId={projectId} tab="run" runId={runId} meId={meId} prefs={prefs} prefsReady={prefsReady} onPrefs={onPrefs} />;
 }
 
 function Overview({ project, act, contentAllowed }: { project: Project; act: Act; contentAllowed: boolean }) {
@@ -272,12 +390,14 @@ function Overview({ project, act, contentAllowed }: { project: Project; act: Act
     api.get<{ tasks: unknown[] }>(`/projects/${project.id}/deadline-review`).then((r) => setMarkedTasks(r.tasks.length), () => setMarkedTasks(0));
   }, [project.id, project.status, isPmOrDeputy]);
   const flags = project.openReviewFlags ?? 0;
+  const dashboard = useProjectDashboard(project.id, contentAllowed);
 
   return (
     <>
-      <section aria-labelledby="about-heading">
-        <div className="row">
-          <h2 id="about-heading">About</h2>
+      <OverviewGlance project={project} contentAllowed={contentAllowed} dashboard={dashboard} />
+      <section aria-labelledby="about-heading" className="box">
+        <div className="settings-box-head">
+          <h2 id="about-heading" className="box-title">About</h2>
           {canEdit && (
             <button className="quiet" onClick={() => setEditing((e) => !e)} aria-expanded={editing}>
               {editing ? 'Close' : 'Edit details'}
@@ -309,11 +429,11 @@ function Overview({ project, act, contentAllowed }: { project: Project; act: Act
           </dl>
         )}
       </section>
-      {contentAllowed && <ProjectFigures projectId={project.id} canReadWork={contentAllowed} />}
+      {contentAllowed && <ProjectFigures projectId={project.id} canReadWork={contentAllowed} state={dashboard} />}
 
       {atClosure && (atClosure.kept.length > 0 || atClosure.unresolved.length > 0) && (
-        <section aria-labelledby="at-closure-heading">
-          <h2 id="at-closure-heading">At closure</h2>
+        <section aria-labelledby="at-closure-heading" className="box">
+          <h2 id="at-closure-heading" className="box-title">At closure</h2>
           {atClosure.kept.length > 0 && (
             <>
               <h3>Tasks kept outstanding</h3>
@@ -341,8 +461,8 @@ function Overview({ project, act, contentAllowed }: { project: Project; act: Act
       )}
 
       {(options.length > 0 || canStage) && (
-        <section aria-labelledby="change-heading">
-          <h2 id="change-heading">Change the project</h2>
+        <section aria-labelledby="change-heading" className="box">
+          <h2 id="change-heading" className="box-title">Change the project</h2>
           <div className="decision">
             {options.map((o) =>
               o.to === 'closed' ? (
@@ -367,8 +487,8 @@ function Overview({ project, act, contentAllowed }: { project: Project; act: Act
       )}
 
       {(closure?.mayPrepare || markedTasks > 0 || flags > 0 || (isOS && closable)) && (
-        <section aria-labelledby="records-heading">
-          <h2 id="records-heading">Closing and reviews</h2>
+        <section aria-labelledby="records-heading" className="box">
+          <h2 id="records-heading" className="box-title">Closing and reviews</h2>
           {flags > 0 && (
             <p className="review-flags">
               {flags} {flags === 1 ? 'item is' : 'items are'} flagged for review after a decision changed. <a href={`#/projects/${project.id}/work`}>Open Work</a>
@@ -405,8 +525,8 @@ function Overview({ project, act, contentAllowed }: { project: Project; act: Act
 
       {isEmailManager && project.status === 'active' && <DigestSend projectId={project.id} onSent={() => setDeliveriesKey((n) => n + 1)} />}
       {isEmailManager && (
-        <section aria-labelledby="deliveries-heading">
-          <h2 id="deliveries-heading">Email delivery</h2>
+        <section aria-labelledby="deliveries-heading" className="box">
+          <h2 id="deliveries-heading" className="box-title">Email delivery</h2>
           <DeliveryHistory path={`/projects/${project.id}/deliveries`} reloadKey={deliveriesKey} />
         </section>
       )}
@@ -414,8 +534,8 @@ function Overview({ project, act, contentAllowed }: { project: Project; act: Act
       <ArchivePanel project={project} act={act} />
       <DepartmentMove project={project} act={act} />
 
-      <section aria-labelledby="history-heading">
-        <h2 id="history-heading">History</h2>
+      <section aria-labelledby="history-heading" className="box">
+        <h2 id="history-heading" className="box-title">History</h2>
         <h3>Stages</h3>
         <ul className="plain">
           {project.stagePeriods.map((s, i) => (
@@ -448,10 +568,131 @@ function Overview({ project, act, contentAllowed }: { project: Project; act: Act
   );
 }
 
+/** A task as the Overview reads it from `GET /projects/:id/records`. */
+interface OverviewTask { id: string; title: string; dueOn: string; status: TaskStatus; assignee: { displayName: string } }
+
+/**
+ * The top of the Overview (spec 7.5): on the left what needs this person's attention in this project; on the right the
+ * stage flow, the task-status split and the tasks due in the next 14 days.
+ */
+function OverviewGlance({ project, contentAllowed, dashboard }: { project: Project; contentAllowed: boolean; dashboard: DashboardState }) {
+  const [attention, setAttention] = useState<NeedsYouItem[] | null>(null);
+  const [attentionError, setAttentionError] = useState<string | null>(null);
+  const [tasks, setTasks] = useState<OverviewTask[] | null>(null);
+  const [tasksError, setTasksError] = useState<string | null>(null);
+  useEffect(() => {
+    let stale = false;
+    setAttention(null);
+    setAttentionError(null);
+    api.get<PersonalDashboard>('/dashboard/me?includeArchived=1&showCompleted=0').then(
+      (r) => !stale && setAttention(projectAttention(r.needsYou, project.id)),
+      (e: Error) => !stale && setAttentionError(e.message),
+    );
+    return () => {
+      stale = true;
+    };
+  }, [project.id]);
+  useEffect(() => {
+    if (!contentAllowed) return;
+    let stale = false;
+    setTasks(null);
+    setTasksError(null);
+    api.get<{ tasks: OverviewTask[] }>(`/projects/${project.id}/records`).then(
+      (r) => !stale && setTasks(r.tasks),
+      (e: Error) => !stale && setTasksError(e.message),
+    );
+    return () => {
+      stale = true;
+    };
+  }, [project.id, contentAllowed]);
+
+  const today = todayUtc8();
+  const flow = stageFlowFrom(project.stages, project.stagePeriods, new Date());
+  // A closed project has been through every stage.
+  const steps = project.status === 'closed' ? flow.map((s) => ({ name: s.name, state: 'done' as const })) : flow;
+  const cancelled = (tasks ?? []).filter((t) => t.status === 'cancelled').length;
+  const due = dueWithin(tasks ?? [], today, 14);
+  const plannedEnd = dashboard.d ? plannedEndLabel(dashboard.d.measures.plannedEnd) : null;
+  const dueColumns: Column<OverviewTask>[] = [
+    { key: 'task', header: 'Task', sortValue: (t) => t.title.toLowerCase(), cell: (t) => <a href={`#/projects/${project.id}/work/${t.id}`}>{t.title}</a> },
+    { key: 'due', header: 'Due', sortValue: (t) => t.dueOn, cell: (t) => (t.dueOn === today ? `Today, ${dayLabel(t.dueOn)}` : dayLabel(t.dueOn)) },
+    { key: 'assignee', header: 'Assignee', sortValue: (t) => t.assignee.displayName.toLowerCase(), cell: (t) => t.assignee.displayName },
+    { key: 'status', header: 'Status', sortValue: (t) => TASK_STATUS_LABEL[t.status], cell: (t) => <StatusLabel meaning={TASK_STATUS_MEANING[t.status]} word={TASK_STATUS_LABEL[t.status]} /> },
+  ];
+
+  return (
+    <div className="overview-top">
+      <Box title="Needs attention in this project">
+        {attentionError ? (
+          <p role="alert" className="error">{attentionError}</p>
+        ) : attention === null ? (
+          <p className="loading">Loading</p>
+        ) : (
+          <AttentionQueue items={attention} empty="Nothing in this project needs you now." inProject />
+        )}
+      </Box>
+      <div className="overview-side">
+        <Box title="Stage">
+          <StageFlow stages={steps} />
+          <dl className="facts">
+            {project.stage?.substage && (
+              <>
+                <dt>Substage</dt>
+                <dd>{project.stage.substage}</dd>
+              </>
+            )}
+            <dt>Planned end</dt>
+            <dd>
+              {project.plannedEnd ? dayLabel(project.plannedEnd) : 'Not set'}
+              {project.plannedEnd && plannedEnd && <span className="meta"> ({plannedEnd})</span>}
+            </dd>
+          </dl>
+        </Box>
+        {contentAllowed && (
+          <Box title="Tasks">
+            {tasksError ? (
+              <p role="alert" className="error">{tasksError}</p>
+            ) : tasks === null ? (
+              <p className="loading">Loading</p>
+            ) : (
+              <>
+                <StackedBar parts={taskStatusParts(tasks)} />
+                {cancelled > 0 && <p className="meta">{cancelled} cancelled, not counted.</p>}
+                <p className="meta"><a href={`#/projects/${project.id}/work`}>Open Work</a></p>
+              </>
+            )}
+          </Box>
+        )}
+        {contentAllowed && (
+          <Box title="Due in the next 14 days">
+            {tasksError ? (
+              <p className="meta">Not available: the tasks could not be read.</p>
+            ) : (
+              <DataTable
+                caption={`Unfinished tasks due by ${dayLabel(addDays(today, 14))}`}
+                columns={dueColumns}
+                rows={due}
+                rowKey={(t) => t.id}
+                loading={tasks === null}
+                empty="No unfinished task is due in the next 14 days."
+                initialSort={{ key: 'due', dir: 'asc' }}
+              />
+            )}
+          </Box>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** The stages a person may move the project into: the active ones, in the project's order. */
+const activeStages = (project: Project): ProjectStage[] => project.stages.filter((s) => s.status === 'active');
+
 function TransitionForm({ project, option, act, onDone }: { project: Project; option: TransitionOption; act: Act; onDone: () => void }) {
   const [reason, setReason] = useState('');
   const [outcome, setOutcome] = useState<ClosureOutcome | ''>(option.outcomes?.length === 1 ? option.outcomes[0] : '');
-  const [stage, setStage] = useState(project.stage?.stage ?? 'Execution');
+  const choices = activeStages(project);
+  const [stage, setStage] = useState(choices.find((s) => s.name === project.stage?.stage)?.name ?? choices[0]?.name ?? '');
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -488,8 +729,8 @@ function TransitionForm({ project, option, act, onDone }: { project: Project; op
         <label>
           Stage to continue in
           <select value={stage} onChange={(e) => setStage(e.target.value)}>
-            {STAGES.map((s) => (
-              <option key={s}>{s}</option>
+            {choices.map((s) => (
+              <option key={s.id}>{s.name}</option>
             ))}
           </select>
         </label>
@@ -507,7 +748,8 @@ function TransitionForm({ project, option, act, onDone }: { project: Project; op
 }
 
 function StageForm({ project, act, onDone }: { project: Project; act: Act; onDone: () => void }) {
-  const [stage, setStage] = useState(project.stage?.stage ?? 'Initiation');
+  const choices = activeStages(project);
+  const [stage, setStage] = useState(choices.find((s) => s.name === project.stage?.stage)?.name ?? choices[0]?.name ?? '');
   const [substage, setSubstage] = useState('');
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -518,8 +760,8 @@ function StageForm({ project, act, onDone }: { project: Project; act: Act; onDon
       <label>
         Stage
         <select value={stage} onChange={(e) => { setStage(e.target.value); setSubstage(''); }}>
-          {STAGES.map((s) => (
-            <option key={s}>{s}</option>
+          {choices.map((s) => (
+            <option key={s.id}>{s.name}</option>
           ))}
         </select>
       </label>
@@ -527,7 +769,7 @@ function StageForm({ project, act, onDone }: { project: Project; act: Act; onDon
         Substage (optional)
         <select value={substage} onChange={(e) => setSubstage(e.target.value)}>
           <option value="">None</option>
-          {SUBSTAGES[stage].map((s) => (
+          {(choices.find((c) => c.name === stage)?.substages ?? []).map((s) => (
             <option key={s}>{s}</option>
           ))}
         </select>
@@ -577,44 +819,112 @@ function EditDetails({ project, act, onDone }: { project: Project; act: Act; onD
   );
 }
 
+const INVITATION_STATE_WORD: Record<InvitationRow['status'], string> = { invited: 'Waiting', accepted: 'Accepted', declined: 'Declined', revoked: 'Withdrawn', expired: 'Expired' };
+
+/** The project's People tab (spec 7.6): who holds which role, hand-over, Audit and Oversight access, and invitations. */
 function People({ project, act }: { project: Project; act: Act }) {
   const invitable = manageableRoles(project.myRoles, project.isAdmin, project.status);
   const current = project.memberships.filter((m) => m.state !== 'revoked');
   const past = project.memberships.filter((m) => m.state === 'revoked');
+  const onHold = current.filter((m) => m.state === 'on_hold').length;
+  const waitingInvitations = project.invitations.filter((i) => i.status === 'invited').length;
+  const memberColumns: Column<Membership>[] = [
+    {
+      key: 'person',
+      header: 'Person',
+      sortValue: (m) => m.displayName.toLowerCase(),
+      cell: (m) => (
+        <span>
+          {m.displayName}
+          <span className="meta work-parent">{m.email}</span>
+        </span>
+      ),
+    },
+    { key: 'role', header: 'Role', sortValue: (m) => roleLabel(m.role), cell: (m) => roleLabel(m.role) },
+    { key: 'dates', header: 'Dates', sortValue: (m) => m.startsOn, cell: (m) => `from ${m.startsOn}${m.expiresOn ? ` to ${m.expiresOn}` : ''}` },
+    {
+      key: 'state',
+      header: 'State',
+      sortValue: (m) => membershipStateLabel(m.state),
+      cell: (m) => (
+        <span className="label-stack">
+          <StatusLabel meaning={MEMBERSHIP_MEANING[m.state]} word={membershipStateLabel(m.state)} />
+          {m.holdReason && <span className="meta">{m.holdReason}</span>}
+        </span>
+      ),
+    },
+    { key: 'actions', header: 'Actions', wide: true, cell: (m) => <MemberActions m={m} project={project} act={act} /> },
+  ];
+  const pastColumns: Column<Membership>[] = [
+    { key: 'person', header: 'Person', sortValue: (m) => m.displayName.toLowerCase(), cell: (m) => m.displayName },
+    { key: 'role', header: 'Role', sortValue: (m) => roleLabel(m.role), cell: (m) => roleLabel(m.role) },
+    { key: 'from', header: 'From', sortValue: (m) => m.startsOn, cell: (m) => m.startsOn },
+    { key: 'state', header: 'State', cell: () => <StatusLabel meaning="off" word="Revoked" /> },
+  ];
+  const invitationColumns: Column<InvitationRow>[] = [
+    { key: 'email', header: 'Email', sortValue: (i) => i.email.toLowerCase(), cell: (i) => i.email },
+    { key: 'role', header: 'Role', sortValue: (i) => roleLabel(i.role), cell: (i) => (i.kind === 'handover' ? 'Project Manager (handover)' : roleLabel(i.role)) },
+    {
+      key: 'status',
+      header: 'Status',
+      sortValue: (i) => i.status,
+      cell: (i) => (
+        <span className="label-stack">
+          <StatusLabel meaning={INVITATION_MEANING[i.status]} word={INVITATION_STATE_WORD[i.status]} />
+          {i.status === 'invited' && <span className="meta">{formatExpiry(i.expiresAt)}</span>}
+        </span>
+      ),
+    },
+    {
+      key: 'actions',
+      header: 'Actions',
+      cell: (i) => {
+        const manage = canManage(i.role, project.myRoles, project.isAdmin, project.status, 'invitation');
+        // Withdrawing is cleanup, allowed in any status; the PM may withdraw their own handover.
+        const withdraw = canManage(i.role, project.myRoles, project.isAdmin, project.status, 'appointment') || (i.kind === 'handover' && project.myRoles.includes('pm'));
+        const resend = manage && (i.status === 'invited' || i.status === 'expired');
+        const canWithdraw = withdraw && i.status === 'invited';
+        if (!resend && !canWithdraw) return <span className="meta">None</span>;
+        return (
+          <span className="decision">
+            {resend && (
+              <button
+                className="link-button"
+                onClick={() =>
+                  void act(
+                    () => api.post(`/invitations/${i.id}/resend`),
+                    (r) => ((r as { delivered?: boolean }).delivered === false ? 'The email was not sent. Send again.' : `A new invitation was sent to ${i.email}.`),
+                  )
+                }
+              >
+                Send again<span className="visually-hidden"> to {i.email}</span>
+              </button>
+            )}
+            {canWithdraw && (
+              <button className="link-button" onClick={() => void act(() => api.post(`/invitations/${i.id}/revoke`), 'Invitation withdrawn.')}>
+                Withdraw<span className="visually-hidden"> the invitation to {i.email}</span>
+              </button>
+            )}
+          </span>
+        );
+      },
+    },
+  ];
   return (
     <>
-      <section aria-labelledby="members-heading">
-        <h2 id="members-heading">People</h2>
-        {current.length === 0 ? (
-          <p className="empty">No one holds a role yet.</p>
-        ) : (
-          <table className="table">
-            <thead>
-              <tr>
-                <th scope="col">Person</th>
-                <th scope="col">Role</th>
-                <th scope="col">Dates</th>
-                <th scope="col">State</th>
-                <th scope="col"><span className="visually-hidden">Actions</span></th>
-              </tr>
-            </thead>
-            <tbody>
-              {current.map((m) => (
-                <MemberRow key={m.id} m={m} project={project} act={act} />
-              ))}
-            </tbody>
-          </table>
-        )}
+      <div className="stat-grid">
+        <StatTile label="People with a role" value={String(new Set(current.map((m) => m.userId)).size)} note={plural(current.length, 'appointment')} />
+        <StatTile label="On Hold" value={String(onHold)} meaning={onHold > 0 ? 'attention' : undefined} word={onHold > 0 ? 'Investigation needed' : undefined} />
+        <StatTile label="Invitations waiting" value={String(waitingInvitations)} />
+        {project.grants.length > 0 && <StatTile label="Audit and Oversight access" value={String(project.grants.filter((g) => g.state === 'active').length)} note="Active now" />}
+      </div>
+      <section aria-labelledby="members-heading" className="box">
+        <h2 id="members-heading" className="box-title">People</h2>
+        <DataTable caption="Everyone who holds a role in this project" columns={memberColumns} rows={current} rowKey={(m) => m.id} empty="No one holds a role yet." />
         {past.length > 0 && (
           <details>
             <summary>Earlier appointments ({past.length})</summary>
-            <ul className="plain">
-              {past.map((m) => (
-                <li key={m.id}>
-                  {m.displayName}, {roleLabel(m.role)}, from {m.startsOn} (revoked)
-                </li>
-              ))}
-            </ul>
+            <DataTable caption="Earlier appointments" columns={pastColumns} rows={past} rowKey={(m) => m.id} empty="None." />
           </details>
         )}
       </section>
@@ -622,124 +932,74 @@ function People({ project, act }: { project: Project; act: Act }) {
       <HandoverForm project={project} act={act} />
       <GrantsSection project={project} act={act} />
 
-      <section aria-labelledby="invitations-heading">
-        <h2 id="invitations-heading">Invitations</h2>
-        {invitable.length > 0 && <InviteForm project={project} roles={invitable} act={act} />}
-        {project.invitations.length === 0 ? (
-          <p className="meta">No invitations yet.</p>
-        ) : (
-          <table className="table">
-            <thead>
-              <tr>
-                <th scope="col">Email</th>
-                <th scope="col">Role</th>
-                <th scope="col">Status</th>
-                <th scope="col"><span className="visually-hidden">Actions</span></th>
-              </tr>
-            </thead>
-            <tbody>
-              {project.invitations.map((i) => {
-                const manage = canManage(i.role, project.myRoles, project.isAdmin, project.status, 'invitation');
-                // Withdrawing is cleanup, allowed in any status; the PM may withdraw their own handover.
-                const withdraw = canManage(i.role, project.myRoles, project.isAdmin, project.status, 'appointment') || (i.kind === 'handover' && project.myRoles.includes('pm'));
-                return (
-                  <tr key={i.id}>
-                    <td>{i.email}</td>
-                    <td>{i.kind === 'handover' ? 'Project Manager (handover)' : roleLabel(i.role)}</td>
-                    <td>
-                      {i.status === 'invited' ? `Waiting · ${formatExpiry(i.expiresAt)}` : i.status[0].toUpperCase() + i.status.slice(1)}
-                    </td>
-                    <td>
-                      {manage && (i.status === 'invited' || i.status === 'expired') && (
-                        <button
-                          className="link-button"
-                          onClick={() =>
-                            void act(
-                              () => api.post(`/invitations/${i.id}/resend`),
-                              (r) => ((r as { delivered?: boolean }).delivered === false ? 'The email was not sent. Send again.' : `A new invitation was sent to ${i.email}.`),
-                            )
-                          }
-                        >
-                          Send again
-                        </button>
-                      )}{' '}
-                      {withdraw && i.status === 'invited' && (
-                        <button className="link-button" onClick={() => void act(() => api.post(`/invitations/${i.id}/revoke`), 'Invitation withdrawn.')}>
-                          Withdraw
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
+      {invitable.length > 0 && (
+        <section aria-labelledby="invite-heading" className="box">
+          <h2 id="invite-heading" className="box-title">Invite someone</h2>
+          <InviteForm project={project} roles={invitable} act={act} />
+        </section>
+      )}
+      <section aria-labelledby="invitations-heading" className="box">
+        <h2 id="invitations-heading" className="box-title">Invitations</h2>
+        <DataTable caption="Invitations to this project" columns={invitationColumns} rows={project.invitations} rowKey={(i) => i.id} empty="No invitations yet." />
       </section>
     </>
   );
 }
 
-function MemberRow({ m, project, act }: { m: Membership; project: Project; act: Act }) {
+/** A role's actions: the hold's findings and restore, Change expiry and Remove, each with its form in place. */
+function MemberActions({ m, project, act }: { m: Membership; project: Project; act: Act }) {
   const manage = canManage(m.role, project.myRoles, project.isAdmin, project.status, 'appointment');
   const [mode, setMode] = useState<'none' | 'extend' | 'revoke'>('none');
   const [date, setDate] = useState(m.expiresOn ?? '');
   const [reason, setReason] = useState('');
+  if (m.state !== 'on_hold' && !manage) return <span className="meta">None</span>;
   return (
-    <tr>
-      <td>
-        {m.displayName}
-        <span className="meta"> {m.email}</span>
-      </td>
-      <td>{roleLabel(m.role)}</td>
-      <td>
-        from {m.startsOn}
-        {m.expiresOn ? ` to ${m.expiresOn}` : ''}
-      </td>
-      <td>
-        {m.state === 'on_hold' ? <span className="badge badge-rejected">{membershipStateLabel(m.state)}</span> : membershipStateLabel(m.state)}
-        {m.holdReason ? <span className="meta"> {m.holdReason}</span> : null}
-      </td>
-      <td>
-        {m.state === 'on_hold' && <HoldActions m={m} project={project} act={act} canRestore={manage} />}
-        {manage && mode === 'none' && (
-          <>
-            <button className="link-button" onClick={() => setMode('extend')}>Change expiry</button>{' '}
-            <button className="link-button" onClick={() => setMode('revoke')}>Remove</button>
-          </>
-        )}
-        {mode === 'extend' && (
-          <form
-            className="inline-form"
-            onSubmit={async (e) => {
-              e.preventDefault();
-              if (await act(() => api.post(`/memberships/${m.id}/extend`, { expiresOn: date }), 'Expiry changed.')) setMode('none');
-            }}
-          >
-            <label>
-              New expiry <input type="date" required value={date} onChange={(e) => setDate(e.target.value)} />
-            </label>
+    <div className="work-details">
+      {m.state === 'on_hold' && <HoldActions m={m} project={project} act={act} canRestore={manage} />}
+      {manage && mode === 'none' && (
+        <span className="decision">
+          <button className="link-button" onClick={() => setMode('extend')}>Change expiry<span className="visually-hidden"> for {m.displayName}</span></button>
+          <button className="link-button" onClick={() => setMode('revoke')}>Remove<span className="visually-hidden"> {m.displayName} as {roleLabel(m.role)}</span></button>
+        </span>
+      )}
+      {mode === 'extend' && (
+        <form
+          className="inline-form stack change-form"
+          aria-label={`Change the expiry of the role held by ${m.displayName}`}
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (await act(() => api.post(`/memberships/${m.id}/extend`, { expiresOn: date }), 'Expiry changed.')) setMode('none');
+          }}
+        >
+          <label>
+            New expiry <input type="date" required value={date} onChange={(e) => setDate(e.target.value)} />
+          </label>
+          <div className="decision">
             <button className="primary">Save</button>
             <button type="button" onClick={() => setMode('none')}>Cancel</button>
-          </form>
-        )}
-        {mode === 'revoke' && (
-          <form
-            className="inline-form"
-            onSubmit={async (e) => {
-              e.preventDefault();
-              if (await act(() => api.post(`/memberships/${m.id}/revoke`, { reason }), `${m.displayName} no longer holds the ${roleLabel(m.role)} role.`)) setMode('none');
-            }}
-          >
-            <label>
-              Reason <input required value={reason} onChange={(e) => setReason(e.target.value)} />
-            </label>
+          </div>
+        </form>
+      )}
+      {mode === 'revoke' && (
+        <form
+          className="inline-form stack change-form"
+          aria-label={`Remove ${m.displayName} as ${roleLabel(m.role)}`}
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (await act(() => api.post(`/memberships/${m.id}/revoke`, { reason }), `${m.displayName} no longer holds the ${roleLabel(m.role)} role.`)) setMode('none');
+          }}
+        >
+          <p className="meta">They lose this role straight away. The appointment stays under Earlier appointments.</p>
+          <label>
+            Reason <input required value={reason} onChange={(e) => setReason(e.target.value)} />
+          </label>
+          <div className="decision">
             <button className="reject">Remove</button>
             <button type="button" onClick={() => setMode('none')}>Cancel</button>
-          </form>
-        )}
-      </td>
-    </tr>
+          </div>
+        </form>
+      )}
+    </div>
   );
 }
 
@@ -762,7 +1022,7 @@ function InviteForm({ project, roles, act }: { project: Project; roles: ProjectR
     }
   }
   return (
-    <form className="panel stack" onSubmit={submit} aria-label="Invite someone">
+    <form className="stack" onSubmit={submit} aria-label="Invite someone">
       <div className="grid-2">
         <label>
           Work email

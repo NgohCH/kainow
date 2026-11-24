@@ -1,10 +1,21 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, api } from '../api.ts';
+import { Box } from '../ui/Box.tsx';
+import { PageHeader } from '../ui/PageHeader.tsx';
+import { StatTile } from '../ui/StatTile.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
+import type { Meaning } from '../ui/meanings.ts';
 import { CLOSING_RULE, closedText, installText, linkKind, stepLinkHidden, stepState, tickWaitText, type GoLive as GoLiveData, type GoLiveStep } from '../golive.ts';
 
 const message = (e: unknown): string => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
 
 type Action = 'tick' | 'untick' | 'skip';
+
+/** What a step shows as its state: done is set up, skipped is not in use, anything else needs doing. */
+function stepMeaning(s: GoLiveStep): { meaning: Meaning; word: string } {
+  if (!s.done) return { meaning: 'attention', word: 'Not done' };
+  return s.skipped ? { meaning: 'off', word: 'Skipped' } : { meaning: 'ok', word: 'Done' };
+}
 
 function Step({ s, closed, onAction, busy }: { s: GoLiveStep; closed: boolean; onAction: (key: string, action: Action, note: string) => void; busy: boolean }) {
   const [asking, setAsking] = useState(false);
@@ -24,13 +35,16 @@ function Step({ s, closed, onAction, busy }: { s: GoLiveStep; closed: boolean; o
   // The test-email and recovery steps' Mark done stays visible but disabled until what it waits for is done.
   const waiting = tickWaitText(s, closed);
   const waitId = `wait-${s.key}`;
+  const state = stepMeaning(s);
   return (
     <li ref={item} tabIndex={-1} id={`step-${s.key}`} className="golive-step">
-      <h2 className="golive-step-text">
+      <Box meaning={state.meaning}>
+      <h2 className="box-title golive-step-text">
         <span className="visually-hidden">Step {s.position}: </span>
         <span aria-hidden="true">{s.position}. </span>
         {s.text}
       </h2>
+      <p><StatusLabel meaning={state.meaning} word={state.word} /></p>
       <p>{s.explanation}</p>
       <p>
         {linkKind(s.link) === 'page' ? (
@@ -83,6 +97,7 @@ function Step({ s, closed, onAction, busy }: { s: GoLiveStep; closed: boolean; o
           </div>
         </form>
       )}
+      </Box>
     </li>
   );
 }
@@ -125,9 +140,16 @@ export function GoLive() {
 
   const stepOf = (key: string) => data?.steps.find((s) => s.key === key);
 
+  const doneCount = data?.steps.filter((x) => x.done).length ?? 0;
+  const total = data?.steps.length ?? 0;
+
   return (
-    <main className="page narrow golive-page">
-      <h1>Go-live checklist</h1>
+    <main className="page golive-page">
+      <PageHeader
+        crumbs={[{ text: 'Settings', href: '#/settings' }]}
+        title="Go-live checklist"
+        intro={data && !data.closedAt ? CLOSING_RULE : 'What is left to do before people use Kainow.'}
+      />
       <p className="visually-hidden" role="status" aria-live="polite">{announce}</p>
       {error && (
         <p role="alert" className="error">
@@ -138,14 +160,23 @@ export function GoLive() {
       {!data && !error && <p className="loading" role="status">Loading</p>}
       {data && (
         <>
-          {data.closedAt ? (
+          <div className="stat-grid">
+            <StatTile label="Steps done" value={`${doneCount} of ${total}`} meter={{ value: doneCount, max: total, text: `${doneCount} of ${total} steps done or skipped` }} />
+            <StatTile
+              label="Checklist"
+              value={data.closedAt ? 'Closed' : 'Open'}
+              meaning={data.closedAt ? 'closed' : 'attention'}
+              word={data.closedAt ? 'Closed' : 'In progress'}
+              note={data.closedAt ? closedText(data.closedAt) : undefined}
+            />
+          </div>
+          {data.closedAt && (
             <>
-              <section aria-labelledby="closed-heading">
-                <h2 id="closed-heading">{closedText(data.closedAt)}</h2>
+              <Box title="Closed" meaning="closed">
+                <p>{closedText(data.closedAt)}</p>
                 <p className="meta">This page is now a record. Steps can no longer be changed.</p>
-              </section>
-              <section aria-labelledby="notdone-heading">
-                <h2 id="notdone-heading">Not done at close</h2>
+              </Box>
+              <Box title="Not done at close">
                 {data.notDoneAtClose.length === 0 ? (
                   <p className="meta">Every step was done.</p>
                 ) : (
@@ -155,10 +186,8 @@ export function GoLive() {
                     ))}
                   </ul>
                 )}
-              </section>
+              </Box>
             </>
-          ) : (
-            <p className="meta">{CLOSING_RULE}</p>
           )}
           {/* role="list" keeps the list announced as one where list-style is removed (Safari). */}
           <ol className="golive-list" role="list">
@@ -167,8 +196,7 @@ export function GoLive() {
             ))}
           </ol>
           {data.waitingFor && data.waitingFor.length > 0 && (
-            <section aria-labelledby="golive-waiting-heading" className="golive-info">
-              <h2 id="golive-waiting-heading">Also needed before the checklist closes</h2>
+            <Box title="Also needed before the checklist closes" meaning="attention">
               <p className="meta">Kainow checks these itself. They are not steps and cannot be ticked.</p>
               <ul className="plain">
                 {data.waitingFor.map((i) => (
@@ -179,11 +207,10 @@ export function GoLive() {
                   </li>
                 ))}
               </ul>
-            </section>
+            </Box>
           )}
           {data.information && data.information.length > 0 && (
-            <section aria-labelledby="golive-info-heading" className="golive-info">
-              <h2 id="golive-info-heading">For information</h2>
+            <Box title="For information">
               <p className="meta">These are not steps. They do not hold up go-live.</p>
               <ul className="plain">
                 {data.information.map((i) => (
@@ -194,7 +221,7 @@ export function GoLive() {
                   </li>
                 ))}
               </ul>
-            </section>
+            </Box>
           )}
         </>
       )}

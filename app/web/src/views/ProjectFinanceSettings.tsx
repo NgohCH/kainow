@@ -17,8 +17,11 @@ import {
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 const FIXED = 'The reporting currency is fixed once figures exist.';
 
-/** Project Settings › Finance (spec 8.2): effective values, who may change them, the turn-off preview, reason and history. */
-export function ProjectFinanceSettings({ projectId }: { projectId: string }) {
+/**
+ * Project Settings › Finance (spec 8.2): effective values, who may change them, the turn-off preview, reason and history.
+ * `bare` leaves the heading to the settings box around it; `onSaved` tells the page the values in force changed.
+ */
+export function ProjectFinanceSettings({ projectId, bare = false, onSaved }: { projectId: string; bare?: boolean; onSaved?: () => void }) {
   const [view, setView] = useState<FinanceSettingsView | null>(null);
   const [hidden, setHidden] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -93,6 +96,7 @@ export function ProjectFinanceSettings({ projectId }: { projectId: string }) {
       }
       apply(await api.put<FinanceSettingsView>(`/projects/${projectId}/settings/finance`, body));
       setNotice('Saved. The change is in the history below.');
+      onSaved?.();
     } catch (err) {
       setError(errText(err));
     } finally {
@@ -101,8 +105,8 @@ export function ProjectFinanceSettings({ projectId }: { projectId: string }) {
   }
 
   return (
-    <section aria-labelledby="finance-settings-heading" className="panel stack">
-      <h3 id="finance-settings-heading">Finance</h3>
+    <section aria-labelledby="finance-settings-heading" className={bare ? 'stack' : 'panel stack'}>
+      <h3 id="finance-settings-heading" className={bare ? 'visually-hidden' : undefined}>Finance</h3>
       <p className="meta">{authorityText(view)}</p>
       <form className="stack" onSubmit={submit} aria-label="Finance settings">
         <fieldset disabled={!editable || busy}>

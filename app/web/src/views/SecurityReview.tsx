@@ -31,6 +31,12 @@ import {
   undesignateReviewer,
 } from '../quarantine.ts';
 import { ReasonDialog } from './DeleteRestore.tsx';
+import { Box } from '../ui/Box.tsx';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { PageHeader } from '../ui/PageHeader.tsx';
+import { StatTile } from '../ui/StatTile.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
+import type { Meaning } from '../ui/meanings.ts';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 
@@ -305,8 +311,8 @@ function RequestForm({ cases, onSent }: { cases: SecurityCase[]; onSent: () => v
     }
   }
   return (
-    <form className="panel stack" onSubmit={submit} noValidate aria-labelledby={`${uid}-h`}>
-      <h3 id={`${uid}-h`}>Ask to open originals</h3>
+    <form className="stack" onSubmit={submit} noValidate aria-labelledby={`${uid}-h`}>
+      <h2 id={`${uid}-h`} className="box-title">Ask to open originals</h2>
       <p className="meta">Another Administrator must approve. Until then nothing opens. Cases are listed by reference only.</p>
       <fieldset className="stack">
         <legend>Cases</legend>
@@ -339,7 +345,57 @@ function RequestForm({ cases, onSent }: { cases: SecurityCase[]; onSent: () => v
   );
 }
 
-/** The security reviewer's page: my grants, the request form, and the case list with Reveal original and Release unchanged. */
+const CASE_MEANING: Record<string, Meaning> = { held: 'attention', cleaned: 'review', released: 'ok', released_unchanged: 'off' };
+const GRANT_MEANING: Record<Grant['status'], Meaning> = { waiting: 'review', declined: 'off', revoked: 'off', expired: 'off', current: 'active' };
+
+const grantColumns: Column<Grant>[] = [
+  { key: 'purpose', header: 'Purpose', sortValue: (g) => g.purpose.toLowerCase(), cell: (g) => <strong>{g.purpose}</strong> },
+  { key: 'status', header: 'Status', sortValue: (g) => g.status, cell: (g) => <StatusLabel meaning={GRANT_MEANING[g.status]} word={GRANT_STATUS_TEXT[g.status]} /> },
+  { key: 'cases', header: 'Cases', sortValue: (g) => g.caseIds.length, cell: (g) => `${g.caseIds.length} ${g.caseIds.length === 1 ? 'case' : 'cases'}` },
+  { key: 'asked', header: 'Asked', sortValue: (g) => g.requestedAt, cell: (g) => `${formatWhen(g.requestedAt)} for ${g.hours} ${g.hours === 1 ? 'hour' : 'hours'}` },
+  {
+    key: 'notes',
+    header: 'Notes',
+    cell: (g) =>
+      [
+        g.expiresAt && g.status === 'current' ? `Ends ${formatWhen(g.expiresAt)}` : '',
+        g.decisionReason ?? '',
+        g.revokeReason ? `Revoked: ${g.revokeReason}` : '',
+      ]
+        .filter(Boolean)
+        .join(' · '),
+  },
+];
+
+const caseColumns: Column<SecurityCase>[] = [
+  {
+    key: 'case',
+    header: 'Case',
+    sortValue: (c) => caseName(c).toLowerCase(),
+    cell: (c) => (
+      <>
+        <strong>{caseName(c)}</strong>
+        {c.waitingForKey && <span className="warn"> {c.label ?? WAITING_FOR_KEY_LABEL}</span>}
+      </>
+    ),
+  },
+  { key: 'reporter', header: 'Reported by', sortValue: (c) => (c.reporter ?? 'Kainow').toLowerCase(), cell: (c) => c.reporter ?? 'Kainow' },
+  { key: 'reported', header: 'Reported', sortValue: (c) => c.reportedAt, cell: (c) => formatWhen(c.reportedAt) },
+  {
+    key: 'state',
+    header: 'State',
+    sortValue: (c) => c.state,
+    cell: (c) => (
+      <>
+        <StatusLabel meaning={CASE_MEANING[c.state] ?? 'draft'} word={CASE_STATE_TEXT[c.state] ?? c.state} />
+        {c.closedAt && <span className="meta"> Closed {formatWhen(c.closedAt)}</span>}
+      </>
+    ),
+  },
+  { key: 'grant', header: 'Your access', sortValue: (c) => (c.currentGrant ? 0 : 1), cell: (c) => (c.currentGrant ? 'Current grant' : 'No current grant') },
+];
+
+/** The security reviewer's page: grants and cases as tables, the request form, and each case's actions (Reveal original, Release unchanged) in boxes. */
 export function SecurityReviewPage() {
   const [cases, setCases] = useState<SecurityCase[] | null>(null);
   const [grants, setGrants] = useState<Grant[] | null>(null);
@@ -356,33 +412,49 @@ export function SecurityReviewPage() {
     );
   }, []);
   useEffect(load, [load]);
+  const openCases = cases?.filter((c) => c.state === 'held' || c.state === 'cleaned').length ?? 0;
+  const currentGrants = grants?.filter((g) => g.status === 'current').length ?? 0;
+  const waitingGrants = grants?.filter((g) => g.status === 'waiting').length ?? 0;
   return (
-    <main className="page narrow">
-      <h1>Security review</h1>
-      <p className="meta">For designated security reviewers. Originals open only under a current grant naming the case, and every opening is recorded.</p>
+    <main className="page">
+      <PageHeader
+        title="Security review"
+        intro="For designated security reviewers. Originals open only under a current grant naming the case, and every opening is recorded."
+      />
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
+      {cases && grants && (
+        <div className="stat-grid">
+          <StatTile label="Open cases" value={String(openCases)} meaning={openCases > 0 ? 'review' : 'ok'} word={openCases > 0 ? 'Needs review' : 'None open'} />
+          <StatTile label="Current grants" value={String(currentGrants)} />
+          <StatTile label="Requests waiting" value={String(waitingGrants)} />
+        </div>
+      )}
       {grants && (
-        <section aria-labelledby="my-grants-heading">
+        <section aria-labelledby="my-grants-heading" className="settings-area">
           <h2 id="my-grants-heading">My grants</h2>
-          {grants.length === 0 && <p className="meta">You have not asked for any.</p>}
-          <ul className="list">
-            {grants.map((g) => (
-              <li key={g.id}><GrantLine g={g} /></li>
-            ))}
-          </ul>
+          <DataTable caption="Requests to open originals" columns={grantColumns} rows={grants} rowKey={(g) => g.id} empty="You have not asked for any." initialSort={{ key: 'asked', dir: 'desc' }} />
         </section>
       )}
-      {cases && <RequestForm cases={cases} onSent={load} />}
       {cases && (
-        <section aria-labelledby="security-cases-heading">
+        <section aria-labelledby="security-cases-heading" className="settings-area">
           <h2 id="security-cases-heading">Cases</h2>
-          {cases.length === 0 && <p className="meta">There are no quarantine cases.</p>}
-          <ul className="list">
-            {cases.map((c) => {
-              const open = c.state === 'held' || c.state === 'cleaned';
-              return (
-                <li key={c.caseId} className="stack">
+          <DataTable caption="Quarantine cases" columns={caseColumns} rows={cases} rowKey={(c) => c.caseId} empty="There are no quarantine cases." initialSort={{ key: 'reported', dir: 'desc' }} />
+        </section>
+      )}
+      {cases && (
+        <Box>
+          <RequestForm cases={cases} onSent={load} />
+        </Box>
+      )}
+      {cases && cases.length > 0 && (
+        <section aria-labelledby="case-actions-heading" className="settings-area">
+          <h2 id="case-actions-heading">Case details and actions</h2>
+          {cases.map((c) => {
+            const open = c.state === 'held' || c.state === 'cleaned';
+            return (
+              <Box key={c.caseId} title={caseName(c)} headingLevel={3} meaning={CASE_MEANING[c.state] ?? 'draft'}>
+                <div className="stack">
                   <CaseLine c={c} />
                   <Disclosures c={c} />
                   {c.currentGrant ? (
@@ -411,10 +483,10 @@ export function SecurityReviewPage() {
                   ) : (
                     <p className="meta">You do not hold a current grant for this case.</p>
                   )}
-                </li>
-              );
-            })}
-          </ul>
+                </div>
+              </Box>
+            );
+          })}
         </section>
       )}
     </main>

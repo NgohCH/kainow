@@ -79,3 +79,11 @@ test('eventText words the history', () => {
   );
   assert.equal(eventText({ kind: 'edited', reason: null, detail: { previous: { quantity: '2.00', unit: 'items' }, next: { quantity: '3.00', unit: 'hours' } } }), 'Edited. Quantity: 2.00 → 3.00; Unit: Items → Hours');
 });
+
+test('every line status has a meaning', async () => {
+  const { LINE_STATUSES, LINE_STATUS_MEANING } = await import('./resources.ts');
+  for (const s of Object.keys(LINE_STATUSES)) assert.ok(LINE_STATUS_MEANING[s as keyof typeof LINE_STATUSES], s);
+  assert.equal(LINE_STATUS_MEANING.needed, 'attention');
+  assert.equal(LINE_STATUS_MEANING.in_use, 'active');
+  assert.equal(LINE_STATUS_MEANING.cancelled, 'off');
+});

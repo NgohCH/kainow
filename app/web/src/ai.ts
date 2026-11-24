@@ -4,6 +4,7 @@
  * every change again. An API key is never kept: the form clears it as it is submitted and nothing here builds a line from it.
  */
 import { api } from './api.ts';
+import type { Meaning } from './ui/meanings.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Connection states and blocked reasons
@@ -26,6 +27,9 @@ export const connectionBadge = (state: DisplayState): string => STATE_LABELS[sta
 
 /** How a badge looks: only a working connection is calm; the others ask for attention in words as well as colour. */
 export const badgeTone = (state: DisplayState): 'ok' | 'quiet' | 'warn' => (state === 'ready' ? 'ok' : state === 'unchecked' || state === 'disabled' ? 'quiet' : 'warn');
+
+/** The same rule as a meaning: Ready is set up, Unchecked and Disabled are not in use, anything else is failing. */
+export const connectionMeaning = (state: DisplayState): Meaning => ({ ok: 'ok', quiet: 'off', warn: 'failing' } as const)[badgeTone(state)];
 
 export const BLOCKED_PREFIX = 'Blocked — ';
 const UNKNOWN_BLOCK = 'AI could not run this request';
@@ -463,3 +467,70 @@ export interface GoLiveInfo {
   explanation: string;
   link: string;
 }
+
+// ---------------------------------------------------------------------------------------------------------------
+// The AI page's at-a-glance tables
+// ---------------------------------------------------------------------------------------------------------------
+
+const num = (v: string) => Number(v);
+
+export interface ModelRow {
+  key: string;
+  name: string;
+  modelId: string;
+  provider: string;
+  roles: string;
+  projects: string[];
+  month: number;
+  state: 'approved' | 'withdrawn' | 'unlisted';
+}
+
+/** Every approved model, plus any other model used this month, with the projects whose connections used it. */
+export function modelRows(models: ModelView[], usage: OrganisationUsage | null): ModelRow[] {
+  const rows = new Map<string, ModelRow>();
+  const keyOf = (provider: string, modelId: string) => `${provider}:${modelId}`;
+  for (const m of models) {
+    rows.set(keyOf(m.provider, m.modelId), {
+      key: m.id,
+      name: m.displayName,
+      modelId: m.modelId,
+      provider: PROVIDER_NAMES[m.provider] ?? m.provider,
+      roles: m.purposes.length === 0 ? 'No kind of work' : m.purposes.map((p) => PURPOSE_LABELS[p]).join(', '),
+      projects: [],
+      month: 0,
+      state: m.state,
+    });
+  }
+  for (const c of usage?.byConnection ?? []) {
+    const k = keyOf(c.provider, c.modelId);
+    let r = rows.get(k);
+    if (!r) {
+      r = { key: k, name: c.modelId, modelId: c.modelId, provider: PROVIDER_NAMES[c.provider] ?? c.provider, roles: 'Not on the list', projects: [], month: 0, state: 'unlisted' };
+      rows.set(k, r);
+    }
+    r.month += num(c.usedMyr);
+    if (c.projectName && !r.projects.includes(c.projectName)) r.projects.push(c.projectName);
+  }
+  // A withdrawn model with no use this month is history, not "in use".
+  return [...rows.values()].filter((r) => r.state !== 'withdrawn' || r.month > 0 || r.projects.length > 0);
+}
+
+/** `unread`: the project's limits could not be read, so `limit` says nothing. */
+export interface Near { projectId: string; name: string; used: number; limit: number | null; unread?: boolean }
+
+/** The state of one project against its own monthly limit, in words. */
+export function nearLimitState(r: Near): { meaning: 'attention' | 'failing' | 'off' | 'ok'; word: string } {
+  if (r.unread) return { meaning: 'attention', word: 'Limit not read' };
+  if (r.limit === null) return { meaning: 'off', word: 'No limit saved' };
+  const s = r.limit <= 0 ? 1 : r.used / r.limit;
+  if (s >= 1) return { meaning: 'failing', word: 'Limit reached' };
+  if (s >= 0.8) return { meaning: 'attention', word: 'Near its limit' };
+  return { meaning: 'ok', word: 'Within its limit' };
+}
+
+/** Projects with use this month, nearest their own monthly limit first; a project with no limit saved comes last. */
+export function nearestLimit(rows: Near[]): Near[] {
+  const share = (r: Near) => (r.limit === null || r.limit <= 0 ? -1 : r.used / r.limit);
+  return [...rows].sort((a, b) => share(b) - share(a) || b.used - a.used);
+}
+

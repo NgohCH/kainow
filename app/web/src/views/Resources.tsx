@@ -4,6 +4,7 @@ import { formatWhen, plural } from '../format.ts';
 import { rolesText } from '../projects.ts';
 import {
   LINE_STATUSES,
+  LINE_STATUS_MEANING,
   type LineEvent,
   type LineStatus,
   type LineView,
@@ -16,6 +17,9 @@ import {
   statusLabel,
   unitLabel,
 } from '../resources.ts';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { StatTile } from '../ui/StatTile.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
 import { FinanceSection } from './Finance.tsx';
 import { ResourceLineForm } from './ResourceLineForm.tsx';
 import { useReturnFocus } from './useReturnFocus.ts';
@@ -35,7 +39,21 @@ export function periodText(l: LineView): string {
   return l.endsOn ? `${l.startsOn} to ${l.endsOn}` : `from ${l.startsOn}`;
 }
 
-/** The project Resources tab (spec 4): status chips, lines, People, Finance and the report links. */
+export function quantityText(l: LineView): string {
+  return l.quantity === null ? 'Not provided' : `${l.quantity} ${unitLabel(l.unit)}`.trim();
+}
+
+/** A line's status, with Past needed-by date and an overlap beside it. Shared with the report. */
+export function LineLabels({ line: l }: { line: LineView }) {
+  return (
+    <span className="label-stack">
+      <StatusLabel meaning={LINE_STATUS_MEANING[l.status]} word={statusLabel(l.status)} />
+      {l.neededByPassed && <StatusLabel meaning="overdue" word="Past needed-by date" />}
+    </span>
+  );
+}
+
+/** The project Resources tab (spec 4, 7.6): counts by status, the lines as a table, People, Finance and the report links. */
 export function Resources({ projectId, roles, status }: { projectId: string; roles: string[]; status: string }) {
   const [data, setData] = useState<ResourcesList | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -69,29 +87,83 @@ export function Resources({ projectId, roles, status }: { projectId: string; rol
   const passed = data.lines.filter((l) => l.neededByPassed).length;
   const hiddenCount = data.counts.finished + data.counts.cancelled;
   const csv = api.url(`/projects/${projectId}/resources/report?format=csv`);
+  const columns: Column<LineView>[] = [
+    {
+      key: 'resource',
+      header: 'Resource',
+      sortValue: (l) => lineName(l).toLowerCase(),
+      cell: (l) => (
+        <span>
+          {lineName(l)}
+          {l.item?.category && <span className="meta work-parent">{l.item.category}</span>}
+        </span>
+      ),
+    },
+    { key: 'status', header: 'Status', sortValue: (l) => ORDER.indexOf(l.status), cell: (l) => <LineLabels line={l} /> },
+    { key: 'quantity', header: 'Quantity', cell: quantityText },
+    { key: 'period', header: 'Period', sortValue: (l) => l.startsOn ?? '', cell: periodText },
+    { key: 'neededBy', header: 'Needed by', sortValue: (l) => l.neededBy ?? '', cell: (l) => l.neededBy ?? 'Not set' },
+    {
+      key: 'details',
+      header: 'Details and actions',
+      wide: true,
+      cell: (l) => (
+        <LineDetails
+          projectId={projectId}
+          line={l}
+          canEdit={actions.editLines && l.status !== 'cancelled'}
+          editing={editing === l.id}
+          onEdit={() => setEditing(editing === l.id ? null : l.id)}
+          onChanged={changed}
+          showAll={showAll}
+        />
+      ),
+    },
+  ];
+  const peopleColumns: Column<ResourcesList['people'][number]>[] = [
+    { key: 'name', header: 'Person', sortValue: (p) => p.name.toLowerCase(), cell: (p) => <a href={`#/projects/${projectId}/work`}>{p.name}</a> },
+    { key: 'roles', header: 'Roles', cell: (p) => rolesText(p.roles) },
+    { key: 'department', header: 'Department', sortValue: (p) => p.department ?? '', cell: (p) => p.department ?? 'Not recorded' },
+    {
+      key: 'tasks',
+      header: 'Open tasks',
+      sortValue: (p) => p.openTasks,
+      cell: (p) => (
+        <span className="label-stack">
+          <span>{plural(p.openTasks, 'open task')}</span>
+          {p.overdue > 0 && <StatusLabel meaning="overdue" word={`${p.overdue} overdue`} />}
+        </span>
+      ),
+    },
+  ];
 
   return (
     <>
-      <section aria-labelledby="resources-heading">
-        <div className="row">
-          <h2 id="resources-heading" tabIndex={-1}>Resources</h2>
+      <section aria-labelledby="resources-heading" className="box">
+        <div className="settings-box-head">
+          <h2 id="resources-heading" className="box-title" tabIndex={-1}>Resources</h2>
           {actions.editLines && (
             <button type="button" className="primary" data-opener="add-resource" aria-expanded={adding} onClick={() => setAdding((a) => !a)}>
               + Add resource
             </button>
           )}
         </div>
+        <p className="meta">Usage records, not bookings</p>
         {actions.readOnly && <p className="meta">{READ_ONLY_NOTE}</p>}
         <p role="status" aria-live="polite" className="meta">{notice ?? ''}</p>
         {error && <p role="alert" className="error">{error}</p>}
-        <ul className="chips-list" aria-label="Lines by status">
+        <div className="stat-grid" role="list" aria-label="Lines by status">
           {ORDER.map((s) => (
-            <li key={s} className="chip-quiet">
-              {LINE_STATUSES[s]} ({data.counts[s]})
-            </li>
+            <div role="listitem" key={s}>
+              <StatTile label={LINE_STATUSES[s]} value={String(data.counts[s])} />
+            </div>
           ))}
-        </ul>
-        {passed > 0 && <p className="warn">Resources past needed-by date: {passed}</p>}
+          {passed > 0 && (
+            <div role="listitem">
+              <StatTile label="Past needed-by date" value={String(passed)} meaning="overdue" word="Resources past needed-by date" />
+            </div>
+          )}
+        </div>
         {adding && <ResourceLineForm projectId={projectId} onSaved={changed} onCancel={() => setAdding(false)} />}
         {hiddenCount > 0 && (
           <label>
@@ -101,48 +173,25 @@ export function Resources({ projectId, roles, status }: { projectId: string; rol
             </span>
           </label>
         )}
-        {shown.length === 0 ? (
-          <p className="meta">{data.lines.length === 0 ? 'No resources have been recorded for this project yet.' : 'No lines to show with this filter.'}</p>
-        ) : (
-          <ul className="plain">
-            {shown.map((l) => (
-              <LineRow
-                key={l.id}
-                projectId={projectId}
-                line={l}
-                canEdit={actions.editLines && l.status !== 'cancelled'}
-                editing={editing === l.id}
-                onEdit={() => setEditing(editing === l.id ? null : l.id)}
-                onChanged={changed}
-                showAll={showAll}
-              />
-            ))}
-          </ul>
-        )}
-        <p className="meta">Usage records, not bookings</p>
+        <DataTable
+          caption={showAll ? 'Resource lines, all statuses' : 'Resource lines, without finished and cancelled'}
+          columns={columns}
+          rows={shown}
+          rowKey={(l) => l.id}
+          empty={data.lines.length === 0 ? 'No resources have been recorded for this project yet.' : 'No lines to show with this filter.'}
+        />
       </section>
 
-      <section aria-labelledby="people-heading">
-        <h2 id="people-heading">People</h2>
-        {data.people.length === 0 ? (
-          <p className="meta">No one is on the project right now.</p>
-        ) : (
-          <ul className="plain">
-            {data.people.map((p) => (
-              <li key={p.userId}>
-                <a href={`#/projects/${projectId}/work`}>{p.name}</a> · {rolesText(p.roles)}
-                {p.department ? ` · ${p.department}` : ''} · {plural(p.openTasks, 'open task')}
-                {p.overdue > 0 ? ` (${p.overdue} overdue)` : ''}
-              </li>
-            ))}
-          </ul>
-        )}
+      <section aria-labelledby="people-heading" className="box">
+        <h2 id="people-heading" className="box-title">People</h2>
+        <DataTable caption="People on the project and their open tasks" columns={peopleColumns} rows={data.people} rowKey={(p) => p.userId} empty="No one is on the project right now." />
       </section>
 
       <FinanceSection projectId={projectId} summary={data.finance} actions={actions} computedAt={data.computedAt} onChanged={changed} />
 
-      <section aria-labelledby="report-heading">
-        <h2 id="report-heading">Report</h2>
+      <section aria-labelledby="report-heading" className="box">
+        <h2 id="report-heading" className="box-title">Report</h2>
+        <p className="meta">A printable page of this project's resource records, and the same as a CSV file.</p>
         <div className="decision">
           <a className="button" href={`#/projects/${projectId}/resources/report`}>View report</a>
           <a className="button" href={csv} download>Download CSV</a>
@@ -152,7 +201,8 @@ export function Resources({ projectId, roles, status }: { projectId: string; rol
   );
 }
 
-function LineRow({ projectId, line: l, canEdit, editing, onEdit, onChanged, showAll }: { projectId: string; line: LineView; canEdit: boolean; editing: boolean; onEdit: () => void; onChanged: (m: string) => void; showAll: boolean }) {
+/** A line's warnings, notes, actions and their forms, and its history: the last cell of its row. */
+function LineDetails({ projectId, line: l, canEdit, editing, onEdit, onChanged, showAll }: { projectId: string; line: LineView; canEdit: boolean; editing: boolean; onEdit: () => void; onChanged: (m: string) => void; showAll: boolean }) {
   const [mode, setMode] = useState<null | 'cancel' | 'history'>(null);
   const [history, setHistory] = useState<LineEvent[] | null>(null);
   const [reason, setReason] = useState('');
@@ -211,17 +261,7 @@ function LineRow({ projectId, line: l, canEdit, editing, onEdit, onChanged, show
   }
 
   return (
-    <li className="panel work-item">
-      <div className="row">
-        <strong>{lineName(l)}</strong>
-        <span className="badge">{statusLabel(l.status)}</span>
-      </div>
-      <p className="meta">
-        {l.item?.category ? `${l.item.category} · ` : ''}
-        {l.quantity !== null ? `${l.quantity} ${unitLabel(l.unit)}` : 'Not provided'} · {periodText(l)}
-        {l.neededBy ? ` · needed by ${l.neededBy}` : ''}
-      </p>
-      {l.neededByPassed && <p className="warn">Past needed-by date</p>}
+    <div className="work-details">
       {overlap && (
         <p className="warn" role="note">
           <span aria-hidden="true">⚠ </span>
@@ -258,7 +298,7 @@ function LineRow({ projectId, line: l, canEdit, editing, onEdit, onChanged, show
       </div>
       {editing && <ResourceLineForm projectId={projectId} line={l} onSaved={onChanged} onCancel={onEdit} />}
       {mode === 'cancel' && (
-        <form className="stack" aria-label="Cancel this resource" onSubmit={(e) => void cancel(e)}>
+        <form className="stack change-form" aria-label="Cancel this resource" onSubmit={(e) => void cancel(e)}>
           <label>
             Reason for cancelling (cannot be undone; add a new line if the need returns)
             <textarea rows={2} value={reason} maxLength={1000} onChange={(e) => setReason(e.target.value)} required />
@@ -287,6 +327,6 @@ function LineRow({ projectId, line: l, canEdit, editing, onEdit, onChanged, show
           )}
         </div>
       )}
-    </li>
+    </div>
   );
 }

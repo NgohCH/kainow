@@ -5,8 +5,6 @@ import {
   type PersonalDashboard,
   type PersonalProject,
   awaitingLabel,
-  cancelledLabel,
-  completionLabel,
   dayLabel,
   expandAllPatch,
   homeQuery,
@@ -16,9 +14,17 @@ import {
   updatedLabel,
   visibleHomeSections,
 } from '../dashboard.ts';
-import { formatWhen, plural } from '../format.ts';
+import { plural } from '../format.ts';
 import { HOME_SECTION_LABELS, openChoice, type HomeSection, type Prefs } from '../prefs.ts';
-import { STATUS_LABEL, roleLabel } from '../projects.ts';
+import { type ProjectStatus, roleLabel } from '../projects.ts';
+import { AttentionQueue } from '../ui/AttentionQueue.tsx';
+import { Box } from '../ui/Box.tsx';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { PageHeader } from '../ui/PageHeader.tsx';
+import { ProgressBar } from '../ui/ProgressBar.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
+import { attentionFlags, greetingFor, homeEmptyCopy, todayLabel } from '../ui/home.ts';
+import { projectMeaning } from '../ui/meanings.ts';
 
 type Save = (next: Prefs) => Promise<void>;
 
@@ -45,51 +51,16 @@ function TaskGroup({ title, tasks }: { title: string; tasks: MyTask[] | undefine
   );
 }
 
-function flagsOf(p: PersonalProject): string[] {
-  const f = p.header?.flags;
-  if (!f) return [];
-  return [
-    f.overdue > 0 ? `${f.overdue} overdue` : '',
-    f.blocked > 0 ? `${f.blocked} blocked` : '',
-    f.missingRole ? 'Missing a required role' : '',
-    f.noIndependentEscalation ? 'No independent escalation recipient' : '',
-    f.deadlineReview ? 'Deadline review required' : '',
-  ].filter(Boolean);
-}
-
-function ProjectSection({ p, open, onToggle }: { p: PersonalProject; open: boolean; onToggle: () => void }) {
-  if (p.onHold || !p.header) {
-    return (
-      <li className="home-project">
-        <strong>{p.name}</strong>
-        <p className="warn">Your membership is on hold</p>
-      </li>
-    );
-  }
-  const h = p.header;
-  const x = p.expanded;
+function ProjectCell({ p, open, onToggle }: { p: PersonalProject; open: boolean; onToggle: () => void }) {
   const panel = `project-${p.id}`;
-  const flags = flagsOf(p);
-  const cancelled = cancelledLabel(h.completion);
+  const x = p.expanded;
+  if (p.onHold || !p.header) return <strong>{p.name}</strong>;
   return (
-    <li className="home-project">
-      <h3>
-        <button type="button" className="disclosure" aria-expanded={open} aria-controls={open && x ? panel : undefined} onClick={onToggle}>
-          {p.name}
-        </button>
-        {p.archived && <span className="meta"> (archived)</span>}
-      </h3>
-      <p className="meta">
-        {STATUS_LABEL[h.status as keyof typeof STATUS_LABEL] ?? h.status}
-        {h.stage && ` · ${h.stage.stage}${h.stage.substage ? `, ${h.stage.substage}` : ''}, ${plural(h.stage.days, 'day')}`}
-        {` · ${completionLabel(h.completion)}`}
-        {cancelled && ` · ${cancelled}`}
-      </p>
-      {flags.length > 0 && (
-        <ul className="chips-list">
-          {flags.map((f) => <li key={f} className="chip-quiet">{f}</li>)}
-        </ul>
-      )}
+    <div className="home-project-cell">
+      <button type="button" className="disclosure" aria-expanded={open} aria-controls={open && x ? panel : undefined} onClick={onToggle}>
+        {p.name}
+      </button>
+      {p.archived && <span className="meta"> (archived)</span>}
       {open && x && (
         <div id={panel} className="home-project-body">
           <dl className="facts">
@@ -114,12 +85,39 @@ function ProjectSection({ p, open, onToggle }: { p: PersonalProject; open: boole
           <p><a href={x.link}>Open the project dashboard</a></p>
         </div>
       )}
-    </li>
+    </div>
   );
 }
 
+const stageText = (p: PersonalProject) => {
+  const s = p.header?.stage;
+  return s ? `${s.stage}${s.substage ? `, ${s.substage}` : ''}, ${plural(s.days, 'day')}` : 'No stage yet';
+};
+
+function projectColumns(isOpen: (id: string) => boolean, toggle: (id: string) => void): Column<PersonalProject>[] {
+  return [
+    { key: 'project', header: 'Project', sortValue: (p) => p.name.toLowerCase(), cell: (p) => <ProjectCell p={p} open={isOpen(p.id)} onToggle={() => toggle(p.id)} /> },
+    {
+      key: 'state', header: 'State', sortValue: (p) => (p.onHold ? 'on hold' : p.header?.status ?? ''),
+      cell: (p) => (p.onHold || !p.header ? <span className="warn">Your membership is on hold</span> : <StatusLabel meaning={projectMeaning(p.header.status as ProjectStatus)} />),
+    },
+    { key: 'stage', header: 'Stage', cell: (p) => (p.header ? stageText(p) : '–') },
+    {
+      key: 'progress', header: 'Progress', sortValue: (p) => (p.header?.completion.state === 'measurable' ? p.header.completion.percent : -1),
+      cell: (p) => (p.header ? <ProgressBar completion={p.header.completion} /> : '–'),
+    },
+    {
+      key: 'attention', header: 'Needs attention', sortValue: (p) => attentionFlags(p.header?.flags).length,
+      cell: (p) => {
+        const flags = attentionFlags(p.header?.flags);
+        return flags.length === 0 ? <span className="row-note">Nothing</span> : <ul className="flag-list">{flags.map((f) => <li key={f}>{f}</li>)}</ul>;
+      },
+    },
+  ];
+}
+
 /** The personal dashboard (spec section 4): Needs you, My tasks and My projects, in the saved order. */
-export function Home({ prefs, ready, failed, onChange }: { prefs: Prefs; ready: boolean; failed: boolean; onChange: Save }) {
+export function Home({ userName, prefs, ready, failed, onChange }: { userName: string; prefs: Prefs; ready: boolean; failed: boolean; onChange: Save }) {
   const [d, setD] = useState<PersonalDashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
@@ -159,24 +157,18 @@ export function Home({ prefs, ready, failed, onChange }: { prefs: Prefs; ready: 
     if (ready) void save({ ...prefs, expanded: { ...prefs.expanded, ...patch } });
   };
 
+  const empty = d ? homeEmptyCopy(d) : null;
+  const columns = projectColumns(isOpen, (id) => choose({ [id]: !isOpen(id) }));
+
   const render: Record<HomeSection, () => React.ReactNode> = {
     needsYou: () => (
-      <section aria-labelledby="needs-heading">
-        <h2 id="needs-heading">{HOME_SECTION_LABELS.needsYou}</h2>
-        {d && d.needsYou.length === 0 && <p>Nothing needs you right now.</p>}
-        <ul className="plain">
-          {d?.needsYou.map((n, i) => (
-            <li key={`${n.kind}-${n.link}-${i}`}>
-              <a href={n.link}>{n.label}</a>
-              <span className="meta"> {n.projectName}{n.since ? ` · since ${formatWhen(n.since)}` : ''}</span>
-            </li>
-          ))}
-        </ul>
-      </section>
+      <Box title={HOME_SECTION_LABELS.needsYou}>
+        {d && <AttentionQueue items={d.needsYou} empty={empty?.needsYou ?? ''} />}
+      </Box>
     ),
     myTasks: () => (
-      <section aria-labelledby="tasks-heading">
-        <h2 id="tasks-heading">{HOME_SECTION_LABELS.myTasks}</h2>
+      <Box title={HOME_SECTION_LABELS.myTasks}>
+        <p><a href="#/my-tasks">All your tasks in one table</a></p>
         <label className="check">
           <input type="checkbox" checked={showCompleted} disabled={!ready} onChange={(e) => save({ ...prefs, home: { ...prefs.home, showCompleted: e.target.checked } })} />
           Show completed (last 30 days)
@@ -193,14 +185,10 @@ export function Home({ prefs, ready, failed, onChange }: { prefs: Prefs; ready: 
             )}
           </>
         )}
-      </section>
+      </Box>
     ),
     myProjects: () => (
-      <section aria-labelledby="projects-heading">
-        <div className="row">
-          <h2 id="projects-heading">{HOME_SECTION_LABELS.myProjects}</h2>
-          <a href="#/projects">All projects and new project</a>
-        </div>
+      <Box title={HOME_SECTION_LABELS.myProjects}>
         <div className="inline-form">
           <label className="check">
             <input type="checkbox" checked={includeArchived} disabled={!ready} onChange={(e) => save({ ...prefs, home: { ...prefs.home, includeArchived: e.target.checked } })} />
@@ -212,23 +200,16 @@ export function Home({ prefs, ready, failed, onChange }: { prefs: Prefs; ready: 
           <button type="button" className="quiet" disabled={shownIds.length === 0} onClick={() => choose(expandAllPatch({}, shownIds, false))}>
             Collapse all
           </button>
+          <a href="#/projects">All projects and new project</a>
         </div>
-        {d && projects.length === 0 && <p className="empty">You are not in any project yet. Create one, or accept an invitation from its Project Manager, Owner or a Sponsor.</p>}
-        <ul className="plain home-projects">
-          {projects.map((p) => (
-            <ProjectSection key={p.id} p={p} open={isOpen(p.id)} onToggle={() => choose({ [p.id]: !isOpen(p.id) })} />
-          ))}
-        </ul>
-      </section>
+        <DataTable caption="Your projects" columns={columns} rows={projects} rowKey={(p) => p.id} loading={!d} empty={empty?.projects ?? ''} />
+      </Box>
     ),
   };
 
   return (
-    <main className="page narrow home">
-      <div className="row">
-        <h1>My Projects</h1>
-        {d && <span className="meta">{updatedLabel(d.computedAt)}</span>}
-      </div>
+    <main className="page home">
+      <PageHeader title={greetingFor(userName, new Date())} intro={`${todayLabel(new Date())}${d ? ` · ${updatedLabel(d.computedAt)}` : ''}`} />
       {error && <p role="alert" className="error">{error}</p>}
       {saveError && <p role="alert" className="error">{saveError}</p>}
       {failed && !ready && <p role="alert" className="error">Your saved display choices could not be loaded, so the defaults are shown and the toggles are off. Reload the page to try again.</p>}

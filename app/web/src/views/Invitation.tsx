@@ -1,6 +1,9 @@
 import { useEffect, useState } from 'react';
 import { ApiError, api, type User } from '../api.ts';
-import { SignIn, go } from '../App.tsx';
+import { AuthFrame, SignIn, go } from '../App.tsx';
+import { PageHeader } from '../ui/PageHeader.tsx';
+import { Box } from '../ui/Box.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
 import { type ProjectRole, formatExpiry, roleLabel } from '../projects.ts';
 
 interface Shown {
@@ -47,13 +50,14 @@ export function Invitation({ token, user, onSignedIn }: { token: string; user: U
   }
 
   if (error && !inv) {
-    return (
-      <main className="page narrow">
+    const body = (
+      <>
         <h1>Invitation</h1>
         <p role="alert" className="error">{error}</p>
         <a href="#/">Go to Kainow</a>
-      </main>
+      </>
     );
+    return user ? <main className="page narrow">{body}</main> : <AuthFrame><main className="auth-card">{body}</main></AuthFrame>;
   }
   if (!inv) return <p className="loading">Loading</p>;
 
@@ -74,36 +78,45 @@ export function Invitation({ token, user, onSignedIn }: { token: string; user: U
     </p>
   );
 
+  const closed = (
+    <p>
+      <StatusLabel meaning="off" word="Closed" /> This invitation can no longer be answered ({inv.status}).
+    </p>
+  );
+
   if (!user) {
     return (
-      <>
-        <main className="page narrow">
+      <AuthFrame>
+        <main className="auth-card wide">
           <h1>Invitation</h1>
           {summary}
-          {open ? <p>Sign in with {inv.email} to answer it.</p> : <p className="warn">This invitation can no longer be answered ({inv.status}).</p>}
+          {open ? <p>Sign in with {inv.email} to answer it.</p> : closed}
+          {open && <SignIn onSignedIn={onSignedIn} embedded />}
         </main>
-        {open && <SignIn onSignedIn={onSignedIn} embedded />}
-      </>
+      </AuthFrame>
     );
   }
 
   return (
     <main className="page narrow">
-      <h1>Invitation</h1>
-      {summary}
-      {done ? (
-        <p role="status">{done}</p>
-      ) : open ? (
-        <>
-          {error && <p role="alert" className="error">{error}</p>}
-          <div className="decision">
-            <button className="primary" disabled={busy} onClick={() => void answer('accept')}>Accept</button>
-            <button disabled={busy} onClick={() => void answer('decline')}>Decline</button>
-          </div>
-        </>
-      ) : (
-        <p className="warn">This invitation can no longer be answered ({inv.status}).</p>
-      )}
+      <PageHeader title="Invitation" />
+      <Box meaning={done ? undefined : open ? 'review' : 'off'}>
+        {!done && open && <p><StatusLabel meaning="review" word="Waiting for your answer" /></p>}
+        {summary}
+        {done ? (
+          <p role="status">{done}</p>
+        ) : open ? (
+          <>
+            {error && <p role="alert" className="error">{error}</p>}
+            <div className="decision">
+              <button className="primary" disabled={busy} onClick={() => void answer('accept')}>Accept</button>
+              <button disabled={busy} onClick={() => void answer('decline')}>Decline</button>
+            </div>
+          </>
+        ) : (
+          closed
+        )}
+      </Box>
     </main>
   );
 }

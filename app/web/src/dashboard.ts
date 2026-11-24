@@ -46,12 +46,14 @@ export interface ProjectDashboard {
   resources: { byStatus: Record<LineStatus, number>; neededByPassed: number; overlapping: number };
   /** Figures only for financial-detail readers; the tracking value alone for anyone else. */
   finance: FinanceSummary;
+  /** Proposals waiting for review that this viewer may read (the Proposals tab's badge). */
+  proposals: { waiting: number };
   computedAt: string;
   coverage: string;
 }
 
 export interface NeedsYouItem {
-  kind: 'approval' | 'minutes' | 'question' | 'copies' | 'deadline_review' | 'resources';
+  kind: 'approval' | 'minutes' | 'question' | 'copies' | 'deadline_review' | 'resources' | 'overdue' | 'blocked' | 'due_soon' | 'risk_review';
   projectId: string;
   projectName: string;
   label: string;
@@ -112,6 +114,8 @@ export interface ProjectTimeline {
   range: { from: string; to: string };
   today: string;
   months: { month: string; lines: TimelineLine[] }[];
+  /** Every stage period overlapping the window, for the bars (D132). */
+  stagePeriods: { stage: string; substage: string | null; startedOn: string; endedOn: string | null }[];
   computedAt: string;
 }
 

@@ -176,6 +176,32 @@ describe('project timeline endpoint', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(rr.map((l) => l.day), ['2026-12-05', '2026-12-20']);
   });
 
+  test('stagePeriods: an open period that began before the window is returned; one that ended before it is not (D132)', async () => {
+    await t.pool.query(`UPDATE project_stage_periods SET started_at = '2026-06-01T02:00:00Z' WHERE project_id = $1`, [projectId]);
+    await t.pool.query(
+      `INSERT INTO project_stage_periods (id, project_id, stage, started_at, ended_at, started_by) VALUES ($1, $2, 'Initiation', '2026-03-01T02:00:00Z', '2026-06-01T02:00:00Z', $3)`,
+      [uuidv7(), projectId, ids.pm],
+    );
+    const r = await get();
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.stagePeriods, [{ stage: 'Initiation', substage: null, startedOn: '2026-06-01', endedOn: null }]);
+    // The list itself has no stage line in the window: the bars need stagePeriods to draw the open period.
+    assert.deepEqual(lines(r.body).filter((l) => l.kind === 'stage'), []);
+    // A period that ended inside the window is returned too.
+    const inside = await get('?from=2026-04-01&to=2026-12-31');
+    assert.deepEqual(inside.body.stagePeriods.map((p: { startedOn: string; endedOn: string | null }) => [p.startedOn, p.endedOn]), [
+      ['2026-03-01', '2026-06-01'],
+      ['2026-06-01', null],
+    ]);
+  });
+
+  test('stagePeriods days turn over at 16:00Z (midnight UTC+8)', async () => {
+    await t.pool.query(`UPDATE project_stage_periods SET started_at = '2026-06-01T15:59:59Z', ended_at = '2026-06-30T16:00:00Z' WHERE project_id = $1`, [projectId]);
+    const days = async (from: string) => (await get(`?from=${from}&to=2026-12-31`)).body.stagePeriods.map((p: { startedOn: string; endedOn: string }) => [p.startedOn, p.endedOn]);
+    assert.deepEqual(await days('2026-07-01'), [['2026-06-01', '2026-07-01']]);
+    assert.deepEqual(await days('2026-07-02'), []);
+  });
+
   test('Deleted task drops out of a due-day count', async () => {
     await task('Kept', '2026-11-25');
     const gone = await task('Removed', '2026-11-25');

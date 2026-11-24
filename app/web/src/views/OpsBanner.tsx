@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { RESTART_MESSAGE, api, isRestarting, onRestarting } from '../api.ts';
 import { type BannerData, BANNER_EVERYONE, UPDATE_TEXT, bannerLines, signInLine } from '../operations.ts';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
 
 /**
  * Under the top bar on every page: protective read-only mode (or update maintenance) and the scheduled update for
@@ -33,7 +34,7 @@ export function OpsBanner({ hash, isAdmin }: { hash: string; isAdmin: boolean })
   if (restarting) {
     return (
       <div className="ops-banner" role="status" aria-label="Notices about Kainow">
-        <p>{RESTART_MESSAGE}</p>
+        <p><StatusLabel meaning="attention" word="Restarting" /> {RESTART_MESSAGE}</p>
       </div>
     );
   }
@@ -41,15 +42,15 @@ export function OpsBanner({ hash, isAdmin }: { hash: string; isAdmin: boolean })
   const lines = bannerLines(banner, isAdmin);
   if (lines.length === 0) return null;
   return (
-    <div className="ops-banner" role="status" aria-label="Notices about Kainow">
+    <div className={`ops-banner${lines.some((l) => l === banner.admin?.recovery) ? ' failing' : ''}`} role="status" aria-label="Notices about Kainow">
       {lines.map((l) => {
         const recovery = l === banner.admin?.recovery;
         const adminLine = recovery || l === banner.admin?.text;
         return (
           <p key={l} className={recovery ? 'error' : undefined}>
-            {l === BANNER_EVERYONE || l === UPDATE_TEXT ? <strong>Read-only. </strong> : null}
-            {recovery ? <strong>Update failed. </strong> : null}
-            {!adminLine && l !== BANNER_EVERYONE && l !== UPDATE_TEXT ? <strong>Update planned. </strong> : null}
+            {l === BANNER_EVERYONE || l === UPDATE_TEXT ? <><StatusLabel meaning="attention" word="Read-only" />{' '}</> : null}
+            {recovery ? <><StatusLabel meaning="failing" word="Update failed" />{' '}</> : null}
+            {!adminLine && l !== BANNER_EVERYONE && l !== UPDATE_TEXT ? <><StatusLabel meaning="dueSoon" word="Update planned" />{' '}</> : null}
             {l}
             {isAdmin && adminLine && banner.admin ? <> <a href={banner.admin.link}>Open Operations</a></> : null}
           </p>

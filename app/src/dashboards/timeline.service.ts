@@ -11,7 +11,16 @@ export interface ProjectTimeline {
   range: { from: string; to: string };
   today: string;
   months: { month: string; lines: TimelineLine[] }[];
+  /** Every stage period overlapping the window (D132), including one that began before it and is still open. */
+  stagePeriods: StagePeriod[];
   computedAt: string;
+}
+
+export interface StagePeriod {
+  stage: string;
+  substage: string | null;
+  startedOn: string;
+  endedOn: string | null;
 }
 
 const UTC8 = `'Asia/Kuala_Lumpur'`;
@@ -41,6 +50,7 @@ export class TimelineService {
     if ('error' in range) throw new BadRequestException(range.error);
     const { from, to } = range;
     const lines: TimelineLine[] = [];
+    const stagePeriods: StagePeriod[] = [];
 
     const stages = (
       await this.pool.query(
@@ -50,7 +60,8 @@ export class TimelineService {
       )
     ).rows;
     for (const s of stages) {
-      const base = { stage: s.stage, substage: s.substage ?? null, startedOn: s.startedOn, endedOn: s.endedOn ?? null };
+      const base: StagePeriod = { stage: s.stage, substage: s.substage ?? null, startedOn: s.startedOn, endedOn: s.endedOn ?? null };
+      if (base.startedOn <= to && (base.endedOn === null || base.endedOn >= from)) stagePeriods.push(base);
       lines.push({ day: s.startedOn, kind: 'stage', label: `${s.stage} started`, detail: base });
       if (s.endedOn) {
         lines.push({ day: s.endedOn, kind: 'stage', label: `${s.stage} ended`, detail: { ...base, durationDays: daysBetween(s.startedOn, s.endedOn) } });
@@ -131,6 +142,7 @@ export class TimelineService {
       range,
       today: ctx.today,
       months: groupByMonth(lines.filter((l) => l.day >= from && l.day <= to)),
+      stagePeriods,
       computedAt: this.clock().toISOString(),
     };
   }

@@ -3,60 +3,73 @@ import { api } from '../api.ts';
 import { plural } from '../format.ts';
 import {
   type DestinationForm, type DestinationPurpose, type MoveProgress, type SharingRepairRow,
-  KIND_LABELS, PURPOSE_LABELS, STATUS_LABELS,
+  KIND_LABELS, PURPOSE_LABELS, SECRET_STATE_LABEL, STATUS_LABELS,
   checkLineLabel, destinationBody, destinationProblem, emptyDestinationForm, filesLabel, lastCheckedLabel, moveConfirmProblem,
   moveProgressText, offeredKinds, onOff, quotaLabel, reasonProblem, repairLine, siteGrantExample, stateTone, storageStateLabel,
 } from '../storage.ts';
-import { AdminsPanel, ConnectionPanel, FormatsPanel } from './StorageConnection.tsx';
+import { Box } from '../ui/Box.tsx';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { SettingsPage, type SettingsPageItem } from '../ui/SettingsPage.tsx';
+import { StatTile } from '../ui/StatTile.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
+import type { Meaning } from '../ui/meanings.ts';
+import { AdminsCurrent, AdminsForm, CheckConnection, ConnectionForm, FormatsCurrent, FormatsForm, SecretForm, useStorageAdmins } from './StorageConnection.tsx';
 import { type CheckResult, type Destination, Notice, ReasonAction, type SettingsView, type Summary, errText } from './storageUi.tsx';
 
-function SummaryPanel({ s }: { s: Summary }) {
+const CONNECTION_MEANING: Record<'ok' | 'quiet' | 'warn', Meaning> = { ok: 'ok', quiet: 'off', warn: 'attention' };
+const DESTINATION_MEANING: Record<Destination['status'], Meaning> = { proposed: 'planned', approved: 'ok', retiring: 'attention', withdrawn: 'off' };
+
+function Glance({ s, reload, setNotice, setError }: { s: Summary; reload: () => void; setNotice: (s: string | null) => void; setError: (s: string | null) => void }) {
+  const columns: Column<Destination>[] = [
+    { key: 'name', header: 'Destination', sortValue: (d) => d.label.toLowerCase(), cell: (d) => <><strong>{d.label}</strong><span className="row-note"> {KIND_LABELS[d.kind]}{(d.kind === 'onedrive' ? d.accountEmail : d.siteUrl) ? ` · ${d.kind === 'onedrive' ? d.accountEmail : d.siteUrl}` : ''}{d.folderPath ? ` · folder ${d.folderPath}` : ''}</span></> },
+    { key: 'purpose', header: 'Purpose', sortValue: (d) => d.purpose, cell: (d) => PURPOSE_LABELS[d.purpose] },
+    { key: 'status', header: 'Status', sortValue: (d) => d.status, cell: (d) => <StatusLabel meaning={DESTINATION_MEANING[d.status]} word={STATUS_LABELS[d.status]} /> },
+    {
+      key: 'check',
+      header: 'Last check',
+      sortValue: (d) => d.lastCheckedAt ?? '',
+      cell: (d) =>
+        d.lastCheckedAt && d.lastCheck ? (
+          <>
+            <StatusLabel meaning={d.lastCheck.ok ? 'ok' : 'failing'} word={d.lastCheck.ok ? 'Passed' : 'Did not pass'} />
+            <span className="row-note"> {lastCheckedLabel(d.lastCheckedAt)}</span>
+          </>
+        ) : (
+          <StatusLabel meaning="off" word="Not checked yet" />
+        ),
+    },
+    { key: 'space', header: 'Space the provider reports', cell: (d) => (d.lastCheck ? quotaLabel(d.lastCheck.quotaBytes) : '—') },
+  ];
+  const tone = CONNECTION_MEANING[stateTone(s.connection)];
   return (
-    <section className="panel stack" aria-labelledby="storage-summary">
-      <h2 id="storage-summary">Storage at a glance</h2>
+    <>
       {s.protectedKeyMissing && (
         <p className="warn" role="status">
           Waiting for the protected key. Until it is installed, storage credentials cannot be saved or used. {plural(s.queuedJobs, 'storage job')} {s.queuedJobs === 1 ? 'is' : 'are'} waiting. See INSTALL.md.
         </p>
       )}
-      <dl className="facts">
-        <dt>Connection</dt>
-        <dd>
-          <span className={`badge tone-${stateTone(s.connection)}`}>{storageStateLabel(s.connection)}</span> <span className="meta">{lastCheckedLabel(s.lastCheckedAt)}</span>
-        </dd>
-        <dt>Source area</dt>
-        <dd>{filesLabel(s.sourceArea.files, s.sourceArea.bytes)}</dd>
-        <dt>Space the provider reports</dt>
-        <dd>{quotaLabel(s.sourceArea.quotaBytes)}</dd>
-        <dt>Files waiting to be stored</dt>
-        <dd>{s.waiting}</dd>
-        <dt>Files that failed</dt>
-        <dd>{s.failed}</dd>
-        <dt>Files withheld</dt>
-        <dd>{s.withheld}</dd>
-        <dt>Sharing to repair</dt>
-        <dd>{s.sharingToRepair.length === 0 ? 'None' : s.sharingToRepair.length}</dd>
-        <dt>Storage Administrators</dt>
-        <dd>{s.storageAdmins.length === 0 ? 'None designated' : s.storageAdmins.map((a) => a.name).join(', ')}</dd>
-        <dt>Scheduled checks</dt>
-        <dd>{onOff(s.scheduledChecks)}</dd>
-      </dl>
+      <div className="stat-grid">
+        <StatTile label="Connection" value={storageStateLabel(s.connection)} meaning={tone} word={tone === 'ok' ? 'Working' : tone === 'off' ? 'Not in use' : 'Needs attention'} note={lastCheckedLabel(s.lastCheckedAt)} />
+        <StatTile label="Source area" value={filesLabel(s.sourceArea.files, s.sourceArea.bytes)} note={`Space the provider reports: ${quotaLabel(s.sourceArea.quotaBytes)}`} />
+        <StatTile label="Files waiting to be stored" value={String(s.waiting)} />
+        <StatTile label="Files that failed" value={String(s.failed)} meaning={s.failed > 0 ? 'failing' : 'ok'} word={s.failed > 0 ? 'Failing' : 'None failed'} />
+        <StatTile label="Files withheld" value={String(s.withheld)} meaning={s.withheld > 0 ? 'attention' : undefined} />
+        <StatTile label="Sharing to repair" value={String(s.sharingToRepair.length)} meaning={s.sharingToRepair.length > 0 ? 'attention' : 'ok'} word={s.sharingToRepair.length > 0 ? 'Needs attention' : 'Nothing to repair'} />
+      </div>
       {s.sourceArea.warning && <p className="warn" role="status">{s.sourceArea.warning}</p>}
       {s.sourceAreaMove && <p role="status">{moveProgressText(s.sourceAreaMove)}</p>}
-    </section>
-  );
-}
-
-function RepairPanel({ rows }: { rows: SharingRepairRow[] }) {
-  return (
-    <section aria-labelledby="storage-repair">
-      <h2 id="storage-repair">Sharing to repair</h2>
-      {rows.length === 0 ? (
-        <p className="meta">Nothing needs repair.</p>
-      ) : (
-        <ul className="plain">{rows.map((r, i) => <li key={i}>{repairLine(r)}</li>)}</ul>
+      <CheckConnection reload={reload} setNotice={setNotice} setError={setError} />
+      <DataTable caption="Destinations and their checks" columns={columns} rows={s.destinations} rowKey={(d) => d.id} empty="No destinations yet. Add the source area and at least one outputs destination." />
+      {s.sharingToRepair.length > 0 && (
+        <Box title="Sharing to repair" headingLevel={3} meaning="attention">
+          <ul className="plain">{s.sharingToRepair.map((r: SharingRepairRow, i) => <li key={i}>{repairLine(r)}</li>)}</ul>
+        </Box>
       )}
-    </section>
+      <Box title="Storage manifest" headingLevel={3}>
+        <p className="meta">A CSV listing every stored file and where it is, for moving to another provider. Restricted items appear as "Restricted item". No content is included. Each download is recorded.</p>
+        <a className="button" href={api.url('/admin/storage/manifest')} download>Download storage manifest</a>
+      </Box>
+    </>
   );
 }
 
@@ -110,9 +123,9 @@ function DestinationCard({ d, reload, setNotice }: { d: Destination; reload: () 
   const where = d.kind === 'onedrive' ? d.accountEmail : d.siteUrl;
   return (
     <li className="panel stack">
-      <h3>{d.label}</h3>
+      <h4>{d.label}</h4>
       <p>
-        <span className="badge">{STATUS_LABELS[d.status]}</span> {PURPOSE_LABELS[d.purpose]} · {KIND_LABELS[d.kind]}
+        <StatusLabel meaning={DESTINATION_MEANING[d.status]} word={STATUS_LABELS[d.status]} /> {PURPOSE_LABELS[d.purpose]} · {KIND_LABELS[d.kind]}
         {where ? ` · ${where}` : ''}{d.folderPath ? ` · folder ${d.folderPath}` : ''}
       </p>
       <p className="meta">
@@ -161,7 +174,7 @@ function DestinationCard({ d, reload, setNotice }: { d: Destination; reload: () 
   );
 }
 
-function AddDestination({ lookup, reload, setNotice }: { lookup: boolean; reload: () => void; setNotice: (s: string | null) => void }) {
+function AddDestination({ lookup, reload, setNotice, close }: { lookup: boolean; reload: () => void; setNotice: (s: string | null) => void; close: () => void }) {
   const [f, setF] = useState<DestinationForm>(emptyDestinationForm);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -180,8 +193,8 @@ function AddDestination({ lookup, reload, setNotice }: { lookup: boolean; reload
     try {
       await api.post('/admin/storage/destinations', destinationBody(form));
       setNotice('Destination added and checked. Read each line of the result before approving it.');
-      setF(emptyDestinationForm());
       reload();
+      close();
     } catch (err) {
       setError(errText(err));
     } finally {
@@ -190,8 +203,7 @@ function AddDestination({ lookup, reload, setNotice }: { lookup: boolean; reload
   }
 
   return (
-    <form className="panel stack" onSubmit={submit} aria-label="Add a destination">
-      <h3>Add a destination</h3>
+    <form className="stack" onSubmit={submit} aria-label="Add a destination">
       <label>
         Kind
         <select value={kind} onChange={(e) => set({ kind: e.target.value as DestinationForm['kind'] })}>
@@ -238,7 +250,10 @@ function AddDestination({ lookup, reload, setNotice }: { lookup: boolean; reload
         <textarea required rows={2} maxLength={1000} value={f.reason} onChange={(e) => set({ reason: e.target.value })} />
       </label>
       {error && <p role="alert" className="error">{error}</p>}
-      <button className="primary" disabled={busy}>Add and check</button>
+      <div className="actions">
+        <button className="primary" disabled={busy}>Add and check</button>
+        <button type="button" className="quiet" onClick={close}>Cancel</button>
+      </div>
     </form>
   );
 }
@@ -248,7 +263,8 @@ interface MoveInfo {
   move: MoveProgress | null;
 }
 
-function MovePanel({ destinations, reload, setNotice }: { destinations: Destination[]; reload: () => void; setNotice: (s: string | null) => void }) {
+/** The form that moves the source area; while a move runs it shows the progress instead. */
+function MoveForm({ destinations, reload, setNotice, close }: { destinations: Destination[]; reload: () => void; setNotice: (s: string | null) => void; close: () => void }) {
   const [info, setInfo] = useState<MoveInfo | null>(null);
   const [to, setTo] = useState('');
   const [files, setFiles] = useState('');
@@ -261,14 +277,13 @@ function MovePanel({ destinations, reload, setNotice }: { destinations: Destinat
   }, []);
   useEffect(load, [load, destinations]);
 
-  if (!info) return error ? <p role="alert" className="error">{error}</p> : null;
+  if (!info) return error ? <p role="alert" className="error">{error}</p> : <p className="loading" role="status">Loading</p>;
   if (info.move) {
     return (
-      <section aria-labelledby="storage-move">
-        <h2 id="storage-move">Moving the source area</h2>
+      <div className="stack">
         <p role="status">{moveProgressText(info.move)}</p>
         <p className="meta">A file that cannot be moved stays at its old place, which stays in use for reading until the move completes.</p>
-      </section>
+      </div>
     );
   }
   const cur = info.current;
@@ -287,12 +302,10 @@ function MovePanel({ destinations, reload, setNotice }: { destinations: Destinat
     setBusy(true);
     try {
       await api.post('/admin/storage/source-area/move', { destinationId: to, reason: reason.trim(), confirm: { files: Number(files), bytes: Number(bytes) } });
-      setFiles('');
-      setBytes('');
-      setReason('');
-      setNotice('The move has started. Progress is shown here and at the top of the page.');
+      setNotice('The move has started. Progress is shown at the top of the page and in this box.');
       load();
       reload();
+      close();
     } catch (err) {
       setError(errText(err));
     } finally {
@@ -300,51 +313,48 @@ function MovePanel({ destinations, reload, setNotice }: { destinations: Destinat
     }
   }
 
+  if (!cur) return <p className="meta">There is no approved source area to move yet.</p>;
+  if (options.length === 0) return <p className="meta">To move the source area, add another source-area destination first (in the Destinations box). It must pass its check. Moving approves it.</p>;
   return (
-    <section aria-labelledby="storage-move" className="stack">
-      <h2 id="storage-move">Move the source area</h2>
-      {!cur ? (
-        <p className="meta">There is no approved source area to move yet.</p>
-      ) : options.length === 0 ? (
-        <p className="meta">To move the source area, add another source-area destination above first. It must pass its check. Moving approves it.</p>
-      ) : (
-        <form className="panel stack" onSubmit={submit} aria-label="Move the source area">
-          <p>
-            The source area is <strong>{cur.label}</strong> and holds <strong>{filesLabel(cur.files, cur.bytes)}</strong> ({cur.bytes.toLocaleString('en-US')} bytes). Every file is copied, checked at the new place and then removed from the old one.
-          </p>
-          <label>
-            New source area
-            <select value={to} onChange={(e) => setTo(e.target.value)}>
-              <option value="">Choose a destination</option>
-              {options.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
-            </select>
-          </label>
-          <label>
-            Type the number of files ({cur.files}) to confirm
-            <input inputMode="numeric" value={files} onChange={(e) => setFiles(e.target.value)} />
-          </label>
-          <label>
-            Type the size in bytes ({cur.bytes.toLocaleString('en-US')}) to confirm
-            <input inputMode="numeric" value={bytes} onChange={(e) => setBytes(e.target.value)} />
-          </label>
-          <label>
-            Reason for the move
-            <textarea required rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
-          </label>
-          {error && <p role="alert" className="error">{error}</p>}
-          <button className="primary" disabled={busy}>Move the source area</button>
-        </form>
-      )}
-    </section>
+    <form className="stack" onSubmit={submit} aria-label="Move the source area">
+      <p>
+        The source area is <strong>{cur.label}</strong> and holds <strong>{filesLabel(cur.files, cur.bytes)}</strong> ({cur.bytes.toLocaleString('en-US')} bytes). Every file is copied, checked at the new place and then removed from the old one.
+      </p>
+      <label>
+        New source area
+        <select value={to} onChange={(e) => setTo(e.target.value)}>
+          <option value="">Choose a destination</option>
+          {options.map((d) => <option key={d.id} value={d.id}>{d.label}</option>)}
+        </select>
+      </label>
+      <label>
+        Type the number of files ({cur.files}) to confirm
+        <input inputMode="numeric" value={files} onChange={(e) => setFiles(e.target.value)} />
+      </label>
+      <label>
+        Type the size in bytes ({cur.bytes.toLocaleString('en-US')}) to confirm
+        <input inputMode="numeric" value={bytes} onChange={(e) => setBytes(e.target.value)} />
+      </label>
+      <label>
+        Reason for the move
+        <textarea required rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
+      </label>
+      {error && <p role="alert" className="error">{error}</p>}
+      <div className="actions">
+        <button className="primary" disabled={busy}>Move the source area</button>
+        <button type="button" className="quiet" onClick={close}>Cancel</button>
+      </div>
+    </form>
   );
 }
 
-/** System Settings, Storage (spec section 8, Enterprise Administrator only): the summary first, then the settings. */
+/** Settings → Storage (spec section 8, Enterprise Administrator only): the state of storage first, then each setting in its own box. */
 export function StorageSettings() {
   const [summary, setSummary] = useState<Summary | null>(null);
   const [view, setView] = useState<SettingsView | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
+  const admins = useStorageAdmins();
 
   const reload = useCallback(() => {
     api.get<Summary>('/admin/storage/summary').then(setSummary, (e) => setError(errText(e)));
@@ -352,36 +362,86 @@ export function StorageSettings() {
   }, []);
   useEffect(reload, [reload]);
 
+  const items: SettingsPageItem[] =
+    summary && view
+      ? [
+          {
+            key: 'connection',
+            title: 'Connection to Microsoft',
+            current: (
+              <dl className="facts">
+                <div><dt>Tenant ID</dt><dd>{view.settings.tenantId ?? 'Not set'}</dd></div>
+                <div><dt>Application (client) ID</dt><dd>{view.settings.clientId ?? 'Not set'}</dd></div>
+                <div><dt>Directory lookup</dt><dd>{onOff(view.settings.directoryLookup)}</dd></div>
+                <div><dt>Scheduled checks</dt><dd>{onOff(view.settings.scheduledChecks)}</dd></div>
+              </dl>
+            ),
+            form: (close) => <ConnectionForm view={view} reload={reload} setNotice={setNotice} close={close} />,
+          },
+          {
+            key: 'secret',
+            title: 'Client secret',
+            current: (
+              <>
+                <p role="status">{SECRET_STATE_LABEL[view.secret]}</p>
+                {!view.protectedKeyLoaded && <p className="warn">Storage credentials cannot be saved until the protected key is installed. See INSTALL.md.</p>}
+              </>
+            ),
+            form: (close) => <SecretForm view={view} reload={reload} setNotice={setNotice} close={close} />,
+          },
+          {
+            key: 'destinations',
+            title: 'Destinations',
+            current:
+              summary.destinations.length === 0 ? (
+                <p className="meta">No destinations yet. Add the source area and at least one outputs destination.</p>
+              ) : (
+                <ul className="plain">{summary.destinations.map((d) => <DestinationCard key={d.id} d={d} reload={reload} setNotice={setNotice} />)}</ul>
+              ),
+            form: (close) => <AddDestination lookup={view.settings.directoryLookup} reload={reload} setNotice={setNotice} close={close} />,
+          },
+          {
+            key: 'move',
+            title: 'Source area move',
+            current: summary.sourceAreaMove ? (
+              <p role="status">{moveProgressText(summary.sourceAreaMove)}</p>
+            ) : (
+              <p className="meta">Moves every source file to another source-area destination. Source area now: {filesLabel(summary.sourceArea.files, summary.sourceArea.bytes)}.</p>
+            ),
+            form: (close) => <MoveForm destinations={summary.destinations} reload={reload} setNotice={setNotice} close={close} />,
+          },
+          {
+            key: 'admins',
+            title: 'Storage Administrators',
+            current: <AdminsCurrent a={admins} reload={reload} setNotice={setNotice} />,
+            form: (close) => <AdminsForm a={admins} reload={reload} setNotice={setNotice} close={close} />,
+          },
+          {
+            key: 'formats',
+            title: 'Formats and what projects may choose',
+            current: <FormatsCurrent view={view} />,
+            form: (close) => <FormatsForm view={view} reload={reload} setNotice={setNotice} close={close} />,
+          },
+        ]
+      : [];
+
   return (
     <main className="page">
-      <h1>Storage</h1>
-      <p className="meta">Where Kainow keeps source files and filed reports. Every change asks for a reason and is recorded.</p>
-      <Notice error={error} notice={notice} />
-      {!summary && !error && <p className="loading">Loading</p>}
-      {summary && <SummaryPanel s={summary} />}
-      {summary && <RepairPanel rows={summary.sharingToRepair} />}
-      {view && summary && (
-        <>
-          <ConnectionPanel view={view} reload={reload} />
-          <section aria-labelledby="storage-destinations" className="stack">
-            <h2 id="storage-destinations">Destinations</h2>
-            {summary.destinations.length === 0 ? (
-              <p className="meta">No destinations yet. Add the source area and at least one outputs destination.</p>
-            ) : (
-              <ul className="plain">{summary.destinations.map((d) => <DestinationCard key={d.id} d={d} reload={reload} setNotice={setNotice} />)}</ul>
-            )}
-            <AddDestination lookup={view.settings.directoryLookup} reload={reload} setNotice={setNotice} />
-          </section>
-          <MovePanel destinations={summary.destinations} reload={reload} setNotice={setNotice} />
-          <AdminsPanel reload={reload} setNotice={setNotice} />
-          <FormatsPanel view={view} reload={reload} />
-          <section aria-labelledby="storage-manifest">
-            <h2 id="storage-manifest">Storage manifest</h2>
-            <p className="meta">A CSV listing every stored file and where it is, for moving to another provider. Restricted items appear as "Restricted item". No content is included. Each download is recorded.</p>
-            <a className="button" href={api.url('/admin/storage/manifest')} download>Download storage manifest</a>
-          </section>
-        </>
-      )}
+      <SettingsPage
+        header={{
+          crumbs: [{ text: 'Settings', href: '#/settings' }],
+          title: 'Storage',
+          intro: 'Where Kainow keeps source files and filed reports. Every change asks for a reason and is recorded.',
+        }}
+        glance={
+          <>
+            <Notice error={error} notice={notice} />
+            {!summary && !error && <p className="loading">Loading</p>}
+            {summary && <Glance s={summary} reload={reload} setNotice={setNotice} setError={setError} />}
+          </>
+        }
+        settings={items}
+      />
     </main>
   );
 }

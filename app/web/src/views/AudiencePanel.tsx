@@ -113,8 +113,8 @@ export function AudiencePanel({
   }
 
   return (
-    <section className="panel audience-panel" aria-label="Audience">
-      <h2>Who can read this</h2>
+    <section className="box audience-panel" aria-label="Audience">
+      <h2 className="box-title">Who can read this</h2>
       <p>
         <strong>{audience.mode === 'project' ? 'Project-wide' : 'Restricted'}</strong>
         {label && <span className="badge badge-pending">{label}</span>}

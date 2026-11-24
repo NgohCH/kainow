@@ -2,7 +2,7 @@
 export type Place = 'header' | 'tab' | 'signIn' | 'email' | 'report';
 export type LogoShape = 'wide' | 'square';
 export type PlaceBranding = { url: string; width: number; height: number; isDefault: boolean };
-export type Branding = { registered: boolean; name: string; places: Record<Place, PlaceBranding> };
+export type Branding = { registered: boolean; name: string; colour: string | null; places: Record<Place, PlaceBranding> };
 
 export type LogoMeta = { width: number; height: number; byteSize: number; uploadedAt: string };
 export type OrganisationProfile = {

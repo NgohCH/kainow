@@ -425,7 +425,8 @@ async function loadRecords(db: Db, hits: RecordHit[]): Promise<Map<string, { row
                     FROM questions q JOIN users u ON u.id = q.requester_id WHERE q.id = ANY($1::uuid[])`],
     ['risk', `SELECT r.id, r.description AS text, r.severity, r.status, u.display_name AS person, ${date('r.review_on')} AS due, r.mitigation
                 FROM risks r LEFT JOIN users u ON u.id = r.responsible_id WHERE r.id = ANY($1::uuid[])`],
-    ['ai_proposal', `SELECT x.id, x.kind, x.owner, x.due AS "dueAsWritten", x.run_id AS "runId",
+    // The type in force: a reviewer may have corrected the model's (D130).
+    ['ai_proposal', `SELECT x.id, coalesce((SELECT e.kind FROM extraction_item_edits e WHERE e.item_id = x.id ORDER BY e.edited_at DESC, e.id DESC LIMIT 1), x.kind) AS kind, x.owner, x.due AS "dueAsWritten", x.run_id AS "runId",
                             coalesce((SELECT e.text FROM extraction_item_edits e WHERE e.item_id = x.id ORDER BY e.edited_at DESC, e.id DESC LIMIT 1), x.text) AS text
                        FROM extraction_items x WHERE x.id = ANY($1::uuid[])`],
     ['human_proposal', `SELECT h.id, h.kind, h.text, h.owner, h.due AS "dueAsWritten" FROM human_proposals h WHERE h.id = ANY($1::uuid[])`],

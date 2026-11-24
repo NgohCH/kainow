@@ -6,6 +6,7 @@ import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
 import { readOptionalReason, readReason, refuseSecretsIn } from '../common/reason';
 import { UUID, uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
+import { KIND_IN_FORCE, LATEST_EDIT } from '../extraction/extraction.service';
 import { activeManagerSql, audienceVisibleSql } from '../discussion/audience';
 import { FINANCE_KINDS, financeRequestVisibleSql, loadProjectFinanceSettings, mayReadFinance } from '../finance/readers';
 import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
@@ -39,9 +40,11 @@ const STATUS_LABEL: Record<ProjectStatus, string> = { draft: 'Draft', planned: '
 
 /** How each kind of target is loaded and locked (its project in "projectId"). */
 export const TARGET_SQL: Record<TargetKind, string> = {
-  extraction_item: `SELECT i.id, i.run_id AS "runId", i.kind, i.review_status AS "reviewStatus", s.project_id AS "projectId"
+  // The type in force (D130). The record is made from approveInTx, which reads it again after this lock.
+  extraction_item: `SELECT i.id, i.run_id AS "runId", ${KIND_IN_FORCE} AS kind, i.review_status AS "reviewStatus", s.project_id AS "projectId"
                       FROM extraction_items i JOIN extraction_runs r ON r.id = i.run_id
                       JOIN source_versions v ON v.id = r.source_version_id JOIN sources s ON s.id = v.source_id
+                      ${LATEST_EDIT}
                      WHERE i.id = $1 AND ${notHeldSql('i')} FOR UPDATE OF i`,
   human_proposal: `SELECT id, project_id AS "projectId", kind, text, owner, review_status AS "reviewStatus" FROM human_proposals h WHERE id = $1 AND ${notHeldSql('h')} FOR UPDATE`,
   // A Deleted or held record (or a held proposal, history spec 7.2) is not a target: changes to it answer as for a
@@ -88,6 +91,8 @@ export interface RequestView {
   offer?: { fromProject: { id: string; name: string }; risk: { id: string; description: string; severity: string } };
   /** For an output approval: which output version, and that approving it does not approve what the text mentions. */
   output?: { id: string; title: string; versionNo: number };
+  /** For an AI proposal: its type in force now (D130: a reviewer may have corrected the model's). */
+  proposal?: { kind: string };
   notice?: string;
   mayApprove: boolean;
   mayRevise: boolean;
@@ -614,6 +619,12 @@ export class ChangesService {
       ).rows) offers.set(o.riskId, { fromProject: { id: o.projectId, name: o.name }, risk: { id: o.riskId, description: o.description, severity: o.severity } });
     }
     const outputs = await this.readableOutputs(db, ctx, rows.filter((r) => r.kind === 'approve_output').map((r) => r.targetId));
+    const itemIds = [...new Set(rows.filter((r) => r.targetKind === 'extraction_item').map((r) => r.targetId))];
+    const proposalKinds = new Map<string, string>(
+      itemIds.length === 0
+        ? []
+        : (await db.query(`SELECT i.id, ${KIND_IN_FORCE} AS kind FROM extraction_items i ${LATEST_EDIT} WHERE i.id = ANY($1::uuid[])`, [itemIds])).rows.map((x) => [x.id, x.kind]),
+    );
     // What each pending kind's handler says about the project, asked once per kind.
     const handlerBlocks = new Map<ChangeKind, string | null>();
     for (const kind of new Set(rows.filter((r) => r.status === 'pending').map((r) => r.kind))) {
@@ -640,6 +651,7 @@ export class ChangesService {
         submittedBy: names.get(r.submittedBy) as string,
         submittedAt: r.submittedAt,
         ...(offer ? { offer } : {}),
+        ...(proposalKinds.has(r.targetId) && r.targetKind === 'extraction_item' ? { proposal: { kind: proposalKinds.get(r.targetId) as string } } : {}),
         ...(r.kind === 'approve_output' ? { ...(outputs.get(r.targetId) ? { output: outputs.get(r.targetId) } : {}), notice: DOES_NOT_APPROVE_COMMITMENTS } : {}),
         mayApprove: changeMayApprove(ctx, r, given.map((a) => a.userId), user.id, handlerBlock),
         mayRevise: pending && r.submittedBy === user.id,

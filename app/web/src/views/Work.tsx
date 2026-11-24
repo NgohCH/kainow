@@ -5,6 +5,10 @@ import { formatWhen } from '../format.ts';
 import {
   DECISION_STATUS_LABEL,
   QUESTION_STATUS_LABEL,
+  QUESTION_STATUS_MEANING,
+  RISK_STATUS_MEANING,
+  TASK_STATUS_MEANING,
+  decisionMeaning,
   type QuestionAction,
   type QuestionStatus,
   RISK_STATUS_LABEL,
@@ -31,6 +35,8 @@ import { ChangeRequestPanel, useRequests } from './ChangeRequest.tsx';
 import { ExportControls } from './ProjectOutputs.tsx';
 import { useOutputPolicy } from './ProjectOutputSettings.tsx';
 import { useFocusItem } from './useFocusItem.ts';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
 import { AddSubtaskForm, AmendForm, CancelForm, FollowUpForm, SupersedeForm, WithdrawForm, type WorkContext } from './ChangeForms.tsx';
 
 interface ReviewFlag {
@@ -180,75 +186,163 @@ export function Work({
     setNotice(message);
     load();
   };
+  const exported = (m: string) => {
+    setError(null);
+    setNotice(m);
+  };
+  const titles = new Map(records.tasks.map((t) => [t.id, t.title]));
+
+  const taskColumns: Column<TaskView>[] = [
+    {
+      key: 'task',
+      header: 'Task',
+      sortValue: (t) => t.title.toLowerCase(),
+      cell: (t) => (
+        <span className={`work-title depth-${t.depth}`}>
+          {t.title}
+          {t.parentId && <span className="meta work-parent">Subtask of {titles.get(t.parentId) ?? 'another task'}</span>}
+        </span>
+      ),
+    },
+    { key: 'status', header: 'Status', sortValue: (t) => TASK_STATUS_LABEL[t.status], cell: (t) => <TaskLabels t={t} /> },
+    {
+      key: 'assignee',
+      header: 'Assignee',
+      sortValue: (t) => t.assignee.displayName.toLowerCase(),
+      cell: (t) => (
+        <span>
+          {t.assignee.displayName}
+          {t.ownerAsWritten && <span className="meta work-parent">The notes say: {t.ownerAsWritten}</span>}
+        </span>
+      ),
+    },
+    { key: 'due', header: 'Due', sortValue: (t) => t.dueOn, cell: (t) => <span>{t.dueOn}<ModeLabel /></span> },
+    {
+      key: 'details',
+      header: 'Details and actions',
+      wide: true,
+      cell: (t) => (
+        <TaskDetails projectId={projectId} t={t} hasChildren={hasChildren.has(t.id)} work={work} act={act} propose={propose} canPropose={canPropose} canClear={canClear} mayDelete={mayDelete} onChanged={changed} />
+      ),
+    },
+  ];
+  const questionColumns: Column<QuestionView>[] = [
+    { key: 'question', header: 'Question', sortValue: (q) => q.text.toLowerCase(), cell: (q) => q.text },
+    { key: 'status', header: 'Status', sortValue: (q) => QUESTION_STATUS_LABEL[q.status], cell: (q) => <StatusLabel meaning={QUESTION_STATUS_MEANING[q.status]} word={QUESTION_STATUS_LABEL[q.status]} /> },
+    { key: 'requester', header: 'Requested by', sortValue: (q) => q.requester.displayName.toLowerCase(), cell: (q) => q.requester.displayName },
+    {
+      key: 'details',
+      header: 'Answers and actions',
+      wide: true,
+      cell: (q) => <QuestionDetails projectId={projectId} q={q} act={act} canClear={canClear} mayDelete={mayDelete} onChanged={changed} />,
+    },
+  ];
+  const decisionColumns: Column<DecisionView>[] = [
+    { key: 'decision', header: 'Decision', sortValue: (d) => d.statement.toLowerCase(), cell: (d) => d.statement },
+    {
+      key: 'status',
+      header: 'Status',
+      sortValue: (d) => DECISION_STATUS_LABEL[d.status] ?? d.status,
+      cell: (d) => (
+        <span className="label-stack">
+          <StatusLabel meaning={decisionMeaning(d.status)} word={DECISION_STATUS_LABEL[d.status] ?? d.status} />
+          {d.changeWaiting && <StatusLabel meaning="review" word="Change waiting" />}
+        </span>
+      ),
+    },
+    { key: 'authorised', header: 'Authorised', sortValue: (d) => d.authorisedAt, cell: (d) => `${d.authorisedBy}, ${formatWhen(d.authorisedAt)}` },
+    {
+      key: 'details',
+      header: 'Details and actions',
+      wide: true,
+      cell: (d) => <DecisionDetails projectId={projectId} d={d} work={work} propose={propose} mayDelete={mayDelete} onChanged={changed} />,
+    },
+  ];
+  const riskColumns: Column<RiskView>[] = [
+    { key: 'risk', header: 'Risk', sortValue: (r) => r.description.toLowerCase(), cell: (r) => r.description },
+    { key: 'status', header: 'Status', sortValue: (r) => RISK_STATUS_LABEL[r.status], cell: (r) => <StatusLabel meaning={RISK_STATUS_MEANING[r.status]} word={RISK_STATUS_LABEL[r.status]} /> },
+    { key: 'severity', header: 'Severity', sortValue: (r) => SEVERITY_ORDER.indexOf(r.severity), cell: (r) => SEVERITY_LABEL[r.severity] },
+    { key: 'responsible', header: 'Responsible', sortValue: (r) => r.responsible?.displayName.toLowerCase() ?? '', cell: (r) => r.responsible?.displayName ?? 'No responsible person yet' },
+    { key: 'review', header: 'Review on', sortValue: (r) => r.reviewOn ?? '', cell: (r) => r.reviewOn ?? 'Not set' },
+    {
+      key: 'details',
+      header: 'Details and actions',
+      wide: true,
+      cell: (r) => <RiskDetails projectId={projectId} r={r} people={people} act={act} canClear={canClear} mayDelete={mayDelete} onChanged={changed} />,
+    },
+  ];
+  const itemId = (row: { id: string }) => `item-${row.id}`;
+
   return (
     <>
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
-      <section aria-labelledby="waiting-heading">
-        <h2 id="waiting-heading">Waiting for authorisation</h2>
+      <section aria-labelledby="waiting-heading" className="box">
+        <h2 id="waiting-heading" className="box-title">Waiting for authorisation</h2>
         {waiting.length === 0 ? (
           <p className="meta">Nothing is waiting for authorisation.</p>
         ) : (
           waiting.map((r) => <ChangeRequestPanel key={`${r.id}:${r.version}`} request={r} work={work} onChanged={changed} projectId={projectId} />)
         )}
       </section>
-      <section aria-labelledby="tasks-heading">
-        <h2 id="tasks-heading">Tasks</h2>
-        <ExportControls projectId={projectId} kind="tasks" policy={policy} onSaved={(m) => { setError(null); setNotice(m); }} />
+      <section aria-labelledby="tasks-heading" className="box">
+        <h2 id="tasks-heading" className="box-title">Tasks</h2>
+        <ExportControls projectId={projectId} kind="tasks" policy={policy} onSaved={exported} />
         {records.tasks.length === 0 ? (
           <p className="empty">No tasks yet. Authorise an action on the review screen to create one.</p>
         ) : (
-          <ul className="plain work-list">
-            {records.tasks.map((t) => (
-              <TaskRow key={t.id} projectId={projectId} t={t} hasChildren={hasChildren.has(t.id)} work={work} act={act} propose={propose} canPropose={canPropose} canClear={canClear} mayDelete={mayDelete} onChanged={changed} />
-            ))}
-          </ul>
+          <DataTable caption="Tasks, each subtask under its parent task" columns={taskColumns} rows={records.tasks} rowKey={(t) => t.id} rowId={itemId} empty="No tasks yet." />
         )}
       </section>
-      <section aria-labelledby="questions-heading">
-        <h2 id="questions-heading">Questions</h2>
-        <ExportControls projectId={projectId} kind="questions" policy={policy} onSaved={(m) => { setError(null); setNotice(m); }} />
+      <section aria-labelledby="questions-heading" className="box">
+        <h2 id="questions-heading" className="box-title">Questions</h2>
+        <ExportControls projectId={projectId} kind="questions" policy={policy} onSaved={exported} />
         {records.questions.length === 0 ? (
           <p className="meta">No questions yet.</p>
         ) : (
-          <ul className="plain work-list">
-            {records.questions.map((q) => (
-              <QuestionRow key={q.id} projectId={projectId} q={q} act={act} canClear={canClear} mayDelete={mayDelete} onChanged={changed} />
-            ))}
-          </ul>
+          <DataTable caption="Questions" columns={questionColumns} rows={records.questions} rowKey={(q) => q.id} rowId={itemId} empty="No questions yet." />
         )}
       </section>
-      <section aria-labelledby="decisions-heading">
-        <h2 id="decisions-heading">Decisions</h2>
-        <ExportControls projectId={projectId} kind="decisions" policy={policy} onSaved={(m) => { setError(null); setNotice(m); }} />
+      <section aria-labelledby="decisions-heading" className="box">
+        <h2 id="decisions-heading" className="box-title">Decisions</h2>
+        <ExportControls projectId={projectId} kind="decisions" policy={policy} onSaved={exported} />
         {records.decisions.length === 0 ? (
           <p className="meta">No decisions yet.</p>
         ) : (
-          <ul className="plain work-list">
-            {records.decisions.map((d) => (
-              <DecisionRow key={d.id} projectId={projectId} d={d} work={work} propose={propose} mayDelete={mayDelete} onChanged={changed} />
-            ))}
-          </ul>
+          <DataTable caption="Decisions" columns={decisionColumns} rows={records.decisions} rowKey={(d) => d.id} rowId={itemId} empty="No decisions yet." />
         )}
       </section>
-      <section aria-labelledby="risks-heading">
-        <h2 id="risks-heading">Risks</h2>
-        <ExportControls projectId={projectId} kind="risks" policy={policy} onSaved={(m) => { setError(null); setNotice(m); }} />
+      <section aria-labelledby="risks-heading" className="box">
+        <h2 id="risks-heading" className="box-title">Risks</h2>
+        <ExportControls projectId={projectId} kind="risks" policy={policy} onSaved={exported} />
         {records.risks.length === 0 ? (
           <p className="meta">No risks yet.</p>
         ) : (
-          <ul className="plain work-list">
-            {records.risks.map((r) => (
-              <RiskRow key={r.id} projectId={projectId} r={r} people={people} act={act} canClear={canClear} mayDelete={mayDelete} onChanged={changed} />
-            ))}
-          </ul>
+          <DataTable caption="Risks" columns={riskColumns} rows={records.risks} rowKey={(r) => r.id} rowId={itemId} empty="No risks yet." />
         )}
       </section>
     </>
   );
 }
 
+const SEVERITY_ORDER: Severity[] = ['low', 'medium', 'high', 'critical'];
+
 type Propose = (kind: string, targetKind: string, targetId: string, terms: Record<string, unknown>) => Promise<boolean>;
+
+/** A task's state and what else is true of it, each as a label with its symbol and word. */
+function TaskLabels({ t }: { t: TaskView }) {
+  return (
+    <span className="label-stack">
+      <StatusLabel meaning={TASK_STATUS_MEANING[t.status]} word={TASK_STATUS_LABEL[t.status]} />
+      {t.overdue && <StatusLabel meaning="overdue" word="Overdue" />}
+      {t.awaitingMembership && <StatusLabel meaning="review" word={`Awaiting Membership${t.invitation ? ` (invitation ${t.invitation})` : ''}`} />}
+      {t.dueAfterParent && <StatusLabel meaning="review" word="Due after its parent task" />}
+      {t.changeWaiting && <StatusLabel meaning="review" word="Change waiting" />}
+      {t.deadlineReviewRequired && <StatusLabel meaning="overdue" word="Deadline review required" />}
+      {t.parentCancelled && <StatusLabel meaning="review" word="Parent cancelled" />}
+    </span>
+  );
+}
 
 /** "Review: decision changed" flags on a record, each with the decision and (for the Project Manager or a Deputy) Clear. */
 function Flags({ flags, canClear }: { flags: ReviewFlag[]; canClear: boolean }) {
@@ -262,7 +356,7 @@ function Flags({ flags, canClear }: { flags: ReviewFlag[]; canClear: boolean }) 
     <ul className="plain review-flags">
       {shown.map((f) => (
         <li key={f.id}>
-          <span className="badge badge-pending">Review: decision changed</span>{' '}
+          <StatusLabel meaning="review" word="Review: decision changed" />{' '}
           <span className="meta">{flagSentence(f.decision)}</span>
           {canClear && open !== f.id && (
             <button className="link-button" onClick={() => { setOpen(f.id); setError(null); }}>Clear</button>
@@ -314,7 +408,8 @@ function Evidence({ source, projectId }: { source: EvidenceSource; projectId: st
 type Act = (path: string, body: object, done: string) => Promise<boolean>;
 type TaskForm = TaskAction | 'amend' | 'subtask' | 'cancel' | 'followup';
 
-function TaskRow({
+/** A task's source, flags, actions and their forms, and its history: the last cell of its row. */
+function TaskDetails({
   projectId, t, hasChildren, work, act, propose, canPropose, canClear, mayDelete, onChanged,
 }: {
   projectId: string; t: TaskView; hasChildren: boolean; work: WorkContext; act: Act; propose: Propose; canPropose: boolean; canClear: boolean;
@@ -362,23 +457,14 @@ function TaskRow({
   const mayFollowUp = canPropose && t.status === 'cancelled';
   const cancel = () => setOpen(null);
   return (
-    <li id={`item-${t.id}`} tabIndex={-1} className={`work-item depth-${t.depth}`}>
-      <div>
-        <strong>{t.title}</strong>{' '}
-        <span className={`badge status-${t.status}`}>{TASK_STATUS_LABEL[t.status]}</span>
-        {t.overdue && <span className="badge badge-rejected">Overdue</span>}
-        {t.awaitingMembership && <span className="badge badge-pending">Awaiting Membership{t.invitation ? ` (invitation ${t.invitation})` : ''}</span>}
-        {t.dueAfterParent && <span className="badge badge-pending">Due after its parent task</span>}
-        {t.changeWaiting && <span className="badge badge-pending">Change waiting</span>}
-        {t.deadlineReviewRequired && <span className="badge badge-rejected">Deadline review required</span>}
-        {t.parentCancelled && <span className="badge badge-pending">Parent cancelled</span>}
-      </div>
-      <span className="meta">
-        {t.assignee.displayName} · due {t.dueOn}<ModeLabel />
-        {t.ownerAsWritten ? ` · the notes say: ${t.ownerAsWritten}` : ''}
-        {t.follows ? ` · Follows ${t.follows.title}` : ''}
-        {t.followedBy ? ` · Followed by ${t.followedBy.title}` : ''}
-      </span>
+    <div className="work-details">
+      {(t.follows || t.followedBy) && (
+        <p className="meta">
+          {t.follows ? `Follows ${t.follows.title}` : ''}
+          {t.follows && t.followedBy ? ' · ' : ''}
+          {t.followedBy ? `Followed by ${t.followedBy.title}` : ''}
+        </p>
+      )}
       {t.source && <Evidence source={t.source} projectId={projectId} />}
       <QuarantineBar projectId={projectId} kind="task" id={t.id} label={`task “${t.title}”`} quarantineLabel={t.quarantineLabel} onReported={() => onChanged('Reported. The task is held while the text is removed.')} />
       <Flags flags={t.reviewFlags} canClear={canClear} />
@@ -408,7 +494,7 @@ function TaskRow({
         </ol>
       )}
       {isAction(open) && (
-        <form className="inline-form stack" onSubmit={submit} aria-label={`${TASK_ACTION_LABEL[open]} task`}>
+        <form className="inline-form stack change-form" onSubmit={submit} aria-label={`${TASK_ACTION_LABEL[open]} task`}>
           <label>
             {TASK_ACTION_PROMPT[open]} <input required value={note} onChange={(e) => setNote(e.target.value)} />
           </label>
@@ -418,8 +504,10 @@ function TaskRow({
               <input value={override} onChange={(e) => setOverride(e.target.value)} />
             </label>
           )}
-          <button className="primary">{TASK_ACTION_LABEL[open]}</button>
-          <button type="button" onClick={cancel}>Cancel</button>
+          <div className="decision">
+            <button className="primary">{TASK_ACTION_LABEL[open]}</button>
+            <button type="button" onClick={cancel}>Cancel</button>
+          </div>
         </form>
       )}
       {open === 'amend' && <AmendForm task={t} people={work.people} onSubmit={send('amend_task')} onCancel={cancel} />}
@@ -430,36 +518,28 @@ function TaskRow({
           task={t}
           onCancel={cancel}
           onSubmit={async (body) => {
-            const ok = await act(`/records/tasks/${t.id}/follow-up`, body, 'Follow-up proposed. An Owner or Sponsor can authorise it from the Notes tab.');
+            const ok = await act(`/records/tasks/${t.id}/follow-up`, body, 'Follow-up proposed. An Owner or Sponsor can authorise it from the Proposals tab.');
             if (ok) setOpen(null);
             return ok;
           }}
         />
       )}
-    </li>
+    </div>
   );
 }
 
-
-function DecisionRow({ projectId, d, work, propose, mayDelete, onChanged }: { projectId: string; d: DecisionView; work: WorkContext; propose: Propose; mayDelete: boolean; onChanged: (message: string) => void }) {
+/** A decision's rationale, what it replaces or was replaced by, and the proposals that may be made about it. */
+function DecisionDetails({ projectId, d, work, propose, mayDelete, onChanged }: { projectId: string; d: DecisionView; work: WorkContext; propose: Propose; mayDelete: boolean; onChanged: (message: string) => void }) {
   const [open, setOpen] = useState<'supersede' | 'withdraw' | null>(null);
   const send = (kind: string) => async (terms: Record<string, unknown>) => {
     const ok = await propose(kind, 'decision', d.id, terms);
     if (ok) setOpen(null);
     return ok;
   };
+  const notes = [d.rationale, d.replaces ? `Replaces: ${d.replaces.statement}` : null, d.replacedBy ? `Replaced by: ${d.replacedBy.statement}` : null].filter(Boolean);
   return (
-    <li id={`item-${d.id}`} tabIndex={-1} className="work-item">
-      <strong>{d.statement}</strong>{' '}
-      <span className={`badge ${d.status === 'active' ? 'badge-approved' : 'badge-pending'}`}>{DECISION_STATUS_LABEL[d.status] ?? d.status}</span>
-      {d.changeWaiting && <span className="badge badge-pending">Change waiting</span>}
-      <span className="meta">
-        {' '}
-        authorised by {d.authorisedBy}, {formatWhen(d.authorisedAt)}
-        {d.rationale ? ` · ${d.rationale}` : ''}
-        {d.replaces ? ` · Replaces: ${d.replaces.statement}` : ''}
-        {d.replacedBy ? ` · Replaced by: ${d.replacedBy.statement}` : ''}
-      </span>
+    <div className="work-details">
+      {notes.length > 0 && <p className="meta">{notes.join(' · ')}</p>}
       <QuarantineBar projectId={projectId} kind="decision" id={d.id} label={`decision “${d.statement}”`} quarantineLabel={d.quarantineLabel} onReported={() => onChanged('Reported. The decision is held while the text is removed.')} />
       {open === null && ((d.mayAct.length > 0 && !d.changeWaiting) || mayDelete) && (
         <div className="decision">
@@ -470,7 +550,7 @@ function DecisionRow({ projectId, d, work, propose, mayDelete, onChanged }: { pr
       )}
       {open === 'supersede' && <SupersedeForm decision={d} work={work} onSubmit={send('supersede_decision')} onCancel={() => setOpen(null)} />}
       {open === 'withdraw' && <WithdrawForm decision={d} work={work} onSubmit={send('withdraw_decision')} onCancel={() => setOpen(null)} />}
-    </li>
+    </div>
   );
 }
 
@@ -482,18 +562,15 @@ const Q_FIELD: Record<QuestionAction, { name: string; prompt: string } | null> =
   withdraw: { name: 'reason', prompt: 'Why withdraw it?' },
 };
 
-function QuestionRow({ projectId, q, act, canClear, mayDelete, onChanged }: { projectId: string; q: QuestionView; act: Act; canClear: boolean; mayDelete: boolean; onChanged: (message: string) => void }) {
+/** A question's answers, flags and actions. */
+function QuestionDetails({ projectId, q, act, canClear, mayDelete, onChanged }: { projectId: string; q: QuestionView; act: Act; canClear: boolean; mayDelete: boolean; onChanged: (message: string) => void }) {
   const [open, setOpen] = useState<QuestionAction | null>(null);
   const [value, setValue] = useState('');
   return (
-    <li id={`item-${q.id}`} tabIndex={-1} className="work-item">
-      <div>
-        <strong>{q.text}</strong> <span className="badge badge-pending">{QUESTION_STATUS_LABEL[q.status]}</span>
-      </div>
-      <span className="meta">Requested by {q.requester.displayName}</span>
+    <div className="work-details">
       <QuarantineBar projectId={projectId} kind="question" id={q.id} label={`question “${q.text}”`} quarantineLabel={q.quarantineLabel} onReported={() => onChanged('Reported. The question is held while the text is removed.')} />
       <Flags flags={q.reviewFlags} canClear={canClear} />
-      {q.answers.length > 0 && (
+      {q.answers.length > 0 ? (
         <ul className="plain answers">
           {q.answers.map((a, i) => (
             <li key={i}>
@@ -501,6 +578,8 @@ function QuestionRow({ projectId, q, act, canClear, mayDelete, onChanged }: { pr
             </li>
           ))}
         </ul>
+      ) : (
+        <p className="meta">No answer yet.</p>
       )}
       {open === null ? (
         <div className="decision">
@@ -513,7 +592,8 @@ function QuestionRow({ projectId, q, act, canClear, mayDelete, onChanged }: { pr
         </div>
       ) : (
         <form
-          className="inline-form"
+          className="inline-form stack change-form"
+          aria-label={`${Q_LABEL[open]} the question`}
           onSubmit={async (e) => {
             e.preventDefault();
             const field = Q_FIELD[open];
@@ -526,36 +606,34 @@ function QuestionRow({ projectId, q, act, canClear, mayDelete, onChanged }: { pr
           <label>
             {Q_FIELD[open]?.prompt} <input required value={value} onChange={(e) => setValue(e.target.value)} />
           </label>
-          <button className="primary">{Q_LABEL[open]}</button>
-          <button type="button" onClick={() => setOpen(null)}>Cancel</button>
+          <div className="decision">
+            <button className="primary">{Q_LABEL[open]}</button>
+            <button type="button" onClick={() => setOpen(null)}>Cancel</button>
+          </div>
         </form>
       )}
-    </li>
+    </div>
   );
 }
 
 const R_LABEL: Record<RiskAction, string> = { mitigate: 'Start mitigating', update: 'Update', accept: 'Accept exposure', resolve: 'Approve resolution', reopen: 'Reopen' };
 
-function RiskRow({ projectId, r, people, act, canClear, mayDelete, onChanged }: { projectId: string; r: RiskView; people: Person[]; act: Act; canClear: boolean; mayDelete: boolean; onChanged: (message: string) => void }) {
+/** A risk's mitigation, hand-over, flags and actions. */
+function RiskDetails({ projectId, r, people, act, canClear, mayDelete, onChanged }: { projectId: string; r: RiskView; people: Person[]; act: Act; canClear: boolean; mayDelete: boolean; onChanged: (message: string) => void }) {
   const [open, setOpen] = useState<RiskAction | null>(null);
   const [note, setNote] = useState('');
   const [mitigation, setMitigation] = useState(r.mitigation ?? '');
   const [responsible, setResponsible] = useState(r.responsible?.id ?? '');
   const [reviewOn, setReviewOn] = useState(r.reviewOn ?? '');
   const showFields = open === 'mitigate' || open === 'update' || open === 'accept';
+  const notes = [
+    r.mitigation ? `Mitigation: ${r.mitigation}` : null,
+    r.handedOverFrom ? `Handed over from ${r.handedOverFrom.name}` : null,
+    r.handedOverTo ? `Handed over to ${r.handedOverTo.name}` : null,
+  ].filter(Boolean);
   return (
-    <li id={`item-${r.id}`} tabIndex={-1} className="work-item">
-      <div>
-        <strong>{r.description}</strong> <span className="badge badge-pending">{RISK_STATUS_LABEL[r.status]}</span>{' '}
-        <span className="badge">{SEVERITY_LABEL[r.severity]}</span>
-      </div>
-      <span className="meta">
-        {r.responsible ? `Responsible: ${r.responsible.displayName}` : 'No responsible person yet'}
-        {r.reviewOn ? ` · review on ${r.reviewOn}` : ''}
-        {r.mitigation ? ` · mitigation: ${r.mitigation}` : ''}
-        {r.handedOverFrom ? ` · Handed over from ${r.handedOverFrom.name}` : ''}
-        {r.handedOverTo ? ` · Handed over to ${r.handedOverTo.name}` : ''}
-      </span>
+    <div className="work-details">
+      {notes.length > 0 && <p className="meta">{notes.join(' · ')}</p>}
       <Flags flags={r.reviewFlags} canClear={canClear} />
       <QuarantineBar projectId={projectId} kind="risk" id={r.id} label={`risk “${r.description}”`} quarantineLabel={r.quarantineLabel} onReported={() => onChanged('Reported. The risk is held while the text is removed.')} />
       {open === null ? (
@@ -569,7 +647,8 @@ function RiskRow({ projectId, r, people, act, canClear, mayDelete, onChanged }: 
         </div>
       ) : (
         <form
-          className="inline-form stack"
+          className="inline-form stack change-form"
+          aria-label={`${R_LABEL[open]}: risk`}
           onSubmit={async (e) => {
             e.preventDefault();
             const body = { note, ...(showFields ? { mitigation, responsibleId: responsible || null, reviewOn: reviewOn || null } : {}) };
@@ -604,10 +683,12 @@ function RiskRow({ projectId, r, people, act, canClear, mayDelete, onChanged }: 
               </label>
             </>
           )}
-          <button className="primary">{R_LABEL[open]}</button>
-          <button type="button" onClick={() => setOpen(null)}>Cancel</button>
+          <div className="decision">
+            <button className="primary">{R_LABEL[open]}</button>
+            <button type="button" onClick={() => setOpen(null)}>Cancel</button>
+          </div>
         </form>
       )}
-    </li>
+    </div>
   );
 }

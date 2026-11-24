@@ -1,7 +1,7 @@
 // Automated accessibility pass (axe-core in headless Chrome) over every screen. See README.md.
 // It signs in with a code read from the API log, so the API must run with LOG_SIGN_IN_CODES=true on a scratch database.
 import puppeteer from 'puppeteer-core';
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -14,6 +14,7 @@ const EMAIL = process.env.KAINOW_EMAIL ?? 'a11y@example.org';
 const API_LOG = process.env.KAINOW_API_LOG ?? '/tmp/a11y/api.log';
 const CHROME = process.env.CHROME ?? '/usr/bin/google-chrome';
 const SETUP_LOG = process.env.KAINOW_SETUP_LOG ?? '/tmp/a11y/setup.log';
+const WORKER_LOG = process.env.KAINOW_WORKER_LOG ?? '/tmp/a11y/worker.log';
 const axe = readFileSync(createRequire(import.meta.url).resolve('axe-core/axe.min.js'), 'utf8');
 const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox'] });
 const results = [];
@@ -22,7 +23,30 @@ async function check(name, page) {
   console.log('RENDERED', name, JSON.stringify(seen));
   await page.evaluate(axe);
   const r = await page.evaluate(() => axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa', 'best-practice'] } }));
-  results.push({ name, violations: r.violations.map((x) => ({ id: x.id, impact: x.impact, help: x.help, nodes: x.nodes.map((n) => n.target.join(' ') + ' :: ' + (n.failureSummary || '').split('\n').slice(1, 3).join(' ')) })) });
+  const violations = r.violations.map((x) => ({ id: x.id, impact: x.impact, help: x.help, nodes: x.nodes.map((n) => n.target.join(' ') + ' :: ' + (n.failureSummary || '').split('\n').slice(1, 3).join(' ')) }));
+  // At 375 px no state may scroll the page sideways (spec 10, Review Focus 3); this is counted as a violation too.
+  const width = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, inner: innerWidth }));
+  if (width.inner <= 400 && width.scroll > width.inner) {
+    const wide = await page.evaluate(() =>
+      [...document.querySelectorAll('body *')]
+        .filter((e) => e.getBoundingClientRect().right > innerWidth + 0.5)
+        .slice(-4)
+        .map((e) => e.tagName.toLowerCase() + (e.id ? '#' + e.id : '') + (typeof e.className === 'string' && e.className.trim() ? '.' + e.className.trim().split(/\s+/).join('.') : '')),
+    );
+    violations.push({ id: 'page-scrolls-sideways', impact: 'serious', help: `the page is ${width.scroll} px wide in a ${width.inner} px window`, nodes: wide });
+  }
+  results.push({ name, violations });
+}
+/** Click the first button in `scope` whose visible text (hidden words aside) is `text`; false when there is none. */
+async function clickButton(page, text, scope = 'main') {
+  for (const b of await page.$$(`${scope} button`)) {
+    const label = await b.evaluate((e) => [...e.childNodes].filter((n) => !(n.classList && n.classList.contains('visually-hidden'))).map((n) => n.textContent).join('').trim());
+    if (label === text) {
+      await b.click();
+      return true;
+    }
+  }
+  return false;
 }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 const log = readFileSync(API_LOG, 'utf8');
@@ -113,9 +137,12 @@ const items = [
   ['risk', 'The venue may not be free', null, null, 'Risk: the venue may not be free.', 109, 140, 1],
   ['question', 'Who books the room?', null, null, 'This sentence is not in the notes.', null, null, 0],
 ];
+const itemIds = items.map(() => randomUUID());
 for (const [i, it] of items.entries()) {
-  await db.query('insert into extraction_items (id, run_id, source_version_id, position, kind, text, owner, due, quote, quote_start, quote_end, quote_matches, created_at) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())', [randomUUID(), runId, versionId, i, it[0], it[1], it[2], it[3], it[4], it[5], it[6], it[7]]);
+  await db.query('insert into extraction_items (id, run_id, source_version_id, position, kind, text, owner, due, quote, quote_start, quote_end, quote_matches, created_at) values ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12, now())', [itemIds[i], runId, versionId, i, it[0], it[1], it[2], it[3], it[4], it[5], it[6], it[7]]);
 }
+// The administrator is also a designated security reviewer, so the Settings hub shows all 18 settings.
+await db.query('update users set security_reviewer = true where id = $1', [user]);
 await db.query("insert into memberships (id, project_id, user_id, role, starts_on) values ($1, $2, $3, 'owner', (now() at time zone 'Asia/Kuala_Lumpur')::date)", [randomUUID(), closedId, user]);
 await db.query("update projects set status = 'closed', closure_outcome = 'delivered' where id = $1", [closedId]);
 const recordsId = (await api('POST', '/projects', { name: 'Records access check', purpose: 'Tasks, questions, decisions and risks.', owningDepartmentId: department.id })).project.id;
@@ -197,6 +224,19 @@ const reviewProject = await projectWith('Deadline review check');
 await mkTask(reviewProject, 'Paint the hall', addDays(5), 'in_progress');
 await mkTask(reviewProject, 'Hang the banners', addDays(6));
 const reviewedTask = await mkTask(reviewProject, 'Collect the keys', addDays(7));
+// Timeline bars (D132): a closed stage that began before the window, the current stage, three tasks due on one day, a risk review and the planned end.
+const barsProject = await projectWith('Timeline bars check');
+await db.query("update project_stage_periods set started_at = now() - interval '120 days', ended_at = now() - interval '30 days' where project_id = $1", [barsProject]);
+await db.query("insert into project_stage_periods (id, project_id, stage, substage, started_at, started_by) values ($1, $2, 'Planning', 'Define Scope', now() - interval '30 days', $3)", [randomUUID(), barsProject, user]);
+await db.query('update projects set planned_end = $2 where id = $1', [barsProject, addDays(120)]);
+for (const title of ['Draft the brief', 'Book the venue', 'Order the badges']) await mkTask(barsProject, title, addDays(14));
+await mkTask(barsProject, 'Send the invitations', addDays(40));
+// Close dates: two that need a second and third lane, then eleven neighbouring days drawn as one total.
+for (const d of [16, 18]) await mkTask(barsProject, `Check the stock ${d}`, addDays(d));
+for (let d = 60; d <= 70; d++) await mkTask(barsProject, `Rehearse part ${d}`, addDays(d));
+await mkRisk(barsProject, 'The venue may be double-booked');
+// A 120-character project name, for the overflow check at 375 px (the project header and the tables).
+await db.query('update projects set name = $2 where id = $1', [closeB, 'Closing ready: a deliberately long dummy project name that keeps going to check the header wraps on a phone screen, okay']);
 await db.end();
 
 const amended = must('amend', await api('POST', `/projects/${recordsId}/changes`, { kind: 'amend_task', targetKind: 'task', targetId: amendTask, terms: { dueOn: addDays(20), reason: 'Waiting on a supplier' }, approve: true }));
@@ -229,12 +269,58 @@ must('delegation', await api('POST', `/projects/${closeB}/closure/delegation`, {
 // Deadline review: defer, then send one new date for authorisation so a request is waiting beside the form.
 must('defer', await api('POST', `/projects/${reviewProject}/transition`, { to: 'deferred', reason: 'Funding paused' }));
 must('deadline review', await api('POST', `/projects/${reviewProject}/deadline-review`, { tasks: [{ taskId: reviewedTask, dueOn: addDays(30) }] }));
-const waiting =await api('POST', `/projects/${recordsId}/proposals`, { kind: 'action', text: 'Book the launch room', owner: 'Ann and Ben', due: 'by 30 November 2026' });
+const waiting = await api('POST', `/projects/${recordsId}/proposals`, { kind: 'action', text: 'Book the launch room', owner: 'Ann and Ben', due: 'by 30 November 2026' });
 if (!waiting.proposal) throw new Error('proposal not recorded: ' + JSON.stringify(waiting));
+// Sub-project 11a: one AI proposal corrected (type changed, with a reason), so the review shows its Change history.
+must('correction', await api('POST', `/extractions/${runId}/items/${itemIds[0]}/edit`, { sourceVersionId: versionId, text: 'Ship on Friday', owner: 'Sam', due: 'Friday', kind: 'action', reason: 'This is work for Sam, not a decision' }));
+must('stage added', await api('POST', `/projects/${projectId}/stages`, { name: 'Accessibility check', position: 1, reason: 'The audit needs a recorded change' }));
 // The invitation link is written to the API log (LOG_SIGN_IN_CODES); read it after the invitation was sent.
-await new Promise((r) => setTimeout(r, 300));
-const inviteToken = [...readFileSync(API_LOG, 'utf8').matchAll(/sponsor\.a11y@example\.org: .*#\/invitations\/([A-Za-z0-9_-]+)/g)].pop()[1];
-const handoverToken = [...readFileSync(API_LOG, 'utf8').matchAll(/next\.a11y@example\.org: .*#\/invitations\/([A-Za-z0-9_-]+)/g)].pop()[1];
+// Project invitations go out through the email outbox, so the worker writes them to its own log (KAINOW_WORKER_LOG).
+const inviteTokenFor = async (address) => {
+  const pattern = new RegExp(address.replace(/\./g, '\\.') + ':[\\s\\S]*?#\\/invitations\\/([A-Za-z0-9_-]+)', 'g');
+  for (let i = 0; i < 120; i++) {
+    const found = [...[API_LOG, WORKER_LOG].filter(Boolean).map((f) => (existsSync(f) ? readFileSync(f, 'utf8') : '')).join('\n').matchAll(pattern)].pop();
+    if (found) return found[1];
+    await wait(500);
+  }
+  throw new Error(`no invitation link for ${address} in the API or worker log`);
+};
+const inviteToken = await inviteTokenFor('sponsor.a11y@example.org');
+const handoverToken = await inviteTokenFor('next.a11y@example.org');
+/** The review's Change history is on screen, with the reason of the correction made above. */
+const mustSeeChangeHistory = async (page) => {
+  const seen = await page.evaluate(() => {
+    const heading = [...document.querySelectorAll('main h3')].find((h) => h.textContent.trim() === 'Change history');
+    return heading && heading.getClientRects().length > 0 ? heading.parentElement.textContent : null;
+  });
+  if (!seen?.includes('This is work for Sam, not a decision')) throw new Error('the review does not show the Change history with its reason');
+};
+// The Settings hub's pages (spec 7.8): every setting, at its own address.
+const SETTING_PAGES = [
+  ['organisation (name, logos, colour)', '#/organisation'],
+  ['administrators', '#/people'],
+  ['departments', '#/departments'],
+  ['email domains', '#/domains'],
+  ['leadership access', '#/leadership-grants'],
+  ['approvals settings (organisation count, override, history)', '#/approvals'],
+  ['reminders and email', '#/notifications-settings'],
+  ['access and records', '#/access-settings'],
+  ['resources and finance', '#/resources-admin'],
+  ['report types', '#/report-types'],
+  ['stage templates', '#/stage-templates'],
+  ['AI (models, limits and policy, usage)', '#/ai'],
+  ['email delivery', '#/deliveries'],
+  ['storage', '#/storage'],
+  ['operations', '#/admin/operations'],
+  ['go-live checklist', '#/go-live'],
+  ['escalated feedback', '#/escalated-feedback'],
+  ['security review', '#/security/cases'],
+];
+const goFresh = async (page, hash) => {
+  await page.goto(`${base}/${hash}`, { waitUntil: 'networkidle0' });
+  await page.reload({ waitUntil: 'networkidle0' });
+  await wait(300);
+};
 
 for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
   const open = async (ctx) => {
@@ -267,43 +353,98 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
   const [n, ...val] = cookie.split('=');
   await page.setCookie({ name: n, value: val.join('='), domain: 'localhost', path: '/' });
   const screens = [
+    ['home, Red scheme (side menu collapsed below 900 px)', '#/'],
+    ['my tasks', '#/my-tasks'],
+    ['reviews', '#/reviews'],
+    ['projects', '#/projects'],
+    ['settings hub', '#/settings'],
+    ...SETTING_PAGES.map(([label, hash]) => [`setting page: ${label}`, hash]),
     ['work tab (tasks, questions, decisions, risks)', `#/projects/${recordsId}/work`],
-    ['notes tab with proposals from people', `#/projects/${recordsId}/notes`],
+    ['proposals tab with proposals from people', `#/projects/${recordsId}/proposals`],
     ['closed project overview (archive panel)', `#/projects/${closedId}`],
-    ['my projects', '#/'],
-    ['project overview', `#/projects/${projectId}`],
+    ['project overview (header and binder tabs)', `#/projects/${projectId}`],
     ['project people', `#/projects/${projectId}/people`],
-    ['project notes', `#/projects/${projectId}/notes`],
+    ['project discussion tab', `#/projects/${projectId}/discussion`],
+    ['project notes tab', `#/projects/${projectId}/notes`],
+    ['project proposals tab (an AI run waiting)', `#/projects/${projectId}/proposals`],
+    ['project settings tab (Stages box)', `#/projects/${projectId}/settings`],
     ['note', `#/notes/${sourceId}`],
-    ['review', `#/runs/${runId}`],
-    ['administrators', '#/people'],
-    ['departments', '#/departments'],
-    ['domains', '#/domains'],
-    ['organisation (name and logos)', '#/organisation'],
-    ['AI (models, limits and policy, usage)', '#/ai'],
-    ['approvals settings (organisation count, override, history)', '#/approvals'],
+    ['review (inside the project, with a Change history)', `#/runs/${runId}`],
     ['closing, not ready', `#/projects/${closeA}/closing`],
     ['closing, ready (the Project Manager allowed to close)', `#/projects/${closeB}/closing`],
     ['deadline review (waiting request and new due dates)', `#/projects/${reviewProject}/deadline-review`],
     ['deferred project overview (deadline review link)', `#/projects/${reviewProject}`],
-    ['overview with closing, delegation and project approvals', `#/projects/${closeB}`],
+    ['timeline with bars (a stage from before the window, the current stage and markers)', `#/projects/${barsProject}/timeline`],
+    ['overview with closing, delegation and project approvals (a 120-character name)', `#/projects/${closeB}`],
   ];
   for (const [label, hash] of screens) {
-    await page.goto(`${base}/${hash}`, { waitUntil: 'networkidle0' });
-    await page.reload({ waitUntil: 'networkidle0' });
-    await wait(300);
+    await goFresh(page, hash);
+    if (label.includes('with a Change history')) await mustSeeChangeHistory(page);
     await check(`${theme}: ${label}`, page);
   }
-  await page.goto(`${base}/#/runs/${runId}`, { waitUntil: 'networkidle0' });
-  await page.reload({ waitUntil: 'networkidle0' });
-  const edit = await page.$('article button.link-button');
-  if (edit) { await edit.click(); await wait(200); await check(`${theme}: review, editor open`, page); }
-  // Forms that open in place: a new project, and a lifecycle change.
-  await page.goto(`${base}/#/`, { waitUntil: 'networkidle0' });
-  await page.reload({ waitUntil: 'networkidle0' });
-  await page.click('main button.primary');
+  // The person menu open, and (below 900 px) the side menu opened by its Menu button.
+  await goFresh(page, '#/');
+  await page.click('#person-menu-button');
+  await wait(200);
+  await check(`${theme}: person menu open`, page);
+  if (width < 900) {
+    await goFresh(page, '#/');
+    await page.click('#menu-toggle');
+    await wait(200);
+    await check(`${theme}: side menu opened`, page);
+  }
+  // Home in the Teal scheme and in the Dark theme (Red), then back to the default.
+  for (const [label, prefs] of [['home, Teal scheme', { theme: 'light', accent: 'teal', accentChosen: true }], ['home, Dark theme', { theme: 'dark', accent: 'red', accentChosen: true }]]) {
+    must(label, await api('PUT', '/me/preferences', prefs));
+    await goFresh(page, '#/');
+    await check(`${theme}: ${label}`, page);
+  }
+  must('reset preferences', await api('PUT', '/me/preferences', { theme: 'light', accent: 'red', accentChosen: false }));
+  // The review's correction panel open (on the proposal that has not been corrected yet).
+  await goFresh(page, `#/runs/${runId}`);
+  if (!(await clickButton(page, 'Correct…'))) throw new Error('no Correct… button on the review');
   await wait(300);
-  await check(`${theme}: new project form open`, page);
+  await check(`${theme}: review, correction panel open`, page);
+  // The organisation colour form with a colour Kainow refuses (it cannot carry white text).
+  await goFresh(page, '#/organisation');
+  await page.click('main button[data-opener="colour"]');
+  await wait(200);
+  for (const f of await page.$$('main input')) {
+    if ((await f.evaluate((e) => e.placeholder)) === '#b0182e') {
+      await f.type('#ffee58');
+      break;
+    }
+  }
+  await wait(300);
+  if (!(await page.$('#colour-problem'))) throw new Error('the refused colour shows no problem');
+  await check(`${theme}: organisation colour form with a refused colour`, page);
+  // Stage templates with one template's form open.
+  await goFresh(page, '#/stage-templates');
+  const opener = await page.$('main button[data-opener^="t-"]');
+  if (!opener) throw new Error('no stage template to open');
+  await opener.click();
+  await wait(300);
+  await check(`${theme}: stage templates, a template open`, page);
+  // Forms that open in place: a new project (with its type of project chosen), and a lifecycle change.
+  await goFresh(page, '#/projects');
+  if (!(await clickButton(page, 'New project'))) throw new Error('no New project button');
+  await wait(400);
+  // The last list in the form is Type of project; another type than the one it starts with must be chosen.
+  const template = (await page.$$('main section[aria-label="New project"] select')).pop();
+  const types = template ? await template.evaluate((e) => ({ label: e.closest('label')?.textContent ?? '', now: e.value, all: [...e.options].map((o) => o.value) })) : null;
+  if (!types?.label.includes('Type of project')) throw new Error('the new project form has no Type of project list');
+  const other = types.all.find((v) => v !== types.now);
+  if (!other) throw new Error('Type of project offers nothing else to choose');
+  await template.select(other);
+  await wait(200);
+  if ((await template.evaluate((e) => e.value)) !== other) throw new Error('the type of project was not chosen');
+  await check(`${theme}: new project form open (type of project chosen)`, page);
+  // The Stages box open: the list, Add a stage, and the Change history with one change.
+  await goFresh(page, `#/projects/${projectId}/settings`);
+  await page.click('main button[data-opener="stages"]');
+  await wait(400);
+  if (!(await page.$eval('#setting-form-stages', (e) => e.textContent)).includes('Added Accessibility check at place')) throw new Error('the Stages box does not show its Change history');
+  await check(`${theme}: Stages box open with its Change history`, page);
   await page.goto(`${base}/#/projects/${projectId}`, { waitUntil: 'networkidle0' });
   await page.reload({ waitUntil: 'networkidle0' });
   for (const b of await page.$$('main button')) {
@@ -316,9 +457,9 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
     ['handover form open', `#/projects/${projectId}/people`, 'Hand over the project'],
     ['grant request form open', `#/projects/${projectId}/people`, 'Record a request'],
     ['finding form open', `#/projects/${projectId}/people`, 'Record finding'],
-    ['department move form open', `#/projects/${projectId}`, 'Move to another department'],
-    ['propose form open', `#/projects/${recordsId}/notes`, 'Propose something'],
-    ['authorise form open (split into subtasks)', `#/projects/${recordsId}/notes`, 'Authorise'],
+    ['department move form open', `#/projects/${projectId}`, 'Change owning department'],
+    ['propose form open', `#/projects/${recordsId}/proposals`, 'Propose something'],
+    ['authorise form open (split into subtasks)', `#/projects/${recordsId}/proposals`, 'Authorise'],
     ['task complete form open', `#/projects/${recordsId}/work`, 'Complete'],
     ['risk accept form open', `#/projects/${recordsId}/work`, 'Accept exposure'],
     ['task history open', `#/projects/${recordsId}/work`, 'History'],
@@ -332,11 +473,7 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
   ]) {
     await page.goto(`${base}/${hash}`, { waitUntil: 'networkidle0' });
     await page.reload({ waitUntil: 'networkidle0' });
-    let clicked = false;
-    for (const b of await page.$$('main button')) {
-      if ((await b.evaluate((e) => e.textContent)) === button) { await b.click(); clicked = true; break; }
-    }
-    if (!clicked) throw new Error(`no "${button}" button for ${label}`);
+    if (!(await clickButton(page, button))) throw new Error(`no "${button}" button for ${label}`);
     await wait(400);
     await check(`${theme}: ${label}`, page);
   }

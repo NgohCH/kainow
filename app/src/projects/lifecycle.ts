@@ -5,8 +5,6 @@
 import { SEPARATION_REASON, type ProjectRole } from './membership';
 import type { ProjectStatus } from './matrix';
 
-export const STAGES: readonly string[] = ['Initiation', 'Planning', 'Execution', 'Review & Acceptance', 'Closure'];
-
 export type ClosureOutcome = 'delivered' | 'partially_delivered' | 'abandoned';
 
 export interface TransitionRequest {
@@ -17,6 +15,8 @@ export interface TransitionRequest {
   reason: string | null;
   outcome: ClosureOutcome | null;
   stage: string | null;
+  /** The project's own active stage names (D131): resuming or reopening continues in one of them. */
+  stages: readonly string[];
   /** Required roles not yet accepted (Scheduled or Active), in plain words; empty when all are. */
   missingAccepted: string[];
   /** Required roles not Active today, in plain words; empty when all are. */
@@ -72,7 +72,7 @@ export function checkTransition(r: TransitionRequest): { allowed: true } | { all
   if (rule.reason && (r.reason === null || r.reason.trim() === '')) return refuse('A reason is required.');
   if (rule.outcome && r.outcome === null) return refuse('Choose a closure outcome.');
   if (r.from === 'planned' && r.to === 'closed' && r.outcome !== 'abandoned') return refuse('A project closed from Planned can only be Abandoned.');
-  if (rule.stage && (r.stage === null || !STAGES.includes(r.stage))) return refuse('Choose the stage to continue in.');
+  if (rule.stage && (r.stage === null || !r.stages.includes(r.stage))) return refuse('Choose the stage to continue in.');
   if (rule.gate === 'accepted' && r.missingAccepted.length > 0) {
     return refuse(`The required roles are not all accepted yet. Still needed: ${r.missingAccepted.join(', ')}.`);
   }

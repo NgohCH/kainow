@@ -119,11 +119,11 @@ export type PanelData =
 export function panelTable(p: PanelData): Table {
   if (p.panel === 'progress') {
     const columns = [
-      'Level', 'Name', 'Owning department', 'Status', 'Stage', 'Days in stage', 'Completed tasks', 'Eligible tasks', 'Cancelled tasks', 'Task completion %',
+      'Level', 'Name', 'Owning department', 'Status', 'Stage template', 'Stage', 'Days in stage', 'Completed tasks', 'Eligible tasks', 'Cancelled tasks', 'Task completion %',
       'Due so far', 'Done', 'Late', 'On-time completion %', 'Awaiting deadline review', 'Planned end', 'Overdue', 'Blocked',
     ];
     const rows: unknown[][] = p.data.departments.map((r) => [
-      'Department', r.name, '', '', '', '', r.tasksDone, r.tasksTotal, '', r.completionPercent ?? 'Progress not yet measurable',
+      'Department', r.name, '', '', '', '', '', r.tasksDone, r.tasksTotal, '', r.completionPercent ?? 'Progress not yet measurable',
       r.onTimeDue, r.onTimeDone, r.onTimeLate, r.onTimePercent ?? 'Nothing due yet', '', '', r.overdue, r.blocked,
     ]);
     for (const r of p.data.projects) {
@@ -131,7 +131,7 @@ export function panelTable(p: PanelData): Table {
       const o = r.onTime;
       const measured = o.state === 'measured' ? o : null;
       rows.push([
-        'Project', r.name, r.owningDepartment, STATUS_LABEL[r.status],
+        'Project', r.name, r.owningDepartment, STATUS_LABEL[r.status], r.stageTemplate ?? '',
         r.stage ? (r.stage.substage ? `${r.stage.stage}: ${r.stage.substage}` : r.stage.stage) : '', r.stage?.days ?? '',
         c.state === 'measurable' ? c.done : '', c.state === 'measurable' ? c.total : '', c.cancelled, c.state === 'measurable' ? c.percent : 'Progress not yet measurable',
         measured?.due ?? '', measured?.done ?? '', measured?.late ?? '', measured?.percent ?? 'Nothing due yet',

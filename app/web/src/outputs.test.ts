@@ -139,3 +139,13 @@ test('a filed file opens and downloads; a linked document only opens (in SharePo
   assert.deepEqual(fileAccess('linked'), { open: true, download: false });
   for (const s of ['pending', 'failed', 'withheld', 'missing', null]) assert.deepEqual(fileAccess(s), { open: false, download: false }, String(s));
 });
+
+test('output and version statuses have meanings', async () => {
+  const { OUTPUT_STATUS_MEANING, VERSION_STATUS_MEANING, outputMeaning } = await import('./outputs.ts');
+  assert.equal(OUTPUT_STATUS_MEANING.submitted, 'review');
+  assert.equal(OUTPUT_STATUS_MEANING.registered, 'active');
+  assert.equal(OUTPUT_STATUS_MEANING.withdrawn, 'off');
+  assert.equal(VERSION_STATUS_MEANING.approved, 'ok');
+  assert.equal(VERSION_STATUS_MEANING.draft, 'draft');
+  assert.equal(outputMeaning('unknown'), 'off');
+});

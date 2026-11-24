@@ -24,6 +24,11 @@ import {
 } from '../quarantine.ts';
 import { ReasonDialog } from './DeleteRestore.tsx';
 import { selectedPageText } from './ReportSecret.tsx';
+import { Box } from '../ui/Box.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
+import type { Meaning } from '../ui/meanings.ts';
+
+const CASE_MEANING: Record<string, Meaning> = { held: 'attention', cleaned: 'review', released: 'ok', released_unchanged: 'off' };
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 const quiet = (e: unknown) => e instanceof ApiError && (e.status === 403 || e.status === 404);
@@ -58,8 +63,8 @@ export function HeldForReviewList({ projectId }: { projectId: string }) {
   if (error) return <p role="alert" className="error">{error}</p>;
   if (!cases || cases.length === 0) return null;
   return (
-    <section aria-labelledby="held-heading">
-      <h2 id="held-heading">Held for review</h2>
+    <Box meaning="review">
+      <h2 id="held-heading" className="box-title">Held for review</h2>
       <p className="meta">Suspected credentials reported in this project. You see the cleaned text only, never the original.</p>
       <ul className="list">
         {cases.map((c) => (
@@ -74,7 +79,7 @@ export function HeldForReviewList({ projectId }: { projectId: string }) {
           </li>
         ))}
       </ul>
-    </section>
+    </Box>
   );
 }
 
@@ -88,8 +93,8 @@ export function CopiesAwaitingList({ projectId }: { projectId: string }) {
   if (error) return <p role="alert" className="error">{error}</p>;
   if (!cases || cases.length === 0) return null;
   return (
-    <section aria-labelledby="awaiting-heading">
-      <h2 id="awaiting-heading">Possible copies awaiting check</h2>
+    <Box meaning="review">
+      <h2 id="awaiting-heading" className="box-title">Possible copies awaiting check</h2>
       <p className="meta">The text reported as a suspected credential also appeared in these places. They were masked at once; confirm or dismiss each.</p>
       <ul className="list">
         {cases.map((c) => (
@@ -101,7 +106,7 @@ export function CopiesAwaitingList({ projectId }: { projectId: string }) {
           </li>
         ))}
       </ul>
-    </section>
+    </Box>
   );
 }
 
@@ -235,8 +240,8 @@ export function PossibleCopies({ caseId, onChanged }: { caseId: string; onChange
   }
 
   return (
-    <section aria-labelledby="copies-heading">
-      <h2 id="copies-heading">Possible copies</h2>
+    <Box meaning="review">
+      <h2 id="copies-heading" className="box-title">Possible copies</h2>
       <p className="meta">These places held the same text and were masked at once. The text is never shown here. Confirm a place if it held the secret; dismiss it if it did not, and its original text goes back.</p>
       {copies && (
         <fieldset className="stack">
@@ -279,7 +284,7 @@ export function PossibleCopies({ caseId, onChanged }: { caseId: string; onChange
       )}
       {error && <p role="alert" className="error">{error}</p>}
       {result && <p role="status" className="meta">{result}</p>}
-    </section>
+    </Box>
   );
 }
 
@@ -309,35 +314,46 @@ export function CasePage({ caseId }: { caseId: string }) {
 
   const open = view && (view.state === 'held' || view.state === 'cleaned');
   return (
-    <main className="page narrow">
-      <p><a href="#/">Back to My Projects</a></p>
-      <h1 tabIndex={-1} ref={heading}>{view ? `A ${kindNoun(view.kind)} held for review` : 'Held for review'}</h1>
+    <main className="page">
+      <header className="page-header">
+        <nav aria-label="Breadcrumb" className="crumbs">
+          <ol><li><a href="#/">Back to My Projects</a></li></ol>
+        </nav>
+        <h1 tabIndex={-1} ref={heading}>{view ? `A ${kindNoun(view.kind)} held for review` : 'Held for review'}</h1>
+      </header>
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
       {view && (
         <>
-          <p className="meta">
-            Reported by {view.reporter}, {formatDay(view.reportedAt)} · {CASE_STATE_TEXT[view.state] ?? view.state}
-            {view.reference ? ` · ${view.reference}` : ''}
-          </p>
-          {view.reason && <p className="meta">Reason given: {view.reason}</p>}
-          {view.label && <p className="warn" role="note">{view.label}</p>}
+          <Box meaning={CASE_MEANING[view.state] ?? 'draft'}>
+            <p>
+              <StatusLabel meaning={CASE_MEANING[view.state] ?? 'draft'} word={CASE_STATE_TEXT[view.state] ?? view.state} />
+            </p>
+            <p className="meta">
+              Reported by {view.reporter}, {formatDay(view.reportedAt)}
+              {view.reference ? ` · ${view.reference}` : ''}
+            </p>
+            {view.reason && <p className="meta">Reason given: {view.reason}</p>}
+            {view.label && <p className="warn" role="note">{view.label}</p>}
+          </Box>
           {view.text !== null ? (
-            <section aria-labelledby="cleaned-heading">
-              <h2 id="cleaned-heading">Cleaned text</h2>
+            <Box>
+              <h2 id="cleaned-heading" className="box-title">Cleaned text</h2>
               <p className="meta">Each removed credential shows as [credential removed], boxed and underlined. The original is not shown here.</p>
               <div className="cleaned-text panel" tabIndex={0} role="region" aria-labelledby="cleaned-heading">
                 <MarkedText text={view.text} />
               </div>
-            </section>
+            </Box>
           ) : (
             !view.label && <p className="meta">There is no cleaned text to show for this case.</p>
           )}
           {open && (
-            <div className="decision">
-              {view.text !== null && <MarkMore caseId={view.caseId} onDone={load} />}
-              <button type="button" ref={releaseButton} className="primary" aria-expanded={releasing} onClick={() => setReleasing((r) => !r)}>Release</button>
-            </div>
+            <Box title="What you can do">
+              <div className="decision">
+                {view.text !== null && <MarkMore caseId={view.caseId} onDone={load} />}
+                <button type="button" ref={releaseButton} className="primary" aria-expanded={releasing} onClick={() => setReleasing((r) => !r)}>Release</button>
+              </div>
+            </Box>
           )}
           {releasing && open && (
             <ReasonDialog

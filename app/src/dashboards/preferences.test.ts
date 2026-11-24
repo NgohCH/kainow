@@ -20,10 +20,23 @@ describe('normalisePrefs', () => {
     assert.deepEqual(normalisePrefs({ home: { order: ['myTasks'] } }).home.order, ['needsYou', 'myTasks', 'myProjects']);
   });
 
-  test('bad theme falls back to light; bad accent to teal', () => {
-    const p = normalisePrefs({ theme: 'neon', accent: 'red' });
+  test('colour scheme: red by default, old documents keep their accent, unknown values fall back', () => {
+    const d = normalisePrefs({});
+    assert.equal(d.accent, 'red');
+    assert.equal(d.accentChosen, false);
+    const old = normalisePrefs({ accent: 'teal' });
+    assert.equal(old.accent, 'teal');
+    assert.equal(old.accentChosen, false);
+    const org = normalisePrefs({ accent: 'organisation', accentChosen: true });
+    assert.equal(org.accent, 'organisation');
+    assert.equal(org.accentChosen, true);
+    assert.equal(normalisePrefs({ accent: 'green' }).accent, 'red');
+    assert.equal(normalisePrefs({ accentChosen: 'yes' }).accentChosen, false);
+  });
+
+  test('bad theme falls back to light', () => {
+    const p = normalisePrefs({ theme: 'neon', accent: 'green' });
     assert.equal(p.theme, 'light');
-    assert.equal(p.accent, 'teal');
     const q = normalisePrefs({ theme: 'dark', accent: 'plum' });
     assert.equal(q.theme, 'dark');
     assert.equal(q.accent, 'plum');

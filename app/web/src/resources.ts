@@ -4,6 +4,7 @@
  */
 import type { FinanceSummary, FinanceView } from './finance.ts';
 import { plural } from './format.ts';
+import type { Meaning } from './ui/meanings.ts';
 
 export const UNITS = {
   hours: 'Hours',
@@ -24,6 +25,8 @@ export const LINE_STATUSES = {
   cancelled: 'Cancelled',
 } as const;
 export type LineStatus = keyof typeof LINE_STATUSES;
+/** How a line's status looks: Needed is not arranged yet, so it asks for attention. */
+export const LINE_STATUS_MEANING: Record<LineStatus, Meaning> = { needed: 'attention', arranged: 'planned', in_use: 'active', finished: 'closed', cancelled: 'off' };
 
 export const ONE_OFF_KINDS = ['equipment', 'facility', 'other'] as const;
 export type OneOffKind = (typeof ONE_OFF_KINDS)[number];

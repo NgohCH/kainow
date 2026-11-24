@@ -1,7 +1,10 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { ApiError, api, type Project } from '../api.ts';
 import { isPastDay, todayUtc8 } from '../changes.ts';
-import { membershipStateLabel, type MembershipState } from '../projects.ts';
+import { MEMBERSHIP_MEANING, membershipStateLabel, type MembershipState } from '../projects.ts';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { StatTile } from '../ui/StatTile.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
 import { NonWorkingDayNote } from './ProjectCalendar.tsx';
 import { ChangeRequestPanel, useRequests } from './ChangeRequest.tsx';
 
@@ -96,6 +99,51 @@ export function DeadlineReview({ project }: { project: Project }) {
 
   const open = review?.tasks.filter((t) => !t.pendingRequest) ?? [];
   const anyDate = Object.values(dates).some((d) => d !== '');
+  const columns: Column<MarkedTask>[] = [
+    { key: 'task', header: 'Task', cell: (t) => <span className={`work-title depth-${Math.min(t.depth, 2)}`}>{t.title}</span> },
+    {
+      key: 'now',
+      header: 'Now',
+      cell: (t) => (
+        <span className="label-stack">
+          <span>{t.status} · {t.assignee.displayName}</span>
+          {flagged(t.membershipState) && <StatusLabel meaning={t.membershipState === 'none' ? 'attention' : MEMBERSHIP_MEANING[t.membershipState as MembershipState]} word={stateText(t.membershipState)} />}
+          <span className="meta">Was due {t.previousDueOn}</span>
+        </span>
+      ),
+    },
+    {
+      key: 'date',
+      header: 'New due date',
+      wide: true,
+      cell: (t) => {
+        const date = dates[t.id] ?? '';
+        return (
+          <div className="work-details">
+            <label>
+              New due date<span className="visually-hidden"> for {t.title}</span>
+              <input
+                type="date"
+                value={date}
+                onChange={(e) => setDates({ ...dates, [t.id]: e.target.value })}
+                aria-describedby={`dr-hint-${t.id} dr-nwd-${t.id}`}
+              />
+            </label>
+            <NonWorkingDayNote date={date} id={`dr-nwd-${t.id}`} />
+            <span id={`dr-hint-${t.id}`} className="hint">
+              {date !== '' && date === t.previousDueOn && 'This is the date it already has. Choose a different one.'}
+              {date !== '' && isPastDay(date) && `This date is before today (${todayUtc8()}).`}
+              {date !== '' && t.parentDueOn && date > t.parentDueOn && `Later than its parent task, due ${t.parentDueOn}. It will be flagged, not changed.`}
+            </span>
+            <button type="button" className="link-button" aria-expanded={reconciling === t.id} onClick={() => setReconciling(reconciling === t.id ? null : t.id)}>
+              This work was finished during the pause<span className="visually-hidden">: {t.title}</span>
+            </button>
+            {reconciling === t.id && <ReconcileForm projectId={project.id} task={t} onDone={(m) => { setReconciling(null); changed(m); }} />}
+          </div>
+        );
+      },
+    },
+  ];
 
   return (
     <>
@@ -109,11 +157,17 @@ export function DeadlineReview({ project }: { project: Project }) {
       {notice && <p role="status" className="meta">{notice}</p>}
       {!review && !error && <p className="loading">Loading</p>}
       {review && review.tasks.length === 0 && <p className="empty">No tasks are waiting for a deadline review.</p>}
+      {review && review.tasks.length > 0 && (
+        <div className="stat-grid">
+          <StatTile label="Need a new date" value={String(open.length)} meaning={open.length > 0 ? 'review' : undefined} />
+          <StatTile label="Waiting for authorisation" value={String(waiting.length)} />
+        </div>
+      )}
 
       {waiting.length > 0 && (
-        <section aria-labelledby="dr-waiting">
-          <div className="row">
-            <h3 id="dr-waiting">Waiting for authorisation</h3>
+        <section aria-labelledby="dr-waiting" className="box">
+          <div className="settings-box-head">
+            <h3 id="dr-waiting" className="box-title">Waiting for authorisation</h3>
             {batches.map((b) => (
               <button key={b} className="primary" onClick={() => void approveAll(b)}>Approve all</button>
             ))}
@@ -128,42 +182,13 @@ export function DeadlineReview({ project }: { project: Project }) {
       )}
 
       {review && open.length > 0 && (
-        <form className="stack" onSubmit={submit} aria-label="New due dates">
-          <h3>New due dates</h3>
-          <ul className="plain">
-            {open.map((t) => {
-              const date = dates[t.id] ?? '';
-              return (
-                <li key={t.id} className="panel" style={t.depth ? { marginLeft: `${t.depth * 1.5}rem` } : undefined}>
-                  <p><strong>{t.title}</strong></p>
-                  <p className="meta">
-                    {t.status} · {t.assignee.displayName}
-                    {flagged(t.membershipState) ? <span className="warn inline">{stateText(t.membershipState)}</span> : null} · was due {t.previousDueOn}
-                  </p>
-                  <label>
-                    New due date
-                    <input
-                      type="date"
-                      value={date}
-                      onChange={(e) => setDates({ ...dates, [t.id]: e.target.value })}
-                      aria-describedby={`dr-hint-${t.id} dr-nwd-${t.id}`}
-                    />
-                  </label>
-                  <NonWorkingDayNote date={date} id={`dr-nwd-${t.id}`} />
-                  <span id={`dr-hint-${t.id}`} className="hint">
-                    {date !== '' && date === t.previousDueOn && 'This is the date it already has. Choose a different one.'}
-                    {date !== '' && isPastDay(date) && `This date is before today (${todayUtc8()}).`}
-                    {date !== '' && t.parentDueOn && date > t.parentDueOn && `Later than its parent task, due ${t.parentDueOn}. It will be flagged, not changed.`}
-                  </span>
-                  <button type="button" className="link-button" aria-expanded={reconciling === t.id} onClick={() => setReconciling(reconciling === t.id ? null : t.id)}>
-                    This work was finished during the pause
-                  </button>
-                  {reconciling === t.id && <ReconcileForm projectId={project.id} task={t} onDone={(m) => { setReconciling(null); changed(m); }} />}
-                </li>
-              );
-            })}
-          </ul>
-          <button className="primary" disabled={!anyDate}>Send for authorisation</button>
+        <form className="box stack" onSubmit={submit} aria-label="New due dates">
+          <h3 className="box-title">New due dates</h3>
+          <p className="meta">Each new date is a request: the task restarts with it once it is authorised.</p>
+          <DataTable caption="Tasks that need a new due date" columns={columns} rows={open} rowKey={(t) => t.id} empty="No tasks need a new date." />
+          <div className="decision">
+            <button className="primary" disabled={!anyDate}>Send for authorisation</button>
+          </div>
         </form>
       )}
     </>

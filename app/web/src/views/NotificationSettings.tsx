@@ -1,22 +1,22 @@
 import { type FormEvent, type ReactNode, useCallback, useEffect, useRef, useState } from 'react';
-import { ProjectOutputSettings } from './ProjectOutputSettings.tsx';
 import { ApiError, api } from '../api.ts';
-import { formatWhen, noticesStartLine } from '../format.ts';
+import { formatWhen, noticesStartLine, plural } from '../format.ts';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { SettingsPage } from '../ui/SettingsPage.tsx';
+import { StatTile } from '../ui/StatTile.tsx';
 import {
   type Current, type Draft, type Preview, FIELD_LABEL, WEEKDAY_NAMES, afterSave, buildChanges, changeErrors, draftFrom, leadDaysText,
 } from '../settings.ts';
-import { ProjectAnalysisSettings } from './AnalysisSettings.tsx';
 import { Holidays } from './Holidays.tsx';
 import { useRefreshCalendar } from './ProjectCalendar.tsx';
 import { PreviewList } from './PreviewList.tsx';
-import { ProjectFinanceSettings } from './ProjectFinanceSettings.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
-const NOT_ALLOWED = 'The Administrator has not allowed projects to change this setting.';
-const NOT_EDITOR = 'Only a Project Manager, Owner or Sponsor can change this.';
-type Group = 'calendar' | 'timings' | 'digest';
-type Source = 'organisation' | 'project';
-type SourceKey = 'dayCounting' | 'weekdays' | 'leadDays' | 'escalationDays';
+export const NOT_ALLOWED = 'The Administrator has not allowed projects to change this setting.';
+export const NOT_EDITOR = 'Only a Project Manager, Owner or Sponsor can change this.';
+export type Group = 'calendar' | 'timings' | 'digest';
+export type Source = 'organisation' | 'project';
+export type SourceKey = 'dayCounting' | 'weekdays' | 'leadDays' | 'escalationDays';
 
 interface HistoryRow { id: string; field: string; oldValue: string | null; newValue: string | null; reason: string; actor: string; at: string }
 interface OrgView extends Current {
@@ -27,7 +27,7 @@ interface OrgView extends Current {
   noticesFrom: string | null;
   history: HistoryRow[];
 }
-interface ProjectView extends Current {
+export interface ProjectView extends Current {
   sources: Record<SourceKey, Source>;
   delegation: Record<Group, boolean>;
   digest: { frequency: 'daily' | 'weekly'; weekday: number | null; time: string } | null;
@@ -36,10 +36,10 @@ interface ProjectView extends Current {
   history: HistoryRow[];
 }
 
-const SOURCE_TEXT: Record<Source, string> = { organisation: 'From the organisation', project: 'Set for this project' };
+export const SOURCE_TEXT: Record<Source, string> = { organisation: 'From the organisation', project: 'Set for this project' };
 const GROUP_OF: Record<SourceKey, Group> = { dayCounting: 'calendar', weekdays: 'calendar', leadDays: 'timings', escalationDays: 'timings' };
-const dayList = (days: number[]) => [...days].sort((a, b) => a - b).map((d) => WEEKDAY_NAMES[d]).join(', ');
-const digestText = (d: ProjectView['digest']) =>
+export const dayList = (days: number[]) => [...days].sort((a, b) => a - b).map((d) => WEEKDAY_NAMES[d]).join(', ');
+export const digestText = (d: ProjectView['digest']) =>
   d ? `${d.frequency === 'weekly' ? `Every ${WEEKDAY_NAMES[d.weekday ?? 1]}` : 'Every day'} at ${d.time} (UTC+8)` : 'Not scheduled';
 
 function History({ rows }: { rows: HistoryRow[] }) {
@@ -70,7 +70,7 @@ function Setting({ source, children, back }: { source?: Source; children: ReactN
 }
 
 /** The form for the organisation's settings (Administrator) or one project's (Project Manager, Owner, Sponsor). */
-export function NotificationSettingsForm({ projectId }: { projectId?: string }) {
+export function NotificationSettingsForm({ projectId, onSaved }: { projectId?: string; onSaved?: () => void }) {
   const scope = projectId ? 'project' : 'organisation';
   const base = projectId ? `/projects/${projectId}/notification-settings` : '/notification-settings';
   const [view, setView] = useState<(OrgView | ProjectView) | null>(null);
@@ -158,6 +158,7 @@ export function NotificationSettingsForm({ projectId }: { projectId?: string }) 
       setReason(next.reason);
       setNotice(next.notice);
       refreshCalendar();
+      onSaved?.();
     } catch (err) {
       setError(errText(err));
     }
@@ -329,40 +330,71 @@ export function NotificationSettingsForm({ projectId }: { projectId?: string }) 
   );
 }
 
-/** Administration → Notifications and email. */
-export function NotificationsSettings() {
-  return (
-    <main className="page narrow">
-      <h1>Notifications and email</h1>
-      <p className="meta">When reminders go out and how days are counted. Projects use these unless you let them set their own. <a href="#/deliveries">See email delivery</a></p>
-      <NotificationSettingsForm />
-      <Holidays canEdit />
-    </main>
-  );
-}
+interface HolidayRow { id: string; date: string; name: string; removedAt: string | null }
 
-/** Project → Settings. Everyone who can read the project sees the values; editing follows `canEdit`. */
-export function ProjectSettings({ projectId, showFinance = false }: { projectId: string; showFinance?: boolean }) {
-  const [canEditCalendar, setCanEditCalendar] = useState(false);
-  const [blocked, setBlocked] = useState<string | null>(null);
-  const refreshCalendar = useRefreshCalendar();
-  useEffect(() => {
-    api.get<{ canEdit: { calendar: boolean }; delegation: { calendar: boolean } }>(`/projects/${projectId}/notification-settings`).then(
-      (v) => {
-        setCanEditCalendar(v.canEdit.calendar);
-        setBlocked(v.delegation.calendar ? null : NOT_ALLOWED);
-      },
-      () => setCanEditCalendar(false),
-    );
-  }, [projectId]);
-  return (
+const HOLIDAY_COLUMNS: Column<HolidayRow>[] = [
+  { key: 'date', header: 'Date', sortValue: (h) => h.date, cell: (h) => h.date },
+  { key: 'name', header: 'Name', sortValue: (h) => h.name.toLowerCase(), cell: (h) => h.name },
+];
+
+/** Settings › Reminders and email. */
+export function NotificationsSettings() {
+  const [view, setView] = useState<OrgView | null>(null);
+  const [holidays, setHolidays] = useState<HolidayRow[] | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const load = useCallback(() => {
+    api.get<OrgView>('/notification-settings').then(setView, (e) => setError(errText(e)));
+    api.get<{ holidays: HolidayRow[] }>('/notification-settings/holidays').then((r) => setHolidays(r.holidays.filter((h) => !h.removedAt)), (e) => setError(errText(e)));
+  }, []);
+  useEffect(load, [load]);
+
+  const year = String(new Date().getFullYear());
+  const thisYear = (holidays ?? []).filter((h) => h.date.startsWith(year));
+  const header = {
+    crumbs: [{ text: 'Settings', href: '#/settings' }],
+    title: 'Reminders and email',
+    intro: 'When reminders go out and how days are counted. Projects use these unless you let them set their own.',
+    action: <a href="#/deliveries">See email delivery</a>,
+  };
+  const glance = (
     <>
-      <h2>Notification settings</h2>
-      <NotificationSettingsForm projectId={projectId} />
-      <Holidays projectId={projectId} canEdit={canEditCalendar} notice={blocked} onChanged={refreshCalendar} />
-      <ProjectAnalysisSettings projectId={projectId} />
-      <ProjectOutputSettings projectId={projectId} />
-      {showFinance && <ProjectFinanceSettings projectId={projectId} />}
+      {error && <p role="alert" className="error">{error}</p>}
+      {!view && !error && <p className="loading">Loading</p>}
+      {view && (
+        <div className="stat-grid">
+          <StatTile label="Day counting" value={view.dayCounting === 'working' ? 'Working Days' : 'Calendar Days'} note={dayList(view.weekdays)} />
+          <StatTile label="Reminder days before the due date" value={leadDaysText(view.leadDays)} />
+          <StatTile label="Escalation delay after the due date" value={`${view.escalationDays} ${view.escalationDays === 1 ? 'day' : 'days'}`} />
+          <StatTile label="Checking for due dates" value={`Every ${view.sweepMinutes} minutes`} />
+        </div>
+      )}
+      <DataTable caption={`Holidays in ${year}`} columns={HOLIDAY_COLUMNS} rows={thisYear} rowKey={(h) => h.id} loading={holidays === null && !error} empty={`No holidays in ${year}.`} initialSort={{ key: 'date', dir: 'asc' }} />
     </>
+  );
+  return (
+    <main className="page">
+      <SettingsPage
+        header={header}
+        glance={glance}
+        settings={[
+          {
+            key: 'rules',
+            title: 'Calendar, reminders and what projects may change',
+            current: view ? (
+              <p>
+                {view.dayCounting === 'working' ? 'Working Days' : 'Calendar Days'}; reminders {leadDaysText(view.leadDays)} before the due date; escalation after {view.escalationDays} {view.escalationDays === 1 ? 'day' : 'days'}.
+              </p>
+            ) : <p className="loading">Loading</p>,
+            form: () => <NotificationSettingsForm onSaved={load} />,
+          },
+          {
+            key: 'holidays',
+            title: 'Holidays',
+            current: <p>{holidays === null ? 'Loading' : `${plural(thisYear.length, 'holiday')} in ${year}.`}</p>,
+            form: () => <Holidays bare canEdit onChanged={load} />,
+          },
+        ]}
+      />
+    </main>
   );
 }

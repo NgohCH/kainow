@@ -14,6 +14,10 @@ import { AiSettingsLink } from './AiLink.tsx';
 import { SummaryRequest } from './SummaryView.tsx';
 import { Intake } from './Intake.tsx';
 import { SubmissionReview } from './Submissions.tsx';
+import { Box } from '../ui/Box.tsx';
+import { PageHeader } from '../ui/PageHeader.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
+import type { Meaning } from '../ui/meanings.ts';
 
 interface Detail {
   source: {
@@ -45,6 +49,14 @@ const STATUS_TEXT: Record<Run['status'], string> = {
   succeeded: 'Ready to review',
   failed: 'Failed',
   blocked: 'Not sent',
+};
+
+const STATUS_MEANING: Record<Run['status'], Meaning> = {
+  queued: 'draft',
+  running: 'planned',
+  succeeded: 'ok',
+  failed: 'failing',
+  blocked: 'blocked',
 };
 
 export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionNo: number | null }) {
@@ -110,7 +122,7 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
     }
   }
 
-  if (error && !detail) return <main className="page narrow"><p role="alert" className="error">{error}</p><a href="#/">My Projects</a></main>;
+  if (error && !detail) return <main className="page narrow"><p role="alert" className="error">{error}</p><a href="#/projects">Projects</a></main>;
   if (!detail || !version) return <p className="loading">Loading</p>;
 
   const src = detail.source;
@@ -125,8 +137,14 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
 
   return (
     <main className="page">
-      <p><a href={`#/projects/${src.projectId}/notes`}>Back to the project's notes</a></p>
-      <h1>{src.title}</h1>
+      <PageHeader
+        crumbs={[
+          { text: 'Projects', href: '#/projects' },
+          { text: project?.name ?? 'Project', href: `#/projects/${src.projectId}` },
+          { text: 'Notes', href: `#/projects/${src.projectId}/notes` },
+        ]}
+        title={src.title}
+      />
       {mayDelete && sourceKind && (
         <p>
           <DeleteAction kind={sourceKind} id={sourceId} label={`${sourceKind === 'minutes' ? 'these minutes' : `this ${sourceKind}`}`} onDone={() => go(`#/projects/${src.projectId}/notes`)} />
@@ -137,18 +155,24 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
           <ReportSecret projectId={src.projectId} kind="source" id={sourceId} label={`this ${sourceKind === 'minutes' ? 'set of minutes' : (sourceKind ?? 'source')}`} onReported={() => go(`#/projects/${src.projectId}/notes`)} />
         </p>
       )}
-      {src.label && <p className="meta">{src.label}</p>}
-      <QuarantineNote text={src.quarantineLabel} />
-      {src.provenance && <p className="meta">{src.provenance}</p>}
-      {src.summary && (
-        <p className="meta" role="note">
-          {src.summary.label}
-          {src.summary.approved && <> · {src.summary.approved}</>} · {src.summary.from}
-        </p>
-      )}
-      {src.publication === 'submitted' && <p className="warn" role="note">Submitted for review. Only the person who submitted it and the reviewers can see it; it is not analysed, and not searched by other participants, until it is published.</p>}
-      {src.publication === 'returned' && (
-        <p className="warn" role="note">{returnedNotice(src.returnedReason)}</p>
+      {(src.label || src.quarantineLabel || src.provenance || src.summary || src.publication !== 'published') && (
+        <Box meaning={src.publication === 'submitted' ? 'review' : src.publication === 'returned' ? 'attention' : undefined}>
+          {src.publication === 'submitted' && <p><StatusLabel meaning="review" word="Submitted for review" /></p>}
+          {src.publication === 'returned' && <p><StatusLabel meaning="attention" word="Returned" /></p>}
+          {src.label && <p className="meta">{src.label}</p>}
+          <QuarantineNote text={src.quarantineLabel} />
+          {src.provenance && <p className="meta">{src.provenance}</p>}
+          {src.summary && (
+            <p className="meta" role="note">
+              {src.summary.label}
+              {src.summary.approved && <> · {src.summary.approved}</>} · {src.summary.from}
+            </p>
+          )}
+          {src.publication === 'submitted' && <p className="warn" role="note">Submitted for review. Only the person who submitted it and the reviewers can see it; it is not analysed, and not searched by other participants, until it is published.</p>}
+          {src.publication === 'returned' && (
+            <p className="warn" role="note">{returnedNotice(src.returnedReason)}</p>
+          )}
+        </Box>
       )}
       {src.publication === 'submitted' && isReviewer && (
         <SubmissionReview sourceId={sourceId} kind={src.kind} intendedMode={src.intendedMode} memberships={memberships} onDone={() => void load()} />
@@ -173,7 +197,7 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
         {detail.mayAddVersion && <button className="quiet" onClick={() => setAdding((a) => !a)} aria-expanded={adding}>Add a new version</button>}
       </nav>
       {adding && detail.mayAddVersion && (
-        <section className="panel" aria-label="Add a new version">
+        <section className="box" aria-label="Add a new version">
           <p className="hint">A new version keeps the old one. Proposals always point at the exact version they were made from.</p>
           <Intake
             withTitle={false}
@@ -188,7 +212,7 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
         </section>
       )}
       <div className="split">
-        <section aria-label="Notes text">
+        <section aria-label="Notes text" className="note-text">
           <p className="meta">
             Version {version.versionNo}, {versionOriginText(version)}, {version.charCount.toLocaleString()} characters, added {formatWhen(version.createdAt)}.{' '}
             {version.origin === 'upload' && (version.originalWithheld ? <span className="warn" role="note">{version.originalWithheld}</span> : <a href={api.originalUrl(sourceId, version.versionNo)}>Download the original file</a>)}
@@ -202,8 +226,8 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
           <div className="source" tabIndex={0}>{text ?? 'Loading'}</div>
         </section>
         {published && src.kind !== 'discussion' && src.mayExtract !== false && (
-        <aside aria-label="Proposals">
-          <h2>Proposals from this version</h2>
+        <aside aria-labelledby="note-proposals-heading" className="box">
+          <h2 id="note-proposals-heading" className="box-title">Proposals from this version</h2>
           <button className="primary" onClick={extract} disabled={starting || active}>
             {active ? 'Reading the notes' : runs.length ? 'Run again' : 'Find decisions and actions'}
           </button>
@@ -213,7 +237,7 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
           <ul className="list runs">
             {runs.map((r) => (
               <li key={r.id}>
-                <span className={`status status-${r.status}`}>{STATUS_TEXT[r.status]}</span>
+                <StatusLabel meaning={STATUS_MEANING[r.status]} word={STATUS_TEXT[r.status]} />
                 <span className="meta">{formatWhen(r.createdAt)}{r.requestedByLabel ? ` · ${r.requestedByLabel}` : ''}</span>
                 {r.status === 'succeeded' && (
                   <>

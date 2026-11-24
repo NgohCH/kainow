@@ -89,8 +89,9 @@ export function ResourceLineForm({ projectId, line, onSaved, onCancel }: { proje
   }
 
   return (
-    <form className="panel stack" aria-label={editing ? 'Edit resource line' : 'Add a resource'} onSubmit={(e) => void submit(e)}>
-      <h3>{editing ? 'Edit resource' : 'Add a resource'}</h3>
+    <form className="box stack change-form" aria-label={editing ? 'Edit resource line' : 'Add a resource'} onSubmit={(e) => void submit(e)}>
+      <h3 className="form-box-title">{editing ? 'Edit resource' : 'Add a resource'}</h3>
+      <p className="meta">{editing ? 'Saving records the change in the line’s history.' : 'This records that the project uses the resource. It does not book it.'}</p>
       {!editing && (
         <fieldset>
           <legend>Resource</legend>

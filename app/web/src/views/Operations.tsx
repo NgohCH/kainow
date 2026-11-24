@@ -47,66 +47,68 @@ import {
   resumeCheckWords,
   runOutcomeWords,
 } from '../operations.ts';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { PageHeader } from '../ui/PageHeader.tsx';
+import { SettingsPage } from '../ui/SettingsPage.tsx';
+import { StatTile } from '../ui/StatTile.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
+import { Box } from '../ui/Box.tsx';
+import type { Meaning } from '../ui/meanings.ts';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 
-/** The mark shown beside a status word, so colour is never the only signal. */
-const MARK = { good: '✓', warn: '!', bad: '✗', none: '–' } as const;
-type Tone = keyof typeof MARK;
+/** The four tones a state can have, shown with the shared status label (symbol and word, never colour alone). */
+type Tone = 'good' | 'warn' | 'bad' | 'none';
+const TONE_MEANING: Record<Tone, Meaning> = { good: 'ok', warn: 'attention', bad: 'failing', none: 'off' };
 const levelTone = (l: StorageLevel): Tone => (l === 'normal' ? 'good' : l === 'warning' ? 'warn' : l === 'critical' ? 'bad' : 'none');
 const backupTone = (s: OperationsView['backups']['status']): Tone => (s === 'healthy' ? 'good' : s === 'last_failed' ? 'warn' : 'bad');
 
 function Word({ tone, children }: { tone: Tone; children: string }) {
-  return (
-    <span className={`ops-word ops-${tone}`}>
-      <span aria-hidden="true" className="ops-mark">{MARK[tone]}</span> {children}
-    </span>
-  );
+  return <StatusLabel meaning={TONE_MEANING[tone]} word={children} />;
 }
 
 const when = (iso: string | null) => (iso ? formatWhen(iso) : 'Never');
 
-/** Backups, last drill, the disks, protective mode and updates: a word and a time each. Shared with the analytics panel. */
+/** Last backup, last restore drill, the disks, protective mode and updates: a figure, a state label and a time each. Shared with the analytics panel. */
 export function StatusStrip({ status }: { status: Pick<OperationsView, 'storage' | 'protective'> & { backups: Pick<OperationsView['backups'], 'status' | 'lastSuccess' | 'lastAttempt'>; lastDrill: Drill | null; updates?: UpdatesSummary } }) {
   const drill = status.lastDrill;
   const drillTone: Tone = !drill ? 'none' : drill.outcome === 'passed' ? 'good' : drill.outcome === 'failed' ? 'bad' : 'warn';
-  const items: Array<{ label: string; tone: Tone; word: string; time: string }> = [
+  const items: Array<{ label: string; tone: Tone; word: string; value: string; note?: string }> = [
     {
-      label: 'Backups',
+      label: 'Last backup',
       tone: backupTone(status.backups.status),
       word: backupStatusWords(status.backups.status),
-      time: status.backups.lastSuccess ? `Last success ${when(status.backups.lastSuccess.finishedAt ?? status.backups.lastSuccess.startedAt)}` : 'No successful backup',
+      value: status.backups.lastSuccess ? when(status.backups.lastSuccess.finishedAt ?? status.backups.lastSuccess.startedAt) : 'None yet',
+      note: status.backups.lastSuccess ? 'Last success' : 'No successful backup',
     },
     {
       label: 'Last restore drill',
       tone: drillTone,
       word: drill ? drillOutcomeWords(drill.outcome) : 'No drill yet',
-      time: drill ? when(drill.finishedAt ?? drill.startedAt) : 'Never',
+      value: drill ? when(drill.finishedAt ?? drill.startedAt) : 'Never',
     },
     ...status.storage.locations.map((l) => ({
       label: locationWords(l.location),
       tone: levelTone(l.level),
       word: levelWords(l.level),
-      time: l.at ? `Read ${when(l.at)}` : 'Never read',
+      value: l.usedPct === null ? 'Not read' : `${l.usedPct.toFixed(0)}% used`,
+      note: l.at ? `Read ${when(l.at)}` : 'Never read',
     })),
     {
       label: 'Protective mode',
       tone: status.protective.on ? ('bad' as const) : ('good' as const),
       word: status.protective.on ? (status.protective.reason === 'update' ? 'On (updating)' : 'On (read-only)') : 'Off',
-      time: status.protective.on && status.protective.since ? `Since ${when(status.protective.since)}` : 'Normal use',
+      value: status.protective.on ? 'On' : 'Off',
+      note: status.protective.on && status.protective.since ? `Since ${when(status.protective.since)}` : 'Normal use',
     },
     ...(status.updates ? [updatesTile(status.updates)] : []),
   ];
   return (
-    <ul className="plain ops-strip" aria-label="Status summary">
+    <div className="stat-grid" role="group" aria-label="Status summary">
       {items.map((i) => (
-        <li key={i.label} className="ops-tile">
-          <span className="ops-tile-label">{i.label}</span>
-          <Word tone={i.tone}>{i.word}</Word>
-          <span className="meta">{i.time}</span>
-        </li>
+        <StatTile key={i.label} label={i.label} value={i.value} meaning={TONE_MEANING[i.tone]} word={i.word} note={i.note} />
       ))}
-    </ul>
+    </div>
   );
 }
 
@@ -166,49 +168,42 @@ export function GrowthChart({ rows, location, id }: { rows: GrowthRow[]; locatio
 }
 
 function RunsTable({ runs }: { runs: BackupRun[] }) {
-  if (runs.length === 0) return <p className="empty">No backup has run yet.</p>;
-  return (
-    <div className="table-scroll">
-      <table className="table">
-        <caption>The last {plural(runs.length, 'backup run')}, newest first</caption>
-        <thead>
-          <tr>
-            <th scope="col">Started</th>
-            <th scope="col">Kind</th>
-            <th scope="col">Outcome</th>
-            <th scope="col">Backup size (encrypted)</th>
-            <th scope="col">Files</th>
-            <th scope="col">Duration</th>
-          </tr>
-        </thead>
-        <tbody>
-          {runs.map((r) => (
-            <tr key={r.id}>
-              <td data-label="Started">{formatWhen(r.startedAt)}</td>
-              <td data-label="Kind">{KIND_WORDS[r.kind]}</td>
-              <td data-label="Outcome">
-                <Word tone={r.outcome === 'succeeded' ? 'good' : r.outcome === 'failed' ? 'bad' : 'warn'}>{runOutcomeWords(r)}</Word>
-                {r.failureText && <span className="meta"> {r.failureText}</span>}
-              </td>
-              <td data-label="Backup size (encrypted)">{formatBytes(r.databaseEncryptedBytes)}</td>
-              <td data-label="Files">
-                {r.filesTotal === null ? 'Not recorded' : `${r.filesTotal}${r.filesNew !== null ? `, ${r.filesNew} new` : ''}${r.filesNotCopied ? `, ${r.filesNotCopied} not copied` : ''}`}
-              </td>
-              <td data-label="Duration">{durationWords(r.durationSeconds)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
+  const columns: Column<BackupRun>[] = [
+    { key: 'started', header: 'Started', sortValue: (r) => r.startedAt, cell: (r) => formatWhen(r.startedAt) },
+    { key: 'kind', header: 'Kind', sortValue: (r) => KIND_WORDS[r.kind], cell: (r) => KIND_WORDS[r.kind] },
+    {
+      key: 'outcome',
+      header: 'Outcome',
+      sortValue: (r) => r.outcome,
+      cell: (r) => (
+        <>
+          <Word tone={r.outcome === 'succeeded' ? 'good' : r.outcome === 'failed' ? 'bad' : 'warn'}>{runOutcomeWords(r)}</Word>
+          {r.failureText && <span className="meta"> {r.failureText}</span>}
+        </>
+      ),
+    },
+    { key: 'size', header: 'Backup size (encrypted)', cell: (r) => formatBytes(r.databaseEncryptedBytes) },
+    {
+      key: 'files',
+      header: 'Files',
+      cell: (r) => (r.filesTotal === null ? 'Not recorded' : `${r.filesTotal}${r.filesNew !== null ? `, ${r.filesNew} new` : ''}${r.filesNotCopied ? `, ${r.filesNotCopied} not copied` : ''}`),
+    },
+    { key: 'duration', header: 'Duration', cell: (r) => durationWords(r.durationSeconds) },
+  ];
+  return <DataTable caption={`The last ${plural(runs.length, 'backup run')}, newest first`} columns={columns} rows={runs} rowKey={(r) => r.id} empty="No backup has run yet." />;
 }
 
 function DrillBlock({ d, heading }: { d: Drill; heading: string }) {
   const tone: Tone = d.outcome === 'passed' ? 'good' : d.outcome === 'failed' ? 'bad' : 'warn';
   const lines = drillFailureLines(d);
+  const columns: Column<Drill['checks'][number]>[] = [
+    { key: 'check', header: 'Check', cell: (c) => checkNameWords(c.name) },
+    { key: 'result', header: 'Result', cell: (c) => <Word tone={c.result === 'passed' ? 'good' : c.result === 'failed' ? 'bad' : 'none'}>{checkResultWords(c.result)}</Word> },
+    { key: 'detail', header: 'Detail', cell: (c) => c.detail ?? '' },
+  ];
   return (
     <div className="stack">
-      <h3>{heading}</h3>
+      <h4>{heading}</h4>
       <p>
         <Word tone={tone}>{drillOutcomeWords(d.outcome)}</Word>
         <span className="meta"> · started {formatWhen(d.startedAt)}{d.setName ? ` · backup set ${d.setName}` : ''}{d.sampled ? ' · sampled' : ''}</span>
@@ -221,65 +216,24 @@ function DrillBlock({ d, heading }: { d: Drill; heading: string }) {
           {lines.map((l) => <li key={l} className="error">{l}</li>)}
         </ul>
       )}
-      {d.checks.length > 0 && (
-        <div className="table-scroll">
-          <table className="table">
-            <caption>Checks in this drill</caption>
-            <thead>
-              <tr>
-                <th scope="col">Check</th>
-                <th scope="col">Result</th>
-                <th scope="col">Detail</th>
-              </tr>
-            </thead>
-            <tbody>
-              {d.checks.map((c) => (
-                <tr key={c.name}>
-                  <th scope="row">{checkNameWords(c.name)}</th>
-                  <td data-label="Result"><Word tone={c.result === 'passed' ? 'good' : c.result === 'failed' ? 'bad' : 'none'}>{checkResultWords(c.result)}</Word></td>
-                  <td data-label="Detail">{c.detail ?? ''}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-      )}
+      {d.checks.length > 0 && <DataTable caption="Checks in this drill" columns={columns} rows={d.checks} rowKey={(c) => c.name} empty="No checks were recorded." />}
     </div>
   );
 }
 
 function StorageBlock({ s, growth }: { s: OperationsView['storage']; growth: GrowthRow[] }) {
+  const columns: Column<StorageRow>[] = [
+    { key: 'location', header: 'Location', sortValue: (l) => locationWords(l.location), cell: (l) => locationWords(l.location) },
+    { key: 'used', header: 'Used', cell: (l) => formatBytes(l.usedBytes) },
+    { key: 'free', header: 'Free', cell: (l) => formatBytes(l.freeBytes) },
+    { key: 'total', header: 'Total', cell: (l) => formatBytes(l.totalBytes) },
+    { key: 'pct', header: 'Percentage used', sortValue: (l) => l.usedPct ?? -1, cell: (l) => (l.usedPct === null ? 'Unavailable' : `${l.usedPct.toFixed(1)}%`) },
+    { key: 'level', header: 'Level', cell: (l) => <Word tone={levelTone(l.level)}>{levelWords(l.level)}</Word> },
+    { key: 'at', header: 'Last reading', cell: (l) => (l.at ? formatWhen(l.at) : 'Never') },
+  ];
   return (
     <>
-      <div className="table-scroll">
-        <table className="table">
-          <caption>Disks and storage</caption>
-          <thead>
-            <tr>
-              <th scope="col">Location</th>
-              <th scope="col">Used</th>
-              <th scope="col">Free</th>
-              <th scope="col">Total</th>
-              <th scope="col">Used</th>
-              <th scope="col">Level</th>
-              <th scope="col">Last reading</th>
-            </tr>
-          </thead>
-          <tbody>
-            {s.locations.map((l: StorageRow) => (
-              <tr key={l.location}>
-                <th scope="row">{locationWords(l.location)}</th>
-                <td data-label="Used">{formatBytes(l.usedBytes)}</td>
-                <td data-label="Free">{formatBytes(l.freeBytes)}</td>
-                <td data-label="Total">{formatBytes(l.totalBytes)}</td>
-                <td data-label="Percentage used">{l.usedPct === null ? 'Unavailable' : `${l.usedPct.toFixed(1)}%`}</td>
-                <td data-label="Level"><Word tone={levelTone(l.level)}>{levelWords(l.level)}</Word></td>
-                <td data-label="Last reading">{l.at ? formatWhen(l.at) : 'Never'}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
+      <DataTable caption="Disks and storage" columns={columns} rows={s.locations} rowKey={(l) => l.location} empty="No disk has been read yet." />
       <p>Safe floor on the database disk: {s.safeFloorGb} GB free. Below it, protective read-only mode turns on.</p>
       {s.locations.map((l) => <GrowthChart key={l.location} rows={growth} location={l.location} id={`growth-${l.location}`} />)}
     </>
@@ -333,12 +287,12 @@ function ResumeForm({ onDone }: { onDone: () => void }) {
   if (!open) return <button type="button" className="primary" onClick={show}>Resume normal use</button>;
   const allPassed = checks !== null && checks.checks.every((c) => c.passed);
   return (
-    <form className="panel stack" onSubmit={confirm} aria-label="Resume normal use">
+    <form className="stack settings-form" onSubmit={confirm} aria-label="Resume normal use">
       <label>
         Reason for resuming
         <textarea required rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
       </label>
-      <h3>Checks before Kainow can resume</h3>
+      <h4>Checks before Kainow can resume</h4>
       {!checks && !error && <p className="loading">Checking</p>}
       {checks && (
         <ul className="plain" aria-label="Resume checks">
@@ -395,18 +349,17 @@ const stateTone = (s: UpdateState): Tone =>
 const stepTone = (o: UpdateStep['outcome']): Tone => (o === 'passed' ? 'good' : o === 'failed' ? 'bad' : o === 'skipped' ? 'none' : 'warn');
 
 /** The Updates tile of the status strip. */
-function updatesTile(u: UpdatesSummary): { label: string; tone: Tone; word: string; time: string } {
+function updatesTile(u: UpdatesSummary): { label: string; tone: Tone; word: string; value: string; note?: string } {
   const word = updateStatusWord(u);
-  const checked = u.lastCheckAt ? `Checked ${when(u.lastCheckAt)}` : 'Never checked';
-  const time =
+  const note =
     word === 'Update scheduled' && u.startsAt
       ? `v${u.latestToVersion ?? ''} starts ${when(u.startsAt)}`
       : word === 'Update failed' && u.latestToVersion
         ? `v${u.latestToVersion}`
         : word === 'Update available' && u.available
-          ? `${u.available} · ${checked}`
-          : checked;
-  return { label: 'Updates', tone: updateTone(word), word, time };
+          ? u.available
+          : undefined;
+  return { label: 'Last update check', tone: updateTone(word), word, value: u.lastCheckAt ? when(u.lastCheckAt) : 'Never', note };
 }
 
 /** Start time (UTC+8), expected length and reason, checked as typed with the server's bounds. Used to approve and to change the time. */
@@ -444,7 +397,7 @@ function WindowForm({ label, submitLabel, initial, onSubmit, onClose }: {
   }
 
   return (
-    <form className="panel stack" onSubmit={submit} aria-label={label}>
+    <form className="stack settings-form" onSubmit={submit} aria-label={label}>
       <div className="stack">
         <label htmlFor={`${id}-start`}>Start (UTC+8)</label>
         <div className="inline-form">
@@ -495,7 +448,7 @@ function CancelUpdateForm({ id, onDone, onClose }: { id: string; onDone: () => v
     }
   }
   return (
-    <form className="panel stack" onSubmit={submit} aria-label="Cancel the update">
+    <form className="stack settings-form" onSubmit={submit} aria-label="Cancel the update">
       <label>
         Reason for cancelling
         <textarea required rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
@@ -512,31 +465,13 @@ function CancelUpdateForm({ id, onDone, onClose }: { id: string; onDone: () => v
 
 function StepsTable({ steps }: { steps: UpdateStep[] }) {
   if (steps.length === 0) return null;
-  return (
-    <div className="table-scroll">
-      <table className="table">
-        <caption>Steps, in order</caption>
-        <thead>
-          <tr>
-            <th scope="col">Step</th>
-            <th scope="col">Result</th>
-            <th scope="col">Started</th>
-            <th scope="col">Why it failed</th>
-          </tr>
-        </thead>
-        <tbody>
-          {steps.map((s, i) => (
-            <tr key={`${s.step}-${i}`}>
-              <th scope="row">{stepWords(s.step)}</th>
-              <td data-label="Result"><Word tone={stepTone(s.outcome)}>{stepOutcomeWords(s.outcome)}</Word></td>
-              <td data-label="Started">{formatWhen(s.startedAt)}</td>
-              <td data-label="Why it failed">{s.failureText ?? ''}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
+  const columns: Column<UpdateStep>[] = [
+    { key: 'step', header: 'Step', cell: (s) => stepWords(s.step) },
+    { key: 'result', header: 'Result', cell: (s) => <Word tone={stepTone(s.outcome)}>{stepOutcomeWords(s.outcome)}</Word> },
+    { key: 'started', header: 'Started', cell: (s) => formatWhen(s.startedAt) },
+    { key: 'why', header: 'Why it failed', cell: (s) => s.failureText ?? '' },
+  ];
+  return <DataTable caption="Steps, in order" columns={columns} rows={steps} rowKey={(s) => `${s.step}-${s.startedAt}`} empty="No steps yet." />;
 }
 
 function CurrentUpdate({ u, onChanged }: { u: UpdateView; onChanged: () => void }) {
@@ -549,7 +484,7 @@ function CurrentUpdate({ u, onChanged }: { u: UpdateView; onChanged: () => void 
   };
   return (
     <div className="stack">
-      <h3>Current update: v{u.toVersion}</h3>
+      <h4>Current update: v{u.toVersion}</h4>
       <p><Word tone={stateTone(u.state)}>{u.stateWords}</Word></p>
       <ul className="plain">
         <li>From v{u.fromVersion} to v{u.toVersion}</li>
@@ -590,34 +525,23 @@ function CurrentUpdate({ u, onChanged }: { u: UpdateView; onChanged: () => void 
 }
 
 function UpdateHistory({ history }: { history: UpdateView[] }) {
-  if (history.length === 0) return <p className="empty">No update has been approved yet.</p>;
-  return (
-    <div className="table-scroll">
-      <table className="table">
-        <caption>The last {plural(history.length, 'update')}, newest first</caption>
-        <thead>
-          <tr>
-            <th scope="col">Version</th>
-            <th scope="col">Outcome</th>
-            <th scope="col">Start</th>
-            <th scope="col">Finished</th>
-            <th scope="col">Why it failed</th>
-          </tr>
-        </thead>
-        <tbody>
-          {history.map((u) => (
-            <tr key={u.id}>
-              <th scope="row">v{u.fromVersion} to v{u.toVersion}</th>
-              <td data-label="Outcome"><Word tone={stateTone(u.state)}>{u.stateWords}</Word>{u.cancelReason && <span className="meta"> Reason: {u.cancelReason}</span>}</td>
-              <td data-label="Start">{formatWhen(u.startsAt)}</td>
-              <td data-label="Finished">{u.finishedAt ? formatWhen(u.finishedAt) : 'Not finished'}</td>
-              <td data-label="Why it failed">{u.failureText ?? ''}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
+  const columns: Column<UpdateView>[] = [
+    { key: 'version', header: 'Version', cell: (u) => `v${u.fromVersion} to v${u.toVersion}` },
+    {
+      key: 'outcome',
+      header: 'Outcome',
+      cell: (u) => (
+        <>
+          <Word tone={stateTone(u.state)}>{u.stateWords}</Word>
+          {u.cancelReason && <span className="meta"> Reason: {u.cancelReason}</span>}
+        </>
+      ),
+    },
+    { key: 'start', header: 'Start', sortValue: (u) => u.startsAt, cell: (u) => formatWhen(u.startsAt) },
+    { key: 'finished', header: 'Finished', cell: (u) => (u.finishedAt ? formatWhen(u.finishedAt) : 'Not finished') },
+    { key: 'why', header: 'Why it failed', cell: (u) => u.failureText ?? '' },
+  ];
+  return <DataTable caption={`The last ${plural(history.length, 'update')}, newest first`} columns={columns} rows={history} rowKey={(u) => u.id} empty="No update has been approved yet." />;
 }
 
 /** Operations → Updates: the running version, release checks, the newest release to approve, the current update and history. */
@@ -683,7 +607,7 @@ function UpdatesSection({ onChanged }: { onChanged: () => void }) {
         {checkNote && <span role="status">{checkNote}</span>}
       </div>
 
-      <h3>Available</h3>
+      <h4>Available</h4>
       {data.available ? (
         <div className="stack">
           <p>
@@ -716,7 +640,7 @@ function UpdatesSection({ onChanged }: { onChanged: () => void }) {
 
       {data.current && <CurrentUpdate u={data.current} onChanged={() => { load(); onChanged(); }} />}
 
-      <h3>History</h3>
+      <h4>History</h4>
       <UpdateHistory history={data.history} />
     </>
   );
@@ -727,94 +651,38 @@ function historyText(c: SettingsData['changes'][number]): string {
   return parts.join('; ') || 'the settings';
 }
 
-/** The five settings, with bounds, values in force and history; saved with a reason. A refusal keeps the form as typed. */
-function SettingsForm({ onSaved }: { onSaved: () => void }) {
+/** The five operations settings as loaded from the server; the page and its form share one copy. */
+function useOpsSettings() {
   const [data, setData] = useState<SettingsData | null>(null);
-  const [form, setForm] = useState<OpsSettingsValues | null>(null);
-  const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [busy, setBusy] = useState(false);
-
   const load = useCallback(() => {
     api.get<SettingsData>('/admin/operations/settings').then(
       (r) => {
         setData(r);
-        setForm(r.settings);
+        setError(null);
       },
       (e) => setError(errText(e)),
     );
   }, []);
   useEffect(load, [load]);
+  return { data, error, reload: load };
+}
 
-  const problem = (() => {
-    if (!data || !form) return null;
-    for (const r of SETTING_ROWS) {
-      const b = data.bounds[r.key];
-      const v = form[r.key];
-      if (!Number.isInteger(v) || v < b.min || v > b.max) return `${r.label} must be a whole number from ${b.min} to ${b.max}.`;
-    }
-    if (form.storageCriticalPct <= form.storageWarningPct) return `The critical level must be higher than the warning level (${form.storageWarningPct}).`;
-    return null;
-  })();
-  const unchanged = !!data && !!form && SETTING_ROWS.every((r) => form[r.key] === data.settings[r.key]);
-
-  async function save(e: FormEvent) {
-    e.preventDefault();
-    if (!form) return;
-    setError(null);
-    setNotice(null);
-    const r = reasonProblem(reason);
-    if (r) return setError(r);
-    setBusy(true);
-    try {
-      await api.put('/admin/operations/settings', { ...form, reason: reason.trim() });
-      setReason('');
-      setNotice('Saved.');
-      load();
-      onSaved();
-    } catch (err) {
-      // The form keeps what was typed. A refusal in protective mode shows the server's own words.
-      setError(isProtectiveRefusal(err) ? err.message : errText(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-
-  if (!data || !form) return error ? <p role="alert" className="error">{error}</p> : <p className="loading">Loading</p>;
-  const set = (key: keyof OpsSettingsValues, value: number) => setForm((f) => (f ? { ...f, [key]: value } : f));
+/** What is in force now: each of the five settings, and the change history. */
+function SettingsCurrent({ data, error }: { data: SettingsData | null; error: string | null }) {
+  if (!data) return error ? <p role="alert" className="error">{error}</p> : <p className="loading">Loading</p>;
   return (
     <>
-      <form className="panel stack" onSubmit={save} aria-label="Operations settings">
-        {SETTING_ROWS.map((r) => {
-          const b = data.bounds[r.key];
-          const min = r.key === 'storageCriticalPct' ? data.rules.storageCriticalEffectiveMin : b.min;
-          const id = `ops-${r.key}`;
-          return (
-            <div key={r.key} className="stack">
-              <label htmlFor={id}>{r.label}</label>
-              <div className="inline-form">
-                <input id={id} type="number" inputMode="numeric" step={1} min={min} max={b.max} required value={Number.isNaN(form[r.key]) ? '' : form[r.key]} aria-describedby={`${id}-info`} onChange={(e) => set(r.key, e.target.value === '' ? NaN : Number(e.target.value))} />
-                <span>{r.unit}</span>
-              </div>
-              <p id={`${id}-info`} className="hint">
-                In force: {data.settings[r.key]} · Default: {data.defaults[r.key]} · Allowed: {b.min}–{b.max}
-                {r.key === 'storageCriticalPct' ? ` (at least ${data.rules.storageCriticalEffectiveMin} with the warning level as it is now)` : ''}. {r.hint}
-              </p>
-            </div>
-          );
-        })}
-        {problem && <p role="alert" className="error">{problem}</p>}
-        <label>
-          Reason for the change
-          <textarea required rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
-        </label>
-        {error && <p role="alert" className="error">{error}</p>}
-        {notice && <p role="status" className="ok">{notice}</p>}
-        <button className="primary" disabled={busy || unchanged || problem !== null}>Save</button>
-      </form>
+      <dl className="facts">
+        {SETTING_ROWS.map((r) => (
+          <div key={r.key}>
+            <dt>{r.label}</dt>
+            <dd>{data.settings[r.key]} {r.unit}</dd>
+          </div>
+        ))}
+      </dl>
       <section aria-labelledby="ops-history">
-        <h3 id="ops-history">Change history</h3>
+        <h4 id="ops-history">Change history</h4>
         {data.changes.length === 0 ? (
           <p className="meta">No changes yet.</p>
         ) : (
@@ -829,10 +697,86 @@ function SettingsForm({ onSaved }: { onSaved: () => void }) {
   );
 }
 
+/** The five settings, with bounds, values in force and history; saved with a reason. A refusal keeps the form as typed. */
+function SettingsForm({ data, onSaved, onClose }: { data: SettingsData; onSaved: () => void; onClose: () => void }) {
+  const [form, setForm] = useState<OpsSettingsValues>(data.settings);
+  const [reason, setReason] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  const problem = (() => {
+    for (const r of SETTING_ROWS) {
+      const b = data.bounds[r.key];
+      const v = form[r.key];
+      if (!Number.isInteger(v) || v < b.min || v > b.max) return `${r.label} must be a whole number from ${b.min} to ${b.max}.`;
+    }
+    if (form.storageCriticalPct <= form.storageWarningPct) return `The critical level must be higher than the warning level (${form.storageWarningPct}).`;
+    return null;
+  })();
+  const unchanged = SETTING_ROWS.every((r) => form[r.key] === data.settings[r.key]);
+
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    setNotice(null);
+    const r = reasonProblem(reason);
+    if (r) return setError(r);
+    setBusy(true);
+    try {
+      await api.put('/admin/operations/settings', { ...form, reason: reason.trim() });
+      setReason('');
+      setNotice('Saved.');
+      onSaved();
+    } catch (err) {
+      // The form keeps what was typed. A refusal in protective mode shows the server's own words.
+      setError(isProtectiveRefusal(err) ? err.message : errText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  const set = (key: keyof OpsSettingsValues, value: number) => setForm((f) => ({ ...f, [key]: value }));
+  return (
+    <form className="stack" onSubmit={save} aria-label="Operations settings">
+      {SETTING_ROWS.map((r) => {
+        const b = data.bounds[r.key];
+        const min = r.key === 'storageCriticalPct' ? data.rules.storageCriticalEffectiveMin : b.min;
+        const id = `ops-${r.key}`;
+        return (
+          <div key={r.key} className="stack">
+            <label htmlFor={id}>{r.label}</label>
+            <div className="inline-form">
+              <input id={id} type="number" inputMode="numeric" step={1} min={min} max={b.max} required value={Number.isNaN(form[r.key]) ? '' : form[r.key]} aria-describedby={`${id}-info`} onChange={(e) => set(r.key, e.target.value === '' ? NaN : Number(e.target.value))} />
+              <span>{r.unit}</span>
+            </div>
+            <p id={`${id}-info`} className="hint">
+              In force: {data.settings[r.key]} · Default: {data.defaults[r.key]} · Allowed: {b.min}–{b.max}
+              {r.key === 'storageCriticalPct' ? ` (at least ${data.rules.storageCriticalEffectiveMin} with the warning level as it is now)` : ''}. {r.hint}
+            </p>
+          </div>
+        );
+      })}
+      {problem && <p role="alert" className="error">{problem}</p>}
+      <label>
+        Reason for the change
+        <textarea required rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
+      </label>
+      {error && <p role="alert" className="error">{error}</p>}
+      {notice && <p role="status" className="ok">{notice}</p>}
+      <div className="inline-form">
+        <button className="primary" disabled={busy || unchanged || problem !== null}>Save</button>
+        <button type="button" className="quiet" onClick={onClose}>Close</button>
+      </div>
+    </form>
+  );
+}
+
 /** Administration → Operations (spec 10): backups, restore drills, storage, protective mode and settings. */
 export function Operations() {
   const [data, setData] = useState<OperationsView | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const settings = useOpsSettings();
 
   const load = useCallback(() => {
     api.get<OperationsView>('/admin/operations').then(
@@ -845,136 +789,141 @@ export function Operations() {
   }, []);
   useEffect(load, [load]);
 
+  const header = {
+    title: 'Operations',
+    intro: 'Backups, restore drills, disk space, updates and the health of Kainow.',
+  };
+
+  if (!data) {
+    return (
+      <main className="page">
+        <PageHeader {...header} />
+        {error && <p role="alert" className="error">{error}</p>}
+        {!error && <p className="loading">Loading</p>}
+      </main>
+    );
+  }
+
+  const glance = (
+    <>
+      {error && <p role="alert" className="error">{error}</p>}
+      <StatusStrip status={{ backups: data.backups, lastDrill: data.drills.last, storage: data.storage, protective: data.protective, updates: data.updates }} />
+
+      <Box title="Backups" headingLevel={3} meaning={TONE_MEANING[backupTone(data.backups.status)]}>
+        <div className="stack">
+          <p><Word tone={backupTone(data.backups.status)}>{backupStatusWords(data.backups.status)}</Word></p>
+          <ul className="plain">
+            <li>Last success: {data.backups.lastSuccess ? `${when(data.backups.lastSuccess.finishedAt ?? data.backups.lastSuccess.startedAt)}, ${KIND_WORDS[data.backups.lastSuccess.kind].toLowerCase()}, backup size (encrypted) ${formatBytes(data.backups.lastSuccess.databaseEncryptedBytes)}, ${data.backups.lastSuccess.filesTotal ?? 0} source files` : 'None yet'}</li>
+            <li>Last attempt: {data.backups.lastAttempt ? `${when(data.backups.lastAttempt.startedAt)}, ${runOutcomeWords(data.backups.lastAttempt).toLowerCase()}` : 'None yet'}</li>
+            {data.backups.lastAttempt?.failureText && <li className="error">Failure: {data.backups.lastAttempt.failureText}</li>}
+            <li>Kept for: {plural(data.backups.retentionDays, 'day')}</li>
+            <li>Backup folder: {data.backups.folderLabel ?? 'Not shown'}</li>
+            <li>Key id: {data.backups.keyId ?? 'Not recorded'}</li>
+          </ul>
+          {data.backups.drillAgain && <p role="status">{data.backups.drillAgain}</p>}
+          <RunsTable runs={data.backups.runs} />
+        </div>
+      </Box>
+
+      <Box title="Updates" headingLevel={3}>
+        <div className="stack">
+          <UpdatesSection onChanged={load} />
+        </div>
+      </Box>
+
+      <Box title="Restore drills" headingLevel={3} meaning={data.drills.last ? TONE_MEANING[data.drills.last.outcome === 'passed' ? 'good' : data.drills.last.outcome === 'failed' ? 'bad' : 'warn'] : 'off'}>
+        <div className="stack">
+          {data.drills.last ? <DrillBlock d={data.drills.last} heading="Last drill" /> : <p className="empty">No restore drill has run yet.</p>}
+          {data.drills.earlier.length > 0 && (
+            <DataTable
+              caption="Earlier drills, newest first"
+              columns={[
+                { key: 'started', header: 'Started', sortValue: (d: Drill) => d.startedAt, cell: (d: Drill) => formatWhen(d.startedAt) },
+                { key: 'result', header: 'Result', cell: (d: Drill) => <Word tone={d.outcome === 'passed' ? 'good' : d.outcome === 'failed' ? 'bad' : 'warn'}>{drillOutcomeWords(d.outcome)}</Word> },
+                { key: 'duration', header: 'Duration', cell: (d: Drill) => durationWords(d.durationSeconds) },
+                { key: 'why', header: 'Why it failed', cell: (d: Drill) => drillFailureLines(d).join(' ') },
+              ]}
+              rows={data.drills.earlier}
+              rowKey={(d) => d.id}
+              empty="No earlier drills."
+            />
+          )}
+          {data.drills.kept.length > 0 && (
+            <div>
+              <h4>Drill databases kept</h4>
+              <ul className="plain">{data.drills.kept.map((k) => <li key={k.name}>{k.name}</li>)}</ul>
+            </div>
+          )}
+          {data.drills.stray.length > 0 && (
+            <div>
+              <h4>Other drill databases on the server</h4>
+              <p className="hint">These are not recorded as kept. A drill that was stopped part-way can leave one.</p>
+              <ul className="plain">{data.drills.stray.map((n) => <li key={n}>{n}</li>)}</ul>
+            </div>
+          )}
+        </div>
+      </Box>
+
+      <Box title="Storage" headingLevel={3}>
+        <div className="stack">
+          <StorageBlock s={data.storage} growth={data.growth} />
+        </div>
+      </Box>
+
+      <Box title="Protective mode" headingLevel={3} meaning={data.protective.on ? 'failing' : 'ok'}>
+        <div className="stack">
+          <ProtectiveBlock p={data.protective} onDone={load} />
+        </div>
+      </Box>
+
+      <Box title="Health" headingLevel={3} meaning={data.health.migrationsCurrent ? 'ok' : 'failing'}>
+        <div className="stack">
+          <ul className="plain">
+            <li>Database: <Word tone="good">Up</Word></li>
+            <li>Database structure: <Word tone={data.health.migrationsCurrent ? 'good' : 'bad'}>{data.health.migrationsCurrent ? 'Matches this version of Kainow' : 'Does not match this version of Kainow'}</Word></li>
+            <li>Last sweep: {when(data.health.lastSweepAt)}</li>
+          </ul>
+          {data.health.queues.length > 0 && (
+            <DataTable
+              caption="Job queues"
+              columns={[
+                { key: 'queue', header: 'Queue', sortValue: (q: OperationsView['health']['queues'][number]) => q.name, cell: (q: OperationsView['health']['queues'][number]) => q.name },
+                { key: 'waiting', header: 'Waiting', sortValue: (q: OperationsView['health']['queues'][number]) => q.queued, cell: (q: OperationsView['health']['queues'][number]) => q.queued },
+                { key: 'running', header: 'Running', sortValue: (q: OperationsView['health']['queues'][number]) => q.active, cell: (q: OperationsView['health']['queues'][number]) => q.active },
+                { key: 'failed', header: 'Failed in 24 hours', sortValue: (q: OperationsView['health']['queues'][number]) => q.failed24h, cell: (q: OperationsView['health']['queues'][number]) => q.failed24h },
+              ]}
+              rows={data.health.queues}
+              rowKey={(q) => q.name}
+              empty="No job queues."
+            />
+          )}
+        </div>
+      </Box>
+
+      <Box title="How backups run" headingLevel={3}>
+        <p>
+          Backups and restore drills run on the server, not in this page: the server&apos;s own schedule starts them, and this page only shows what they did.
+          To make a backup by hand, run a drill, or restore from a backup, follow INSTALL.md, section &quot;Backups&quot;.
+        </p>
+      </Box>
+    </>
+  );
+
   return (
     <main className="page">
-      <h1>Operations</h1>
-      {error && <p role="alert" className="error">{error}</p>}
-      {!data && !error && <p className="loading">Loading</p>}
-      {data && (
-        <>
-          <StatusStrip status={{ backups: data.backups, lastDrill: data.drills.last, storage: data.storage, protective: data.protective, updates: data.updates }} />
-
-          <section className="panel stack" aria-labelledby="ops-backups">
-            <h2 id="ops-backups">Backups</h2>
-            <p><Word tone={backupTone(data.backups.status)}>{backupStatusWords(data.backups.status)}</Word></p>
-            <ul className="plain">
-              <li>Last success: {data.backups.lastSuccess ? `${when(data.backups.lastSuccess.finishedAt ?? data.backups.lastSuccess.startedAt)}, ${KIND_WORDS[data.backups.lastSuccess.kind].toLowerCase()}, backup size (encrypted) ${formatBytes(data.backups.lastSuccess.databaseEncryptedBytes)}, ${data.backups.lastSuccess.filesTotal ?? 0} source files` : 'None yet'}</li>
-              <li>Last attempt: {data.backups.lastAttempt ? `${when(data.backups.lastAttempt.startedAt)}, ${runOutcomeWords(data.backups.lastAttempt).toLowerCase()}` : 'None yet'}</li>
-              {data.backups.lastAttempt?.failureText && <li className="error">Failure: {data.backups.lastAttempt.failureText}</li>}
-              <li>Kept for: {plural(data.backups.retentionDays, 'day')}</li>
-              <li>Backup folder: {data.backups.folderLabel ?? 'Not shown'}</li>
-              <li>Key id: {data.backups.keyId ?? 'Not recorded'}</li>
-            </ul>
-            {data.backups.drillAgain && <p role="status">{data.backups.drillAgain}</p>}
-            <RunsTable runs={data.backups.runs} />
-          </section>
-
-          <section className="panel stack" aria-labelledby="ops-updates">
-            <h2 id="ops-updates">Updates</h2>
-            <UpdatesSection onChanged={load} />
-          </section>
-
-          <section className="panel stack" aria-labelledby="ops-drills">
-            <h2 id="ops-drills">Restore drills</h2>
-            {data.drills.last ? <DrillBlock d={data.drills.last} heading="Last drill" /> : <p className="empty">No restore drill has run yet.</p>}
-            {data.drills.earlier.length > 0 && (
-              <div className="table-scroll">
-                <table className="table">
-                  <caption>Earlier drills, newest first</caption>
-                  <thead>
-                    <tr>
-                      <th scope="col">Started</th>
-                      <th scope="col">Result</th>
-                      <th scope="col">Duration</th>
-                      <th scope="col">Why it failed</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.drills.earlier.map((d) => (
-                      <tr key={d.id}>
-                        <td data-label="Started">{formatWhen(d.startedAt)}</td>
-                        <td data-label="Result"><Word tone={d.outcome === 'passed' ? 'good' : d.outcome === 'failed' ? 'bad' : 'warn'}>{drillOutcomeWords(d.outcome)}</Word></td>
-                        <td data-label="Duration">{durationWords(d.durationSeconds)}</td>
-                        <td data-label="Why it failed">{drillFailureLines(d).join(' ')}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-            {data.drills.kept.length > 0 && (
-              <div>
-                <h3>Drill databases kept</h3>
-                <ul className="plain">{data.drills.kept.map((k) => <li key={k.name}>{k.name}</li>)}</ul>
-              </div>
-            )}
-            {data.drills.stray.length > 0 && (
-              <div>
-                <h3>Other drill databases on the server</h3>
-                <p className="hint">These are not recorded as kept. A drill that was stopped part-way can leave one.</p>
-                <ul className="plain">{data.drills.stray.map((n) => <li key={n}>{n}</li>)}</ul>
-              </div>
-            )}
-          </section>
-
-          <section className="panel stack" aria-labelledby="ops-storage">
-            <h2 id="ops-storage">Storage</h2>
-            <StorageBlock s={data.storage} growth={data.growth} />
-          </section>
-
-          <section className="panel stack" aria-labelledby="ops-protective">
-            <h2 id="ops-protective">Protective mode</h2>
-            <ProtectiveBlock p={data.protective} onDone={load} />
-          </section>
-
-          <section className="panel stack" aria-labelledby="ops-health">
-            <h2 id="ops-health">Health</h2>
-            <ul className="plain">
-              <li>Database: <Word tone="good">Up</Word></li>
-              <li>Database structure: <Word tone={data.health.migrationsCurrent ? 'good' : 'bad'}>{data.health.migrationsCurrent ? 'Matches this version of Kainow' : 'Does not match this version of Kainow'}</Word></li>
-              <li>Last sweep: {when(data.health.lastSweepAt)}</li>
-            </ul>
-            {data.health.queues.length > 0 && (
-              <div className="table-scroll">
-                <table className="table">
-                  <caption>Job queues</caption>
-                  <thead>
-                    <tr>
-                      <th scope="col">Queue</th>
-                      <th scope="col">Waiting</th>
-                      <th scope="col">Running</th>
-                      <th scope="col">Failed in 24 hours</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {data.health.queues.map((q) => (
-                      <tr key={q.name}>
-                        <th scope="row">{q.name}</th>
-                        <td data-label="Waiting">{q.queued}</td>
-                        <td data-label="Running">{q.active}</td>
-                        <td data-label="Failed in 24 hours">{q.failed24h}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            )}
-          </section>
-
-          <section className="panel stack" aria-labelledby="ops-settings">
-            <h2 id="ops-settings">Settings</h2>
-            <SettingsForm onSaved={load} />
-          </section>
-
-          <section className="panel stack" aria-labelledby="ops-how">
-            <h2 id="ops-how">How backups run</h2>
-            <p>
-              Backups and restore drills run on the server, not in this page: the server&apos;s own schedule starts them, and this page only shows what they did.
-              To make a backup by hand, run a drill, or restore from a backup, follow INSTALL.md, section &quot;Backups&quot;.
-            </p>
-          </section>
-        </>
-      )}
+      <SettingsPage
+        header={header}
+        glance={glance}
+        settings={[
+          {
+            key: 'operations',
+            title: 'Backup and storage settings',
+            current: <SettingsCurrent data={settings.data} error={settings.error} />,
+            form: (close) =>
+              settings.data ? <SettingsForm data={settings.data} onSaved={() => { settings.reload(); load(); }} onClose={close} /> : <p className="loading">Loading</p>,
+          },
+        ]}
+      />
     </main>
   );
 }

@@ -5,21 +5,21 @@
 | # | Step | What it checks |
 |---|---|---|
 | 1 | Sign-in page | "Sign in to Kainow" and the Work email box |
-| 2 | Sign in with a code | the code step, then My Projects after the code from the API log is entered |
-| 3 | My Projects | the project list with Load Project 01 |
+| 2 | Sign in with a code | the code step, then Home (its heading is a greeting) after the code from the API log is entered |
+| 3 | Projects | Projects from the side menu (below 900 px the Menu button opens it first): the projects table with Load Project 01 |
 | 4 | Open a project | the project's heading and About |
-| 5 | Work tab | Tasks |
-| 6 | Save a task progress change from the Work list | blocks an In progress task with a reason ("Block: done.", the task shows Blocked); when none is left, unblocks a Blocked one ("Unblock: done.", In Progress) |
-| 7 | Post a discussion comment | the comment appears under Messages |
-| 8 | Open a note | the note's heading |
-| 9 | Review screen with a proposal | the run inserts a finished AI run (`review-run.mjs`) on Meeting notes 6.1 in Load Project 06 (the Administrator is its Owner); the note, its Review button, then Review proposals with the source text and the decision waiting |
+| 5 | Work tab | the Work binder tab: Tasks |
+| 6 | Save a task progress change from the Work list | in the Tasks table, blocks an In progress task with a reason ("Block: done.", the task shows Blocked); when none is left, unblocks a Blocked one ("Unblock: done.", In Progress) |
+| 7 | Post a discussion comment | the Discussion tab, a thread: the comment appears under Messages |
+| 8 | Open a note | back to the project, the Notes tab, a note: the note's heading |
+| 9 | Review screen with a proposal | the run inserts a finished AI run (`review-run.mjs`) on Meeting notes 6.1 in Load Project 06 (the Administrator is its Owner); the Notes tab, the note, its Review button, then Review proposals (inside the project) with the decision waiting and the source text (below 900 px, through "Show in the notes" and back) |
 | 10 | Approve a proposal | Authorise on that decision: it shows "Authorised: see the Work tab" |
-| 11 | Authorise a person's proposal | Load Project 06 (or the next project the Administrator owns once 06 has none waiting): Proposals from people, Authorise a decision: "Authorised: it is now on the Work tab." |
-| 12 | Personal dashboard | My Projects: Needs you and My tasks |
+| 11 | Authorise a person's proposal | Load Project 06 (or the next project the Administrator owns once 06 has none waiting): the Proposals tab, Proposals from people, Authorise a decision: "Authorised: it is now on the Work tab." |
+| 12 | Personal dashboard | Home from the side menu: Needs you and My tasks |
 | 13 | Project dashboard | the project's Figures |
-| 14 | Analytics as Administrator | Analytics and Saved views |
-| 15 | Operations page | Operations and Backups |
-| 16 | Sign out | the sign-in page again |
+| 14 | Analytics as Administrator | Analytics from the side menu, and Saved views |
+| 15 | Operations page | Operations from the side menu, and its Backups box |
+| 16 | Sign out | Sign out in the person menu (the button with the person's name): the sign-in page again |
 
 **Browsers** (`BROWSERS`, a comma list; the default is all of them):
 
@@ -59,7 +59,7 @@ Notes:
 - The API sends one sign-in code a minute per person, so each journey waits up to a minute before asking for its code. A full run (12 journeys) takes about 20 minutes.
 - One console error is expected and not counted: before sign-in (and after sign-out) the page asks `GET /auth/me`, the API answers 401, and Chrome, Edge and Firefox log any 4xx answer as "Failed to load resource". Every other console error or page error fails the step.
 - No Playwright release ships every Firefox major: `firefox-previous` runs whatever the previous Playwright release ships (on 23 November 2026, Firefox 157, two majors behind 159), so the matrix records the previous major (158) as not checked and 157 as an older version checked.
-- If Firefox fails with `spawn UNKNOWN` and Windows logs "side-by-side configuration is incorrect … mozglue", the browsers were installed from an app whose `%LOCALAPPDATA%` is redirected (a packaged app). Install and run with `PLAYWRIGHT_BROWSERS_PATH` set to an ordinary folder (the same value for `npx playwright install`, the `playwright-previous` install and `node smoke.mjs`).
+- If Firefox fails with `spawn UNKNOWN` and Windows logs "side-by-side configuration is incorrect … mozglue", the browsers were installed from an app whose `%LOCALAPPDATA%` is redirected (a packaged app). Install and run with `PLAYWRIGHT_BROWSERS_PATH` set to an ordinary folder (the same value for `npx playwright install`, the `playwright-previous` install and `node smoke.mjs`). Copying the installed `ms-playwright` folders (Firefox, WebKit, winldd, ffmpeg) into an ordinary folder and pointing `PLAYWRIGHT_BROWSERS_PATH` at it also works (24 November 2026).
 - Each step's console errors are collected before its screenshot: in WebKit, Playwright's screenshot inserts a style of its own, which Kainow's Content Security Policy (`style-src 'self'`) refuses and WebKit logs ("Refused to apply a stylesheet …"). It happens only while Playwright takes the screenshot, so it is not counted.
 - `review-run.mjs` writes the AI run straight to the database (as `tests/a11y/audit.mjs` does), because the review screen needs a finished run and the test installation has no AI. It refuses a database that is not the seeded "Example Organisation". Run by hand (`DATABASE_URL=… node review-run.mjs 3`) it makes one run with three decisions, for the Safari check.
 - After a failed step the rest of that journey is skipped (and Sign out still runs when the sign-in worked).

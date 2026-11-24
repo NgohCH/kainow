@@ -3,6 +3,8 @@ import { ApiError, api } from '../api.ts';
 import type { RequestView } from '../changes.ts';
 import {
   type AdjustmentKind,
+  BALANCE_LABEL,
+  type BudgetVersion,
   CURRENCIES,
   type Currency,
   type EntryView,
@@ -22,6 +24,9 @@ import {
 } from '../finance.ts';
 import { formatWhen, plural } from '../format.ts';
 import { type ResourceActions } from '../resources.ts';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { StatTile } from '../ui/StatTile.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
 import { ChangeRequestPanel, useRequests } from './ChangeRequest.tsx';
 import { useReturnFocus } from './useReturnFocus.ts';
 
@@ -51,8 +56,11 @@ export function FinanceSection({
   if (!('figures' in summary)) {
     if (summary.tracking === 'enabled') {
       return (
-        <section aria-labelledby="finance-heading">
-          <h2 id="finance-heading">Finance</h2>
+        <section aria-labelledby="finance-heading" className="box">
+          <div className="settings-box-head">
+            <h2 id="finance-heading" className="box-title">Finance</h2>
+            <StatusLabel meaning="active" word="Tracking enabled" />
+          </div>
           <p>{NON_READER_SENTENCE}</p>
         </section>
       );
@@ -79,8 +87,11 @@ function NotRequired({ projectId, onChanged }: { projectId: string; onChanged: (
     };
   }, [projectId]);
   return (
-    <section aria-labelledby="finance-heading">
-      <h2 id="finance-heading">Finance</h2>
+    <section aria-labelledby="finance-heading" className="box">
+      <div className="settings-box-head">
+        <h2 id="finance-heading" className="box-title">Finance</h2>
+        <StatusLabel meaning="off" word={NOT_REQUIRED} />
+      </div>
       <p>Financial tracking: {NOT_REQUIRED}</p>
       {history && (
         <>
@@ -147,26 +158,31 @@ function FinanceReader({
   const ai = view ? aiSpendText(view.aiSpendThisMonth) : null;
 
   return (
-    <section aria-labelledby="finance-heading">
-      <div className="row">
-        <h2 id="finance-heading">Finance ({currency})</h2>
+    <section aria-labelledby="finance-heading" className="box">
+      <div className="settings-box-head">
+        <h2 id="finance-heading" className="box-title">Finance ({currency})</h2>
         <span className="meta">Updated {formatWhen(computedAt)}</span>
       </div>
-      <dl className="facts">
-        <dt>Budget</dt>
-        <dd>
-          {money(figures.budget, currency)}
-          {latest ? ` (approved ${formatWhen(latest.approvedAt)})` : ''}{' '}
-          {actions.proposeBudget && (
-            <button type="button" className="quiet" data-opener="budget" aria-expanded={panel === 'budget'} onClick={() => setPanel(panel === 'budget' ? null : 'budget')}>
-              Propose change
-            </button>
-          )}
-        </dd>
-        <dt>Spent</dt>
-        <dd>{money(figures.spent, currency)}</dd>
-      </dl>
-      {figuresLines(figures, currency).map((l) => (
+      {/* A budget not yet approved reads "Not provided"; an approved budget of zero reads 0.00. They are never shown alike. */}
+      <div className="stat-grid">
+        <StatTile label="Budget" value={money(figures.budget, currency)} note={latest ? `Approved ${formatWhen(latest.approvedAt)}` : 'No budget is approved yet'} />
+        <StatTile
+          label="Spent"
+          value={money(figures.spent, currency)}
+          meaning={figures.overBudget ? 'overdue' : figures.level > 0 ? 'attention' : undefined}
+          word={figures.overBudget ? 'Over budget' : figures.level > 0 ? 'Warning (advisory)' : undefined}
+          note={figures.percentUsed !== null ? `${figures.percentUsed}% of the approved budget used` : undefined}
+        />
+        {figures.budget !== null && figures.balance !== null && <StatTile label={BALANCE_LABEL} value={money(figures.balance, currency)} />}
+      </div>
+      {actions.proposeBudget && (
+        <p>
+          <button type="button" className="quiet" data-opener="budget" aria-expanded={panel === 'budget'} onClick={() => setPanel(panel === 'budget' ? null : 'budget')}>
+            Propose change<span className="visually-hidden"> to the budget</span>
+          </button>
+        </p>
+      )}
+      {figuresLines(figures, currency).filter((l) => !l.startsWith(BALANCE_LABEL)).map((l) => (
         <p key={l} className={l.startsWith('Over budget') || l.includes('(advisory)') ? 'warn' : 'meta'}>
           {l}
         </p>
@@ -230,44 +246,59 @@ function FinanceDetail({
   const [adjusting, setAdjusting] = useState<string | null>(null);
   useReturnFocus(adjusting ? `adjust-${adjusting}` : null);
   const reporting = currency ?? view.currency;
+  const versionColumns: Column<BudgetVersion>[] = [
+    { key: 'amount', header: 'Budget', cell: (b) => money(b.amount, b.currency) },
+    { key: 'approved', header: 'Approved', sortValue: (b) => b.approvedAt, cell: (b) => formatWhen(b.approvedAt) },
+  ];
+  const entryColumns: Column<EntryView>[] = [
+    { key: 'spentOn', header: 'Spent on', sortValue: (e) => e.spentOn, cell: (e) => e.spentOn },
+    {
+      key: 'description',
+      header: 'Description',
+      sortValue: (e) => e.description.toLowerCase(),
+      cell: (e) => (
+        <span>
+          {e.description}
+          {e.reference && <span className="meta work-parent">Ref {e.reference}</span>}
+        </span>
+      ),
+    },
+    { key: 'amount', header: 'Amount', cell: (e) => money(e.amount, e.currency) },
+    {
+      key: 'counted',
+      header: 'Counted',
+      cell: (e) => (e.counted !== null && reporting ? money(e.counted, reporting) : <StatusLabel meaning="off" word="Not in totals" />),
+    },
+    { key: 'recorded', header: 'Recorded', sortValue: (e) => e.recordedAt, cell: (e) => `${e.recordedBy.name}, ${formatWhen(e.recordedAt)}` },
+    {
+      key: 'details',
+      header: 'Changes and approvals',
+      wide: true,
+      cell: (e) => (
+        <EntryItem
+          entry={e}
+          reporting={reporting}
+          request={requests.find((r) => r.id === e.pending?.id)}
+          canAdjust={Boolean(actions?.adjustSpending) && !view.historyOnly && projectId !== undefined}
+          adjusting={adjusting === e.id}
+          onAdjust={() => setAdjusting(adjusting === e.id ? null : e.id)}
+          projectId={projectId}
+          onChanged={(m) => {
+            setAdjusting(null);
+            onChanged(m);
+          }}
+        />
+      ),
+    },
+  ];
   return (
-    <div className="panel">
+    <div className="finance-detail">
       <h3>{view.historyOnly ? 'Finance history' : 'Spending list'}</h3>
       {view.notice && <p role="status">{view.notice}</p>}
       {view.budgetVersions.length > 0 && (
-        <>
-          <h4>Budget versions</h4>
-          <ul className="plain">
-            {view.budgetVersions.map((b) => (
-              <li key={b.id}>
-                {money(b.amount, b.currency)} <span className="meta">approved {formatWhen(b.approvedAt)}</span>
-              </li>
-            ))}
-          </ul>
-        </>
+        <DataTable caption="Budget versions" columns={versionColumns} rows={view.budgetVersions} rowKey={(b) => b.id} empty="No budget versions." />
       )}
-      {view.entries.length === 0 ? (
-        <p className="meta">No spending has been recorded.</p>
-      ) : (
-        <ul className="plain">
-          {view.entries.map((e) => (
-            <EntryItem
-              key={e.id}
-              entry={e}
-              reporting={reporting}
-              request={requests.find((r) => r.id === e.pending?.id)}
-              canAdjust={Boolean(actions?.adjustSpending) && !view.historyOnly && projectId !== undefined}
-              adjusting={adjusting === e.id}
-              onAdjust={() => setAdjusting(adjusting === e.id ? null : e.id)}
-              projectId={projectId}
-              onChanged={(m) => {
-                setAdjusting(null);
-                onChanged(m);
-              }}
-            />
-          ))}
-        </ul>
-      )}
+      <DataTable caption="Recorded spending, in date order" columns={entryColumns} rows={view.entries} rowKey={(e) => e.id} empty="No spending has been recorded." />
     </div>
   );
 }
@@ -291,24 +322,17 @@ function EntryItem({
   projectId?: string;
   onChanged: (message: string) => void;
 }) {
+  const nothing = !(reporting && e.adjustments.length > 0) && !e.pending && !request && !(canAdjust && reporting);
   return (
-    <li className="panel">
-      <p>
-        <strong>{e.spentOn}</strong> · {money(e.amount, e.currency)} · {e.description}
-        {e.reference ? ` (ref ${e.reference})` : ''}
-      </p>
-      <p className="meta">
-        Recorded by {e.recordedBy.name}, {formatWhen(e.recordedAt)}
-        {' · '}
-        {e.counted !== null && reporting ? `Counted: ${money(e.counted, reporting)}` : `Not in totals`}
-      </p>
+    <div className="work-details">
+      {nothing && <span className="meta">None</span>}
       {reporting &&
         e.adjustments.map((a) => (
           <p key={a.id} className="meta">
             {adjustmentLabel(a, reporting)}: {a.reason}
           </p>
         ))}
-      {e.pending && <p className="warn">{pendingLabel(e.pending)}</p>}
+      {e.pending && <StatusLabel meaning="review" word={pendingLabel(e.pending)} />}
       {request && <ChangeRequestPanel request={{ ...request, currentTerms: reporting ? { currency: reporting } : {} }} onChanged={onChanged} />}
       {canAdjust && !e.pending && reporting && (
         <button type="button" className="quiet" data-opener={`adjust-${e.id}`} aria-expanded={adjusting} onClick={onAdjust}>
@@ -316,7 +340,7 @@ function EntryItem({
         </button>
       )}
       {adjusting && projectId && reporting && <AdjustForm projectId={projectId} entry={e} currency={reporting} onSaved={onChanged} onCancel={onAdjust} />}
-    </li>
+    </div>
   );
 }
 
@@ -367,8 +391,9 @@ function RecordSpendingForm({ projectId, currency, onSaved, onCancel }: { projec
     }
   }
   return (
-    <form className="panel stack" aria-label="Record spending" onSubmit={(e) => void submit(e)}>
-      <h3>Record spending</h3>
+    <form className="box stack change-form" aria-label="Record spending" onSubmit={(e) => void submit(e)}>
+      <h3 className="form-box-title">Record spending</h3>
+      <p className="meta">Recorded straight away. Later changes are proposed as a correction, refund or conversion, and need approval.</p>
       <label>
         Spent on
         <input type="date" value={spentOn} onChange={(e) => setSpentOn(e.target.value)} required />
@@ -423,8 +448,9 @@ function BudgetForm({ projectId, currency, onSaved, onCancel }: { projectId: str
     }
   }
   return (
-    <form className="panel stack" aria-label="Propose a budget change" onSubmit={(e) => void submit(e)}>
-      <h3>Propose a budget change</h3>
+    <form className="box stack change-form" aria-label="Propose a budget change" onSubmit={(e) => void submit(e)}>
+      <h3 className="form-box-title">Propose a budget change</h3>
+      <p className="meta">The budget changes only once the change is approved. An amount of 0 is an approved budget of zero, not a missing one.</p>
       <label>
         New budget ({currency})
         <input inputMode="decimal" value={amount} onChange={(e) => setAmount(e.target.value)} required />
@@ -477,7 +503,8 @@ function AdjustForm({ projectId, entry, currency, onSaved, onCancel }: { project
     }
   }
   return (
-    <form className="stack" aria-label="Propose a change to this entry" onSubmit={(e) => void submit(e)}>
+    <form className="stack change-form" aria-label="Propose a change to this entry" onSubmit={(e) => void submit(e)}>
+      <p className="meta">The entry stays as recorded; the change applies once it is approved.</p>
       <label>
         Kind
         <select value={type} onChange={(e) => setType(e.target.value as AdjustmentKind)}>

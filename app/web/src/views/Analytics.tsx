@@ -27,6 +27,7 @@ import { STATUS_LABEL } from '../projects.ts';
 import { ResourcesView } from './analytics/ResourcesPanel.tsx';
 import { OperationsPanelView } from './analytics/OperationsPanel.tsx';
 import type { OperationsPanelData } from '../operations.ts';
+import { PageHeader } from '../ui/PageHeader.tsx';
 import { CsvLink, Drill, type DrillTarget, ProblemsView, ProgressView, SystemView, TrendsView } from './analytics/Panels.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
@@ -234,13 +235,14 @@ export function Analytics() {
 
   return (
     <main className="page">
-      <div className="row">
-        <h1>Analytics</h1>
-        <a href="#/admin/analytics/definitions">Definitions</a>
-      </div>
-      <p className="meta">Counts and project names only. Records are listed in a drill-down only in projects where you are a participant.</p>
+      <PageHeader
+        title="Analytics"
+        intro="Counts and project names only. Records are listed in a drill-down only in projects where you are a participant."
+        action={<a href="#/admin/analytics/definitions">Definitions</a>}
+      />
 
-      <form className="panel stack" aria-label="Filters" onSubmit={(e) => e.preventDefault()}>
+      <form className="box stack" aria-label="Filters" onSubmit={(e) => e.preventDefault()}>
+        <h2 className="box-title">Filters</h2>
         <div className="grid-2">
           <label>
             Period
@@ -286,8 +288,8 @@ export function Analytics() {
         <p className="hint">The period changes trends and "in the period" counts. Progress and problems always show the projects as they stand now.</p>
       </form>
 
-      <section className="panel stack" aria-labelledby="views-heading">
-        <h2 id="views-heading">Saved views</h2>
+      <section className="box stack" aria-labelledby="views-heading">
+        <h2 id="views-heading" className="box-title">Saved views</h2>
         {viewError && <p role="alert" className="error">{viewError}</p>}
         {notice && <p role="status" className="ok">{notice}</p>}
         <label>
@@ -330,8 +332,8 @@ export function Analytics() {
 
       {panels.length === 0 && <p className="empty">Every panel is hidden. Show one under Arrange panels and columns, or choose Reset.</p>}
       {panels.map((p) => (
-        <section key={p} className="panel" aria-labelledby={`panel-${p}`}>
-          <h2 id={`panel-${p}`}>{PANEL_LABELS[p]}</h2>
+        <section key={p} className="box analytics-panel" aria-labelledby={`panel-${p}`}>
+          <h2 id={`panel-${p}`} className="box-title">{PANEL_LABELS[p]}</h2>
           {body(p)}
         </section>
       ))}

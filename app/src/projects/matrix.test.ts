@@ -12,6 +12,7 @@ test('the matrix holds exactly the agreed rows', () => {
     'note.view': ['participant', 'draft,planned,active,deferred,closed'],
     'project.edit': ['pm,owner,sponsor', 'draft,planned,active'],
     'project.stage': ['pm', 'active'],
+    'project.stages': ['pm,owner,sponsor', 'draft,planned,active'],
     'note.import': ['pm,deputy_pm,owner,sponsor', 'draft,planned,active'],
     'extraction.run': ['pm,deputy_pm,owner,sponsor', 'draft,planned,active'],
     'proposal.edit': ['pm,owner,sponsor', 'draft,planned,active'],
