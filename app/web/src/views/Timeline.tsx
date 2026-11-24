@@ -117,9 +117,10 @@ export function Timeline({ projectId, prefs, ready, onChange }: { projectId: str
         ))}
       </fieldset>
       {saveError && <p role="alert" className="error">{saveError}</p>}
-      <TimelineBars
-        layout={barsLayout({ from: t.range.from, to: t.range.to, today: t.today, periods: t.stagePeriods ?? [], lines: t.months.flatMap((m) => m.lines), hiddenKinds: hidden })}
-      />
+      {/* A response without the periods: leave the bars out rather than say there are none. */}
+      {t.stagePeriods && <TimelineBars
+        layout={barsLayout({ from: t.range.from, to: t.range.to, today: t.today, periods: t.stagePeriods, lines: t.months.flatMap((m) => m.lines), hiddenKinds: hidden })}
+      />}
       {months.map((m) => {
         const keys = new Map(m.items.map((i, n) => [i, i.today ? `today-${n}` : `${i.line.day}-${i.line.kind}-${i.line.label}-${n}`]));
         return (

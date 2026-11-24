@@ -23,11 +23,16 @@ export interface TimelineBar {
 export type MarkerKind = 'tasks_due' | 'risk_review' | 'resource_needed_by' | 'planned_end';
 export interface TimelineMarker { kind: MarkerKind; day: string; atPct: number; count: number; text: string }
 
+/** What is drawn in a marker row: one day's marker, or a run of days too close together to draw apart, as one total. */
+export interface DrawnMarker { atPct: number; startPct: number; endPct: number; lane: number; count: number; text: string }
+export interface MarkerRow { kind: MarkerKind; lanes: number; items: DrawnMarker[] }
+
 export interface BarsLayout {
   months: { label: string; atPct: number }[];
   todayPct: number | null;
   bars: TimelineBar[];
   markers: TimelineMarker[];
+  markerRows: MarkerRow[];
   summary: string;
 }
 
@@ -48,13 +53,17 @@ const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one :
 function lineCount(line: TimelineLine): number {
   const d = line.detail as { tasks?: unknown[]; risks?: unknown[] } | undefined;
   const list = line.kind === 'tasks_due' ? d?.tasks : line.kind === 'risk_review' ? d?.risks : undefined;
-  if (Array.isArray(list)) return list.length;
-  const n = /^(\d+) /.exec(line.label);
-  return n ? Number(n[1]) : 1;
+  return list ? list.length : 1;
 }
 
-function markerText(kind: MarkerKind, count: number, day: string): string {
-  const on = dayLabel(day);
+function markerText(kind: MarkerKind, count: number, first: string, last = first): string {
+  const on = dayLabel(first);
+  if (first !== last) {
+    const range = `from ${on} to ${dayLabel(last)}`;
+    if (kind === 'tasks_due') return `${plural(count, 'task', 'tasks')} due ${range}`;
+    if (kind === 'risk_review') return `${plural(count, 'risk review', 'risk reviews')} due ${range}`;
+    return `${plural(count, 'resource', 'resources')} needed ${range}`;
+  }
   if (kind === 'tasks_due') return `${plural(count, 'task', 'tasks')} due on ${on}`;
   if (kind === 'risk_review') return `${plural(count, 'risk review', 'risk reviews')} due on ${on}`;
   if (kind === 'resource_needed_by') return `${plural(count, 'resource', 'resources')} needed by ${on}`;
@@ -69,6 +78,59 @@ function windowTotal(kind: MarkerKind, markers: TimelineMarker[]): string | null
   if (kind === 'risk_review') return `${plural(n, 'risk review', 'risk reviews')} due in the window.`;
   if (kind === 'resource_needed_by') return `${plural(n, 'resource', 'resources')} needed in the window.`;
   return `Planned end ${dayLabel(these[0].day)}.`;
+}
+
+const MAX_LANES = 3;
+/** The narrowest the track is drawn, in rem: .tl-plot's 52rem minimum less its 10rem labels and 4.5rem end space (styles.css). */
+const TRACK_REM = 37.5;
+const inPct = (rem: number) => (rem * 100) / TRACK_REM;
+
+type Group = { days: TimelineMarker[]; atPct: number; startPct: number; endPct: number; from: number; to: number; count: number };
+
+/** Days drawn as one marker, with the space it takes: the symbol centred on its date, the count after it, a line across a run. */
+function group(days: TimelineMarker[]): Group {
+  const startPct = days[0].atPct;
+  const endPct = days[days.length - 1].atPct;
+  const atPct = (startPct + endPct) / 2;
+  const count = days.reduce((n, m) => n + m.count, 0);
+  const right = count > 1 ? 0.75 + 0.5 * String(count).length : 0.6;
+  return { days, atPct, startPct, endPct, count, from: Math.min(startPct, atPct - inPct(0.6)), to: Math.max(endPct, atPct + inPct(right)) };
+}
+
+/** Markers that would cover each other go on up to three lanes; a stretch that needs more becomes one total. */
+function markerRow(kind: MarkerKind, markers: TimelineMarker[]): MarkerRow {
+  let groups = markers.map((m) => group([m]));
+  for (;;) {
+    // Stretches of markers that touch, each marker on the first free lane.
+    const stretches: { groups: Group[]; lanes: number[]; laneEnds: number[]; to: number }[] = [];
+    for (const g of [...groups].sort((a, b) => a.from - b.from)) {
+      let s = stretches[stretches.length - 1];
+      if (!s || g.from >= s.to) stretches.push((s = { groups: [], lanes: [], laneEnds: [], to: 0 }));
+      const free = s.laneEnds.findIndex((end) => end <= g.from);
+      const lane = free < 0 ? s.laneEnds.length : free;
+      s.laneEnds[lane] = g.to;
+      s.lanes.push(lane);
+      s.groups.push(g);
+      s.to = Math.max(s.to, g.to);
+    }
+    if (stretches.every((s) => s.laneEnds.length <= MAX_LANES)) {
+      const items = stretches.flatMap((s) =>
+        s.groups.map((g, i): DrawnMarker => ({
+          atPct: g.atPct,
+          startPct: g.startPct,
+          endPct: g.endPct,
+          lane: s.lanes[i],
+          count: g.count,
+          text: markerText(kind, g.count, g.days[0].day, g.days[g.days.length - 1].day),
+        })),
+      );
+      return { kind, lanes: Math.max(...stretches.map((s) => s.laneEnds.length)), items };
+    }
+    // A total can be wider than the days it stands for, so check again: there are fewer groups each time.
+    groups = stretches.flatMap((s) =>
+      s.laneEnds.length <= MAX_LANES ? s.groups : [group(s.groups.flatMap((g) => g.days).sort((a, b) => (a.day < b.day ? -1 : 1)))],
+    );
+  }
 }
 
 export function barsLayout(input: {
@@ -127,8 +189,12 @@ export function barsLayout(input: {
   const order = (k: MarkerKind) => MARKER_KINDS.findIndex((x) => x.kind === k);
   const markers = [...grouped.values()].sort((a, b) => (a.day < b.day ? -1 : a.day > b.day ? 1 : order(a.kind) - order(b.kind)));
 
+  const markerRows = MARKER_KINDS.map((k) => ({ kind: k.kind, of: markers.filter((m) => m.kind === k.kind) }))
+    .filter((r) => r.of.length > 0)
+    .map((r) => markerRow(r.kind, r.of));
+
   const totals = MARKER_KINDS.map((k) => windowTotal(k.kind, markers)).filter((s): s is string => s !== null);
   const summary = [bars.length > 0 ? bars.map((b) => b.text).join(' ') : 'No stages recorded in this window.', ...totals].join(' ');
 
-  return { months, todayPct: inWindow(today) ? at(today) : null, bars, markers, summary };
+  return { months, todayPct: inWindow(today) ? at(today) : null, bars, markers, markerRows, summary };
 }

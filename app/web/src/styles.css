@@ -714,12 +714,12 @@ fieldset { min-width: 0; }
 @media (max-width: 30rem) { .timeline-line { grid-template-columns: 1fr; gap: 0; } }
 /* Timeline bars (D132): positions come in as --at (and --len) fractions of the window; the drawing scrolls inside its box. */
 .tl-scroll { overflow-x: auto; max-width: 100%; }
-.tl-plot { --label-w: 10rem; position: relative; min-width: 52rem; padding: 0 1rem 0.25rem 0; }
-.tl-overlay { position: absolute; top: 0; bottom: 0; left: var(--label-w); right: 1rem; pointer-events: none; }
+.tl-plot { --label-w: 10rem; position: relative; min-width: 52rem; padding: 0 4.5rem 0.25rem 0; }
+.tl-overlay { position: absolute; top: 0; bottom: 0; left: var(--label-w); right: 4.5rem; pointer-events: none; }
 .tl-grid, .tl-today-line { position: absolute; top: 0; bottom: 0; left: calc(var(--at) * 100%); border-left: 1px solid var(--rule); }
 .tl-today-line { border-left: 2px solid var(--accent-deep); }
 .tl-row { display: grid; grid-template-columns: var(--label-w) 1fr; align-items: center; min-height: 2.2rem; border-bottom: 1px solid var(--muted-wash); }
-.tl-label { display: flex; flex-direction: column; padding: 0.3rem 0.6rem 0.3rem 0; font-size: 0.9rem; overflow-wrap: anywhere; }
+.tl-label { position: sticky; left: 0; z-index: 1; align-self: stretch; background: var(--surface); display: flex; flex-direction: column; justify-content: center; margin-right: 0.6rem; padding: 0.3rem 0; font-size: 0.9rem; overflow-wrap: anywhere; }
 .tl-label .meta { font-size: 0.8rem; }
 .tl-stage { font-weight: 600; }
 .tl-current { color: var(--accent-deep); font-weight: 600; font-size: 0.85rem; }
@@ -731,10 +731,14 @@ fieldset { min-width: 0; }
 .tl-bar { position: absolute; top: 50%; transform: translateY(-50%); height: 0.9rem; left: calc(var(--at) * 100%); width: max(4px, calc(var(--len) * 100%)); background: var(--muted-wash); border: 1px solid var(--control-border); border-radius: 4px; box-sizing: border-box; }
 .tl-bar.current { background: var(--accent); border-color: var(--accent-deep); }
 .tl-bar.clipped { border-top-left-radius: 0; border-bottom-left-radius: 0; border-left-style: dashed; }
-.tl-marker { position: absolute; top: 50%; left: calc(var(--at) * 100%); transform: translate(-50%, -50%); font-size: 0.85rem; line-height: 1; color: var(--ink); white-space: nowrap; background: var(--surface); }
-.tl-count { font-size: 0.75rem; font-weight: 600; margin-left: 1px; }
-.tl-symbol { color: var(--ink); }
-.tl-markers .tl-label { display: block; }
+.tl-markers .tl-track { min-height: calc(var(--lanes) * 1.25rem + 0.4rem); }
+.tl-marker, .tl-run { position: absolute; top: calc((var(--lane) + 0.5) * 1.25rem + 0.2rem); left: calc(var(--at) * 100%); }
+.tl-marker { transform: translateY(-50%); font-size: 0.85rem; line-height: 1; color: var(--ink); white-space: nowrap; }
+.tl-symbol { display: inline-block; transform: translateX(-50%); }
+.tl-count { position: absolute; left: 0.6rem; top: 0; font-size: 0.75rem; font-weight: 600; }
+/* A run of close dates: a line from the first to the last, under its symbol and total. */
+.tl-run { width: calc(var(--len) * 100%); margin-top: 0.5rem; border-top: 2px solid var(--muted); }
+@media (max-width: 40rem) { .tl-plot { --label-w: 7rem; } }
 .about-figures { margin: 0.75rem 0; }
 /* Analytics definitions */
 .definitions dt { font-weight: 600; margin-top: 0.75rem; }

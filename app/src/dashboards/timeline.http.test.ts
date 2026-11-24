@@ -195,6 +195,13 @@ describe('project timeline endpoint', { skip: SKIP_NO_DB }, () => {
     ]);
   });
 
+  test('stagePeriods days turn over at 16:00Z (midnight UTC+8)', async () => {
+    await t.pool.query(`UPDATE project_stage_periods SET started_at = '2026-06-01T15:59:59Z', ended_at = '2026-06-30T16:00:00Z' WHERE project_id = $1`, [projectId]);
+    const days = async (from: string) => (await get(`?from=${from}&to=2026-12-31`)).body.stagePeriods.map((p: { startedOn: string; endedOn: string }) => [p.startedOn, p.endedOn]);
+    assert.deepEqual(await days('2026-07-01'), [['2026-06-01', '2026-07-01']]);
+    assert.deepEqual(await days('2026-07-02'), []);
+  });
+
   test('Deleted task drops out of a due-day count', async () => {
     await task('Kept', '2026-11-25');
     const gone = await task('Removed', '2026-11-25');

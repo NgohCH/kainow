@@ -1,4 +1,4 @@
-import type { CSSProperties } from 'react';
+import { Fragment, type CSSProperties } from 'react';
 import { dayLabel } from '../dashboard.ts';
 import { Box } from './Box.tsx';
 import { MARKER_KINDS, type BarsLayout } from './timelineBars.ts';
@@ -11,7 +11,7 @@ const at = (pct: number) => ({ '--at': pct / 100 }) as CSSProperties;
  * Below its natural width the drawing scrolls sideways inside its own box, never the page.
  */
 export function TimelineBars({ layout }: { layout: BarsLayout }) {
-  const rows = MARKER_KINDS.map((k) => ({ ...k, markers: layout.markers.filter((m) => m.kind === k.kind) })).filter((r) => r.markers.length > 0);
+  const rows = layout.markerRows.map((r) => ({ ...r, ...MARKER_KINDS.find((k) => k.kind === r.kind)! }));
   return (
     <Box title="Bars" headingLevel={3}>
       <p className="visually-hidden">{layout.summary}</p>
@@ -54,14 +54,17 @@ export function TimelineBars({ layout }: { layout: BarsLayout }) {
           {rows.map((r) => (
             <div key={r.kind} className="tl-row tl-markers">
               <span className="tl-label">
-                <span className="tl-symbol">{r.symbol}</span> {r.label}
+                <span>{r.symbol} {r.label}</span>
               </span>
-              <div className="tl-track">
-                {r.markers.map((m) => (
-                  <span key={m.day} className="tl-marker" style={at(m.atPct)} title={m.text}>
-                    {r.symbol}
-                    {m.count > 1 && <span className="tl-count">{m.count}</span>}
-                  </span>
+              <div className="tl-track" style={{ '--lanes': r.lanes } as CSSProperties}>
+                {r.items.map((m) => (
+                  <Fragment key={m.startPct}>
+                    {m.endPct > m.startPct && <span className="tl-run" style={{ ...at(m.startPct), '--len': (m.endPct - m.startPct) / 100, '--lane': m.lane } as CSSProperties} />}
+                    <span className="tl-marker" style={{ ...at(m.atPct), '--lane': m.lane } as CSSProperties} title={m.text}>
+                      <span className="tl-symbol">{r.symbol}</span>
+                      {m.count > 1 && <span className="tl-count">{m.count}</span>}
+                    </span>
+                  </Fragment>
                 ))}
               </div>
             </div>

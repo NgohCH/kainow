@@ -88,6 +88,69 @@ test('an empty project gives no bars and says so', () => {
   assert.equal(l.summary, 'No stages recorded in this window.');
 });
 
+// Every drawn marker's space, in pixels at the narrowest track (600 px): symbol centred on its date, count after it.
+const clear = (l: ReturnType<typeof barsLayout>) => {
+  for (const r of l.markerRows) {
+    for (const a of r.items) {
+      for (const b of r.items) {
+        if (a === b || a.lane !== b.lane || a.atPct > b.atPct) continue;
+        const aEnd = Math.max(a.endPct * 6, a.atPct * 6 + (a.count > 1 ? 10 + 7.5 * String(a.count).length : 8));
+        const bStart = Math.min(b.startPct * 6, b.atPct * 6 - 8);
+        assert.ok(aEnd <= bStart, `${a.text} covers ${b.text}`);
+      }
+    }
+  }
+};
+const drawn = (l: ReturnType<typeof barsLayout>) => l.markerRows.reduce((n, r) => n + r.items.reduce((m, i) => m + i.count, 0), 0);
+const dayAfter = (n: number) => new Date(Date.parse('2026-12-01T00:00:00Z') + n * 86_400_000).toISOString().slice(0, 10);
+
+test('close markers go on separate lanes, so none covers another; far ones share a lane', () => {
+  const l = barsLayout({ ...WINDOW, periods: [], lines: [tasksDue(dayAfter(0), 3), tasksDue(dayAfter(2), 12), tasksDue(dayAfter(4), 1), tasksDue(dayAfter(60), 2)], hiddenKinds: [] });
+  assert.equal(l.markerRows[0].lanes, 3);
+  assert.deepEqual(l.markerRows[0].items.map((i) => [i.lane, i.count]), [[0, 3], [1, 12], [2, 1], [0, 2]]);
+  clear(l);
+});
+
+test('a stretch needing more than three lanes becomes one total that names its dates and count; per-day markers stay in the data', () => {
+  const l = barsLayout({ ...WINDOW, periods: [], lines: [0, 1, 2, 3, 4].map((n) => tasksDue(dayAfter(n), n + 1)), hiddenKinds: [] });
+  assert.deepEqual(l.markerRows[0].items.map((i) => [i.count, i.text]), [[15, '15 tasks due from 1 Dec 2026 to 5 Dec 2026']]);
+  assert.equal(l.markers.length, 5);
+});
+
+test('no count is lost and nothing overlaps, however the dates fall', () => {
+  for (let step = 1; step <= 12; step++) {
+    for (const n of [1, 9, 120]) {
+      const lines: TimelineLine[] = [];
+      for (let d = 0, i = 0; d < 150; d += 1 + ((i * step) % 7), i++) lines.push(tasksDue(dayAfter(d), 1 + ((n * i) % (n + 1))));
+      const l = barsLayout({ ...WINDOW, periods: [], lines, hiddenKinds: [] });
+      assert.equal(drawn(l), l.markers.reduce((s, m) => s + m.count, 0));
+      assert.ok(l.markerRows[0].lanes <= 3);
+      clear(l);
+    }
+  }
+});
+
+test('a repeated stage keeps one bar per period, and a same-day period is a 0-day bar', () => {
+  const l = barsLayout({
+    ...WINDOW,
+    periods: [
+      { stage: 'Build', substage: null, startedOn: '2026-09-01', endedOn: '2026-10-01' },
+      { stage: 'Testing', substage: null, startedOn: '2026-10-01', endedOn: '2026-10-01' },
+      { stage: 'Build', substage: null, startedOn: '2026-10-01', endedOn: null },
+    ],
+    lines: [],
+    hiddenKinds: [],
+  });
+  assert.deepEqual(l.bars.map((b) => [b.stage, b.days, b.current]), [['Build', 30, false], ['Testing', 0, false], ['Build', 54, true]]);
+  assert.equal(l.bars[1].startPct, l.bars[1].endPct);
+});
+
+test('a window wholly in the future draws no bar for the open stage', () => {
+  const l = barsLayout({ from: '2027-01-01', to: '2027-06-01', today: '2026-11-24', periods: GENERAL_PERIODS, lines: [], hiddenKinds: [] });
+  assert.deepEqual(l.bars, []);
+  assert.equal(l.todayPct, null);
+});
+
 test('percentages stay within 0 to 100, whatever the dates', () => {
   const periods = [
     { stage: 'Long ago', substage: null, startedOn: '2020-01-01', endedOn: '2030-01-01' },

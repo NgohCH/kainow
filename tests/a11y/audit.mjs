@@ -231,6 +231,9 @@ await db.query("insert into project_stage_periods (id, project_id, stage, substa
 await db.query('update projects set planned_end = $2 where id = $1', [barsProject, addDays(120)]);
 for (const title of ['Draft the brief', 'Book the venue', 'Order the badges']) await mkTask(barsProject, title, addDays(14));
 await mkTask(barsProject, 'Send the invitations', addDays(40));
+// Close dates: two that need a second and third lane, then eleven neighbouring days drawn as one total.
+for (const d of [16, 18]) await mkTask(barsProject, `Check the stock ${d}`, addDays(d));
+for (let d = 60; d <= 70; d++) await mkTask(barsProject, `Rehearse part ${d}`, addDays(d));
 await mkRisk(barsProject, 'The venue may be double-booked');
 // A 120-character project name, for the overflow check at 375 px (the project header and the tables).
 await db.query('update projects set name = $2 where id = $1', [closeB, 'Closing ready: a deliberately long dummy project name that keeps going to check the header wraps on a phone screen, okay']);
