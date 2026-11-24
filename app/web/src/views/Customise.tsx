@@ -1,24 +1,70 @@
-import { useState } from 'react';
+import { useState, type Ref } from 'react';
 import { ApiError } from '../api.ts';
 import {
-  ACCENT_KEYS,
-  ACCENTS,
   HOME_SECTION_LABELS,
   LEADERSHIP_FIELDS,
   LEADERSHIP_FIXED_FIELDS,
   defaultPrefs,
   moveItem,
   moveSection,
+  schemeChoices,
+  schemeFor,
   setHidden,
-  type FixedAccentKey,
   type HomeSection,
   type Prefs,
   type Theme,
 } from '../prefs.ts';
 
-const ACCENT_LABELS: Record<FixedAccentKey, string> = { red: 'Red', teal: 'Teal', blue: 'Blue', plum: 'Plum', slate: 'Slate' };
-const FIXED_ACCENTS = ACCENT_KEYS.filter((k): k is FixedAccentKey => k !== 'organisation');
 const THEME_LABELS: Record<Theme, string> = { light: 'Light', dark: 'Dark' };
+
+/** Saves a change and keeps a short status line: "Saving", "Saved", or the reason it failed. */
+export function useSaveStatus(onChange: (next: Prefs) => Promise<void>) {
+  const [status, setStatus] = useState('');
+  const [error, setError] = useState(false);
+  async function save(next: Prefs) {
+    setStatus('Saving');
+    setError(false);
+    try {
+      await onChange(next);
+      setStatus('Saved');
+    } catch (e) {
+      setError(true);
+      setStatus(e instanceof ApiError ? e.message : 'Your changes were not saved. Try again.');
+    }
+  }
+  return { save, status, error };
+}
+
+/**
+ * Colour scheme and Light or dark (spec section 8). The scheme marked is the one shown: until the person picks one that is
+ * the installation default, whatever accent the stored document holds. Picking a scheme records that the person chose it.
+ */
+export function AppearanceChoice({ prefs, orgColour, save, name }: { prefs: Prefs; orgColour: string | null; save: (next: Prefs) => void; name: string }) {
+  const shown = schemeFor(prefs, orgColour).key;
+  return (
+    <>
+      <fieldset>
+        <legend>Colour scheme</legend>
+        {schemeChoices(prefs.theme, orgColour).map((c) => (
+          <label key={c.key} className="choice">
+            <input type="radio" name={`${name}-scheme`} checked={shown === c.key} onChange={() => save({ ...prefs, accent: c.key, accentChosen: true })} />
+            <span className="swatch" aria-hidden="true" style={{ background: c.swatch }} />
+            {c.label}
+          </label>
+        ))}
+      </fieldset>
+      <fieldset>
+        <legend>Light or dark</legend>
+        {(['light', 'dark'] as const).map((t) => (
+          <label key={t} className="choice">
+            <input type="radio" name={`${name}-theme`} checked={prefs.theme === t} onChange={() => save({ ...prefs, theme: t })} />
+            {THEME_LABELS[t]}
+          </label>
+        ))}
+      </fieldset>
+    </>
+  );
+}
 
 type Row = { key: string; label: string; fixed: boolean };
 
@@ -68,7 +114,7 @@ function OrderList({
 }
 
 /**
- * The Customise panel (spec section 8): theme, accent, Home section order and visibility, and leadership field order and
+ * The Customise panel (spec section 8): light or dark, colour scheme, Home section order and visibility, and leadership field order and
  * visibility. Every change is saved at once through onChange, which the app sends to PUT /me/preferences.
  */
 export function Customise({
@@ -78,6 +124,8 @@ export function Customise({
   ready = true,
   failed = false,
   show = ['appearance', 'home', 'leadership'],
+  orgColour = null,
+  headingRef,
 }: {
   prefs: Prefs;
   onChange: (next: Prefs) => Promise<void>;
@@ -87,21 +135,12 @@ export function Customise({
   /** True when loading the saved preferences failed: only then is the reload alert shown. */
   failed?: boolean;
   show?: ('appearance' | 'home' | 'leadership')[];
+  /** The organisation colour, when set: offers the Organisation scheme. */
+  orgColour?: string | null;
+  /** The heading, so whoever opened the panel can move focus to it. */
+  headingRef?: Ref<HTMLHeadingElement>;
 }) {
-  const [status, setStatus] = useState('');
-  const [error, setError] = useState(false);
-
-  async function save(next: Prefs) {
-    setStatus('Saving');
-    setError(false);
-    try {
-      await onChange(next);
-      setStatus('Saved');
-    } catch (e) {
-      setError(true);
-      setStatus(e instanceof ApiError ? e.message : 'Your changes were not saved. Try again.');
-    }
-  }
+  const { save, status, error } = useSaveStatus(onChange);
 
   const homeRows: Row[] = prefs.home.order.map((k) => ({ key: k, label: HOME_SECTION_LABELS[k], fixed: k === 'needsYou' }));
   const leadershipRows: Row[] = prefs.leadership.fields.order.map((k) => ({
@@ -113,7 +152,7 @@ export function Customise({
   return (
     <section className="panel customise" aria-labelledby="customise-heading">
       <div className="row">
-        <h2 id="customise-heading">Customise</h2>
+        <h2 id="customise-heading" ref={headingRef} tabIndex={-1}>Customise</h2>
         {onClose && (
           <button type="button" className="quiet" onClick={onClose}>
             Close
@@ -124,29 +163,7 @@ export function Customise({
       {failed && !ready && <p role="alert" className="error">Your saved preferences have not loaded, so they cannot be changed now. Reload the page to try again.</p>}
       <fieldset className="plain-fieldset" disabled={!ready}>
       <div className="stack">
-        {show.includes('appearance') && (
-          <>
-            <fieldset>
-              <legend>Theme</legend>
-              {(['light', 'dark'] as const).map((t) => (
-                <label key={t} className="choice">
-                  <input type="radio" name="customise-theme" checked={prefs.theme === t} onChange={() => save({ ...prefs, theme: t })} />
-                  {THEME_LABELS[t]}
-                </label>
-              ))}
-            </fieldset>
-            <fieldset>
-              <legend>Accent colour</legend>
-              {FIXED_ACCENTS.map((a) => (
-                <label key={a} className="choice">
-                  <input type="radio" name="customise-accent" checked={prefs.accent === a} onChange={() => save({ ...prefs, accent: a, accentChosen: true })} />
-                  <span className="swatch" aria-hidden="true" style={{ background: ACCENTS[a][prefs.theme].accent }} />
-                  {ACCENT_LABELS[a]}
-                </label>
-              ))}
-            </fieldset>
-          </>
-        )}
+        {show.includes('appearance') && <AppearanceChoice prefs={prefs} orgColour={orgColour} save={save} name="customise" />}
         {show.includes('home') && (
           <OrderList
             legend="Home sections"

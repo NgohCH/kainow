@@ -10,6 +10,7 @@ import {
   expansionDefault,
   moveItem,
   moveSection,
+  schemeChoices,
   schemeFor,
   setHidden,
   type FixedAccentKey,
@@ -261,4 +262,20 @@ test('openChoice: a session choice beats the saved one, which beats the default'
   assert.equal(openChoice({}, { a: true }, 6, 'a'), true);
   assert.equal(openChoice({ a: false }, { a: true }, 3, 'a'), false);
   assert.equal(openChoice({}, {}, 5, 'a'), true);
+});
+
+test('schemeChoices: the five fixed schemes, and Organisation only when its colour is usable', () => {
+  assert.deepEqual(schemeChoices('light', null).map((c) => c.label), ['Red', 'Teal', 'Blue', 'Plum', 'Slate']);
+  assert.deepEqual(schemeChoices('light', '#ffd84a').map((c) => c.key), ['red', 'teal', 'blue', 'plum', 'slate'], 'an unusable colour is not offered');
+  const withOrg = schemeChoices('dark', '#1f55a8');
+  assert.deepEqual(withOrg.map((c) => c.label), ['Red', 'Teal', 'Blue', 'Plum', 'Slate', 'Organisation']);
+  assert.equal(withOrg[0].swatch, ACCENTS.red.dark.accent);
+  assert.equal(withOrg[5].swatch, schemeFor({ theme: 'dark', accent: 'organisation', accentChosen: true }, '#1f55a8').tokens.accent);
+});
+
+test('the scheme shown as chosen is the one applied while the person has not chosen', () => {
+  // A stored document from before accentChosen holds accent "teal" that the person never picked: Red (or Organisation) shows.
+  const unchosen = { ...DEFAULT_PREFS, accent: 'teal' as const, accentChosen: false };
+  assert.equal(schemeFor(unchosen, null).key, 'red');
+  assert.equal(schemeFor(unchosen, '#1f55a8').key, 'organisation');
 });

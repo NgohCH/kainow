@@ -223,6 +223,15 @@ export function schemeFor(prefs: Pick<Prefs, 'theme' | 'accent' | 'accentChosen'
   return { key: fixedKey, tokens: ACCENTS[fixedKey][prefs.theme] };
 }
 
+export const ACCENT_LABELS: Record<AccentKey, string> = { red: 'Red', teal: 'Teal', blue: 'Blue', plum: 'Plum', slate: 'Slate', organisation: 'Organisation' };
+
+/** The colour schemes a person may pick, each with the accent it shows in this theme. Organisation only when its colour is usable. */
+export function schemeChoices(theme: Theme, orgColour: string | null): { key: AccentKey; label: string; swatch: string }[] {
+  const fixed = ACCENT_KEYS.filter((k): k is FixedAccentKey => k !== 'organisation').map((k) => ({ key: k as AccentKey, label: ACCENT_LABELS[k], swatch: ACCENTS[k][theme].accent }));
+  const org = schemeFor({ theme, accent: 'organisation', accentChosen: true }, orgColour);
+  return org.key === 'organisation' ? [...fixed, { key: 'organisation', label: ACCENT_LABELS.organisation, swatch: org.tokens.accent }] : fixed;
+}
+
 const SCHEME_VARS: Record<keyof SchemeTokens, string> = {
   menu: '--menu',
   menuInk: '--menu-ink',
