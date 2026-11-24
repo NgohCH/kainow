@@ -47,8 +47,9 @@ export class ExtractionController {
 
   /**
    * The project's extraction runs for the Proposals tab (11a spec 6.3): read-only, with the notes list's permission and
-   * source-audience filter, so a Restricted note's runs are not listed outside its audience. Served beside
-   * `GET projects/:id/proposals` (the people's proposals), whose address was already taken.
+   * source-audience filter, so a Restricted source's runs are not listed outside its audience; runs on analysed
+   * discussions are listed the same way. Served beside `GET projects/:id/proposals` (the people's proposals), whose
+   * address was already taken.
    */
   @Get('projects/:projectId/proposal-runs')
   @AnySignedInUser()

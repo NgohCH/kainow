@@ -7,9 +7,10 @@ import { CLOCK, type Clock } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
 import { PROPOSAL_REJECTED_REASON, lockPendingAuthorisation, rejectPendingAuthorisation } from '../changes/end-pending';
 import { PG_POOL } from '../db/database.module';
-import { notHeldSql, refuseHeld } from '../history/deleted-sql';
+import { liveSourceSql, notHeldSql, refuseHeld } from '../history/deleted-sql';
 import { QUOTE_CHANGED_TEXT, quoteChangedItems } from '../quarantine/clean';
 import { POSSIBLE_COPY_TEXT, possibleCopyLabelSql, possibleCopySql } from '../quarantine/labels';
+import { audienceVisibleSql } from '../discussion/audience';
 import { listedSourceSql } from '../notes/notes.service';
 import { locateQuote } from '../notes/text';
 import { activeMembershipSql } from '../projects/access-sql';
@@ -161,19 +162,31 @@ export interface ProposalRun {
   total: number;
 }
 
-/** Succeeded runs with proposals, of the project's notes in the viewer's notes list (its permission and audience filter). */
+/**
+ * SQL: source `s` is the transcript an analysis of a discussion reads, its thread and itself live and not held, and the
+ * viewer is in its audience: the rule `assertSourceReadable` applies when the run is opened. The notes list leaves
+ * transcripts out, so `listedSourceSql` does not cover them.
+ */
+const listedTranscriptSql = (s: string, a: string, user: string, today: string): string =>
+  `${s}.kind = 'discussion' AND ${s}.publication = 'published' AND ${liveSourceSql(s)} AND ${audienceVisibleSql(a, user, today)}
+   AND EXISTS (SELECT 1 FROM discussion_threads lt WHERE lt.id = ${s}.thread_id AND ${notHeldSql('lt')})`;
+
+/**
+ * Succeeded runs with proposals, of the project's notes in the viewer's notes list and of analysed discussions, each
+ * with its own source's audience filter.
+ */
 const LISTED_RUN_ITEMS = `extraction_runs r JOIN source_versions v ON v.id = r.source_version_id JOIN sources s ON s.id = v.source_id
   JOIN audiences a ON a.id = s.audience_id JOIN extraction_items i ON i.run_id = r.id AND ${notHeldSql('i')}
- WHERE r.status = 'succeeded' AND s.project_id = $1 AND ${listedSourceSql('s', 'a', '$2', '$3')}`;
+ WHERE r.status = 'succeeded' AND s.project_id = $1 AND (${listedSourceSql('s', 'a', '$2', '$3')} OR (${listedTranscriptSql('s', 'a', '$2', '$3')}))`;
 
 /**
  * The Proposals tab's runs, newest first (`GET /projects/:projectId/proposal-runs`). The caller has checked `note.view`;
- * runs of notes outside the viewer's audience are neither listed nor counted.
+ * runs of notes and discussions outside the viewer's audience are neither listed nor counted.
  */
 export async function proposalRuns(db: Queryable, projectId: string, userId: string, today: string): Promise<ProposalRun[]> {
   const { rows } = await db.query(
     `SELECT r.id AS "runId", s.id AS "sourceId",
-            CASE WHEN ${possibleCopySql('source', 's.id')} THEN '${POSSIBLE_COPY_TEXT}' ELSE s.title END AS "sourceTitle",
+            CASE WHEN ${possibleCopySql('source', 's.id')} OR ${possibleCopySql('thread', 's.thread_id')} THEN '${POSSIBLE_COPY_TEXT}' ELSE s.title END AS "sourceTitle",
             v.version_no AS "versionNo", COALESCE(r.finished_at, r.created_at) AS "finishedAt",
             (count(*) FILTER (WHERE i.review_status = 'pending'))::int AS waiting, count(*)::int AS total
        FROM ${LISTED_RUN_ITEMS}
@@ -186,7 +199,7 @@ export async function proposalRuns(db: Queryable, projectId: string, userId: str
 
 /**
  * Proposals waiting for review that the viewer may read (the project dashboard's `proposals.waiting`): pending
- * extraction proposals of notes in their notes list, plus pending people's proposals. The caller decides whether the
+ * extraction proposals of notes in their notes list and of discussions they may read, plus pending people's proposals. The caller decides whether the
  * viewer may read project content at all.
  */
 export async function waitingProposals(db: Queryable, projectId: string, userId: string, today: string): Promise<number> {
@@ -198,7 +211,7 @@ export async function waitingProposals(db: Queryable, projectId: string, userId:
   return rows[0].n as number;
 }
 
-export const SUMMARY_NOT_EVIDENCE ='A shareable summary is never used as evidence, so it cannot be analysed for proposals.';
+export const SUMMARY_NOT_EVIDENCE = 'A shareable summary is never used as evidence, so it cannot be analysed for proposals.';
 
 @Injectable()
 export class ExtractionService {

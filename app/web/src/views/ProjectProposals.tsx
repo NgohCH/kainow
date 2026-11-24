@@ -23,7 +23,7 @@ const columns: Column<ProposalRun>[] = [
   },
 ];
 
-/** The Proposals tab: the AI's proposals from each run on the project's notes (waiting first), then people's own proposals. */
+/** The Proposals tab: the AI's proposals from each run on the project's notes and discussions (waiting first), then people's own proposals. */
 export function ProjectProposals({
   projectId,
   canPropose,
@@ -57,8 +57,8 @@ export function ProjectProposals({
   return (
     <>
       <section aria-labelledby="ai-proposals-heading">
-        <h2 id="ai-proposals-heading">Proposals from notes</h2>
-        <p className="meta">The AI proposes decisions, actions, questions and risks from each version of the notes. Nothing becomes a record until a person authorises it.</p>
+        <h2 id="ai-proposals-heading">Proposals from AI</h2>
+        <p className="meta">The AI proposes decisions, actions, questions and risks from the notes and the discussions it has analysed. Nothing becomes a record until a person authorises it.</p>
         {error && <p role="alert" className="error">{error}</p>}
         <DataTable
           caption="Waiting for review"
@@ -66,7 +66,7 @@ export function ProjectProposals({
           rows={waiting}
           rowKey={(r) => r.runId}
           loading={!runs && !error}
-          empty={runs ? 'Nothing from the notes is waiting for review.' : 'Loading'}
+          empty={runs ? 'No AI proposal is waiting for review.' : 'Loading'}
         />
         {reviewed.length > 0 && (
           <>
