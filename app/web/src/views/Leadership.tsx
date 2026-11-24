@@ -119,7 +119,9 @@ const HEADER_KEYS = ['name', 'attentionFlags', 'refresh'];
 function Card({ c, keys, open, onToggle }: { c: LeadershipCard; keys: string[]; open: boolean; onToggle: () => void }) {
   const flags = flagsOf(c);
   const panel = `leadership-${c.id}`;
-  const body = keys.filter((k) => !HEADER_KEYS.includes(k));
+  // Status shows in the header when the person shows that field, so the body leaves it out.
+  const statusShown = keys.includes('status') && isProjectStatus(c.status);
+  const body = keys.filter((k) => !HEADER_KEYS.includes(k) && !(k === 'status' && statusShown));
   return (
     <li className={`box leadership-card${flags.length > 0 ? ' edge-left m-attention' : ''}`}>
       <h3>
@@ -127,9 +129,9 @@ function Card({ c, keys, open, onToggle }: { c: LeadershipCard; keys: string[]; 
           {c.name ?? 'Project'}
         </button>
       </h3>
-      {(flags.length > 0 || isProjectStatus(c.status)) && (
+      {(flags.length > 0 || statusShown) && (
         <ul className="flag-row" aria-label="Status and attention flags">
-          {isProjectStatus(c.status) && <li><StatusLabel meaning={projectMeaning(c.status)} word={STATUS_LABEL[c.status]} /></li>}
+          {statusShown && isProjectStatus(c.status) && <li><StatusLabel meaning={projectMeaning(c.status)} word={STATUS_LABEL[c.status]} /></li>}
           {flags.map((f) => <li key={f}><StatusLabel meaning="attention" word={f} /></li>)}
         </ul>
       )}
@@ -190,8 +192,8 @@ export function Leadership({ prefs, ready, failed, onChange }: { prefs: Prefs; r
   };
   const setAll = (open: boolean) => choose(Object.fromEntries(ids.map((id) => [id, open])));
   const flagged = cards.filter((c) => flagsOf(c).length > 0).length;
-  const overdueTotal = total(cards, 'overdue');
-  const blockedTotal = total(cards, 'blocked');
+  const overdueTotal = keys.includes('overdue') ? total(cards, 'overdue') : null;
+  const blockedTotal = keys.includes('blocked') ? total(cards, 'blocked') : null;
 
   return (
     <main className="page home leadership-page">

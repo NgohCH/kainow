@@ -952,7 +952,8 @@ button.stat-tile[aria-pressed="true"] { border-color: var(--accent); box-shadow:
 
 /* Discussion: people, AI answers, drafts and AI proposals look different by outline, label and symbol, never by colour
    alone. A person's message: solid outline and their name. An AI answer: dashed outline and the AI answer label with ✦.
-   A draft: dotted, thicker outline and its draft label with ✎. AI proposals keep their dashed outline and kind edge. */
+   A draft: a thicker dashed outline (every draft keeps the dashed outline of AI output) and its draft label with ▤.
+   AI proposals keep their dashed outline and kind edge. ✎ stays reserved for "Changed by a person" (D130). */
 .messages { display: grid; gap: 0.6rem; border-top: 0; }
 .message { border: 1px solid var(--muted-wash); border-radius: 6px; padding: 0.75rem 1rem; overflow-wrap: anywhere; }
 .message.human-message { border-style: solid; }
@@ -960,8 +961,8 @@ button.stat-tile[aria-pressed="true"] { border-color: var(--accent); box-shadow:
 .message.ai-answer { border: 1px dashed var(--ink); border-radius: 6px; margin: 0; background: var(--paper); }
 .ai-label { display: inline-block; font-weight: 600; }
 .ai-label::before { content: '✦\00a0' / ''; }
-.ai-proposed.draft-box { border: 2px dotted var(--ink); border-radius: 6px; }
-.draft-box .ai-label.draft-label::before { content: '✎\00a0' / ''; }
+.ai-proposed.draft-box { border: 2px dashed var(--ink); border-radius: 6px; }
+.draft-box .ai-label.draft-label::before { content: '▤\00a0' / ''; }
 .ask-card.ai-proposed { border-radius: 6px; }
 .kind-key { font-size: 13px; }
 .thread-facts .badge { margin-left: 0.4rem; }

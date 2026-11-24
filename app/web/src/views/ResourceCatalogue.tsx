@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import { plural } from '../format.ts';
 import { EMPTY_ITEM as EMPTY, type ItemDraft, itemProblem } from '../resourceScreens.ts';
@@ -28,14 +28,20 @@ interface Category {
   status: 'active' | 'retired';
 }
 
-function ItemForm({ initial, categories, editing, onSubmit, onCancel }: {
+function ItemForm({ initial, categories, editing, onSubmit, onCancel, focusFirst = false }: {
   initial: ItemDraft;
   categories: Category[];
   editing: boolean;
   onSubmit: (d: ItemDraft) => Promise<string | null>;
   onCancel: () => void;
+  /** Moves focus to the first field when the form opens away from its button (Edit opens it above the table). */
+  focusFirst?: boolean;
 }) {
   const [d, setD] = useState(initial);
+  const first = useRef<HTMLSelectElement>(null);
+  useEffect(() => {
+    if (focusFirst) first.current?.focus();
+  }, [focusFirst]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const set = (patch: Partial<ItemDraft>) => setD((x) => ({ ...x, ...patch }));
@@ -53,7 +59,7 @@ function ItemForm({ initial, categories, editing, onSubmit, onCancel }: {
       <div className="grid-2">
         <label>
           Kind
-          <select value={d.kind} onChange={(e) => set({ kind: e.target.value })}>
+          <select ref={first} value={d.kind} onChange={(e) => set({ kind: e.target.value })}>
             {KINDS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
           </select>
         </label>
@@ -342,6 +348,7 @@ export function ResourceCatalogue({ embedded = false, bare = false, onChanged }:
             initial={draftOf(editingItem)}
             categories={categories}
             editing
+            focusFirst
             onCancel={() => setEditing(null)}
             onSubmit={async (d) => {
               const refused = await run(() => api.put(`/resources/catalogue/items/${editingItem.id}`, { ...d, reference: d.reference.trim(), name: d.name.trim(), description: d.description.trim() }), 'Item saved.');

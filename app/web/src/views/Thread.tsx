@@ -208,7 +208,7 @@ function ThreadBody({ first, projectId, meId, messageNo, answerId, project }: { 
         {changed && <span className="badge">{changed}</span>}
       </p>
       <p className="meta kind-key">
-        How to tell them apart: a message from a person has a solid outline and their name; an AI answer has a dashed outline and the ✦ AI answer label{meeting ? '; draft minutes have a dotted outline and a ✎ draft label' : ''}.
+        How to tell them apart: a message from a person has a solid outline and their name; an AI answer has a dashed outline and the ✦ AI answer label{meeting ? '; draft minutes have a thicker dashed outline and a ▤ draft label' : ''}.
       </p>
       {meeting && (
         <MeetingControls
