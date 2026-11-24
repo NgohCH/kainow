@@ -1,11 +1,11 @@
 # Sub-project 11a: interface redesign (design)
 
 **Date:** 24 November 2026
-**Status:** Draft for the Product Owner's approval
+**Status:** Approved
 **Branch:** `TheLord/subproject-11-acceptance-24e07c` (worktree), cut from `main` at 2046ba8
 **Decisions:** D127 (v0.1 test release), D128 (navigation, Settings hub and page pattern), D129 (colour schemes and organisation colour), D130 (correcting a proposal's type, with a reason and a named history), D131 (stage templates), D132 (timeline bars)
 **Configuration Catalogue:** C111 (personal colour scheme), C112 (organisation colour), C113 (stage templates; refines C09)
-**Migrations:** 0036 (`0036_interface.sql`), 0037 (`0037_stage_templates.sql`), 0038 (`0038_project_stage_changes.sql`)
+**Migrations:** 0036 (`0036_interface.sql`), 0037 (`0037_stage_templates.sql`), 0038 (`0038_project_stage_changes.sql`), 0039 (`0039_cleaning_length_limits.sql`)
 
 ## 1. Why
 
@@ -216,7 +216,7 @@ Sign-in, onboarding, the setup link, invitations, notes, threads, summaries, sea
 
 - **Personal choice (C111).** In the person menu: Red, Teal, Blue, Plum, Slate, and Organisation when C112 is set; and Light or Dark. Saved with the person's existing preferences (`/me/preferences`, field `accent`), no separate settings page (UI rules §8). The server's accepted list grows to include `red` and `organisation`.
 - **Default.** A person who never chose has the installation default: Organisation when C112 is set, otherwise Red. A person who chose a scheme keeps it. A person whose saved value is `organisation` falls back to Red if the organisation colour is later cleared.
-- *Designer's call, how "never chose" is stored:* today every saved preferences document holds `accent: 'teal'` whether or not the person picked it, so the stored value cannot tell. The preferences document gains `accentChosen` (boolean, default false), set true only when the person picks a scheme in the person menu; while it is false the installation default applies. Migration 0036 sets `accentChosen` false on every existing row. No installation is in production use yet (v0.1 is the first release), so no real choice is lost.
+- *Designer's call, how "never chose" is stored:* today every saved preferences document holds `accent: 'teal'` whether or not the person picked it, so the stored value cannot tell. The preferences document gains `accentChosen` (boolean, default false), set true only when the person picks a scheme in the person menu; while it is false the installation default applies. No migration is needed: a saved document without the field is read as `accentChosen` false (`normalisePrefs`). No installation is in production use yet (v0.1 is the first release), so no real choice is lost.
 - **Organisation colour (C112).** On the Organisation setting page, next to the logos: one colour (a hex value), set and cleared by the Enterprise Administrator with a reason, recorded with previous and new values like other organisation settings. Kainow derives the scheme (menu, active item, washes) from it and refuses a colour that cannot reach the contrast in §5.1 with white text on buttons and on the menu, saying so in plain words. Stored on the `organisation` row (migration 0036). Served with `/organisation/branding`, so the sign-in page uses it.
 - **Before sign-in** the sign-in page uses the installation default.
 

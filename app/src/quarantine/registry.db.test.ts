@@ -6,6 +6,7 @@ import { uuidv7 } from '../common/uuid7';
 import { runMigrations } from '../db/migrate';
 import { SKIP_NO_DB, resetPublicSchema, testDatabaseUrl } from '../testing/db';
 import { seedProject, seedUser } from '../testing/projects';
+import { MARKER } from './clean-text';
 import { ITEM_KINDS, NO_USER_TEXT, QUARANTINE_WRITE_TABLES, TEXT_COLUMNS, type ItemKind, type TextColumn } from './registry';
 
 const migrationsDir = loadDatabaseConfig({ DATABASE_URL: 'x' }).migrationsDir;
@@ -132,6 +133,37 @@ describe('text registry (spec 7.4)', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(blind, [], 'UPDATE triggers on registered tables without the quarantine exception');
     const { rows: rules } = await pool.query(`SELECT tablename FROM pg_rules WHERE schemaname = 'public' AND tablename = ANY($1)`, [tables]);
     assert.deepEqual(rules, [], 'no rewrite rule on a registered table');
+  });
+
+  test('no length limit on a registered column can stop cleaning', async () => {
+    // The marker is longer than most secrets, so a cleaned value may pass the limit set on input: every upper limit on
+    // a swept column must let a value holding the marker through (the form of 0027). Otherwise the sweep rolls back and
+    // the secret stays visible.
+    const { rows } = await pool.query<{ table: string; constraint: string; columns: string[]; def: string }>(
+      `SELECT cl.relname AS table, c.conname AS constraint, pg_get_constraintdef(c.oid) AS def,
+              array(SELECT a.attname::text FROM pg_attribute a WHERE a.attrelid = c.conrelid AND a.attnum = ANY(c.conkey)) AS columns
+         FROM pg_constraint c JOIN pg_class cl ON cl.oid = c.conrelid
+        WHERE c.contype = 'c' AND c.connamespace = 'public'::regnamespace`,
+    );
+    const blocking: string[] = [];
+    let relaxed = 0;
+    for (const c of TEXT_COLUMNS) {
+      for (const r of rows.filter((x) => x.table === c.table && x.columns.includes(c.column))) {
+        const way = `OR (strpos(${c.column}, '${MARKER}'::text) > 0)`;
+        const limit = new RegExp(`\\b(?:char_length|character_length|length|octet_length)\\((?:btrim\\()?\\(?${c.column}\\)?(?:::text)?\\)*\\s*(?:<=?|=)\\s*\\d+\\)*`, 'g');
+        for (const m of r.def.matchAll(limit)) {
+          if (r.def.slice(m.index + m[0].length).trimStart().startsWith(way)) relaxed += 1;
+          else blocking.push(`${name(c)}: ${r.constraint} ${r.def}`);
+        }
+      }
+    }
+    assert.deepEqual(blocking, [], `length limits cleaning can break:\n${blocking.join('\n')}`);
+    assert.ok(relaxed >= 14, `only ${relaxed} relaxed limits found: does the pattern still match what PostgreSQL prints?`);
+    const typed = await pool.query(
+      `SELECT table_name || '.' || column_name AS name FROM information_schema.columns WHERE table_schema = 'public' AND character_maximum_length IS NOT NULL`,
+    );
+    const registered = new Set(TEXT_COLUMNS.map(name));
+    assert.deepEqual(typed.rows.map((r) => r.name).filter((n: string) => registered.has(n)), [], 'no registered column has a length in its type');
   });
 
   describe('derived rows', () => {

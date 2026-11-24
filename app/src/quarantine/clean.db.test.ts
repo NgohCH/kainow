@@ -607,6 +607,81 @@ describe('cleaning engine (spec 7.4)', { skip: SKIP_NO_DB }, () => {
     await assert.rejects(pool.query(`UPDATE discussion_threads SET title = $2 WHERE id = $1`, [thread, 'y'.repeat(201)]), (e: { code?: string }) => e.code === '23514');
   });
 
+  test('a full-length stage name holding the text is cleaned everywhere it is kept, and restored', async () => {
+    const project = await newProject();
+    const task = await seedTask(project, 'Rotate the key');
+    const mark = 'Q7!z';
+    const name = `${'S'.repeat(80 - mark.length - 1)} ${mark}`;
+    const cleanedName = name.replace(mark, MARKER);
+    assert.deepEqual([name.length, cleanedName.length], [80, 96]);
+    const stage = uuidv7();
+    await pool.query(`INSERT INTO project_stages (id, project_id, position, name, substages, added_by, added_at) VALUES ($1, $2, 9, $3, $4, $5, now())`, [stage, project, name, [`Sub ${mark}`], user]);
+    const period = uuidv7();
+    await pool.query(`INSERT INTO project_stage_periods (id, project_id, stage, started_at, ended_at, started_by) VALUES ($1, $2, $3, now(), now(), $4)`, [period, project, name, user]);
+    const change = uuidv7();
+    const next = [{ name, substages: [`Sub ${mark}`], status: 'active' }];
+    await pool.query(
+      `INSERT INTO project_stage_changes (id, project_id, kind, stage_id, actor_id, at, reason, previous, next) VALUES ($1, $2, 'added', $3, $4, now(), $5, '[]', $6)`,
+      [change, project, stage, user, `For ${mark}`, JSON.stringify(next)],
+    );
+    const read = async () => ({
+      stage: (await pool.query(`SELECT name, substages FROM project_stages WHERE id = $1`, [stage])).rows[0],
+      period: (await pool.query(`SELECT stage FROM project_stage_periods WHERE id = $1`, [period])).rows[0],
+      change: (await pool.query(`SELECT reason, previous, next FROM project_stage_changes WHERE id = $1`, [change])).rows[0],
+    });
+    const before = await read();
+    const { caseId } = await clean(project, 'task', task, [mark]);
+    assert.deepEqual(await read(), {
+      stage: { name: cleanedName, substages: [`Sub ${MARKER}`] },
+      period: { stage: cleanedName },
+      change: { reason: `For ${MARKER}`, previous: [], next: [{ name: cleanedName, substages: [`Sub ${MARKER}`], status: 'active' }] },
+    });
+    const r = await tx((c) => restoreOriginals(c, key, caseId));
+    assert.deepEqual(r.changed, []);
+    assert.deepEqual(await read(), before);
+    // Without the marker the limits still hold, and a name may never be blank.
+    for (const bad of ['y'.repeat(81), '   ']) {
+      for (const [sql, id] of [[`UPDATE project_stages SET name = $2 WHERE id = $1`, stage], [`UPDATE project_stage_periods SET stage = $2 WHERE id = $1`, period]]) {
+        await assert.rejects(pool.query(sql, [id, bad]), (e: { code?: string }) => e.code === '23514');
+      }
+    }
+  });
+
+  test('a full-length reason for a correction is cleaned and restored', async () => {
+    const project = await newProject();
+    const { version } = await seedSource(project, 'Notes.');
+    const item = await seedItem(version, 'Notes', { start: 0, end: 5 });
+    const mark = 'Q7!z';
+    const reason = `${'r'.repeat(500 - mark.length - 1)} ${mark}`;
+    const edit = uuidv7();
+    await pool.query(`INSERT INTO extraction_item_edits (id, item_id, kind, text, reason, edited_by, edited_at) VALUES ($1, $2, 'decision', 'Rotate it', $3, $4, now())`, [edit, item, reason, user]);
+    const read = async () => (await pool.query(`SELECT reason FROM extraction_item_edits WHERE id = $1`, [edit])).rows[0].reason as string;
+    const { caseId } = await clean(project, 'proposal', item, [mark]);
+    assert.equal(await read(), reason.replace(mark, MARKER));
+    await tx((c) => restoreOriginals(c, key, caseId));
+    assert.equal(await read(), reason);
+  });
+
+  test('a full-length AI connection label is cleaned and restored', async () => {
+    const project = await newProject();
+    const task = await seedTask(project, 'Rotate the key');
+    const mark = 'Q7!z';
+    const label = `${'L'.repeat(100 - mark.length - 1)} ${mark}`;
+    const model = uuidv7();
+    await pool.query(
+      `INSERT INTO ai_models (id, provider, model_id, display_name, input_usd_per_million_micro, cached_input_usd_per_million_micro, output_usd_per_million_micro, data_terms, state, updated_at, updated_by)
+       VALUES ($1, 'openai', 'dummy-model', 'Dummy', 1, 1, 1, 'None kept', 'approved', now(), $2)`,
+      [model, user],
+    );
+    const connection = uuidv7();
+    await pool.query(`INSERT INTO ai_connections (id, project_id, model_ref, label, position, state, created_at) VALUES ($1, $2, $3, $4, 1, 'ready', now())`, [connection, project, model, label]);
+    const read = async () => (await pool.query(`SELECT label FROM ai_connections WHERE id = $1`, [connection])).rows[0].label as string;
+    const { caseId } = await clean(project, 'task', task, [mark]);
+    assert.equal(await read(), label.replace(mark, MARKER));
+    await tx((c) => restoreOriginals(c, key, caseId));
+    assert.equal(await read(), label);
+  });
+
   test('the exception is closed again when cleanItem and restoreOriginals return', async () => {
     const project = await newProject();
     const { source, version } = await seedSource(project, `text ${SECRET}`);
