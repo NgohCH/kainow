@@ -92,7 +92,7 @@ Write the exact version in the result table (Part D).
 
 Do these steps on each device, in Safari, one after the other. After each step, write **OK** in the box if what should appear appeared, or write what happened instead. If something looks broken (text on top of other text, a button that does nothing, a red error message, a page that stays on "Loading"), write it down, take a screenshot if you can, and carry on with the next step.
 
-On an iPhone the menu at the top of every page is long: scroll up to see it.
+On an iPhone or a narrow iPad window the side menu is folded away: tap **Menu** at the top left to open it.
 
 | # | What to do | What should appear | As expected / what happened |
 |---|---|---|---|

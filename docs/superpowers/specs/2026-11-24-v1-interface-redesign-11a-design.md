@@ -5,7 +5,7 @@
 **Branch:** `TheLord/subproject-11-acceptance-24e07c` (worktree), cut from `main` at 2046ba8
 **Decisions:** D127 (v0.1 test release), D128 (navigation, Settings hub and page pattern), D129 (colour schemes and organisation colour), D130 (correcting a proposal's type, with a reason and a named history), D131 (stage templates), D132 (timeline bars)
 **Configuration Catalogue:** C111 (personal colour scheme), C112 (organisation colour), C113 (stage templates; refines C09)
-**Migrations:** 0036 (`0036_interface.sql`), 0037 (`0037_stage_templates.sql`)
+**Migrations:** 0036 (`0036_interface.sql`), 0037 (`0037_stage_templates.sql`), 0038 (`0038_project_stage_changes.sql`)
 
 ## 1. Why
 
