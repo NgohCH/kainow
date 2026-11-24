@@ -40,6 +40,20 @@ export async function seedProject(
   const templateId = opts.stageTemplateId ?? GENERAL_TEMPLATE_ID;
   const departmentId = opts.departmentId ?? (await seedDepartment(pool, `Dept ${id.slice(-6)}`));
   const by = opts.members[0]?.userId ?? (await pool.query(`SELECT id FROM users ORDER BY id LIMIT 1`)).rows[0].id;
+  // Migration tests seed on a schema from before 0037 (no stage templates): there a project starts in Initiation.
+  if ((await pool.query(`SELECT to_regclass('public.stage_template_stages') IS NULL AS before`)).rows[0].before) {
+    await pool.query(
+      `INSERT INTO projects (id, name, purpose, owning_department_id, status, closure_outcome, created_by, created_at)
+       VALUES ($1, $2, 'Purpose', $3, $4, $5, $6, '2026-10-31T16:00:00Z')`,
+      [id, opts.name ?? 'Project', departmentId, status, status === 'closed' ? 'abandoned' : null, by],
+    );
+    await pool.query(
+      `INSERT INTO project_stage_periods (id, project_id, stage, started_at, started_by) VALUES ($1, $2, 'Initiation', '2026-10-31T16:00:00Z', $3)`,
+      [uuidv7(), id, by],
+    );
+    await seedMemberships(pool, id, by, opts.members);
+    return id;
+  }
   await pool.query(
     `INSERT INTO projects (id, name, purpose, owning_department_id, status, closure_outcome, created_by, created_at, stage_template_id)
      VALUES ($1, $2, 'Purpose', $3, $4, $5, $6, '2026-10-31T16:00:00Z', $7)`,
@@ -56,14 +70,18 @@ export async function seedProject(
     `INSERT INTO project_stage_periods (id, project_id, stage, started_at, started_by) VALUES ($1, $2, $3, '2026-10-31T16:00:00Z', $4)`,
     [uuidv7(), id, stages[0].name, by],
   );
-  for (const m of opts.members) {
+  await seedMemberships(pool, id, by, opts.members);
+  return id;
+}
+
+async function seedMemberships(pool: Pool, projectId: string, by: string, members: SeedMember[]): Promise<void> {
+  for (const m of members) {
     await pool.query(
       `INSERT INTO memberships (id, project_id, user_id, role, starts_on, expires_on, revoked_at, revoked_by)
        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-      [uuidv7(), id, m.userId, m.role, m.startsOn ?? '2026-11-01', m.expiresOn ?? null, m.revoked ? new Date() : null, m.revoked ? by : null],
+      [uuidv7(), projectId, m.userId, m.role, m.startsOn ?? '2026-11-01', m.expiresOn ?? null, m.revoked ? new Date() : null, m.revoked ? by : null],
     );
   }
-  return id;
 }
 
 /**
