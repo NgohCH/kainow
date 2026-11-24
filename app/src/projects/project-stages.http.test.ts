@@ -194,6 +194,7 @@ describe("a project's own stages (D131)", { skip: SKIP_NO_DB }, () => {
     assert.equal(choose.body.message, 'Choose a stage.');
     assert.equal((await member.request('POST', `/projects/${id}/stages/${analysis.id}/restore`, { reason })).status, 403);
 
+    t.clock.advanceSeconds(1); // the test clock stands still; the history is ordered by time
     const restored = await owner.request('POST', `/projects/${id}/stages/${analysis.id}/restore`, { reason });
     assert.equal(restored.status, 200);
     assert.equal(restored.body.project.stages.find((s: Stage) => s.id === analysis.id).status, 'active');
