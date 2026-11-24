@@ -36,6 +36,7 @@ import { LeadershipModule } from './leadership/leadership.module';
 import type { StorageConnectorFactory } from './storage/connector-factory';
 import { OutputsModule } from './outputs/outputs.module';
 import { StorageModule } from './storage/storage.module';
+import { SettingsSummaryModule } from './settings-summary/settings-summary.module';
 
 @Global()
 @Module({})
@@ -72,6 +73,8 @@ export interface AppOptions extends AuthOptions {
 export class AppModule {
   /** Configuration is passed in so tests and the real entry point share one wiring. */
   static register(config: AppConfig, options: AppOptions = {}): DynamicModule {
+    // One instance, shared with the settings summary, which reads the feedback service it exports.
+    const discussion = DiscussionModule.register(options.meetingEndHook, options.automaticAnalysis, options.analysisQueue);
     return {
       module: AppModule,
       imports: [
@@ -95,7 +98,7 @@ export class AppModule {
         DigestsModule,
         GoLiveModule,
         SearchModule,
-        DiscussionModule.register(options.meetingEndHook, options.automaticAnalysis, options.analysisQueue),
+        discussion,
         AssistModule.register(options.assistQueue),
         HistoryModule,
         QuarantineModule,
@@ -104,6 +107,7 @@ export class AppModule {
         AnalyticsModule,
         StorageModule.register(options.storageConnectors),
         OpsModule,
+        SettingsSummaryModule.register(discussion),
       ],
       controllers: [HealthController],
     };

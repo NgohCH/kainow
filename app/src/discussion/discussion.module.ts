@@ -34,7 +34,7 @@ export class DiscussionModule {
         FeedbackService,
         { provide: MEETING_END_HOOK, inject: [AnalysisService], useFactory: (analysis: AnalysisService): MeetingEndHook => meetingEndHook ?? analysis },
       ],
-      exports: [AudienceModule, ThreadsService, MeetingsService],
+      exports: [AudienceModule, ThreadsService, MeetingsService, FeedbackService],
     };
   }
 }

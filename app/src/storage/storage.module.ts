@@ -20,7 +20,7 @@ export class StorageModule {
       global: true,
       controllers: [StorageController],
       providers: [StorageSettingsService, DestinationsService, StorageAdminsService, SourceAreaMoveService, ManifestService, StorageSummaryService, factory],
-      exports: [StorageSettingsService, DestinationsService, StorageAdminsService, STORAGE_CONNECTORS],
+      exports: [StorageSettingsService, DestinationsService, StorageAdminsService, STORAGE_CONNECTORS, StorageSummaryService],
     };
   }
 }
