@@ -1,4 +1,4 @@
-import { stackedBarLegend, type BarPart } from './graphics.ts';
+import { stackedBarLegend, stackedBarText, type BarPart } from './graphics.ts';
 import { MEANINGS } from './meanings.ts';
 import { meaningVar } from './StatusLabel.tsx';
 
@@ -11,11 +11,12 @@ export function StackedBar({ parts }: { parts: BarPart[] }) {
       <div className="bar" aria-hidden="true">
         {legend.map((p) => <span key={p.label} className={`m-${meaningVar(p.meaning)}`} style={{ flexGrow: p.count }} />)}
       </div>
-      {total === 0 ? <p className="bar-legend">None.</p> : (
-        <ul className="bar-legend">
+      <p className={total > 0 ? "visually-hidden" : "bar-legend"}>{stackedBarText(parts)}</p>
+      {total > 0 && (
+        <ul className="bar-legend" aria-hidden="true">
           {legend.map((p) => (
             <li key={p.label} className={`m-${meaningVar(p.meaning)}`}>
-              <span aria-hidden="true" className="legend-symbol">{MEANINGS[p.meaning].symbol}</span>
+              <span className="legend-symbol">{MEANINGS[p.meaning].symbol}</span>
               <span>{p.count} {p.label} ({p.percent}%)</span>
             </li>
           ))}

@@ -1,4 +1,4 @@
-import { useMemo, useState, type ReactNode } from 'react';
+import { useId, useMemo, useState, type ReactNode } from 'react';
 import { sortRows, type SortDir } from './table.ts';
 
 export interface Column<T> { key: string; header: string; cell: (row: T) => ReactNode; sortValue?: (row: T) => string | number }
@@ -14,7 +14,24 @@ export function DataTable<T>({ caption, columns, rows, rowKey, empty, loading, i
     return col ? sortRows(rows, col, sort!.dir) : rows;
   }, [rows, columns, sort]);
   const toggle = (key: string) => setSort((s) => (s && s.key === key && s.dir === 'asc' ? { key, dir: 'desc' } : { key, dir: 'asc' }));
+  const sortable = columns.filter((c) => c.sortValue);
+  const uid = useId();
   return (
+    <div className="data-table-wrap">
+    {sortable.length > 0 && (
+      <div className="table-sort-select">
+        <label htmlFor={`${uid}-by`}>Sort by</label>
+        <select id={`${uid}-by`} value={sort?.key ?? ''} onChange={(e) => setSort(e.target.value ? { key: e.target.value, dir: sort?.dir ?? 'asc' } : null)}>
+          <option value="">Original order</option>
+          {sortable.map((c) => <option key={c.key} value={c.key}>{c.header}</option>)}
+        </select>
+        <label htmlFor={`${uid}-dir`} className="visually-hidden">Sort direction</label>
+        <select id={`${uid}-dir`} value={sort?.dir ?? 'asc'} disabled={!sort} onChange={(e) => sort && setSort({ key: sort.key, dir: e.target.value as SortDir })}>
+          <option value="asc">Ascending</option>
+          <option value="desc">Descending</option>
+        </select>
+      </div>
+    )}
     <table className="data-table" aria-busy={loading || undefined}>
       <caption>{caption}</caption>
       <thead>
@@ -36,7 +53,7 @@ export function DataTable<T>({ caption, columns, rows, rowKey, empty, loading, i
       </thead>
       <tbody>
         {loading ? (
-          <tr className="table-note"><td colSpan={columns.length} role="status">Loading…</td></tr>
+          <tr className="table-note"><td colSpan={columns.length}><span role="status">Loading…</span></td></tr>
         ) : shown.length === 0 ? (
           <tr className="table-note"><td colSpan={columns.length}>{empty}</td></tr>
         ) : (
@@ -52,5 +69,6 @@ export function DataTable<T>({ caption, columns, rows, rowKey, empty, loading, i
         )}
       </tbody>
     </table>
+    </div>
   );
 }
