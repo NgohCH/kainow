@@ -10,7 +10,7 @@ export const HOME_SECTIONS = ['needsYou', 'myTasks', 'myProjects'] as const;
 export type HomeSection = (typeof HOME_SECTIONS)[number];
 
 const THEMES = ['light', 'dark'] as const;
-const ACCENTS = ['teal', 'blue', 'plum', 'slate'] as const;
+export const ACCENTS = ['red', 'teal', 'blue', 'plum', 'slate', 'organisation'] as const;
 
 /** The leadership card field keys (spec 6.3), in default order, from the one catalogue. */
 export const LEADERSHIP_FIELD_KEYS = LEADERSHIP_FIELDS.map((f) => f.key) as readonly string[];
@@ -22,6 +22,8 @@ export const MAX_EXPANDED = 1000;
 export type Prefs = {
   theme: (typeof THEMES)[number];
   accent: (typeof ACCENTS)[number];
+  /** True once the person has picked a scheme themselves (so the organisation's colour is not applied over it). */
+  accentChosen: boolean;
   home: { order: HomeSection[]; hidden: HomeSection[]; showCompleted: boolean; includeArchived: boolean };
   leadership: { fields: { order: string[]; hidden: string[] } };
   expanded: Record<string, boolean>;
@@ -30,7 +32,8 @@ export type Prefs = {
 
 export const DEFAULT_PREFS: Prefs = {
   theme: 'light',
-  accent: 'teal',
+  accent: 'red',
+  accentChosen: false,
   home: { order: [...HOME_SECTIONS], hidden: [], showCompleted: false, includeArchived: false },
   leadership: { fields: { order: [...LEADERSHIP_FIELD_KEYS], hidden: [] } },
   expanded: {},
@@ -79,6 +82,7 @@ export function normalisePrefs(input: unknown): Prefs {
   return {
     theme: oneOf(src.theme, THEMES, DEFAULT_PREFS.theme),
     accent: oneOf(src.accent, ACCENTS, DEFAULT_PREFS.accent),
+    accentChosen: bool(src.accentChosen, DEFAULT_PREFS.accentChosen),
     home: {
       order: ['needsYou', ...sections],
       hidden: known(home.hidden, HOME_SECTIONS).filter((s) => s !== 'needsYou'),

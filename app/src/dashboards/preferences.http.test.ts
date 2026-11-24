@@ -47,11 +47,20 @@ describe('preferences endpoints', { skip: SKIP_NO_DB }, () => {
     assert.equal(put.body.theme, 'light');
   });
 
+  test('accent and accentChosen round-trip', async () => {
+    const put = await ann.request('PUT', '/me/preferences', { accent: 'blue', accentChosen: true });
+    assert.equal(put.body.accent, 'blue');
+    const g = await ann.request('GET', '/me/preferences');
+    assert.equal(g.body.accent, 'blue');
+    assert.equal(g.body.accentChosen, true);
+  });
+
   test('each user reads only their own', async () => {
     await ann.request('PUT', '/me/preferences', { theme: 'dark', accent: 'blue' });
     const b = await bob.request('GET', '/me/preferences');
     assert.equal(b.body.theme, 'light');
-    assert.equal(b.body.accent, 'teal');
+    assert.equal(b.body.accent, 'red');
+    assert.equal(b.body.accentChosen, false);
     await bob.request('PUT', '/me/preferences', { accent: 'slate' });
     assert.equal((await ann.request('GET', '/me/preferences')).body.accent, 'blue');
   });
