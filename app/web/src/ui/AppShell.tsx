@@ -89,7 +89,17 @@ export function AppShell({
 
   return (
     <div className="shell">
-      <a className="skip" href="#main">Skip to content</a>
+      {/* The address is the page's route, so following "#main" would leave the page: move focus to the content instead. */}
+      <a
+        className="skip"
+        href="#main"
+        onClick={(e) => {
+          e.preventDefault();
+          document.getElementById('main')?.focus();
+        }}
+      >
+        Skip to content
+      </a>
       <TopBar
         hash={hash}
         branding={branding}
@@ -133,7 +143,7 @@ export function AppShell({
             />
           </div>
         )}
-        <div id="main">{children}</div>
+        <div id="main" tabIndex={-1}>{children}</div>
         <footer className="foot">Times are shown in UTC+8.</footer>
       </div>
     </div>

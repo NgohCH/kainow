@@ -211,6 +211,7 @@ p { margin: 0 0 0.75rem; }
 
 .skip { position: absolute; left: -999px; top: 0; background: var(--surface); padding: 0.5rem 1rem; z-index: 10; }
 .skip:focus { left: 0; }
+#main:focus { outline: none; }
 .loading, .empty { padding: 2rem 1rem; color: var(--muted); max-width: 60ch; margin: 0 auto; }
 
 /* The app shell (spec 6.1, 6.2): side menu on the left, a slim top bar, then the page. Below 900 px the menu folds
@@ -251,7 +252,7 @@ a.spend { color: var(--accent-deep); text-decoration: underline; }
 .person-spend { display: none; padding: 0 0 0.6rem; margin-bottom: 0.6rem; border-bottom: 1px solid var(--rule); }
 
 .person-menu { position: relative; min-width: 0; }
-.person-button { display: inline-flex; align-items: center; gap: 0.5rem; max-width: 14rem; min-width: 0; padding: 0.25rem 0.6rem 0.25rem 0.25rem; border-color: var(--rule); border-radius: 999px; color: var(--ink); font-weight: 500; }
+.person-button { display: inline-flex; align-items: center; gap: 0.5rem; max-width: min(14rem, 100%); min-width: 0; padding: 0.25rem 0.6rem 0.25rem 0.25rem; border-color: var(--rule); border-radius: 999px; color: var(--ink); font-weight: 500; }
 .person-button[aria-expanded='true'] { border-color: var(--accent); }
 .person-initial { display: inline-grid; place-items: center; width: 1.9rem; height: 1.9rem; border-radius: 50%; background: var(--accent); color: var(--accent-contrast); font-weight: 700; flex: none; }
 .person-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -800,6 +801,8 @@ a.stat-tile.linked:hover { border-color: var(--accent); }
 .meter { display: block; height: 6px; background: var(--muted-wash); border-radius: 3px; overflow: hidden; margin-top: 0.3rem; }
 .meter > span { display: block; height: 100%; background: var(--accent); }
 
+/* A table wider than its box (between the stacked phone layout and a wide screen) scrolls inside the box, never the page. */
+.data-table-wrap { max-width: 100%; overflow-x: auto; }
 .data-table { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--surface); }
 .data-table caption { text-align: left; font-family: var(--serif); font-size: 18px; padding: 0 0 0.5rem; }
 .data-table th, .data-table td { text-align: left; padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--muted-wash); vertical-align: top; }
