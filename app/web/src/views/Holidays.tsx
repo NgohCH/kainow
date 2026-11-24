@@ -10,8 +10,8 @@ interface Listing { holidays: Holiday[]; organisationHolidays?: Array<{ id: stri
 
 type Pending = { kind: 'add'; date: string; name: string } | { kind: 'remove'; id: string; label: string };
 
-/** Holidays for the organisation or one project: add or remove with a reason, after seeing what would move. */
-export function Holidays({ projectId, canEdit, notice: blockedNote, onChanged }: { projectId?: string; canEdit: boolean; notice?: string | null; onChanged?: () => void }) {
+/** Holidays for the organisation or one project: add or remove with a reason, after seeing what would move. `bare` leaves out the heading, for use inside a settings box that already names it. */
+export function Holidays({ projectId, canEdit, notice: blockedNote, onChanged, bare = false }: { projectId?: string; canEdit: boolean; notice?: string | null; onChanged?: () => void; bare?: boolean }) {
   const base = projectId ? `/projects/${projectId}/holidays` : '/notification-settings/holidays';
   const [list, setList] = useState<Listing | null>(null);
   const [date, setDate] = useState('');
@@ -73,8 +73,8 @@ export function Holidays({ projectId, canEdit, notice: blockedNote, onChanged }:
   const inherited = list?.organisationHolidays ?? [];
   const id = projectId ? 'proj-holidays' : 'org-holidays';
   return (
-    <section aria-labelledby={id}>
-      <h2 id={id}>Holidays</h2>
+    <section aria-labelledby={bare ? undefined : id} aria-label={bare ? 'Holidays' : undefined}>
+      {!bare && <h2 id={id}>Holidays</h2>}
       <p className="meta">A holiday is not a working day. It moves notices that have not been sent. It never changes a deadline.</p>
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="ok">{notice}</p>}

@@ -2,6 +2,10 @@ import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import { waitingRequestsText } from '../changes.ts';
 import { formatWhen } from '../format.ts';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { PageHeader } from '../ui/PageHeader.tsx';
+import { SettingsPage } from '../ui/SettingsPage.tsx';
+import { StatTile } from '../ui/StatTile.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 
@@ -48,98 +52,129 @@ function PendingChoice({ pending, value, onChange }: { pending: number | null; v
   );
 }
 
-function History({ rows }: { rows: HistoryRow[] }) {
-  return (
-    <section aria-labelledby="policy-history">
-      <h2 id="policy-history">Change history</h2>
-      {rows.length === 0 ? (
-        <p className="meta">No changes yet.</p>
-      ) : (
-        <ul className="plain">
-          {rows.map((h) => (
-            <li key={h.id}>
-              {formatWhen(h.at)}: {h.actor} changed {fieldLabel(h.field).toLowerCase()} from {h.oldValue ?? 'not set'} to {h.newValue ?? 'not set'}
-              {h.pendingChoice ? ` (waiting requests: ${h.pendingChoice === 'keep' ? 'kept' : 'restarted'})` : ''} — {h.reason}
-            </li>
-          ))}
-        </ul>
-      )}
-    </section>
-  );
+function historyText(h: HistoryRow): string {
+  return `${fieldLabel(h.field)} from ${h.oldValue ?? 'not set'} to ${h.newValue ?? 'not set'}${h.pendingChoice ? ` (waiting requests: ${h.pendingChoice === 'keep' ? 'kept' : 'restarted'})` : ''}`;
 }
 
-/** Administration → Approvals: the organisation's count and the override switch. */
-export function ApprovalSettings() {
-  const [policy, setPolicy] = useState<OrgPolicy | null>(null);
-  const [impact, setImpact] = useState<number | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
-  const [required, setRequired] = useState(1);
-  const [override, setOverride] = useState(false);
+const HISTORY_COLUMNS: Column<HistoryRow>[] = [
+  { key: 'when', header: 'When', sortValue: (h) => h.at, cell: (h) => formatWhen(h.at) },
+  { key: 'who', header: 'Who', sortValue: (h) => h.actor.toLowerCase(), cell: (h) => h.actor },
+  { key: 'what', header: 'What changed', cell: (h) => historyText(h) },
+  { key: 'reason', header: 'Reason', cell: (h) => h.reason },
+];
+
+/** The form for the organisation's count and the override switch; it starts from what is in force each time it opens. */
+function ApprovalForm({ policy, impact, onSaved }: { policy: OrgPolicy; impact: number | null; onSaved: () => void }) {
+  const [required, setRequired] = useState(policy.required);
+  const [override, setOverride] = useState(policy.projectsMayOverride);
   const [reason, setReason] = useState('');
   const [pending, setPending] = useState<'keep' | 'restart'>('keep');
-
-  const load = useCallback(() => {
-    api.get<OrgPolicy>('/approval-policy').then(
-      (p) => {
-        setPolicy(p);
-        setRequired(p.required);
-        setOverride(p.projectsMayOverride);
-      },
-      (e) => setError(errText(e)),
-    );
-    api.get<{ pending: number }>('/approval-policy/impact').then((r) => setImpact(r.pending), () => setImpact(null));
-  }, []);
-  useEffect(load, [load]);
+  const [error, setError] = useState<string | null>(null);
 
   async function save(e: FormEvent) {
     e.preventDefault();
     setError(null);
-    setNotice(null);
     try {
       await api.post('/approval-policy', { required, projectsMayOverride: override, reason, pending });
-      setReason('');
-      setPending('keep');
-      setNotice('Saved.');
-      load();
+      onSaved();
     } catch (err) {
       setError(errText(err));
     }
   }
 
-  const unchanged = policy !== null && policy.required === required && policy.projectsMayOverride === override;
-
+  const unchanged = policy.required === required && policy.projectsMayOverride === override;
   return (
-    <main className="page narrow">
-      <h1>Approvals</h1>
-      <p className="meta">How many Owners or Sponsors must approve a change before it is made.</p>
+    <form className="stack" onSubmit={save} aria-label="Approval count">
+      <label>
+        Approvals needed
+        <select value={required} onChange={(e) => setRequired(Number(e.target.value))}>
+          {[1, 2, 3].map((n) => (
+            <option key={n} value={n}>{n}</option>
+          ))}
+        </select>
+      </label>
+      <label className="check">
+        <input type="checkbox" checked={override} onChange={(e) => setOverride(e.target.checked)} />
+        Let a project's Owners and Sponsors set their own count
+      </label>
+      <PendingChoice pending={impact} value={pending} onChange={setPending} />
+      <label>
+        Reason for the change
+        <textarea required rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />
+      </label>
       {error && <p role="alert" className="error">{error}</p>}
-      {notice && <p role="status" className="ok">{notice}</p>}
-      {policy && (
-        <>
-          <form className="panel stack" onSubmit={save} aria-label="Approval count">
-            <label>
-              Approvals needed
-              <select value={required} onChange={(e) => setRequired(Number(e.target.value))}>
-                {[1, 2, 3].map((n) => (
-                  <option key={n} value={n}>{n}</option>
-                ))}
-              </select>
-            </label>
-            <label className="check">
-              <input type="checkbox" checked={override} onChange={(e) => setOverride(e.target.checked)} />
-              Let a project's Owners and Sponsors set their own count
-            </label>
-            <PendingChoice pending={impact} value={pending} onChange={setPending} />
-            <label>
-              Reason for the change
-              <textarea required rows={2} value={reason} onChange={(e) => setReason(e.target.value)} />
-            </label>
-            <button className="primary" disabled={unchanged}>Save</button>
-          </form>
-          <History rows={policy.history} />
-        </>
-      )}
+      <button className="primary" disabled={unchanged}>Save</button>
+    </form>
+  );
+}
+
+/** Settings › Approvals: the organisation's count and the override switch. */
+export function ApprovalSettings() {
+  const [policy, setPolicy] = useState<OrgPolicy | null>(null);
+  const [impact, setImpact] = useState<number | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const load = useCallback(() => {
+    api.get<OrgPolicy>('/approval-policy').then(setPolicy, (e) => setError(errText(e)));
+    api.get<{ pending: number }>('/approval-policy/impact').then((r) => setImpact(r.pending), () => setImpact(null));
+  }, []);
+  useEffect(load, [load]);
+
+  const header = {
+    crumbs: [{ text: 'Settings', href: '#/settings' }],
+    title: 'Approvals',
+    intro: 'How many Owners or Sponsors must approve a change before it is made.',
+  };
+  if (!policy) {
+    return (
+      <main className="page">
+        <PageHeader {...header} />
+        {error ? <p role="alert" className="error">{error}</p> : <p className="loading">Loading</p>}
+      </main>
+    );
+  }
+  const glance = (
+    <>
+      {error && <p role="alert" className="error">{error}</p>}
+      <p role="status" className="ok">{notice ?? ''}</p>
+      <div className="stat-grid">
+        <StatTile label="Approvals needed" value={String(policy.required)} note={policy.required === 1 ? 'One approval is enough' : `${policy.required} people must approve`} />
+        <StatTile label="Projects set their own count" value={policy.projectsMayOverride ? 'Allowed' : 'Not allowed'} />
+        <StatTile label="Requests waiting" value={impact === null ? 'Not known' : String(impact)} note="Waiting for an approval now" />
+      </div>
+      <DataTable caption="Change history" columns={HISTORY_COLUMNS} rows={policy.history} rowKey={(h) => h.id} empty="No changes yet." />
+    </>
+  );
+  return (
+    <main className="page">
+      <SettingsPage
+        header={header}
+        glance={glance}
+        settings={[
+          {
+            key: 'count',
+            title: 'Approval count',
+            current: (
+              <p>
+                {policy.required} {policy.required === 1 ? 'approval' : 'approvals'} needed. Projects {policy.projectsMayOverride ? 'may' : 'may not'} set their own count.
+              </p>
+            ),
+            form: (close) => (
+              <ApprovalForm
+                policy={policy}
+                impact={impact}
+                onSaved={() => {
+                  setNotice('Saved.');
+                  setError(null);
+                  load();
+                  close();
+                }}
+              />
+            ),
+          },
+        ]}
+      />
     </main>
   );
 }

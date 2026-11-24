@@ -1,7 +1,11 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { api } from '../api.ts';
 import { plural } from '../format.ts';
-import { REPORT_TYPE_STATUS, nameProblem, reasonProblem } from '../storage.ts';
+import { nameProblem, reasonProblem } from '../storage.ts';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { SettingsPage } from '../ui/SettingsPage.tsx';
+import { StatTile } from '../ui/StatTile.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
 import { Notice, ReasonAction, errText, useReturnFocus } from './storageUi.tsx';
 
 interface ReportType {
@@ -59,39 +63,16 @@ function RenameForm({ t, onDone }: { t: ReportType; onDone: (message: string) =>
   );
 }
 
-/** System Settings, Report types (spec 4.4, Enterprise Administrator only): add, rename and retire, each with a reason. */
+/** Settings › Report types (spec 4.4, Enterprise Administrator only): add, rename and retire, each with a reason. */
 export function ReportTypes() {
   const [types, setTypes] = useState<ReportType[] | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const [name, setName] = useState('');
-  const [reason, setReason] = useState('');
-  const [busy, setBusy] = useState(false);
 
   const load = useCallback(() => {
     api.get<{ reportTypes: ReportType[] }>('/admin/report-types').then((r) => setTypes(r.reportTypes), (e) => setError(errText(e)));
   }, []);
   useEffect(load, [load]);
-
-  async function add(e: FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setNotice(null);
-    const p = nameProblem(name) ?? reasonProblem(reason);
-    if (p) return setError(p);
-    setBusy(true);
-    try {
-      await api.post('/admin/report-types', { name: name.trim(), reason: reason.trim() });
-      setNotice(`${name.trim()} added.`);
-      setName('');
-      setReason('');
-      load();
-    } catch (err) {
-      setError(errText(err));
-    } finally {
-      setBusy(false);
-    }
-  }
 
   const done = (message: string) => {
     setNotice(message);
@@ -101,72 +82,105 @@ export function ReportTypes() {
   const active = (types ?? []).filter((t) => t.status === 'active');
   const retired = (types ?? []).filter((t) => t.status === 'retired');
 
-  return (
-    <main className="page narrow">
-      <h1>Report types</h1>
-      <p className="meta">The kinds of report people choose when they file an output. The type name is also the folder name at filing time. Retiring a type keeps its history and stops it being chosen for new outputs.</p>
+  const columns: Column<ReportType>[] = [
+    { key: 'name', header: 'Name', sortValue: (t) => t.name.toLowerCase(), cell: (t) => <strong>{t.name}</strong> },
+    {
+      key: 'status',
+      header: 'State',
+      sortValue: (t) => t.status,
+      cell: (t) => <StatusLabel meaning={t.status === 'active' ? 'active' : 'off'} word={t.status === 'active' ? 'In use' : 'Retired'} />,
+    },
+    {
+      key: 'action',
+      header: 'Action',
+      cell: (t) =>
+        t.status === 'active' ? (
+          <div className="stack">
+            <RenameForm t={t} onDone={done} />
+            <ReasonAction
+              label={`Retire ${t.name}`}
+              prompt="Reason for retiring it"
+              onSend={async (r) => {
+                await api.put(`/admin/report-types/${t.id}`, { status: 'retired', reason: r });
+                done(`${t.name} is retired.`);
+              }}
+            >
+              <p className="hint">Outputs already filed under it keep it. It can no longer be chosen for new outputs.</p>
+            </ReasonAction>
+          </div>
+        ) : (
+          <span className="meta">None</span>
+        ),
+    },
+  ];
+
+  const glance = (
+    <>
       <Notice error={error} notice={notice} />
-      {!types && !error && <p className="loading">Loading</p>}
-      {types && (
-        <>
-          <section aria-labelledby="rt-active">
-            <h2 id="rt-active">In use ({plural(active.length, 'type')})</h2>
-            {active.length === 0 ? (
-              <p className="meta">No report types are in use. Add one so people can file outputs.</p>
-            ) : (
-              <ul className="plain">
-                {active.map((t) => (
-                  <li key={t.id} className="panel stack">
-                    <strong>{t.name}</strong>
-                    <span className="meta">{REPORT_TYPE_STATUS.active}</span>
-                    <div className="inline-form">
-                      <RenameForm t={t} onDone={done} />
-                      <ReasonAction
-                        label={`Retire ${t.name}`}
-                        prompt="Reason for retiring it"
-                        onSend={async (r) => {
-                          await api.put(`/admin/report-types/${t.id}`, { status: 'retired', reason: r });
-                          done(`${t.name} is retired.`);
-                        }}
-                      >
-                        <p className="hint">Outputs already filed under it keep it. It can no longer be chosen for new outputs.</p>
-                      </ReasonAction>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-
-          <form className="panel stack" onSubmit={add} aria-label="Add a report type">
-            <h2>Add a report type</h2>
-            <label>
-              Name
-              <input required maxLength={100} value={name} onChange={(e) => setName(e.target.value)} />
-            </label>
-            <label>
-              Reason
-              <textarea required rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
-            </label>
-            <button className="primary" disabled={busy}>Add</button>
-          </form>
-
-          <section aria-labelledby="rt-retired">
-            <h2 id="rt-retired">Retired</h2>
-            {retired.length === 0 ? (
-              <p className="meta">No report types are retired.</p>
-            ) : (
-              <ul className="plain">
-                {retired.map((t) => (
-                  <li key={t.id}>
-                    {t.name} <span className="meta">· {REPORT_TYPE_STATUS.retired}</span>
-                  </li>
-                ))}
-              </ul>
-            )}
-          </section>
-        </>
-      )}
+      <div className="stat-grid">
+        <StatTile label="In use" value={types ? plural(active.length, 'type') : 'Loading'} />
+        <StatTile label="Retired" value={types ? plural(retired.length, 'type') : 'Loading'} />
+      </div>
+      {types && active.length === 0 && <p className="meta">No report types are in use. Add one so people can file outputs.</p>}
+      <DataTable caption="Report types" columns={columns} rows={types ?? []} rowKey={(t) => t.id} loading={!types && !error} empty="No report types yet." initialSort={{ key: 'status', dir: 'asc' }} />
+    </>
+  );
+  return (
+    <main className="page">
+      <SettingsPage
+        header={{
+          crumbs: [{ text: 'Settings', href: '#/settings' }],
+          title: 'Report types',
+          intro: 'The kinds of report people choose when they file an output. The type name is also the folder name at filing time. Retiring a type keeps its history and stops it being chosen for new outputs.',
+        }}
+        glance={glance}
+        settings={[
+          {
+            key: 'add',
+            title: 'Add a report type',
+            current: <p className="meta">A new type can be chosen for new outputs straight away.</p>,
+            form: (close) => <AddForm onAdded={(n) => { done(`${n} added.`); close(); }} />,
+          },
+        ]}
+      />
     </main>
+  );
+}
+
+function AddForm({ onAdded }: { onAdded: (name: string) => void }) {
+  const [name, setName] = useState('');
+  const [reason, setReason] = useState('');
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  async function add(e: FormEvent) {
+    e.preventDefault();
+    setError(null);
+    const p = nameProblem(name) ?? reasonProblem(reason);
+    if (p) return setError(p);
+    setBusy(true);
+    try {
+      await api.post('/admin/report-types', { name: name.trim(), reason: reason.trim() });
+      onAdded(name.trim());
+    } catch (err) {
+      setError(errText(err));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <form className="stack" onSubmit={add} aria-label="Add a report type">
+      <label>
+        Name
+        <input required maxLength={100} value={name} onChange={(e) => setName(e.target.value)} />
+      </label>
+      <label>
+        Reason
+        <textarea required rows={2} maxLength={1000} value={reason} onChange={(e) => setReason(e.target.value)} />
+      </label>
+      {error && <p role="alert" className="error">{error}</p>}
+      <button className="primary" disabled={busy}>Add</button>
+    </form>
   );
 }

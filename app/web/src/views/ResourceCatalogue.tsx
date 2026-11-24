@@ -115,9 +115,11 @@ function RetireForm({ label, onRetire, onCancel }: { label: string; onRetire: (r
  * The resource catalogue (spec 3.1, 8.1): items and categories, add, edit, rename and retire. Open to the Administrator and
  * named catalogue maintainers; the server decides.
  */
-export function ResourceCatalogue({ embedded = false }: { embedded?: boolean } = {}) {
-  const Wrapper = embedded ? 'section' : 'main';
+/** `embedded` puts it on another page; `bare` also drops its own panel and heading, for use inside a settings box that names it. `onChanged` runs after each saved change. */
+export function ResourceCatalogue({ embedded = false, bare = false, onChanged }: { embedded?: boolean; bare?: boolean; onChanged?: () => void } = {}) {
+  const Wrapper = bare ? 'div' : embedded ? 'section' : 'main';
   const Heading = embedded ? 'h2' : 'h1';
+  const Sub = bare ? 'h4' : 'h3';
   const [items, setItems] = useState<Item[] | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -159,6 +161,7 @@ export function ResourceCatalogue({ embedded = false }: { embedded?: boolean } =
       await work();
       setNotice(done);
       load();
+      onChanged?.();
       return null;
     } catch (e) {
       return errText(e);
@@ -169,13 +172,13 @@ export function ResourceCatalogue({ embedded = false }: { embedded?: boolean } =
   const draftOf = (i: Item): ItemDraft => ({ kind: i.kind, reference: i.reference, name: i.name, categoryId: i.categoryId ?? '', description: i.description });
 
   return (
-    <Wrapper className={embedded ? 'panel' : 'page'} aria-labelledby="catalogue-heading">
-      <Heading id="catalogue-heading" tabIndex={-1}>Resource catalogue</Heading>
+    <Wrapper className={bare ? undefined : embedded ? 'panel' : 'page'} aria-labelledby="catalogue-heading">
+      {bare ? <h4 id="catalogue-heading" tabIndex={-1} className="visually-hidden">Resource catalogue</h4> : <Heading id="catalogue-heading" tabIndex={-1}>Resource catalogue</Heading>}
       <p className="meta">Shared equipment and facilities that projects choose from. A retired item stays on existing lines and cannot be chosen for new ones.</p>
       <p role="status" aria-live="polite" className="ok">{notice ?? ''}</p>
       {error && <p role="alert" className="error">{error}</p>}
 
-      <h3>Categories</h3>
+      <Sub>Categories</Sub>
       <form
         className="inline-form"
         onSubmit={async (e) => {
@@ -245,7 +248,7 @@ export function ResourceCatalogue({ embedded = false }: { embedded?: boolean } =
       )}
 
       <div className="row">
-        <h3>Items</h3>
+        <Sub>Items</Sub>
         <button type="button" className="primary" data-opener="add-item" aria-expanded={adding} onClick={() => setAdding((a) => !a)} disabled={categories.every((c) => c.status !== 'active')}>
           + Add item
         </button>

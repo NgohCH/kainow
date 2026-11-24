@@ -1,7 +1,10 @@
 import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import { CURRENCIES, type Currency } from '../finance.ts';
-import { formatWhen } from '../format.ts';
+import { formatWhen, plural } from '../format.ts';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { SettingsPage } from '../ui/SettingsPage.tsx';
+import { StatTile } from '../ui/StatTile.tsx';
 import { orgSettingsProblem, settingsChangeText } from '../resourceScreens.ts';
 import { ResourceCatalogue } from './ResourceCatalogue.tsx';
 import { useReturnFocus } from './useReturnFocus.ts';
@@ -24,7 +27,7 @@ interface Person {
   role?: string;
 }
 
-function Maintainers() {
+function Maintainers({ bare = false, onChanged }: { bare?: boolean; onChanged?: () => void }) {
   const [list, setList] = useState<Maintainer[] | null>(null);
   const [people, setPeople] = useState<Person[]>([]);
   const [userId, setUserId] = useState('');
@@ -50,6 +53,7 @@ function Maintainers() {
     try {
       const r = await api.post<{ maintainers: Maintainer[] }>('/admin/resources/maintainers', { userId, reason });
       setList(r.maintainers);
+      onChanged?.();
       setUserId('');
       setReason('');
       setNotice('Catalogue maintainer added.');
@@ -65,6 +69,7 @@ function Maintainers() {
     try {
       const r = await api.delete<{ maintainers: Maintainer[] }>('/admin/resources/maintainers', { userId: m.userId, reason: removeReason });
       setList(r.maintainers);
+      onChanged?.();
       focus.leaving('maintainers-heading');
       setRemoving(null);
       setRemoveReason('');
@@ -76,8 +81,8 @@ function Maintainers() {
 
   const taken = new Set((list ?? []).map((m) => m.userId));
   return (
-    <section className="panel" aria-labelledby="maintainers-heading">
-      <h2 id="maintainers-heading" tabIndex={-1}>Catalogue maintainers</h2>
+    <section className={bare ? undefined : 'panel'} aria-labelledby="maintainers-heading">
+      {bare ? <h4 id="maintainers-heading" tabIndex={-1} className="visually-hidden">Catalogue maintainers</h4> : <h2 id="maintainers-heading" tabIndex={-1}>Catalogue maintainers</h2>}
       <p className="meta">Administrators can always maintain the catalogue. Name other people here; each addition and removal is recorded with a reason, and either can be undone at any time.</p>
       <form className="stack" onSubmit={add} aria-label="Add a catalogue maintainer">
         <div className="grid-2">
@@ -138,7 +143,7 @@ interface OrgView {
   changes: { id: string; at: string; reason: string; actor: string; previous: unknown; next: unknown }[];
 }
 
-function FinanceSettingsPanel() {
+function FinanceSettingsPanel({ bare = false, onChanged }: { bare?: boolean; onChanged?: () => void }) {
   const [data, setData] = useState<OrgView | null>(null);
   const [may, setMay] = useState(true);
   const [def, setDef] = useState('MYR');
@@ -189,6 +194,7 @@ function FinanceSettingsPanel() {
         }),
       );
       setNotice('Saved. The change is in the history below.');
+      onChanged?.();
     } catch (err) {
       setError(errText(err));
     } finally {
@@ -197,8 +203,8 @@ function FinanceSettingsPanel() {
   }
 
   return (
-    <section className="panel" aria-labelledby="finance-admin-heading">
-      <h2 id="finance-admin-heading">Finance</h2>
+    <section className={bare ? undefined : 'panel'} aria-labelledby={bare ? undefined : 'finance-admin-heading'} aria-label={bare ? 'Finance' : undefined}>
+      {!bare && <h2 id="finance-admin-heading">Finance</h2>}
       <p className="meta">These are the organisation's defaults. {may && 'A project can set its own warning thresholds. '}Spending warnings are advisory and never block anything.</p>
       <form className="stack" onSubmit={save} aria-label="Finance settings">
         <label className="check">
@@ -246,7 +252,7 @@ function FinanceSettingsPanel() {
         {notice && <p role="status" className="ok">{notice}</p>}
         <button className="primary" disabled={busy}>Save finance settings</button>
       </form>
-      <h3>History</h3>
+      {bare ? <h4>History</h4> : <h3>History</h3>}
       {data.changes.length === 0 ? (
         <p className="meta">No changes have been recorded.</p>
       ) : (
@@ -263,43 +269,69 @@ function FinanceSettingsPanel() {
   );
 }
 
-type Tab = 'catalogue' | 'maintainers' | 'finance';
-const TABS: Array<[Tab, string]> = [['catalogue', 'Catalogue'], ['maintainers', 'Catalogue maintainers'], ['finance', 'Finance']];
+interface MaintainerRow { userId: string; name: string; email: string; addedAt: string }
 
-/** System Settings › Resources and finance (spec 8.1). */
+const MAINTAINER_COLUMNS: Column<MaintainerRow>[] = [
+  { key: 'name', header: 'Name', sortValue: (m) => m.name.toLowerCase(), cell: (m) => <strong>{m.name}</strong> },
+  { key: 'email', header: 'Email', sortValue: (m) => m.email.toLowerCase(), cell: (m) => m.email },
+  { key: 'added', header: 'Added', sortValue: (m) => m.addedAt, cell: (m) => formatWhen(m.addedAt) },
+];
+
+/** Settings › Resources and finance (spec 8.1). */
 export function ResourceAdmin() {
-  const [tab, setTab] = useState<Tab>('catalogue');
+  const [maintainers, setMaintainers] = useState<MaintainerRow[] | null>(null);
+  const [finance, setFinance] = useState<OrgView | null>(null);
+  const [catalogue, setCatalogue] = useState<{ active: number; retired: number } | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const load = useCallback(() => {
+    api.get<{ maintainers: MaintainerRow[] }>('/admin/resources/maintainers').then((r) => setMaintainers(r.maintainers), (e) => setError(errText(e)));
+    api.get<OrgView>('/admin/resources/settings').then(setFinance, (e) => setError(errText(e)));
+    api.get<{ items: Array<{ status: string }> }>('/resources/catalogue?all=1').then(
+      (r) => setCatalogue({ active: r.items.filter((i) => i.status === 'active').length, retired: r.items.filter((i) => i.status !== 'active').length }),
+      (e) => setError(errText(e)),
+    );
+  }, []);
+  useEffect(load, [load]);
+
+  const s = finance?.settings;
+  const glance = (
+    <>
+      {error && <p role="alert" className="error">{error}</p>}
+      <div className="stat-grid">
+        <StatTile label="Catalogue items in use" value={catalogue ? String(catalogue.active) : 'Loading'} note={catalogue ? `${catalogue.retired} retired` : undefined} />
+        <StatTile label="Catalogue maintainers" value={maintainers ? String(maintainers.length) : 'Loading'} note="Besides the Administrators" />
+        <StatTile label="Default currency" value={s ? s.defaultCurrency : 'Loading'} note={s ? `Enabled: ${s.enabledCurrencies.join(', ')}` : undefined} />
+        <StatTile label="Spending warnings" value={s ? `${s.warnFirstPct}% and ${s.warnSecondPct}%` : 'Loading'} note={s ? (s.projectsMayManageFinance ? 'Projects may set their own' : 'Projects may not set their own') : undefined} />
+      </div>
+      <DataTable caption="Catalogue maintainers" columns={MAINTAINER_COLUMNS} rows={maintainers ?? []} rowKey={(m) => m.userId} loading={maintainers === null && !error} empty="No one besides the Administrators maintains the catalogue." />
+    </>
+  );
   return (
     <main className="page">
-      <h1>Resources and finance</h1>
-      <div className="tabs" role="tablist" aria-label="Resources and finance settings">
-        {TABS.map(([t, label], i) => (
-          <button
-            key={t}
-            type="button"
-            role="tab"
-            id={`res-tab-${t}`}
-            aria-selected={tab === t}
-            aria-controls={`res-panel-${t}`}
-            tabIndex={tab === t ? 0 : -1}
-            onClick={() => setTab(t)}
-            onKeyDown={(e) => {
-              const to = e.key === 'ArrowRight' ? (i + 1) % TABS.length : e.key === 'ArrowLeft' ? (i + TABS.length - 1) % TABS.length : e.key === 'Home' ? 0 : e.key === 'End' ? TABS.length - 1 : -1;
-              if (to < 0) return;
-              e.preventDefault();
-              setTab(TABS[to][0]);
-              document.getElementById(`res-tab-${TABS[to][0]}`)?.focus();
-            }}
-          >
-            {label}
-          </button>
-        ))}
-      </div>
-      <div role="tabpanel" id={`res-panel-${tab}`} aria-labelledby={`res-tab-${tab}`}>
-        {tab === 'catalogue' && <ResourceCatalogue embedded />}
-        {tab === 'maintainers' && <Maintainers />}
-        {tab === 'finance' && <FinanceSettingsPanel />}
-      </div>
+      <SettingsPage
+        header={{ crumbs: [{ text: 'Settings', href: '#/settings' }], title: 'Resources and finance', intro: 'The shared resource catalogue, who maintains it, and the finance defaults projects start from.' }}
+        glance={glance}
+        settings={[
+          {
+            key: 'catalogue',
+            title: 'Resource catalogue',
+            current: <p>{catalogue ? `${plural(catalogue.active, 'item')} in use, ${catalogue.retired} retired.` : 'Loading'}</p>,
+            form: () => <ResourceCatalogue embedded bare onChanged={load} />,
+          },
+          {
+            key: 'maintainers',
+            title: 'Catalogue maintainers',
+            current: <p>{maintainers ? (maintainers.length === 0 ? 'Only the Administrators.' : `${plural(maintainers.length, 'person', 'people')} besides the Administrators.`) : 'Loading'}</p>,
+            form: () => <Maintainers bare onChanged={load} />,
+          },
+          {
+            key: 'finance',
+            title: 'Finance defaults',
+            current: <p>{s ? `Default currency ${s.defaultCurrency}; warnings at ${s.warnFirstPct}% and ${s.warnSecondPct}%.` : 'Loading'}</p>,
+            form: () => <FinanceSettingsPanel bare onChanged={load} />,
+          },
+        ]}
+      />
     </main>
   );
 }
