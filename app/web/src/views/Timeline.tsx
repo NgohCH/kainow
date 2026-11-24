@@ -13,6 +13,8 @@ import {
 import { setHidden, type Prefs, type TimelineKind } from '../prefs.ts';
 import { Box } from '../ui/Box.tsx';
 import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { TimelineBars } from '../ui/TimelineBars.tsx';
+import { barsLayout } from '../ui/timelineBars.ts';
 
 const KINDS = Object.keys(TIMELINE_KIND_LABELS) as TimelineKind[];
 
@@ -115,6 +117,9 @@ export function Timeline({ projectId, prefs, ready, onChange }: { projectId: str
         ))}
       </fieldset>
       {saveError && <p role="alert" className="error">{saveError}</p>}
+      <TimelineBars
+        layout={barsLayout({ from: t.range.from, to: t.range.to, today: t.today, periods: t.stagePeriods ?? [], lines: t.months.flatMap((m) => m.lines), hiddenKinds: hidden })}
+      />
       {months.map((m) => {
         const keys = new Map(m.items.map((i, n) => [i, i.today ? `today-${n}` : `${i.line.day}-${i.line.kind}-${i.line.label}-${n}`]));
         return (

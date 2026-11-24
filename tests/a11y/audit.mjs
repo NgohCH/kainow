@@ -224,6 +224,14 @@ const reviewProject = await projectWith('Deadline review check');
 await mkTask(reviewProject, 'Paint the hall', addDays(5), 'in_progress');
 await mkTask(reviewProject, 'Hang the banners', addDays(6));
 const reviewedTask = await mkTask(reviewProject, 'Collect the keys', addDays(7));
+// Timeline bars (D132): a closed stage that began before the window, the current stage, three tasks due on one day, a risk review and the planned end.
+const barsProject = await projectWith('Timeline bars check');
+await db.query("update project_stage_periods set started_at = now() - interval '120 days', ended_at = now() - interval '30 days' where project_id = $1", [barsProject]);
+await db.query("insert into project_stage_periods (id, project_id, stage, substage, started_at, started_by) values ($1, $2, 'Planning', 'Define Scope', now() - interval '30 days', $3)", [randomUUID(), barsProject, user]);
+await db.query('update projects set planned_end = $2 where id = $1', [barsProject, addDays(120)]);
+for (const title of ['Draft the brief', 'Book the venue', 'Order the badges']) await mkTask(barsProject, title, addDays(14));
+await mkTask(barsProject, 'Send the invitations', addDays(40));
+await mkRisk(barsProject, 'The venue may be double-booked');
 // A 120-character project name, for the overflow check at 375 px (the project header and the tables).
 await db.query('update projects set name = $2 where id = $1', [closeB, 'Closing ready: a deliberately long dummy project name that keeps going to check the header wraps on a phone screen, okay']);
 await db.end();
@@ -354,6 +362,7 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
     ['closing, ready (the Project Manager allowed to close)', `#/projects/${closeB}/closing`],
     ['deadline review (waiting request and new due dates)', `#/projects/${reviewProject}/deadline-review`],
     ['deferred project overview (deadline review link)', `#/projects/${reviewProject}`],
+    ['timeline with bars (a stage from before the window, the current stage and markers)', `#/projects/${barsProject}/timeline`],
     ['overview with closing, delegation and project approvals (a 120-character name)', `#/projects/${closeB}`],
   ];
   for (const [label, hash] of screens) {
