@@ -374,6 +374,20 @@ button.reject:not(:disabled):hover { background: var(--rust-wash); }
 .status-rejected button.reject { background: var(--rust); color: var(--rust-contrast); opacity: 1; }
 .tally { font-weight: 600; margin: 0; }
 
+/* Each AI proposal keeps its dashed outline in every scheme; the kind colour stays on its left edge (D130) */
+.proposal.ai-proposed { border: 1px dashed var(--ink); border-left: 4px solid var(--kind, var(--rule)); border-radius: 4px; margin: 0 0 0.75rem; padding: 0.75rem 1rem 1rem; }
+.proposal.ai-proposed:last-child { border-bottom: 1px dashed var(--ink); }
+.proposal.ai-proposed.is-selected { border-left-width: 8px; padding-left: calc(1rem - 4px); }
+.proposal-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.35rem 0.6rem; margin: 0 0 0.4rem; font-size: 0.85rem; }
+.proposal-place { margin-left: auto; }
+.changed-label { color: var(--ink); font-weight: 600; }
+.change-history { margin: 0.6rem 0; padding: 0.5rem 0.75rem; border-left: 2px solid var(--rule); font-size: 0.9rem; overflow-wrap: anywhere; }
+.change-history h3 { font-size: 0.95rem; margin: 0 0 0.35rem; }
+.change-history ol { margin: 0; padding-left: 1.25rem; display: grid; gap: 0.35rem; }
+.correction-reason { display: block; }
+.correction-panel select { max-width: 100%; }
+.review .narrow-only { display: none; }
+
 @media (min-width: 900px) {
   .review-split .proposals { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow-y: auto; padding-right: 0.5rem; }
   .review-split .source { max-height: calc(100vh - 2rem); overflow-y: auto; position: sticky; top: 1rem; }
@@ -381,6 +395,12 @@ button.reject:not(:disabled):hover { background: var(--rust-wash); }
 @media (max-width: 899px) {
   .split { grid-template-columns: 1fr; gap: 1.5rem; }
   .source { max-height: 50vh; overflow-y: auto; }
+  /* The notes open in their own view, reached from each proposal, with a way back below them */
+  .review .narrow-only { display: block; }
+  .review-split .source-pane { display: none; }
+  .review.showing-source .review-split .source-pane { display: block; }
+  .review.showing-source .review-split .proposals { display: none; }
+  .review.showing-source .source { max-height: none; }
 }
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; scroll-behavior: auto !important; }

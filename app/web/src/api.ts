@@ -268,9 +268,23 @@ export interface Item {
   quoteChanged?: string | null;
   /** Set when the quote lies in a discussion message: which message, by whom and when. */
   discussionEvidence?: { threadId: string; messageNo: number; authorName: string; at: string } | null;
-  /** True when a reviewer has changed the wording. `original` is then what the model said. */
+  /** True when a reviewer has changed the proposal. `original` is what the model said, whether or not it was changed. */
   edited?: boolean;
-  original?: { text: string; owner: string | null; due: string | null };
+  /** The model's own proposal and the model that made it (null when unknown). `kind` above is the kind in force. */
+  original?: { kind: Kind; text: string; owner: string | null; due: string | null; model: string | null };
+  /** Every reviewer correction, newest first (D130). */
+  corrections?: Correction[];
+}
+
+/** One reviewer correction of an AI proposal: who, their project role today, when, the fields changed and why. */
+export interface Correction {
+  at: string;
+  by: string;
+  role: string | null;
+  changed: Array<'type' | 'text' | 'owner' | 'due'>;
+  from: { kind: string };
+  to: { kind: string };
+  reason: string | null;
 }
 
 // --- Projects (V1.0 sub-project 1) ---
