@@ -247,3 +247,12 @@ test('projects nearest their limit come first; a project with no limit saved com
   ]);
   assert.deepEqual(sorted.map((r) => r.projectId), ['c', 'b', 'a', 'd']);
 });
+
+test('connection states map to meanings: only Ready is calm', async () => {
+  const { connectionMeaning } = await import('./ai.ts');
+  assert.equal(connectionMeaning('ready'), 'ok');
+  assert.equal(connectionMeaning('unchecked'), 'off');
+  assert.equal(connectionMeaning('disabled'), 'off');
+  assert.equal(connectionMeaning('key_rejected'), 'failing');
+  assert.equal(connectionMeaning('waiting_for_key'), 'failing');
+});

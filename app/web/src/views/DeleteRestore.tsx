@@ -15,6 +15,7 @@ import {
 } from '../history.ts';
 import { formatDay } from '../format.ts';
 import type { Act } from './ProjectAccessPanels.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 
@@ -65,7 +66,7 @@ export function ReasonDialog({
 
   return (
     <form
-      className="panel stack delete-dialog"
+      className="box stack delete-dialog change-form"
       role="dialog"
       aria-modal="false"
       aria-labelledby={`${id}-title`}
@@ -229,8 +230,11 @@ export function DeletionDelegationPanel({ project, act }: { project: Project; ac
   const { open, setOpen, button } = useOpener();
   if (project.myRoles.length === 0 || (!d && !may)) return null;
   return (
-    <section aria-labelledby="delegation-heading">
-      <h2 id="delegation-heading">Record deletion</h2>
+    <section aria-labelledby="delegation-heading" className="box">
+      <div className="settings-box-head">
+        <h2 id="delegation-heading" className="box-title">Record deletion</h2>
+        <StatusLabel meaning={d ? 'active' : 'off'} word={d ? 'Project Manager allowed' : 'Owners and Sponsors only'} />
+      </div>
       {d ? (
         <p>
           {delegationLabel(d.pm, d.by)}. <span className="meta">{formatDay(d.at)}: {d.reason}</span>

@@ -4,6 +4,7 @@ import { ApiError } from '../api.ts';
 import {
   CATEGORIES,
   CATEGORY_LABEL,
+  FEEDBACK_STATUS_MEANING,
   canEscalate,
   type Category,
   escalateFeedback,
@@ -19,6 +20,7 @@ import {
   type TargetKind,
 } from '../feedback.ts';
 import { formatWhen } from '../format.ts';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
 
@@ -63,7 +65,8 @@ export function FeedbackButton({ projectId, targetKind, targetId, label = 'Give 
       <button type="button" className="quiet" aria-expanded={open} onClick={() => { setOpen(!open); setSent(false); }}>{label}</button>
       {sent && <span role="status" className="meta"> Feedback sent. The Project Manager will see it; it does not change this output.</span>}
       {open && (
-        <form className="panel stack" onSubmit={send} aria-label={`Feedback on ${TARGET_LABEL[targetKind].toLowerCase()}`} noValidate>
+        <form className="box stack change-form" onSubmit={send} aria-label={`Feedback on ${TARGET_LABEL[targetKind].toLowerCase()}`} noValidate>
+          <p className="meta">The Project Manager sees it. It does not change this output, train a model or change a setting.</p>
           <fieldset>
             <legend>What was wrong?</legend>
             {CATEGORIES.map((c) => (
@@ -113,11 +116,14 @@ function Item({ projectId, f, canReview, onChanged }: { projectId: string; f: Fe
   }
 
   return (
-    <li className="panel stack">
-      <p>
-        <strong>{CATEGORY_LABEL[f.category]}</strong> · {TARGET_LABEL[f.targetKind]} · <span className={`badge badge-${f.status}`}>{STATUS_LABEL[f.status]}</span>
-        {f.escalatedAt && <span className="badge"> Escalated to the Administrator</span>}
-      </p>
+    <li className="box stack">
+      <div className="settings-box-head">
+        <h3 className="box-title">{CATEGORY_LABEL[f.category]} · {TARGET_LABEL[f.targetKind]}</h3>
+        <span className="label-stack">
+          <StatusLabel meaning={FEEDBACK_STATUS_MEANING[f.status]} word={STATUS_LABEL[f.status]} />
+          {f.escalatedAt && <StatusLabel meaning="attention" word="Escalated to the Administrator" />}
+        </span>
+      </div>
       <p className="meta">{f.reporterName}, {formatWhen(f.createdAt)}</p>
       <p><ReportSecret projectId={projectId} kind="feedback" id={f.id} label="this feedback note" /></p>
       <QuarantineNote text={f.quarantineLabel} />
@@ -131,7 +137,7 @@ function Item({ projectId, f, canReview, onChanged }: { projectId: string; f: Fe
         </span>
       )}
       {acting && (
-        <form className="stack" onSubmit={submit}>
+        <form className="stack change-form" onSubmit={submit} aria-label={acting.kind === 'escalate' ? 'Escalate to the Administrator' : acting.label}>
           <label>
             {acting.kind === 'escalate' ? 'Note for the Administrator (only this note, the project, category, model and run are sent)' : `Note for “${acting.label}”`}
             <textarea rows={2} maxLength={MAX_NOTE} value={note} onChange={(e) => setNote(e.target.value)} autoFocus />
@@ -164,7 +170,7 @@ export function Feedback({ projectId }: { projectId: string }) {
         {data.canReview ? 'Everything reported on this project.' : 'What you have reported, and where it stands.'} Feedback never trains a model or changes a draft, a record or a setting.
       </p>
       {data.feedback.length === 0 && <p className="empty">No feedback yet.</p>}
-      <ul className="plain stack">
+      <ul className="plain">
         {data.feedback.map((f) => <Item key={f.id} projectId={projectId} f={f} canReview={data.canReview} onChanged={changed} />)}
       </ul>
     </section>

@@ -122,8 +122,11 @@ export function OrganisationAnalysisSettings() {
   );
 }
 
-/** Project → Settings. Everyone who can read the project sees the values; editing follows `canEdit`. */
-export function ProjectAnalysisSettings({ projectId }: { projectId: string }) {
+/**
+ * Project → Settings. Everyone who can read the project sees the values; editing follows `canEdit`. `bare` leaves the
+ * heading to the settings box around it; `onSaved` tells the page that the values in force changed.
+ */
+export function ProjectAnalysisSettings({ projectId, bare = false, onSaved }: { projectId: string; bare?: boolean; onSaved?: () => void }) {
   const [view, setView] = useState<ProjectAnalysisView | null>(null);
   const [draft, setDraft] = useState(projectDraftFrom({ automatic: true, quietMinutes: 5, projectsMayChange: false, source: { automatic: 'organisation', quietMinutes: 'organisation' }, own: { automatic: null, quietMinutes: null }, canEdit: false, history: [] }));
   const [reason, setReason] = useState('');
@@ -155,6 +158,7 @@ export function ProjectAnalysisSettings({ projectId }: { projectId: string }) {
       show(await putProjectAnalysis(projectId, body));
       setReason('');
       saved.setNotice('Saved. The change applies from the next check.');
+      onSaved?.();
     } catch (err) {
       setError(errText(err));
     }
@@ -162,7 +166,7 @@ export function ProjectAnalysisSettings({ projectId }: { projectId: string }) {
 
   return (
     <section aria-label="Automatic analysis for this project" className="stack">
-      <h2>Automatic analysis</h2>
+      {!bare && <h2>Automatic analysis</h2>}
       <p className="meta">{explanationSentence(view)}</p>
       {why !== null ? (
         <>
@@ -184,6 +188,7 @@ export function ProjectAnalysisSettings({ projectId }: { projectId: string }) {
                   show(await putProjectAnalysis(projectId, clear));
                   setReason('');
                   saved.setNotice('Saved. This project now uses the organisation’s values.');
+                  onSaved?.();
                 } catch (err) {
                   setError(errText(err));
                 }

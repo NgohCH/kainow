@@ -17,6 +17,8 @@ import {
 } from '../assist.ts';
 import { formatWhen } from '../format.ts';
 import { QuarantineNote } from './ReportSecret.tsx';
+import { StatTile } from '../ui/StatTile.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
 
@@ -134,7 +136,7 @@ export function AssistReview({ projectId, roles }: { projectId: string; roles: s
 
   if (answerActions.length === 0 && summaryActions.length === 0)
     return (
-      <p className="empty">
+      <p className="empty box">
         Nothing here is for your role to review. A summary you drafted is opened from the <a href={`#/projects/${projectId}/notes`}>note</a> or <a href={`#/projects/${projectId}/discussion`}>meeting</a> it came from.
       </p>
     );
@@ -143,10 +145,18 @@ export function AssistReview({ projectId, roles }: { projectId: string; roles: s
     <section aria-labelledby="review-heading">
       <h2 id="review-heading">Review</h2>
       <div className="visually-hidden" role="status" aria-live="polite" aria-atomic="true">{info}</div>
+      <div className="stat-grid">
+        {answerActions.length > 0 && (
+          <StatTile label="Answers and drafts to review" value={items === null ? '…' : String(items.length)} meaning={items && items.length > 0 ? 'review' : undefined} />
+        )}
+        {summaryActions.length > 0 && (
+          <StatTile label="Summaries to review" value={summaries === null ? '…' : String(summaries.length)} meaning={summaries && summaries.length > 0 ? 'review' : undefined} />
+        )}
+      </div>
 
       {answerActions.length > 0 && (
-        <section aria-labelledby="review-answers-heading">
-          <h3 id="review-answers-heading" tabIndex={-1} ref={heading}>Answers and drafts to review</h3>
+        <section aria-labelledby="review-answers-heading" className="box">
+          <h3 id="review-answers-heading" className="box-title" tabIndex={-1} ref={heading}>Answers and drafts to review</h3>
           <p className="meta">Shared AI answers and drafts that used something since removed. Until you decide, only the Project Manager and Deputies see them.</p>
           {itemsError && <p role="alert" className="error">{itemsError}</p>}
           {items === null && !itemsError && <p className="loading">Loading</p>}
@@ -159,7 +169,8 @@ export function AssistReview({ projectId, roles }: { projectId: string; roles: s
                 <li key={key} className="ask-card ai-proposed">
                   <p>
                     <span className="ai-label">{i.kind === 'answer' ? 'AI answer' : 'AI draft'}</span>{' '}
-                    {href ? <a href={href}><strong>{i.title}</strong></a> : <strong>{i.title}</strong>}
+                    {href ? <a href={href}><strong>{i.title}</strong></a> : <strong>{i.title}</strong>}{' '}
+                    <StatusLabel meaning="review" />
                   </p>
                   <p className="meta">By {i.by.displayName}{i.flaggedAt ? ` · flagged ${formatWhen(i.flaggedAt)}` : ''}</p>
                   <p><strong>Why it needs review:</strong> {i.reason}</p>
@@ -191,8 +202,8 @@ export function AssistReview({ projectId, roles }: { projectId: string; roles: s
       )}
 
       {summaryActions.length > 0 && (
-        <section aria-labelledby="review-summaries-heading">
-          <h3 id="review-summaries-heading" tabIndex={-1} ref={summariesHeading}>Summaries to review</h3>
+        <section aria-labelledby="review-summaries-heading" className="box">
+          <h3 id="review-summaries-heading" className="box-title" tabIndex={-1} ref={summariesHeading}>Summaries to review</h3>
           <p className="meta">Shareable summaries of restricted sources and meetings: drafts waiting for approval, and approved ones whose access needs a check.</p>
           {summariesError && <p role="alert" className="error">{summariesError}</p>}
           {summaries === null && !summariesError && <p className="loading">Loading</p>}
@@ -205,7 +216,8 @@ export function AssistReview({ projectId, roles }: { projectId: string; roles: s
                 <li key={key} className="ask-card ai-proposed">
                   <p>
                     <span className="ai-label">{inReview ? REVIEW_REQUIRED_LABEL : s.label}</span>{' '}
-                    <a href={summaryPath(s.id)}><strong>{s.original.title}</strong></a>
+                    <a href={summaryPath(s.id)}><strong>{s.original.title}</strong></a>{' '}
+                    {inReview ? <StatusLabel meaning="review" word="Access review" /> : (s.approvalRequested ? <StatusLabel meaning="review" word="Approval asked for" /> : <StatusLabel meaning="draft" />)}
                   </p>
                   <QuarantineNote text={s.quarantineLabel} />
                   <p className="meta">

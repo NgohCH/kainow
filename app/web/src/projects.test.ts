@@ -81,3 +81,16 @@ test('a list of role keys reads as role names, unknown keys left as they are', (
   assert.equal(rolesText(['mystery']), 'mystery');
   assert.equal(rolesText([]), '');
 });
+
+test('membership, grant and invitation states each have a meaning, never colour alone', async () => {
+  const { MEMBERSHIP_MEANING, GRANT_MEANING, INVITATION_MEANING } = await import('./projects.ts');
+  assert.equal(MEMBERSHIP_MEANING.active, 'active');
+  assert.equal(MEMBERSHIP_MEANING.on_hold, 'attention');
+  assert.equal(MEMBERSHIP_MEANING.scheduled, 'planned');
+  assert.equal(GRANT_MEANING.requested, 'review');
+  assert.equal(GRANT_MEANING.suspended, 'deferred');
+  assert.equal(GRANT_MEANING.revoked, 'off');
+  assert.equal(INVITATION_MEANING.invited, 'planned');
+  assert.equal(INVITATION_MEANING.accepted, 'ok');
+  assert.equal(INVITATION_MEANING.expired, 'attention');
+});

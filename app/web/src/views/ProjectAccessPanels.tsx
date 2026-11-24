@@ -3,7 +3,9 @@ import { ApiError, api, type Department, type Finding, type Grant, type Membersh
 import { formatWhen } from '../format.ts';
 import { type FolderChoice, MOVING_FILES, type TransferView, transferConfirmText } from '../outputs.ts';
 import { useReturnFocus } from './ProjectOutputSettings.tsx';
-import { type GrantKind, accessLabel, canArchive, canManageGrants, grantStateLabel, roleLabel } from '../projects.ts';
+import { GRANT_MEANING, type GrantKind, accessLabel, canArchive, canManageGrants, grantStateLabel, roleLabel } from '../projects.ts';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
 
 export type Act = (work: () => Promise<unknown>, done: string | ((result: unknown) => string)) => Promise<boolean>;
 
@@ -37,8 +39,11 @@ export function ArchivePanel({ project, act }: { project: Project; act: Act }) {
   const may = canArchive(project.status, project.myRoles);
   const verb = project.archived ? 'unarchive' : 'archive';
   return (
-    <section aria-labelledby="archive-heading">
-      <h2 id="archive-heading">Archive</h2>
+    <section aria-labelledby="archive-heading" className="box">
+      <div className="settings-box-head">
+        <h2 id="archive-heading" className="box-title">Archive</h2>
+        {project.archived && <StatusLabel meaning="off" word="Archived" />}
+      </div>
       <p className="meta">
         {project.archived
           ? project.archivedAutomatically
@@ -117,8 +122,8 @@ export function DepartmentMove({ project, act }: { project: Project; act: Act })
     }
   }
   return (
-    <section aria-labelledby="department-heading">
-      <h2 id="department-heading">Owning department</h2>
+    <section aria-labelledby="department-heading" className="box">
+      <h2 id="department-heading" className="box-title">Owning department</h2>
       <p>
         {project.owningDepartment.name}
         {filed > 0 && <span className="meta"> · {filed === 1 ? '1 filed output file' : `${filed} filed output files`}</span>}
@@ -135,7 +140,7 @@ export function DepartmentMove({ project, act }: { project: Project; act: Act })
         </button>
       )}
       {open ? (
-        <form className="panel stack" onSubmit={submit} aria-label="Change owning department" onKeyDown={(e) => e.key === 'Escape' && close()}>
+        <form className="stack change-form" onSubmit={submit} aria-label="Change owning department" onKeyDown={(e) => e.key === 'Escape' && close()}>
           <label>
             New owning department
             <select required value={to} disabled={confirming} onChange={(e) => setTo(e.target.value)}>
@@ -277,10 +282,11 @@ export function HandoverForm({ project, act }: { project: Project; act: Act }) {
     }
   }
   return (
-    <section aria-labelledby="handover-heading">
-      <h2 id="handover-heading">Hand over</h2>
+    <section aria-labelledby="handover-heading" className="box">
+      <h2 id="handover-heading" className="box-title">Hand over</h2>
+      {!open && <p className="meta">Name the new Project Manager. You stay Project Manager until they accept.</p>}
       {open ? (
-        <form className="panel stack" onSubmit={submit} aria-label="Hand over the project">
+        <form className="stack" onSubmit={submit} aria-label="Hand over the project">
           <label>
             Work email of the new Project Manager
             <input type="email" required value={email} onChange={(e) => setEmail(e.target.value)} />
@@ -312,9 +318,9 @@ export function GrantsSection({ project, act }: { project: Project; act: Act }) 
   const [recording, setRecording] = useState(false);
   if (!manager && project.grants.length === 0) return null;
   return (
-    <section aria-labelledby="grants-heading">
-      <div className="row">
-        <h2 id="grants-heading">Audit and Oversight access</h2>
+    <section aria-labelledby="grants-heading" className="box">
+      <div className="settings-box-head">
+        <h2 id="grants-heading" className="box-title">Audit and Oversight access</h2>
         {manager && (
           <button className="quiet" onClick={() => setRecording((r) => !r)} aria-expanded={recording}>
             {recording ? 'Close' : 'Record a request'}
@@ -323,15 +329,7 @@ export function GrantsSection({ project, act }: { project: Project; act: Act }) 
       </div>
       <p className="meta">Read-only access for a set period: 30 days by default, at most 90 at a time. Someone other than the person who recorded the request approves it.</p>
       {recording && <GrantRequestForm project={project} act={act} onDone={() => setRecording(false)} />}
-      {project.grants.length === 0 ? (
-        <p className="meta">No requests yet.</p>
-      ) : (
-        <ul className="list">
-          {project.grants.map((g) => (
-            <GrantRow key={g.id} g={g} manager={manager} act={act} />
-          ))}
-        </ul>
-      )}
+      <DataTable caption="Audit and Oversight access to this project" columns={grantColumns(manager, act)} rows={project.grants} rowKey={(g) => g.id} empty="No requests yet." />
     </section>
   );
 }
@@ -351,7 +349,7 @@ function GrantRequestForm({ project, act, onDone }: { project: Project; act: Act
     if (await act(() => api.post(`/projects/${project.id}/grants`, { userId, kind, purpose, scope, startsOn, expiresOn, inspectDeleted }), 'Request recorded. Another manager now approves or declines it.')) onDone();
   }
   return (
-    <form className="panel stack" onSubmit={submit} aria-label="Record an access request">
+    <form className="stack change-form box" onSubmit={submit} aria-label="Record an access request">
       <p className="meta">Access is for a person who already has an account; choose from the project's people.</p>
       <div className="grid-2">
         <label>
@@ -404,7 +402,32 @@ function GrantRequestForm({ project, act, onDone }: { project: Project; act: Act
   );
 }
 
-function GrantRow({ g, manager, act }: { g: Grant; manager: boolean; act: Act }) {
+/** The grants table: who, which access, its state, the period and terms, and (for a manager) what can be done next. */
+function grantColumns(manager: boolean, act: Act): Column<Grant>[] {
+  return [
+    { key: 'person', header: 'Person', sortValue: (g) => g.user.displayName.toLowerCase(), cell: (g) => g.user.displayName },
+    { key: 'kind', header: 'Access', sortValue: (g) => g.kind, cell: (g) => accessLabel(g.kind) },
+    { key: 'state', header: 'State', sortValue: (g) => grantStateLabel(g.state), cell: (g) => <StatusLabel meaning={GRANT_MEANING[g.state]} word={grantStateLabel(g.state)} /> },
+    { key: 'period', header: 'Period', sortValue: (g) => g.startsOn, cell: (g) => `${g.startsOn} to ${g.expiresOn}` },
+    {
+      key: 'terms',
+      header: 'Purpose and scope',
+      wide: true,
+      cell: (g) => (
+        <span>
+          Purpose: {g.purpose}. Scope: {g.scope}.
+          <span className="meta work-parent">
+            Recorded by {g.requestedBy}
+            {g.decidedBy ? `; decided by ${g.decidedBy}` : ''}.{g.inspectDeleted ? ' Includes Inspect Deleted Content.' : ''}
+          </span>
+        </span>
+      ),
+    },
+    ...(manager ? [{ key: 'actions', header: 'Actions', wide: true, cell: (g: Grant) => <GrantActions g={g} act={act} /> }] : []),
+  ];
+}
+
+function GrantActions({ g, act }: { g: Grant; act: Act }) {
   const [mode, setMode] = useState<'none' | 'decline' | 'extend' | 'suspend' | 'restore' | 'revoke'>('none');
   const [date, setDate] = useState(g.expiresOn);
   const post = (path: string, body: object, done: string) => act(() => api.post(`/grants/${g.id}/${path}`, body), done);
@@ -421,17 +444,8 @@ function GrantRow({ g, manager, act }: { g: Grant; manager: boolean; act: Act })
     />
   );
   return (
-    <li>
-      <div>
-        <strong>{g.user.displayName}</strong> · {accessLabel(g.kind)} · <span className="badge badge-pending">{grantStateLabel(g.state)}</span>
-        <span className="meta">
-          {' '}
-          {g.startsOn} to {g.expiresOn}. Purpose: {g.purpose}. Scope: {g.scope}. Recorded by {g.requestedBy}
-          {g.decidedBy ? `; decided by ${g.decidedBy}` : ''}.
-          {g.inspectDeleted ? ' Includes Inspect Deleted Content.' : ''}
-        </span>
-      </div>
-      {manager && mode === 'none' && (
+    <div className="work-details">
+      {mode === 'none' && (
         <div className="decision">
           {g.state === 'requested' && g.mayDecide && (
             <>
@@ -464,7 +478,7 @@ function GrantRow({ g, manager, act }: { g: Grant; manager: boolean; act: Act })
           <button type="button" onClick={() => setMode('none')}>Cancel</button>
         </form>
       )}
-    </li>
+    </div>
   );
 }
 

@@ -22,9 +22,13 @@ import { formatWhen } from '../format.ts';
 import { DraftDetail } from './DraftView.tsx';
 import { AiSettingsLink } from './AiLink.tsx';
 import { QuarantineNote } from './ReportSecret.tsx';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
+import type { Meaning } from '../ui/meanings.ts';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
 const STATUS_TEXT: Record<DraftStatus, string> = { queued: 'Waiting to start', running: 'Being drafted', ready: 'Ready', failed: 'AI draft unavailable', blocked: 'AI draft unavailable' };
+const STATUS_MEANING: Record<DraftStatus, Meaning> = { queued: 'planned', running: 'active', ready: 'ok', failed: 'failing', blocked: 'failing' };
 
 export const draftPath = (projectId: string, id: string) => `#/projects/${projectId}/drafts/${id}`;
 
@@ -57,35 +61,46 @@ function DraftList({ projectId }: { projectId: string }) {
     return () => window.clearTimeout(timer);
   }, [active, tick, load]);
 
+  const columns: Column<DraftListItem>[] = [
+    {
+      key: 'title',
+      header: 'Draft',
+      sortValue: (d) => d.title.toLowerCase(),
+      cell: (d) => (
+        <span>
+          <span className="ai-label">AI draft</span> <a href={draftPath(projectId, d.id)}>{d.title}</a>
+          <span className="meta work-parent">{d.kindLabel}</span>
+        </span>
+      ),
+    },
+    {
+      key: 'state',
+      header: 'State',
+      sortValue: (d) => STATUS_TEXT[d.status],
+      cell: (d) => (
+        <div className="label-stack" role={d.status === 'queued' || d.status === 'running' ? 'status' : undefined}>
+          <StatusLabel meaning={STATUS_MEANING[d.status]} word={d.notice ?? STATUS_TEXT[d.status]} />
+          {d.shared && <StatusLabel meaning={d.inReview ? 'review' : 'active'} word={d.inReview ? 'Shared, waiting for review' : 'Shared'} />}
+          <QuarantineNote text={d.quarantineLabel} />
+        </div>
+      ),
+    },
+    { key: 'requested', header: 'Requested by', sortValue: (d) => d.requestedBy.displayName.toLowerCase(), cell: (d) => d.requestedBy.displayName },
+    { key: 'updated', header: 'Updated', sortValue: (d) => d.updatedAt, cell: (d) => formatWhen(d.updatedAt) },
+    { key: 'versions', header: 'Versions', sortValue: (d) => d.versionCount, cell: (d) => String(d.versionCount) },
+  ];
+
   return (
-    <section aria-labelledby="drafts-heading">
-      <div className="row">
-        <h2 id="drafts-heading">Drafts</h2>
+    <section aria-labelledby="drafts-heading" className="box">
+      <div className="settings-box-head">
+        <h2 id="drafts-heading" className="box-title">Drafts</h2>
         <button type="button" aria-expanded={creating} onClick={() => setCreating((v) => !v)}>{creating ? 'Close the form' : 'New draft'}</button>
       </div>
       <p className="meta">Reports and specifications written by AI from this project. Each one is an AI draft, not approved.</p>
       {creating && <NewDraftFormView projectId={projectId} onDone={() => setCreating(false)} />}
       {error && <p role="alert" className="error">{error}</p>}
-      {items === null && !error && <p className="loading">Loading</p>}
-      {items?.length === 0 && <p className="empty">There are no drafts yet.</p>}
       <AiSettingsLink projectId={projectId} show={!!items?.some((d) => d.status === 'blocked')} />
-      <ul className="ask-list">
-        {items?.map((d) => (
-          <li key={d.id} className="ask-card ai-proposed">
-            <p>
-              <a href={draftPath(projectId, d.id)}><strong>{d.title}</strong></a>
-            </p>
-            <p className="meta">
-              {d.kindLabel} · requested by {d.requestedBy.displayName} · updated {formatWhen(d.updatedAt)} · {d.versionCount} {d.versionCount === 1 ? 'version' : 'versions'}
-              {d.shared ? (d.inReview ? ' · shared, waiting for review' : ' · shared') : ''}
-            </p>
-            <p className={d.status === 'failed' || d.status === 'blocked' ? 'warn' : 'meta'} role={d.status === 'queued' || d.status === 'running' ? 'status' : undefined}>
-              {d.notice ?? STATUS_TEXT[d.status]}
-            </p>
-            <QuarantineNote text={d.quarantineLabel} />
-          </li>
-        ))}
-      </ul>
+      <DataTable caption="Drafts in this project you can see" columns={columns} rows={items ?? []} rowKey={(d) => d.id} loading={items === null && !error} empty="There are no drafts yet." />
     </section>
   );
 }
@@ -141,7 +156,9 @@ function NewDraftFormView({ projectId, onDone }: { projectId: string; onDone: ()
   }
 
   return (
-    <form className="panel stack" onSubmit={send} noValidate aria-label="New draft">
+    <form className="box stack change-form" onSubmit={send} noValidate aria-label="New draft">
+      <p className="form-box-title">New draft</p>
+      <p className="meta">AI writes it from what you choose. It is an AI draft, not approved, and opens here when it is ready.</p>
       <label>
         Kind of draft
         <select value={form.kind} onChange={(e) => changeKind(e.target.value as ReportKind)}>

@@ -4,6 +4,7 @@
  * only a state, and keep the spec's exact copy in one place.
  */
 import { formatWhen, plural } from './format.ts';
+import type { Meaning } from './ui/meanings.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Types (as the server sends them)
@@ -146,6 +147,8 @@ export const OUTPUT_STATUS_LABEL: Readonly<Record<OutputStatus, string>> = {
   withdrawn: 'Withdrawn',
 };
 export const outputStatusLabel = (s: string): string => OUTPUT_STATUS_LABEL[s as OutputStatus] ?? s;
+export const OUTPUT_STATUS_MEANING: Readonly<Record<OutputStatus, Meaning>> = { submitted: 'review', registered: 'active', declined: 'off', withdrawn: 'off' };
+export const outputMeaning = (s: string): Meaning => OUTPUT_STATUS_MEANING[s as OutputStatus] ?? 'off';
 
 const VERSION_STATUS: Readonly<Record<VersionStatus, string>> = {
   draft: 'Draft — not approved',
@@ -154,6 +157,8 @@ const VERSION_STATUS: Readonly<Record<VersionStatus, string>> = {
 };
 /** "Draft — not approved", "Approved" or "Superseded". */
 export const versionStatusLabel = (s: string): string => VERSION_STATUS[s as VersionStatus] ?? s;
+export const VERSION_STATUS_MEANING: Readonly<Record<VersionStatus, Meaning>> = { draft: 'draft', approved: 'ok', superseded: 'off' };
+export const versionMeaning = (s: string): Meaning => VERSION_STATUS_MEANING[s as VersionStatus] ?? 'off';
 
 const ORIGINS: Readonly<Record<string, string>> = {
   draft_report: 'From a draft report',

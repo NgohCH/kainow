@@ -34,3 +34,8 @@ test('escalated list shows no content fields', () => {
   const rich = escalatedLine({ ...row, note: 'reporter text', body: 'discussion text', output: 'AI output' } as typeof row, () => 'when');
   assert.equal(JSON.stringify(rich).includes('reporter text') || JSON.stringify(rich).includes('discussion text') || JSON.stringify(rich).includes('AI output'), false);
 });
+
+test('feedback statuses have meanings', async () => {
+  const { FEEDBACK_STATUS_MEANING } = await import('./feedback.ts');
+  assert.deepEqual(FEEDBACK_STATUS_MEANING, { open: 'review', reviewed: 'active', closed: 'closed' });
+});

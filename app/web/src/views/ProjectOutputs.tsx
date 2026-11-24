@@ -3,8 +3,11 @@ import { ApiError, api } from '../api.ts';
 import { formatDay, formatWhen, plural } from '../format.ts';
 import {
   type DeletedOutput, EXPORT_NAME, type ExportKind, type OutputSettingsView, type OutputSummary, checkLabel, exportControls,
-  exportPath, filenameFromDisposition, filingLabel, formatLabel, outputStatusLabel, versionStatusLabel,
+  exportPath, filenameFromDisposition, filingLabel, formatLabel, outputMeaning, outputStatusLabel, versionMeaning, versionStatusLabel,
 } from '../outputs.ts';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { StatTile } from '../ui/StatTile.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
 import type { ProjectRole, ProjectStatus } from '../projects.ts';
 import { OutputPage, type ProjectPeople } from './OutputPage.tsx';
 import { useOutputPolicy, useReportTypes, useReturnFocus } from './ProjectOutputSettings.tsx';
@@ -120,7 +123,7 @@ function SaveExportForm({ projectId, kind, filters, mayChooseExisting, onDone, o
     }
   }
   return (
-    <form className="panel stack" onSubmit={submit} aria-label={`Save the ${EXPORT_NAME[kind]} export as an output`}>
+    <form className="box stack change-form" onSubmit={submit} aria-label={`Save the ${EXPORT_NAME[kind]} export as an output`}>
       {mayChooseExisting && (
         <label>
           Save as
@@ -196,8 +199,9 @@ function SubmitForm({ projectId, policy, onDone, onCancel }: { projectId: string
     }
   }
   return (
-    <form className="panel stack" onSubmit={submit} aria-labelledby={`${uid}-h`}>
-      <h3 id={`${uid}-h`}>Submit an output</h3>
+    <form className="box stack change-form" onSubmit={submit} aria-labelledby={`${uid}-h`}>
+      <h3 id={`${uid}-h`} className="form-box-title">Submit an output</h3>
+      <p className="meta">It waits for the Project Manager or a Deputy to register it. Submitting does not file or approve it.</p>
       <p className="hint">To submit a draft report, open it under Drafts and choose "Submit as output".</p>
       <fieldset>
         <legend>What are you submitting?</legend>
@@ -283,22 +287,74 @@ function OutputRegister({ projectId, roles }: { projectId: string; roles: Projec
   const shown = (outputs ?? []).filter((o) => (!year || yearOf(o.issueDate) === year) && (!search.trim() || o.title.toLowerCase().includes(search.trim().toLowerCase())));
   const waiting = (outputs ?? []).filter((o) => o.status === 'submitted').length;
   const review = (outputs ?? []).filter((o) => o.reviewRequired).length;
+  const columns: Column<OutputSummary>[] = [
+    {
+      key: 'title',
+      header: 'Title',
+      sortValue: (o) => o.title.toLowerCase(),
+      cell: (o) => (
+        <span>
+          <a href={`#/projects/${projectId}/outputs/${o.id}`}>{o.title}</a>
+          {(o.aiAssisted || o.audience.mode === 'restricted') && (
+            <span className="meta work-parent">
+              {[o.aiAssisted && 'AI-assisted', o.audience.mode === 'restricted' && 'Restricted'].filter(Boolean).join(' · ')}
+            </span>
+          )}
+        </span>
+      ),
+    },
+    { key: 'type', header: 'Report type', sortValue: (o) => o.reportType?.name.toLowerCase() ?? '', cell: (o) => o.reportType?.name ?? 'Not chosen yet' },
+    { key: 'issued', header: 'Issue date', sortValue: (o) => o.issueDate ?? '', cell: (o) => (o.issueDate ? formatDay(`${o.issueDate}T00:00:00+08:00`) : 'Not issued yet') },
+    {
+      key: 'status',
+      header: 'Status',
+      sortValue: (o) => outputStatusLabel(o.status),
+      cell: (o) => (
+        <span className="label-stack">
+          <StatusLabel meaning={outputMeaning(o.status)} word={outputStatusLabel(o.status)} />
+          {o.reviewLabel && <StatusLabel meaning="review" word={o.reviewLabel} />}
+        </span>
+      ),
+    },
+    {
+      key: 'version',
+      header: 'Latest version',
+      sortValue: (o) => o.latestVersion?.no ?? 0,
+      cell: (o) => (o.latestVersion ? <StatusLabel meaning={versionMeaning(o.latestVersion.status)} word={`Version ${o.latestVersion.no}: ${versionStatusLabel(o.latestVersion.status)}`} /> : 'None'),
+    },
+    { key: 'filing', header: 'Filing', cell: (o) => (o.latestVersion ? o.latestVersion.filing.label || filingLabel(o.latestVersion.filing.state) : '—') },
+    {
+      key: 'check',
+      header: 'Last check',
+      cell: (o) => {
+        const v = o.latestVersion;
+        return v && v.filing.checkStatus ? checkLabel(v.filing.checkStatus, v.filing.lastCheckedAt, v.status) : '—';
+      },
+    },
+  ];
 
   return (
-    <section aria-labelledby="outputs-heading">
-      <h2 id="outputs-heading">Outputs</h2>
+    <section aria-labelledby="outputs-heading" className="box">
+      <div className="settings-box-head">
+        <h2 id="outputs-heading" className="box-title">Outputs</h2>
+        {policy?.maySubmit && !submitting && <button type="button" ref={submitButton} className="primary" onClick={() => setSubmitting(true)}>Submit an output</button>}
+      </div>
       {outputs && (
-        <p role="status">
-          {plural(outputs.length, 'output')} in the register{statusFilter || typeFilter ? ' (filtered)' : ''}
-          {waiting > 0 ? ` · ${waiting} submitted, waiting to be registered` : ''}
-          {review > 0 ? ` · ${review} need an access review` : ''}
-        </p>
+        <>
+          <div className="stat-grid">
+            <StatTile label={statusFilter || typeFilter ? 'In the register (filtered)' : 'In the register'} value={String(outputs.length)} />
+            <StatTile label="Waiting to be registered" value={String(waiting)} meaning={waiting > 0 ? 'review' : undefined} word={waiting > 0 ? 'Submitted' : undefined} />
+            <StatTile label="Access review needed" value={String(review)} meaning={review > 0 ? 'attention' : undefined} word={review > 0 ? 'Needs review' : undefined} />
+          </div>
+          <p role="status" className="visually-hidden">
+            {plural(outputs.length, 'output')} in the register{statusFilter || typeFilter ? ' (filtered)' : ''}
+            {waiting > 0 ? ` · ${waiting} submitted, waiting to be registered` : ''}
+            {review > 0 ? ` · ${review} need an access review` : ''}
+          </p>
+        </>
       )}
       {notice && <p role="status" className="meta">{notice}</p>}
       {error && <p role="alert" className="error">{error}</p>}
-      <div className="actions">
-        {policy?.maySubmit && !submitting && <button type="button" ref={submitButton} className="primary" onClick={() => setSubmitting(true)}>Submit an output</button>}
-      </div>
       {submitting && policy && (
         <SubmitForm
           projectId={projectId}
@@ -358,47 +414,7 @@ function OutputRegister({ projectId, roles }: { projectId: string; roles: Projec
           }}
         />
       )}
-      {!outputs && !error && <p className="loading">Loading</p>}
-      {outputs && shown.length === 0 && <p className="empty">No outputs match.</p>}
-      {shown.length > 0 && (
-        <table className="table outputs-table">
-          <caption className="visually-hidden">Outputs register</caption>
-          <thead>
-            <tr>
-              <th scope="col">Title</th>
-              <th scope="col">Report type</th>
-              <th scope="col">Issue date</th>
-              <th scope="col">Status</th>
-              <th scope="col">Latest version</th>
-              <th scope="col">Filing</th>
-              <th scope="col">Last check</th>
-            </tr>
-          </thead>
-          <tbody>
-            {shown.map((o) => {
-              const v = o.latestVersion;
-              return (
-                <tr key={o.id}>
-                  <td data-label="Title">
-                    <a href={`#/projects/${projectId}/outputs/${o.id}`}>{o.title}</a>
-                    {o.aiAssisted && <span className="meta"> · AI-assisted</span>}
-                    {o.audience.mode === 'restricted' && <span className="meta"> · Restricted</span>}
-                  </td>
-                  <td data-label="Report type">{o.reportType?.name ?? 'Not chosen yet'}</td>
-                  <td data-label="Issue date">{o.issueDate ? formatDay(`${o.issueDate}T00:00:00+08:00`) : 'Not issued yet'}</td>
-                  <td data-label="Status">
-                    {outputStatusLabel(o.status)}
-                    {o.reviewLabel && <span className="warn inline">{o.reviewLabel}</span>}
-                  </td>
-                  <td data-label="Latest version">{v ? `Version ${v.no}: ${versionStatusLabel(v.status)}` : 'None'}</td>
-                  <td data-label="Filing">{v ? v.filing.label || filingLabel(v.filing.state) : '—'}</td>
-                  <td data-label="Last check">{v && v.filing.checkStatus ? checkLabel(v.filing.checkStatus, v.filing.lastCheckedAt, v.status) : '—'}</td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      )}
+      <DataTable caption="Outputs register" columns={columns} rows={shown} rowKey={(o) => o.id} loading={!outputs && !error} empty="No outputs match." />
       {manages && <DeletedOutputs projectId={projectId} onRestored={(m) => { setNotice(m); load(); }} />}
     </section>
   );
@@ -417,18 +433,20 @@ function DeletedOutputs({ projectId, onRestored }: { projectId: string; onRestor
   }, [projectId]);
   useEffect(load, [load]);
   if (rows.length === 0) return null;
-  return (
-    <section aria-labelledby="deleted-outputs-heading">
-      <h3 id="deleted-outputs-heading" tabIndex={-1} ref={heading}>Deleted outputs</h3>
-      <p className="hint">Deleting never removed a file from storage. Restoring puts the entry back in the register.</p>
-      <ul className="plain">
-        {rows.map((d) => (
-          <li key={d.id}>
-            <strong>{d.title}</strong> <span className="meta">deleted by {d.deletedBy.displayName}, {formatWhen(d.deletedAt)} — "{d.reason}"</span>{' '}
+  const columns: Column<DeletedOutput>[] = [
+    { key: 'title', header: 'Title', sortValue: (d) => d.title.toLowerCase(), cell: (d) => d.title },
+    { key: 'deleted', header: 'Deleted', sortValue: (d) => d.deletedAt, cell: (d) => `${d.deletedBy.displayName}, ${formatWhen(d.deletedAt)}` },
+    { key: 'reason', header: 'Reason', cell: (d) => `"${d.reason}"` },
+    {
+      key: 'restore',
+      header: 'Restore',
+      wide: true,
+      cell: (d) => (
+        <>
             {open !== d.id && <button type="button" className="link-button" onClick={() => { remember(); setOpen(d.id); setReason(''); setError(null); }}>Restore<span className="visually-hidden"> {d.title}</span></button>}
             {open === d.id && (
               <form
-                className="inline-form"
+                className="inline-form stack change-form"
                 aria-label={`Restore ${d.title}`}
                 onKeyDown={(e) => e.key === 'Escape' && setOpen(null)}
                 onSubmit={async (e) => {
@@ -451,9 +469,15 @@ function DeletedOutputs({ projectId, onRestored }: { projectId: string; onRestor
                 {error && <span role="alert" className="error">{error}</span>}
               </form>
             )}
-          </li>
-        ))}
-      </ul>
+        </>
+      ),
+    },
+  ];
+  return (
+    <section aria-labelledby="deleted-outputs-heading" className="box">
+      <h3 id="deleted-outputs-heading" className="box-title" tabIndex={-1} ref={heading}>Deleted outputs</h3>
+      <p className="hint">Deleting never removed a file from storage. Restoring puts the entry back in the register.</p>
+      <DataTable caption="Deleted register entries" columns={columns} rows={rows} rowKey={(d) => d.id} empty="None." />
     </section>
   );
 }
@@ -500,8 +524,8 @@ export function SubmitDraftAsOutput({ projectId, draftVersionId, versionNo, titl
       )}
       {!open && <button type="button" ref={opener} onClick={() => { setOpen(true); setDone(null); }}>Submit as output<span className="visually-hidden"> (version {versionNo})</span></button>}
       {open && (
-        <form className="panel stack" aria-labelledby={`${uid}-h`} onSubmit={submit} onKeyDown={(e) => e.key === 'Escape' && setOpen(false)}>
-          <h3 id={`${uid}-h`}>Submit version {versionNo} as an output</h3>
+        <form className="box stack change-form" aria-labelledby={`${uid}-h`} onSubmit={submit} onKeyDown={(e) => e.key === 'Escape' && setOpen(false)}>
+          <h3 id={`${uid}-h`} className="form-box-title">Submit version {versionNo} as an output</h3>
           {formats.length === 0 ? (
             <p className="warn">This project makes no Markdown, DOCX or PDF outputs. A PM, Owner or Sponsor can change this in Project settings › Outputs.</p>
           ) : (

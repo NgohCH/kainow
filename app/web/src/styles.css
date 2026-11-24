@@ -706,7 +706,8 @@ details > summary { cursor: pointer; font-weight: 600; }
 
 /* The resources report prints on its own: no bar, tabs, buttons or footer. */
 @media print {
-  .topbar, .side-menu, .foot, .skip, .tabs, .no-print, .ask-panel { display: none !important; }
+  .topbar, .side-menu, .foot, .skip, .tabs, .no-print, .ask-panel, .table-sort-select { display: none !important; }
+  .report .data-table tr { break-inside: avoid; }
   .shell { display: block; }
   .report .warn { background: none; color: inherit; border: 1px solid currentColor; }
   .report ul.plain > li { break-inside: avoid; }

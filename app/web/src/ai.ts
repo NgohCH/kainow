@@ -4,6 +4,7 @@
  * every change again. An API key is never kept: the form clears it as it is submitted and nothing here builds a line from it.
  */
 import { api } from './api.ts';
+import type { Meaning } from './ui/meanings.ts';
 
 // ---------------------------------------------------------------------------------------------------------------
 // Connection states and blocked reasons
@@ -26,6 +27,9 @@ export const connectionBadge = (state: DisplayState): string => STATE_LABELS[sta
 
 /** How a badge looks: only a working connection is calm; the others ask for attention in words as well as colour. */
 export const badgeTone = (state: DisplayState): 'ok' | 'quiet' | 'warn' => (state === 'ready' ? 'ok' : state === 'unchecked' || state === 'disabled' ? 'quiet' : 'warn');
+
+/** The same rule as a meaning: Ready is set up, Unchecked and Disabled are not in use, anything else is failing. */
+export const connectionMeaning = (state: DisplayState): Meaning => ({ ok: 'ok', quiet: 'off', warn: 'failing' } as const)[badgeTone(state)];
 
 export const BLOCKED_PREFIX = 'Blocked — ';
 const UNKNOWN_BLOCK = 'AI could not run this request';

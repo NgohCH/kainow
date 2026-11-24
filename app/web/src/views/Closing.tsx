@@ -2,6 +2,8 @@ import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { ApiError, api, type Project, type ProjectSummary } from '../api.ts';
 import { type Readiness, closureSummary } from '../changes.ts';
 import { OUTCOME_LABEL, type ClosureOutcome } from '../projects.ts';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 
@@ -94,18 +96,24 @@ export function Closing({ project, act }: { project: Project; act: (work: () => 
       {!view && !error && <p className="loading">Loading</p>}
       {view && (
         <>
-          <p role="status" className={view.readiness.ready ? 'ok' : 'meta'}>{closureSummary(view.readiness)}</p>
-          {!view.mayPrepare && (
-            <p className="meta">
-              You can read the closing list. Only an Owner or Sponsor, or the Project Manager when they have allowed it, can prepare the closure.
-            </p>
-          )}
-          {view.delegation && (
-            <p className="meta">
-              {view.delegation.pm} may prepare and close this project. Allowed by {view.delegation.by}: {view.delegation.reason}
-            </p>
-          )}
-          {isOwnerOrSponsor && <DelegationControl project={project} view={view} run={run} />}
+          <section aria-labelledby="closing-ready" className={`box edge-left m-${view.readiness.ready ? 'ok' : 'attention'}`}>
+            <div className="settings-box-head">
+              <h3 id="closing-ready" className="box-title">Ready to close?</h3>
+              <StatusLabel meaning={view.readiness.ready ? 'ok' : 'attention'} word={view.readiness.ready ? 'Ready' : 'Not ready yet'} />
+            </div>
+            <p role="status">{closureSummary(view.readiness)}</p>
+            {!view.mayPrepare && (
+              <p className="meta">
+                You can read the closing list. Only an Owner or Sponsor, or the Project Manager when they have allowed it, can prepare the closure.
+              </p>
+            )}
+            {view.delegation && (
+              <p className="meta">
+                {view.delegation.pm} may prepare and close this project. Allowed by {view.delegation.by}: {view.delegation.reason}
+              </p>
+            )}
+            {isOwnerOrSponsor && <DelegationControl project={project} view={view} run={run} />}
+          </section>
 
           <ItemSection title="Tasks" kind="task" items={view.items.tasks} view={view} project={project} run={run} targets={targets} />
           <ItemSection title="Questions" kind="question" items={view.items.questions} view={view} project={project} run={run} targets={targets} />
@@ -143,7 +151,7 @@ export function DelegationControl({ project, view, run }: { project: Project; vi
     if (await run(() => api.post(`/projects/${project.id}/closure/delegation`, { reason }), 'The Project Manager can now prepare and close this project.')) setReason('');
   }
   return (
-    <form className="panel stack" onSubmit={submit} aria-label="Let the PM close this project">
+    <form className="stack change-form" onSubmit={submit} aria-label="Let the PM close this project">
       <label>
         Reason for letting the Project Manager close this project
         <input required value={reason} onChange={(e) => setReason(e.target.value)} />
@@ -162,64 +170,82 @@ function ItemSection(props: {
   run: (w: () => Promise<unknown>, d: string) => Promise<boolean>;
   targets: Array<{ id: string; name: string }>;
 }) {
-  const { title, kind, items } = props;
+  const { title, kind, items, targets } = props;
   const heading = `closing-${kind}`;
+  const labelOf = (item: Item) => (kind === 'task' ? item.title : kind === 'question' ? item.text : item.description) ?? '';
+  const columns: Column<Item>[] = [
+    {
+      key: 'item',
+      header: title.replace(/s$/, ''),
+      cell: (item) => <span className={`work-title depth-${kind === 'task' ? Math.min(item.depth ?? 0, 2) : 0}`}>{labelOf(item)}</span>,
+    },
+    {
+      key: 'state',
+      header: 'Now',
+      cell: (item) =>
+        kind === 'task'
+          ? `${item.status}${item.dueOn ? `, due ${item.dueOn}` : ''}`
+          : kind === 'question'
+            ? item.status
+            : `${item.status}, ${item.severity}${item.reviewOn ? `, review ${item.reviewOn}` : ''}`,
+    },
+    {
+      key: 'disposition',
+      header: 'At closure',
+      wide: true,
+      cell: (item) => {
+        const current = item.disposition;
+        const target = current?.handoverProjectId ? targets.find((t) => t.id === current.handoverProjectId)?.name : undefined;
+        return (
+          <div className="work-details">
+            {current ? (
+              <p>
+                <StatusLabel meaning="ok" word={CHOICE_LABEL(kind, current.disposition)} />
+                {target ? ` (${target})` : ''}
+                {current.affectsDelivery ? ' (affects delivery acceptance)' : ''}: {current.reason}
+              </p>
+            ) : (
+              <p><StatusLabel meaning="attention" word="Needs a disposition" /></p>
+            )}
+            {item.pendingRequest && (
+              <p className="label-stack" role="status">
+                <StatusLabel meaning="review" word="Waiting for authorisation" />
+                <span className="meta">A request for this is waiting for authorisation. Choosing again withdraws it.</span>
+              </p>
+            )}
+            {current && !item.pendingRequest && item.why && (
+              <p className="warn" role="status">{item.why}</p>
+            )}
+            <ItemActions item={item} {...props} />
+          </div>
+        );
+      },
+    },
+  ];
   return (
-    <section aria-labelledby={heading}>
-      <h3 id={heading}>{title}</h3>
-      {items.length === 0 ? (
-        <p className="meta">Nothing open.</p>
-      ) : (
-        <ul className="plain">
-          {items.map((item) => (
-            <ItemRow key={item.id} item={item} {...props} />
-          ))}
-        </ul>
-      )}
+    <section aria-labelledby={heading} className="box">
+      <h3 id={heading} className="box-title">{title}</h3>
+      <DataTable caption={`Open ${title.toLowerCase()} and what happens to each at closure`} columns={columns} rows={items} rowKey={(i) => i.id} empty="Nothing open." />
     </section>
   );
 }
 
-function ItemRow({ item, kind, view, project, run, targets }: { item: Item; kind: Kind; view: ClosureView; project: Project; run: (w: () => Promise<unknown>, d: string) => Promise<boolean>; targets: Array<{ id: string; name: string }> }) {
+/** Choose or change one item's disposition, with its form in place. */
+function ItemActions({ item, kind, view, project, run, targets }: { item: Item; kind: Kind; view: ClosureView; project: Project; run: (w: () => Promise<unknown>, d: string) => Promise<boolean>; targets: Array<{ id: string; name: string }> }) {
   const current = item.disposition;
   const [editing, setEditing] = useState(false);
-  const label = kind === 'task' ? item.title : kind === 'question' ? item.text : item.description;
-  const target = current?.handoverProjectId ? targets.find((t) => t.id === current.handoverProjectId)?.name : undefined;
-  return (
-    <li className="panel" style={kind === 'task' && item.depth ? { marginLeft: `${item.depth * 1.5}rem` } : undefined}>
-      <p><strong>{label}</strong></p>
-      <p className="meta">
-        {kind === 'task' && `${item.status}${item.dueOn ? `, due ${item.dueOn}` : ''}`}
-        {kind === 'question' && item.status}
-        {kind === 'risk' && `${item.status}, ${item.severity}${item.reviewOn ? `, review ${item.reviewOn}` : ''}`}
-      </p>
-      {current ? (
-        <p>
-          <span className="ok">{CHOICE_LABEL(kind, current.disposition)}</span>
-          {target ? ` (${target})` : ''}
-          {current.affectsDelivery ? ' (affects delivery acceptance)' : ''}: {current.reason}
-        </p>
-      ) : (
-        <p className="warn">Needs a disposition.</p>
-      )}
-      {item.pendingRequest && (
-        <p className="meta" role="status">A request for this is waiting for authorisation. Choosing again withdraws it.</p>
-      )}
-      {current && !item.pendingRequest && item.why && (
-        <p className="warn" role="status">{item.why}</p>
-      )}
-      {view.mayPrepare && !editing && <button onClick={() => setEditing(true)}>{current ? 'Change the disposition' : 'Choose a disposition'}</button>}
-      {view.mayPrepare && editing && (
-        <DispositionForm
-          kind={kind}
-          item={item}
-          projectId={project.id}
-          targets={targets}
-          run={run}
-          onDone={() => setEditing(false)}
-        />
-      )}
-    </li>
+  if (!view.mayPrepare) return null;
+  return editing ? (
+    <DispositionForm
+      kind={kind}
+      item={item}
+      projectId={project.id}
+      targets={targets}
+      run={run}
+      onDone={() => setEditing(false)}
+    />
+  ) : (
+    <button onClick={() => setEditing(true)}>{current ? 'Change the disposition' : 'Choose a disposition'}</button>
   );
 }
 
@@ -305,8 +331,9 @@ function CloseForm({ project, view, act }: { project: Project; view: ClosureView
     if (ok) window.location.hash = `#/projects/${project.id}`;
   }
   return (
-    <form className="panel stack" onSubmit={submit} aria-label="Close the project">
-      <h3>Close the project</h3>
+    <form className="box stack" onSubmit={submit} aria-label="Close the project">
+      <h3 className="box-title">Close the project</h3>
+      <p className="meta">Closing makes the project read-only. An Owner or Sponsor can reopen it later, with a reason.</p>
       <fieldset>
         <legend>Outcome</legend>
         {outcomes.map((o) => {

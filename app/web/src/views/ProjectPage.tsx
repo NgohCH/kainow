@@ -1,6 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
-import { ApiError, api, type Membership, type Project } from '../api.ts';
-import { formatWhen } from '../format.ts';
+import { ApiError, api, type InvitationRow, type Membership, type Project } from '../api.ts';
+import { formatWhen, plural } from '../format.ts';
 import {
   type ClosureOutcome,
   type ProjectRole,
@@ -13,6 +13,8 @@ import {
   canManage,
   formatExpiry,
   manageableRoles,
+  INVITATION_MEANING,
+  MEMBERSHIP_MEANING,
   membershipStateLabel,
   roleLabel,
   stageDuration,
@@ -29,6 +31,7 @@ import { Box } from '../ui/Box.tsx';
 import { DataTable, type Column } from '../ui/DataTable.tsx';
 import { StackedBar } from '../ui/StackedBar.tsx';
 import { StageFlow } from '../ui/StageFlow.tsx';
+import { StatTile } from '../ui/StatTile.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
 import { projectMeaning } from '../ui/meanings.ts';
 import { projectTabs, tabForHash } from '../ui/projectTabs.ts';
@@ -48,7 +51,7 @@ import { ResourcesReport } from './ResourcesReport.tsx';
 import { DeliveryHistory } from './Deliveries.tsx';
 import { DigestSend, EscalationFlags } from './DigestSend.tsx';
 import { Feedback } from './Feedback.tsx';
-import { ProjectSettings } from './NotificationSettings.tsx';
+import { ProjectSettings } from './ProjectSettings.tsx';
 import { ProjectAi } from './ProjectAi.tsx';
 import { mayViewAiTab, mayViewAiUsage } from '../ai.ts';
 import { ProjectCalendarProvider } from './ProjectCalendar.tsx';
@@ -809,44 +812,112 @@ function EditDetails({ project, act, onDone }: { project: Project; act: Act; onD
   );
 }
 
+const INVITATION_STATE_WORD: Record<InvitationRow['status'], string> = { invited: 'Waiting', accepted: 'Accepted', declined: 'Declined', revoked: 'Withdrawn', expired: 'Expired' };
+
+/** The project's People tab (spec 7.6): who holds which role, hand-over, Audit and Oversight access, and invitations. */
 function People({ project, act }: { project: Project; act: Act }) {
   const invitable = manageableRoles(project.myRoles, project.isAdmin, project.status);
   const current = project.memberships.filter((m) => m.state !== 'revoked');
   const past = project.memberships.filter((m) => m.state === 'revoked');
+  const onHold = current.filter((m) => m.state === 'on_hold').length;
+  const waitingInvitations = project.invitations.filter((i) => i.status === 'invited').length;
+  const memberColumns: Column<Membership>[] = [
+    {
+      key: 'person',
+      header: 'Person',
+      sortValue: (m) => m.displayName.toLowerCase(),
+      cell: (m) => (
+        <span>
+          {m.displayName}
+          <span className="meta work-parent">{m.email}</span>
+        </span>
+      ),
+    },
+    { key: 'role', header: 'Role', sortValue: (m) => roleLabel(m.role), cell: (m) => roleLabel(m.role) },
+    { key: 'dates', header: 'Dates', sortValue: (m) => m.startsOn, cell: (m) => `from ${m.startsOn}${m.expiresOn ? ` to ${m.expiresOn}` : ''}` },
+    {
+      key: 'state',
+      header: 'State',
+      sortValue: (m) => membershipStateLabel(m.state),
+      cell: (m) => (
+        <span className="label-stack">
+          <StatusLabel meaning={MEMBERSHIP_MEANING[m.state]} word={membershipStateLabel(m.state)} />
+          {m.holdReason && <span className="meta">{m.holdReason}</span>}
+        </span>
+      ),
+    },
+    { key: 'actions', header: 'Actions', wide: true, cell: (m) => <MemberActions m={m} project={project} act={act} /> },
+  ];
+  const pastColumns: Column<Membership>[] = [
+    { key: 'person', header: 'Person', sortValue: (m) => m.displayName.toLowerCase(), cell: (m) => m.displayName },
+    { key: 'role', header: 'Role', sortValue: (m) => roleLabel(m.role), cell: (m) => roleLabel(m.role) },
+    { key: 'from', header: 'From', sortValue: (m) => m.startsOn, cell: (m) => m.startsOn },
+    { key: 'state', header: 'State', cell: () => <StatusLabel meaning="off" word="Revoked" /> },
+  ];
+  const invitationColumns: Column<InvitationRow>[] = [
+    { key: 'email', header: 'Email', sortValue: (i) => i.email.toLowerCase(), cell: (i) => i.email },
+    { key: 'role', header: 'Role', sortValue: (i) => roleLabel(i.role), cell: (i) => (i.kind === 'handover' ? 'Project Manager (handover)' : roleLabel(i.role)) },
+    {
+      key: 'status',
+      header: 'Status',
+      sortValue: (i) => i.status,
+      cell: (i) => (
+        <span className="label-stack">
+          <StatusLabel meaning={INVITATION_MEANING[i.status]} word={INVITATION_STATE_WORD[i.status]} />
+          {i.status === 'invited' && <span className="meta">{formatExpiry(i.expiresAt)}</span>}
+        </span>
+      ),
+    },
+    {
+      key: 'actions',
+      header: 'Actions',
+      cell: (i) => {
+        const manage = canManage(i.role, project.myRoles, project.isAdmin, project.status, 'invitation');
+        // Withdrawing is cleanup, allowed in any status; the PM may withdraw their own handover.
+        const withdraw = canManage(i.role, project.myRoles, project.isAdmin, project.status, 'appointment') || (i.kind === 'handover' && project.myRoles.includes('pm'));
+        const resend = manage && (i.status === 'invited' || i.status === 'expired');
+        const canWithdraw = withdraw && i.status === 'invited';
+        if (!resend && !canWithdraw) return <span className="meta">None</span>;
+        return (
+          <span className="decision">
+            {resend && (
+              <button
+                className="link-button"
+                onClick={() =>
+                  void act(
+                    () => api.post(`/invitations/${i.id}/resend`),
+                    (r) => ((r as { delivered?: boolean }).delivered === false ? 'The email was not sent. Send again.' : `A new invitation was sent to ${i.email}.`),
+                  )
+                }
+              >
+                Send again<span className="visually-hidden"> to {i.email}</span>
+              </button>
+            )}
+            {canWithdraw && (
+              <button className="link-button" onClick={() => void act(() => api.post(`/invitations/${i.id}/revoke`), 'Invitation withdrawn.')}>
+                Withdraw<span className="visually-hidden"> the invitation to {i.email}</span>
+              </button>
+            )}
+          </span>
+        );
+      },
+    },
+  ];
   return (
     <>
-      <section aria-labelledby="members-heading">
-        <h2 id="members-heading">People</h2>
-        {current.length === 0 ? (
-          <p className="empty">No one holds a role yet.</p>
-        ) : (
-          <table className="table">
-            <thead>
-              <tr>
-                <th scope="col">Person</th>
-                <th scope="col">Role</th>
-                <th scope="col">Dates</th>
-                <th scope="col">State</th>
-                <th scope="col"><span className="visually-hidden">Actions</span></th>
-              </tr>
-            </thead>
-            <tbody>
-              {current.map((m) => (
-                <MemberRow key={m.id} m={m} project={project} act={act} />
-              ))}
-            </tbody>
-          </table>
-        )}
+      <div className="stat-grid">
+        <StatTile label="People with a role" value={String(new Set(current.map((m) => m.userId)).size)} note={plural(current.length, 'appointment')} />
+        <StatTile label="On Hold" value={String(onHold)} meaning={onHold > 0 ? 'attention' : undefined} word={onHold > 0 ? 'Investigation needed' : undefined} />
+        <StatTile label="Invitations waiting" value={String(waitingInvitations)} />
+        {project.grants.length > 0 && <StatTile label="Audit and Oversight access" value={String(project.grants.filter((g) => g.state === 'active').length)} note="Active now" />}
+      </div>
+      <section aria-labelledby="members-heading" className="box">
+        <h2 id="members-heading" className="box-title">People</h2>
+        <DataTable caption="Everyone who holds a role in this project" columns={memberColumns} rows={current} rowKey={(m) => m.id} empty="No one holds a role yet." />
         {past.length > 0 && (
           <details>
             <summary>Earlier appointments ({past.length})</summary>
-            <ul className="plain">
-              {past.map((m) => (
-                <li key={m.id}>
-                  {m.displayName}, {roleLabel(m.role)}, from {m.startsOn} (revoked)
-                </li>
-              ))}
-            </ul>
+            <DataTable caption="Earlier appointments" columns={pastColumns} rows={past} rowKey={(m) => m.id} empty="None." />
           </details>
         )}
       </section>
@@ -854,124 +925,74 @@ function People({ project, act }: { project: Project; act: Act }) {
       <HandoverForm project={project} act={act} />
       <GrantsSection project={project} act={act} />
 
-      <section aria-labelledby="invitations-heading">
-        <h2 id="invitations-heading">Invitations</h2>
-        {invitable.length > 0 && <InviteForm project={project} roles={invitable} act={act} />}
-        {project.invitations.length === 0 ? (
-          <p className="meta">No invitations yet.</p>
-        ) : (
-          <table className="table">
-            <thead>
-              <tr>
-                <th scope="col">Email</th>
-                <th scope="col">Role</th>
-                <th scope="col">Status</th>
-                <th scope="col"><span className="visually-hidden">Actions</span></th>
-              </tr>
-            </thead>
-            <tbody>
-              {project.invitations.map((i) => {
-                const manage = canManage(i.role, project.myRoles, project.isAdmin, project.status, 'invitation');
-                // Withdrawing is cleanup, allowed in any status; the PM may withdraw their own handover.
-                const withdraw = canManage(i.role, project.myRoles, project.isAdmin, project.status, 'appointment') || (i.kind === 'handover' && project.myRoles.includes('pm'));
-                return (
-                  <tr key={i.id}>
-                    <td>{i.email}</td>
-                    <td>{i.kind === 'handover' ? 'Project Manager (handover)' : roleLabel(i.role)}</td>
-                    <td>
-                      {i.status === 'invited' ? `Waiting · ${formatExpiry(i.expiresAt)}` : i.status[0].toUpperCase() + i.status.slice(1)}
-                    </td>
-                    <td>
-                      {manage && (i.status === 'invited' || i.status === 'expired') && (
-                        <button
-                          className="link-button"
-                          onClick={() =>
-                            void act(
-                              () => api.post(`/invitations/${i.id}/resend`),
-                              (r) => ((r as { delivered?: boolean }).delivered === false ? 'The email was not sent. Send again.' : `A new invitation was sent to ${i.email}.`),
-                            )
-                          }
-                        >
-                          Send again
-                        </button>
-                      )}{' '}
-                      {withdraw && i.status === 'invited' && (
-                        <button className="link-button" onClick={() => void act(() => api.post(`/invitations/${i.id}/revoke`), 'Invitation withdrawn.')}>
-                          Withdraw
-                        </button>
-                      )}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
-        )}
+      {invitable.length > 0 && (
+        <section aria-labelledby="invite-heading" className="box">
+          <h2 id="invite-heading" className="box-title">Invite someone</h2>
+          <InviteForm project={project} roles={invitable} act={act} />
+        </section>
+      )}
+      <section aria-labelledby="invitations-heading" className="box">
+        <h2 id="invitations-heading" className="box-title">Invitations</h2>
+        <DataTable caption="Invitations to this project" columns={invitationColumns} rows={project.invitations} rowKey={(i) => i.id} empty="No invitations yet." />
       </section>
     </>
   );
 }
 
-function MemberRow({ m, project, act }: { m: Membership; project: Project; act: Act }) {
+/** A role's actions: the hold's findings and restore, Change expiry and Remove, each with its form in place. */
+function MemberActions({ m, project, act }: { m: Membership; project: Project; act: Act }) {
   const manage = canManage(m.role, project.myRoles, project.isAdmin, project.status, 'appointment');
   const [mode, setMode] = useState<'none' | 'extend' | 'revoke'>('none');
   const [date, setDate] = useState(m.expiresOn ?? '');
   const [reason, setReason] = useState('');
+  if (m.state !== 'on_hold' && !manage) return <span className="meta">None</span>;
   return (
-    <tr>
-      <td>
-        {m.displayName}
-        <span className="meta"> {m.email}</span>
-      </td>
-      <td>{roleLabel(m.role)}</td>
-      <td>
-        from {m.startsOn}
-        {m.expiresOn ? ` to ${m.expiresOn}` : ''}
-      </td>
-      <td>
-        {m.state === 'on_hold' ? <span className="badge badge-rejected">{membershipStateLabel(m.state)}</span> : membershipStateLabel(m.state)}
-        {m.holdReason ? <span className="meta"> {m.holdReason}</span> : null}
-      </td>
-      <td>
-        {m.state === 'on_hold' && <HoldActions m={m} project={project} act={act} canRestore={manage} />}
-        {manage && mode === 'none' && (
-          <>
-            <button className="link-button" onClick={() => setMode('extend')}>Change expiry</button>{' '}
-            <button className="link-button" onClick={() => setMode('revoke')}>Remove</button>
-          </>
-        )}
-        {mode === 'extend' && (
-          <form
-            className="inline-form"
-            onSubmit={async (e) => {
-              e.preventDefault();
-              if (await act(() => api.post(`/memberships/${m.id}/extend`, { expiresOn: date }), 'Expiry changed.')) setMode('none');
-            }}
-          >
-            <label>
-              New expiry <input type="date" required value={date} onChange={(e) => setDate(e.target.value)} />
-            </label>
+    <div className="work-details">
+      {m.state === 'on_hold' && <HoldActions m={m} project={project} act={act} canRestore={manage} />}
+      {manage && mode === 'none' && (
+        <span className="decision">
+          <button className="link-button" onClick={() => setMode('extend')}>Change expiry<span className="visually-hidden"> for {m.displayName}</span></button>
+          <button className="link-button" onClick={() => setMode('revoke')}>Remove<span className="visually-hidden"> {m.displayName} as {roleLabel(m.role)}</span></button>
+        </span>
+      )}
+      {mode === 'extend' && (
+        <form
+          className="inline-form stack change-form"
+          aria-label={`Change the expiry of the role held by ${m.displayName}`}
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (await act(() => api.post(`/memberships/${m.id}/extend`, { expiresOn: date }), 'Expiry changed.')) setMode('none');
+          }}
+        >
+          <label>
+            New expiry <input type="date" required value={date} onChange={(e) => setDate(e.target.value)} />
+          </label>
+          <div className="decision">
             <button className="primary">Save</button>
             <button type="button" onClick={() => setMode('none')}>Cancel</button>
-          </form>
-        )}
-        {mode === 'revoke' && (
-          <form
-            className="inline-form"
-            onSubmit={async (e) => {
-              e.preventDefault();
-              if (await act(() => api.post(`/memberships/${m.id}/revoke`, { reason }), `${m.displayName} no longer holds the ${roleLabel(m.role)} role.`)) setMode('none');
-            }}
-          >
-            <label>
-              Reason <input required value={reason} onChange={(e) => setReason(e.target.value)} />
-            </label>
+          </div>
+        </form>
+      )}
+      {mode === 'revoke' && (
+        <form
+          className="inline-form stack change-form"
+          aria-label={`Remove ${m.displayName} as ${roleLabel(m.role)}`}
+          onSubmit={async (e) => {
+            e.preventDefault();
+            if (await act(() => api.post(`/memberships/${m.id}/revoke`, { reason }), `${m.displayName} no longer holds the ${roleLabel(m.role)} role.`)) setMode('none');
+          }}
+        >
+          <p className="meta">They lose this role straight away. The appointment stays under Earlier appointments.</p>
+          <label>
+            Reason <input required value={reason} onChange={(e) => setReason(e.target.value)} />
+          </label>
+          <div className="decision">
             <button className="reject">Remove</button>
             <button type="button" onClick={() => setMode('none')}>Cancel</button>
-          </form>
-        )}
-      </td>
-    </tr>
+          </div>
+        </form>
+      )}
+    </div>
   );
 }
 
@@ -994,7 +1015,7 @@ function InviteForm({ project, roles, act }: { project: Project; roles: ProjectR
     }
   }
   return (
-    <form className="panel stack" onSubmit={submit} aria-label="Invite someone">
+    <form className="stack" onSubmit={submit} aria-label="Invite someone">
       <div className="grid-2">
         <label>
           Work email

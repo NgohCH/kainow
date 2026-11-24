@@ -4,7 +4,7 @@ import { formatDay, formatWhen } from '../format.ts';
 import { OUTPUT_EVENT_TEXT } from '../history.ts';
 import {
   type AffectedPerson, APPROVAL_NOTICE, FILE_ACTION_LABEL, type FileAction, type OpenRefusal, type OutputDetail, type OutputSummary, type OutputVersion, audiencePreviewText,
-  checkLabel, fileAccess, filingLabel, formatLabel, mayAskApproval, mayFile, openRefusal, originLabel, outputStatusLabel, versionStatusLabel,
+  checkLabel, fileAccess, filingLabel, formatLabel, mayAskApproval, mayFile, openRefusal, originLabel, outputMeaning, outputStatusLabel, versionMeaning, versionStatusLabel,
   SHARING_DONE, SHARING_POLL_MS, SHARING_UPDATING, sharingRetryingLabel,
 } from '../outputs.ts';
 import type { ProjectRole, ProjectStatus } from '../projects.ts';
@@ -12,6 +12,8 @@ import { sizeLabel } from '../storage.ts';
 import { ChangeRequestPanel, useRequests } from './ChangeRequest.tsx';
 import { useReportTypes, useReturnFocus } from './ProjectOutputSettings.tsx';
 import { ReportSecret } from './ReportSecret.tsx';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
 
 /** The project's current people and departments, for contributors and audiences. */
 export interface ProjectPeople {
@@ -105,28 +107,89 @@ export function OutputPage({ projectId, outputId, roles, status, people }: {
   );
 
   const back = <p><a href={`#/projects/${projectId}/outputs`}>All outputs</a></p>;
-  if (gone) return <section aria-label="Output">{back}<p role="status">{gone}</p></section>;
+  if (gone) return <section aria-label="Output" className="box">{back}<p role="status">{gone}</p></section>;
   if (!output) return error ? <p role="alert" className="error">{error}</p> : <p className="loading">Loading</p>;
 
   const base = `/projects/${projectId}/outputs/${outputId}`;
   const approvals = requests.filter((r) => r.kind === 'approve_output' && r.status === 'pending' && r.output?.id === outputId);
   const live = output.status === 'submitted' || output.status === 'registered';
+  const versionManages = manages && output.status === 'registered';
+  const versionColumns: Column<OutputVersion>[] = [
+    {
+      key: 'version',
+      header: 'Version',
+      sortValue: (v) => v.no,
+      cell: (v) => (
+        <span>
+          Version {v.no}
+          <span className="meta work-parent">{originLabel(v.origin)} · {formatLabel(v.format)} · {sizeLabel(v.sizeBytes)} · {v.createdBy.displayName}, {formatWhen(v.createdAt)}</span>
+        </span>
+      ),
+    },
+    { key: 'status', header: 'Status', sortValue: (v) => versionStatusLabel(v.status), cell: (v) => <StatusLabel meaning={versionMeaning(v.status)} word={versionStatusLabel(v.status)} /> },
+    { key: 'filing', header: 'Filing', cell: (v) => <VersionFiling v={v} base={base} manages={versionManages} act={act} /> },
+    {
+      key: 'check',
+      header: 'Check',
+      cell: (v) => {
+        const f = v.filing;
+        return (
+          <span>
+            {fileAccess(f.state).open ? checkLabel(f.checkStatus, f.lastCheckedAt, v.status) : '—'}
+            {f.recovery && <span className="hint">{f.recovery}</span>}
+            {f.registering && <span className="hint">{f.registering}</span>}
+            {f.registerFailed && <span className="warn inline">{f.registerFailed}</span>}
+          </span>
+        );
+      },
+    },
+    {
+      key: 'actions',
+      header: 'Approval and file',
+      wide: true,
+      cell: (v) => (
+        <VersionActions
+          v={v}
+          base={base}
+          manages={versionManages}
+          mayRequestApproval={mayRequestApproval && output.status === 'registered' && !approvals.some((r) => r.output?.versionNo === v.no)}
+          approvalPending={approvals.some((r) => r.output?.versionNo === v.no)}
+          act={act}
+        />
+      ),
+    },
+  ];
 
   return (
     <section aria-labelledby="output-heading">
       {back}
-      <h2 id="output-heading" tabIndex={-1} ref={heading}>{output.title}</h2>
-      <p>
-        <strong>{outputStatusLabel(output.status)}</strong>
-        {' · '}{output.reportType?.name ?? 'Report type not chosen yet'}
-        {output.categories.length > 0 && ` (also ${output.categories.map((c) => c.name).join(', ')})`}
-        {' · '}Issue date: {dayText(output.issueDate)}
-        {' · '}Author: {output.author.displayName}
-        {output.aiAssisted && ' · AI-assisted'}
-        {' · '}{output.audience.mode === 'restricted' ? 'Restricted' : 'Project-wide'}
-      </p>
-      {output.reviewLabel && <p className="warn" role="note">{output.reviewLabel}</p>}
-      {output.registeredBy && output.registeredAt && <p className="meta">Registered by {output.registeredBy.displayName}, {formatWhen(output.registeredAt)}</p>}
+      <div className="box">
+      <div className="settings-box-head">
+        <h2 id="output-heading" className="box-title" tabIndex={-1} ref={heading}>{output.title}</h2>
+        <span className="label-stack">
+          <StatusLabel meaning={outputMeaning(output.status)} word={outputStatusLabel(output.status)} />
+          {output.reviewLabel && <StatusLabel meaning="review" word={output.reviewLabel} />}
+        </span>
+      </div>
+      <dl className="facts">
+        <dt>Report type</dt>
+        <dd>
+          {output.reportType?.name ?? 'Report type not chosen yet'}
+          {output.categories.length > 0 && ` (also ${output.categories.map((c) => c.name).join(', ')})`}
+        </dd>
+        <dt>Issue date</dt>
+        <dd>{dayText(output.issueDate)}</dd>
+        <dt>Author</dt>
+        <dd>{output.author.displayName}{output.aiAssisted && ' · AI-assisted'}</dd>
+        <dt>Who may read it</dt>
+        <dd>{output.audience.mode === 'restricted' ? 'Restricted' : 'Project-wide'}</dd>
+        {output.registeredBy && output.registeredAt && (
+          <>
+            <dt>Registered</dt>
+            <dd>{output.registeredBy.displayName}, {formatWhen(output.registeredAt)}</dd>
+          </>
+        )}
+      </dl>
       {notice && <p role="status" className="meta">{notice}</p>}
       {error && <p role="alert" className="error">{error}</p>}
 
@@ -154,49 +217,24 @@ export function OutputPage({ projectId, outputId, roles, status, people }: {
       {mode === 'review-withdraw' && <ReasonForm title="Withdraw the output" button="Withdraw" hint="Withdrawn is final. Its files stay in storage, shared with nobody." onCancel={() => setMode(null)} onSubmit={(reason) => act(() => api.post(`${base}/review/withdraw`, { reason }), 'Withdrawn.')} />}
       {mode === 'version' && <AddVersionForm base={base} onCancel={() => setMode(null)} act={act} />}
       {mode === 'accept' && <AcceptIntoForm projectId={projectId} outputId={outputId} onCancel={() => setMode(null)} act={act} />}
+      </div>
 
-      <h3>Versions</h3>
-      {output.versions.length === 0 ? (
-        <p className="meta">No versions.</p>
-      ) : (
-        <table className="table outputs-table">
-          <caption className="visually-hidden">Versions of {output.title}</caption>
-          <thead>
-            <tr>
-              <th scope="col">Version</th>
-              <th scope="col">Status</th>
-              <th scope="col">Filing</th>
-              <th scope="col">Check</th>
-              <th scope="col">Approval</th>
-              <th scope="col">File</th>
-            </tr>
-          </thead>
-          <tbody>
-            {output.versions.map((v) => (
-              <VersionRow
-                key={v.no}
-                v={v}
-                base={base}
-                manages={manages && output.status === 'registered'}
-                mayRequestApproval={mayRequestApproval && output.status === 'registered' && !approvals.some((r) => r.output?.versionNo === v.no)}
-                approvalPending={approvals.some((r) => r.output?.versionNo === v.no)}
-                act={act}
-              />
-            ))}
-          </tbody>
-        </table>
-      )}
+      <section aria-labelledby="output-versions" className="box">
+        <h3 id="output-versions" className="box-title">Versions</h3>
+        <DataTable caption={`Versions of ${output.title}`} columns={versionColumns} rows={output.versions} rowKey={(v) => String(v.no)} empty="No versions." />
+      </section>
 
       {approvals.length > 0 && (
-        <section aria-labelledby="output-approvals">
-          <h3 id="output-approvals" tabIndex={-1}>Waiting for approval</h3>
+        <section aria-labelledby="output-approvals" className="box">
+          <h3 id="output-approvals" className="box-title" tabIndex={-1}>Waiting for approval</h3>
           {approvals.map((r) => (
             <ChangeRequestPanel key={`${r.id}:${r.version}`} request={r} projectId={projectId} onChanged={(m) => { setNotice(m); void load(); }} />
           ))}
         </section>
       )}
 
-      <h3>Contributors</h3>
+      <section aria-labelledby="output-contributors" className="box">
+      <h3 id="output-contributors" className="box-title">Contributors</h3>
       {output.contributors.people.length === 0 && output.contributors.departments.length === 0 ? (
         <p className="meta">Only the author ({output.author.displayName}).</p>
       ) : (
@@ -205,10 +243,12 @@ export function OutputPage({ projectId, outputId, roles, status, people }: {
           {output.contributors.departments.map((d) => <li key={d.id}>{d.name} (department)</li>)}
         </ul>
       )}
+      </section>
 
       <AudienceSection output={output} base={base} people={people} act={act} sharingDone={sharingDone} />
 
-      <h3>History</h3>
+      <section aria-labelledby="output-history" className="box">
+      <h3 id="output-history" className="box-title">History</h3>
       <ol className="plain">
         {output.history.map((h, i) => (
           <li key={i}>
@@ -218,14 +258,34 @@ export function OutputPage({ projectId, outputId, roles, status, people }: {
           </li>
         ))}
       </ol>
+      </section>
     </section>
   );
 }
 
 type Act = (work: () => Promise<unknown>, done: string) => Promise<boolean>;
 
-/** One version: status, filing, check (with time), approval, Open and (for a filed file) Download, and what the PM or a Deputy can do. */
-function VersionRow({ v, base, manages, mayRequestApproval, approvalPending, act }: {
+/** A version's filing, with File it (or Try again) for the PM or a Deputy. */
+function VersionFiling({ v, base, manages, act }: { v: OutputVersion; base: string; manages: boolean; act: Act }) {
+  const f = v.filing;
+  return (
+    <span>
+      {f.label || filingLabel(f.state)}
+      {f.location && <span className="hint">{f.location}</span>}
+      {f.destination && <span className="hint">In {f.destination}</span>}
+      {f.path && <span className="hint path">{f.path}</span>}
+      {f.sharing && <span className="hint">{f.sharing}</span>}
+      {manages && mayFile(v) && (
+        <button type="button" className="link-button" onClick={() => void act(() => api.post(`${base}/versions/${v.no}/file`), 'Filing was requested. The register shows when it is filed.')}>
+          {f.state === 'failed' ? 'Try again' : 'File it'}<span className="visually-hidden"> (version {v.no})</span>
+        </button>
+      )}
+    </span>
+  );
+}
+
+/** One version's approval and file: the approval state and Ask for approval, Open and (for a filed file) Download, and the file actions. */
+function VersionActions({ v, base, manages, mayRequestApproval, approvalPending, act }: {
   v: OutputVersion; base: string; manages: boolean; mayRequestApproval: boolean; approvalPending: boolean; act: Act;
 }) {
   const [refusal, setRefusal] = useState<OpenRefusal | null>(null);
@@ -259,31 +319,8 @@ function VersionRow({ v, base, manages, mayRequestApproval, approvalPending, act
 
   const actions: FileAction[] = [...new Set([...(f.actions ?? []), ...(refusal?.actions ?? [])])].filter(() => manages);
   return (
-    <tr>
-      <td data-label="Version">
-        Version {v.no}
-        <span className="meta"> · {originLabel(v.origin)} · {formatLabel(v.format)} · {sizeLabel(v.sizeBytes)} · {v.createdBy.displayName}, {formatWhen(v.createdAt)}</span>
-      </td>
-      <td data-label="Status">{versionStatusLabel(v.status)}</td>
-      <td data-label="Filing">
-        {f.label || filingLabel(f.state)}
-        {f.location && <span className="hint">{f.location}</span>}
-        {f.destination && <span className="hint">In {f.destination}</span>}
-        {f.path && <span className="hint path">{f.path}</span>}
-        {f.sharing && <span className="hint">{f.sharing}</span>}
-        {manages && mayFile(v) && (
-          <button type="button" className="link-button" onClick={() => void act(() => api.post(`${path}/file`), 'Filing was requested. The register shows when it is filed.')}>
-            {f.state === 'failed' ? 'Try again' : 'File it'}<span className="visually-hidden"> (version {v.no})</span>
-          </button>
-        )}
-      </td>
-      <td data-label="Check">
-        {hasFile ? checkLabel(f.checkStatus, f.lastCheckedAt, v.status) : '—'}
-        {f.recovery && <span className="hint">{f.recovery}</span>}
-        {f.registering && <span className="hint">{f.registering}</span>}
-        {f.registerFailed && <span className="warn inline">{f.registerFailed}</span>}
-      </td>
-      <td data-label="Approval">
+    <div className="work-details">
+      <div>
         {approvalPending ? (
           <button type="button" className="link-button" onClick={() => { const h = document.getElementById('output-approvals'); h?.scrollIntoView(); h?.focus(); }}>Approval requested — waiting</button>
         ) : v.approvalRequestId ? (
@@ -297,7 +334,7 @@ function VersionRow({ v, base, manages, mayRequestApproval, approvalPending, act
           <button type="button" className="link-button" onClick={() => { remember(); setMode('approval'); }}>Ask for approval<span className="visually-hidden"> of version {v.no}</span></button>
         )}
         {mode === 'approval' && (
-          <div className="panel stack" role="group" aria-label={`Ask for approval of version ${v.no}`}>
+          <div className="box stack change-form" role="group" aria-label={`Ask for approval of version ${v.no}`}>
             <p>An Owner or Sponsor approves this exact version under the project's approval policy.</p>
             <p className="warn" role="note">{APPROVAL_NOTICE}</p>
             <div className="actions">
@@ -306,8 +343,8 @@ function VersionRow({ v, base, manages, mayRequestApproval, approvalPending, act
             </div>
           </div>
         )}
-      </td>
-      <td data-label="File">
+      </div>
+      <div>
         <div className="actions">
           {hasFile && <button type="button" onClick={() => void open()} disabled={opening}>Open<span className="visually-hidden"> version {v.no}</span></button>}
           {access.download && <a href={api.url(`${path}/download`)} download>Download a copy<span className="visually-hidden"> of version {v.no}</span></a>}
@@ -341,8 +378,8 @@ function VersionRow({ v, base, manages, mayRequestApproval, approvalPending, act
             </div>
           </form>
         )}
-      </td>
-    </tr>
+      </div>
+    </div>
   );
 }
 
@@ -352,7 +389,7 @@ function ReasonForm({ title, button, hint, onSubmit, onCancel }: { title: string
   const uid = useId();
   return (
     <form
-      className="panel stack"
+      className="box stack change-form"
       aria-labelledby={`${uid}-t`}
       onKeyDown={(e) => e.key === 'Escape' && onCancel()}
       onSubmit={(e) => {
@@ -360,7 +397,7 @@ function ReasonForm({ title, button, hint, onSubmit, onCancel }: { title: string
         void onSubmit(reason);
       }}
     >
-      <h3 id={`${uid}-t`}>{title}</h3>
+      <h3 id={`${uid}-t`} className="form-box-title">{title}</h3>
       <p className="hint">{hint}</p>
       <label>
         Reason <input required autoFocus value={reason} onChange={(e) => setReason(e.target.value)} />
@@ -414,7 +451,7 @@ function RegisterForm({ output, people, edit, onSubmit, onCancel }: {
   const chosenPeople = Object.keys(personDepts);
   return (
     <form
-      className="panel stack"
+      className="box stack change-form"
       aria-labelledby={`${uid}-h`}
       onKeyDown={(e) => e.key === 'Escape' && onCancel()}
       onSubmit={(e) => {
@@ -430,7 +467,7 @@ function RegisterForm({ output, people, edit, onSubmit, onCancel }: {
         });
       }}
     >
-      <h3 id={`${uid}-h`}>{edit ? 'Edit the details' : 'Register this output'}</h3>
+      <h3 id={`${uid}-h`} className="form-box-title">{edit ? 'Edit the details' : 'Register this output'}</h3>
       {!edit && <p className="hint">Registering does not file or approve it. File each version afterwards, then ask for approval.</p>}
       <label>
         Title <input required autoFocus maxLength={200} value={title} onChange={(e) => setTitle(e.target.value)} />
@@ -526,7 +563,7 @@ function AddVersionForm({ base, act, onCancel }: { base: string; act: Act; onCan
   const [url, setUrl] = useState('');
   return (
     <form
-      className="panel stack"
+      className="box stack change-form"
       aria-labelledby={`${uid}-h`}
       onSubmit={(e: FormEvent) => {
         e.preventDefault();
@@ -539,7 +576,7 @@ function AddVersionForm({ base, act, onCancel }: { base: string; act: Act; onCan
         }, 'A new Draft version was added. File it, then ask for approval.');
       }}
     >
-      <h3 id={`${uid}-h`}>Add a new version</h3>
+      <h3 id={`${uid}-h`} className="form-box-title">Add a new version</h3>
       <p className="hint">Earlier versions never change. To add a draft report, open it under Drafts and choose "Submit as output".</p>
       <fieldset>
         <legend>From</legend>
@@ -568,7 +605,7 @@ function AcceptIntoForm({ projectId, outputId, act, onCancel }: { projectId: str
   }, [projectId, outputId]);
   return (
     <form
-      className="panel stack"
+      className="box stack change-form"
       aria-label="Add this submission to an existing output"
       onSubmit={(e) => {
         e.preventDefault();
@@ -619,7 +656,7 @@ function AudienceSection({ output, base, people, act, sharingDone }: { output: O
   let content: ReactNode = null;
   if (editing) {
     content = (
-      <form className="panel stack" aria-labelledby={`${uid}-h`} onSubmit={previewChange} onKeyDown={(e) => e.key === 'Escape' && setEditing(false)}>
+      <form className="box stack change-form" aria-labelledby={`${uid}-h`} onSubmit={previewChange} onKeyDown={(e) => e.key === 'Escape' && setEditing(false)}>
         <h4 id={`${uid}-h`}>Change who may read it</h4>
         <fieldset>
           <legend>Readers</legend>
@@ -653,8 +690,8 @@ function AudienceSection({ output, base, people, act, sharingDone }: { output: O
     );
   }
   return (
-    <section aria-labelledby={`${uid}-a`}>
-      <h3 id={`${uid}-a`}>Who may read it</h3>
+    <section aria-labelledby={`${uid}-a`} className="box">
+      <h3 id={`${uid}-a`} className="box-title">Who may read it</h3>
       <p>
         {output.audience.mode === 'project'
           ? 'Project-wide: everyone who may read the project.'

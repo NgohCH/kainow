@@ -43,14 +43,16 @@ export function useReturnFocus(open: boolean, fallback?: RefObject<HTMLElement |
   }, []);
 }
 
-const NOT_YOURS = 'The Project Manager, the Owner or a Sponsor can change this when the Administrator allows projects to; otherwise an Enterprise Administrator. Not while the project is Deferred or Closed.';
-const who = (editable: boolean) => (editable ? 'You may change this.' : NOT_YOURS);
+export const NOT_YOURS = 'The Project Manager, the Owner or a Sponsor can change this when the Administrator allows projects to; otherwise an Enterprise Administrator. Not while the project is Deferred or Closed.';
+export const who = (editable: boolean) => (editable ? 'You may change this.' : NOT_YOURS);
 
 /**
  * Project settings › Outputs (spec 8.3): the output destination, formats and export roles, each with its effective
  * value, where it comes from and who may change it (Q01). Changes need a reason and are versioned on the server.
+ * `bare` sits inside a settings box that already shows the values: it opens straight on the form (or, for someone who
+ * may not change anything, the values); its Cancel calls `onClose`, which closes that box.
  */
-export function ProjectOutputSettings({ projectId }: { projectId: string }) {
+export function ProjectOutputSettings({ projectId, bare = false, onSaved, onClose }: { projectId: string; bare?: boolean; onSaved?: () => void; onClose?: () => void }) {
   const { policy: view, reload } = useOutputPolicy(projectId);
   const uid = useId();
   const [destinationId, setDestinationId] = useState('');
@@ -60,7 +62,7 @@ export function ProjectOutputSettings({ projectId }: { projectId: string }) {
   const [outputFormats, setOutputFormats] = useState<string[]>([]);
   const [roles, setRoles] = useState<ExportRole[]>([]);
   const [reason, setReason] = useState('');
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(bare);
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const changeButton = useRef<HTMLButtonElement>(null);
@@ -97,17 +99,21 @@ export function ProjectOutputSettings({ projectId }: { projectId: string }) {
     if (view.editable.exportRoles) body.exportRoles = roles;
     try {
       await api.put(`/projects/${projectId}/output-settings`, body);
-      setEditing(false);
       setNotice('The output settings were saved.');
       reload();
+      onSaved?.();
+      if (!bare) setEditing(false);
     } catch (err) {
       setError(errText(err));
     }
   }
 
+  const cancel = () => (bare ? onClose?.() : setEditing(false));
+  const showForm = editing && anyEditable;
   return (
     <section aria-labelledby={`${uid}-h`}>
-      <h2 id={`${uid}-h`}>Outputs</h2>
+      <h2 id={`${uid}-h`} className={bare ? 'visually-hidden' : undefined}>Outputs</h2>
+      {!(bare && anyEditable) && (
       <dl className="settings-summary">
         <dt>Output destination</dt>
         <dd>
@@ -132,11 +138,12 @@ export function ProjectOutputSettings({ projectId }: { projectId: string }) {
           <span className="hint">{effectiveSourceLabel(view.sources.exportRoles)}. Exports also need the Administrator to allow project exports. {who(view.editable.exportRoles)}</span>
         </dd>
       </dl>
+      )}
       {view.updatedAt && <p className="meta">Last changed {formatWhen(view.updatedAt)}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
-      {anyEditable && !editing && <button type="button" ref={changeButton} onClick={() => { reset(view); setEditing(true); setNotice(null); }}>Change output settings</button>}
-      {editing && (
-        <form className="panel stack" aria-label="Change output settings" onSubmit={save} onKeyDown={(e) => e.key === 'Escape' && setEditing(false)}>
+      {anyEditable && !editing && !bare && <button type="button" ref={changeButton} onClick={() => { reset(view); setEditing(true); setNotice(null); }}>Change output settings</button>}
+      {showForm && (
+        <form className={bare ? 'stack' : 'panel stack'} aria-label="Change output settings" onSubmit={save} onKeyDown={(e) => e.key === 'Escape' && cancel()}>
           {view.editable.destination && (
             <label>
               Output destination
@@ -179,7 +186,7 @@ export function ProjectOutputSettings({ projectId }: { projectId: string }) {
           {error && <p role="alert" className="error">{error}</p>}
           <div className="actions">
             <button className="primary">Save</button>
-            <button type="button" onClick={() => setEditing(false)}>Cancel</button>
+            <button type="button" onClick={cancel}>Cancel</button>
           </div>
         </form>
       )}
