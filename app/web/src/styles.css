@@ -861,3 +861,13 @@ button.stat-tile[aria-pressed="true"] { border-color: var(--accent); box-shadow:
 .attention-empty { margin: 0; }
 .flag-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 0.2rem; }
 .row-note { color: var(--muted); font-size: 13px; }
+
+/* Settings hub (spec 7.8) */
+.setting-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 0.8rem; }
+.settings-counts { margin: 0 0 0.8rem; font-size: 15px; }
+.settings-search { margin: 0 0 1.2rem; display: flex; flex-direction: column; gap: 0.25rem; max-width: 24rem; }
+.settings-search label { font-size: 13px; color: var(--muted); }
+.colour-preview { display: flex; flex-wrap: wrap; gap: 0.4rem; margin: 0.4rem 0; }
+.colour-swatch { display: inline-flex; align-items: center; min-width: 5.5rem; padding: 0.35rem 0.6rem; border-radius: 6px; font-size: 13px; border: 1px solid var(--muted-wash); }
+.colour-row { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; align-items: end; }
+.colour-row input[type="color"] { width: 3rem; height: 2.2rem; padding: 0; }

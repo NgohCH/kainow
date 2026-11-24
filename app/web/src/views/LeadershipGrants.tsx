@@ -4,6 +4,9 @@ import { formatWhen } from '../format.ts';
 import { dayLabel } from '../dashboard.ts';
 import { type Grant, type ScopeKind, grantStateLabel, reasonProblem, scopeLabel } from '../leadership.ts';
 import { todayUtc8 } from '../changes.ts';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { SettingsPage } from '../ui/SettingsPage.tsx';
+import { StatTile } from '../ui/StatTile.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 
@@ -66,8 +69,7 @@ function GrantForm({ meId, onDone }: { meId: string; onDone: () => void }) {
   }
 
   return (
-    <form className="panel stack" onSubmit={submit} aria-label="Give leadership access">
-      <h2>Give leadership access</h2>
+    <form className="stack" onSubmit={submit} aria-label="Give leadership access">
       <label>
         Person
         <select required value={userId} onChange={(e) => setUserId(e.target.value)}>
@@ -212,7 +214,7 @@ function GrantRow({ g, onDone }: { g: Grant; onDone: () => void }) {
   );
 }
 
-/** Administration, Leadership access (spec 6.1, D89): who sees the leadership summary, for which projects, and until when. */
+/** Settings, Leadership access (spec 6.1, D89): who sees the leadership summary, for which projects, and until when. */
 export function LeadershipGrants({ meId }: { meId: string }) {
   const [grants, setGrants] = useState<Grant[] | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -227,20 +229,47 @@ export function LeadershipGrants({ meId }: { meId: string }) {
   }, []);
   useEffect(load, [load]);
 
-  return (
-    <main className="page narrow">
-      <h1>Leadership access</h1>
-      <p className="meta">A leadership grant lets a person see summary figures for the projects in its scope. It gives no access to a project's content.</p>
+  const live = (grants ?? []).filter((g) => g.state === 'active' || g.state === 'scheduled');
+  const notActive = live.filter((g) => g.accountStatus !== 'active');
+  const columns: Column<Grant>[] = [
+    { key: 'person', header: 'Person', sortValue: (g) => g.userName.toLowerCase(), cell: (g) => <>{g.userName} <span className="meta">{g.email}</span></> },
+    { key: 'scope', header: 'Scope', cell: (g) => scopeLabel(g) },
+    { key: 'account', header: 'Account', sortValue: (g) => g.accountStatus, cell: (g) => g.accountStatus.replace(/_/g, ' ') },
+    { key: 'from', header: 'First day', sortValue: (g) => g.startsOn, cell: (g) => dayLabel(g.startsOn) },
+  ];
+
+  const glance = (
+    <>
       {error && <p role="alert" className="error">{error}</p>}
-      <GrantForm meId={meId} onDone={load} />
-      <section aria-labelledby="grants-heading">
-        <h2 id="grants-heading">Grants</h2>
-        {!grants && !error && <p className="loading">Loading</p>}
-        {grants && grants.length === 0 && <p className="empty">No leadership access has been given.</p>}
-        <ul className="plain home-projects">
-          {grants?.map((g) => <GrantRow key={g.id} g={g} onDone={load} />)}
-        </ul>
-      </section>
+      <div className="stat-grid">
+        <StatTile label="Active grants" value={String(live.filter((g) => g.state === 'active').length)} />
+        <StatTile label="Scheduled grants" value={String(live.filter((g) => g.state === 'scheduled').length)} />
+        <StatTile label="Holder not active" value={String(notActive.length)} meaning={grants ? (notActive.length > 0 ? 'attention' : 'ok') : undefined} word={notActive.length > 0 ? 'Needs attention' : 'None'} note="Access held by an account that is not Active" />
+      </div>
+      {notActive.length > 0 && <DataTable caption="Holder not active" columns={columns} rows={notActive} rowKey={(g) => g.id} empty="" />}
+      <h3 id="grants-heading">Grants</h3>
+      {!grants && !error && <p className="loading">Loading</p>}
+      {grants && grants.length === 0 && <p className="empty">No leadership access has been given.</p>}
+      <ul className="plain home-projects" aria-labelledby="grants-heading">
+        {grants?.map((g) => <GrantRow key={g.id} g={g} onDone={load} />)}
+      </ul>
+    </>
+  );
+
+  return (
+    <main className="page">
+      <SettingsPage
+        header={{ crumbs: [{ text: 'Settings', href: '#/settings' }], title: 'Leadership access', intro: "A leadership grant lets a person see summary figures for the projects in its scope. It gives no access to a project's content." }}
+        glance={glance}
+        settings={[
+          {
+            key: 'give',
+            title: 'Give leadership access',
+            current: <p className="meta">Choose a person, the scope, the days and a reason. Each grant and each change is recorded.</p>,
+            form: (close) => <GrantForm meId={meId} onDone={() => { load(); close(); }} />,
+          },
+        ]}
+      />
     </main>
   );
 }

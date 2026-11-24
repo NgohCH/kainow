@@ -1,5 +1,7 @@
 /** The side menu (spec 6.1, D128): which groups and items a person sees, and which item a page belongs to. */
 
+import { SETTINGS_CATALOGUE } from './settings.ts';
+
 export type MenuHeading = 'Work' | 'Organisation' | 'Administration';
 export interface MenuItem { href: string; text: string; badge?: number }
 export interface MenuGroup { heading: MenuHeading; items: MenuItem[] }
@@ -39,46 +41,13 @@ export function sideMenuGroups(ctx: MenuContext): MenuGroup[] {
   return groups.filter((g) => g.items.length > 0);
 }
 
-/** The organisation-wide settings by group (spec 7.8), with the addresses they keep. */
-export const SETTINGS_GROUPS: { heading: string; items: { href: string; text: string; reviewerOnly?: true }[] }[] = [
-  {
-    heading: 'Organisation and people',
-    items: [
-      { href: '#/organisation', text: 'Organisation' },
-      { href: '#/people', text: 'Administrators' },
-      { href: '#/departments', text: 'Departments' },
-      { href: '#/domains', text: 'Email domains' },
-      { href: '#/leadership-grants', text: 'Leadership access' },
-    ],
-  },
-  {
-    heading: 'Work rules',
-    items: [
-      { href: '#/approvals', text: 'Approvals' },
-      { href: '#/notifications-settings', text: 'Reminders and email' },
-      { href: '#/access-settings', text: 'Access and records' },
-      { href: '#/resources-admin', text: 'Resources and finance' },
-      { href: '#/report-types', text: 'Report types' },
-    ],
-  },
-  {
-    heading: 'Connections',
-    items: [
-      { href: '#/ai', text: 'AI' },
-      { href: '#/deliveries', text: 'Email delivery' },
-      { href: '#/storage', text: 'Storage' },
-    ],
-  },
-  {
-    heading: 'Running Kainow',
-    items: [
-      { href: '#/admin/operations', text: 'Operations' },
-      { href: '#/go-live', text: 'Go-live checklist' },
-      { href: '#/escalated-feedback', text: 'Escalated feedback' },
-      { href: '#/security/cases', text: 'Security review', reviewerOnly: true },
-    ],
-  },
-];
+/** The organisation-wide settings by group (spec 7.8), made from the one catalogue. */
+export const SETTINGS_GROUPS: { heading: string; items: { href: string; text: string; reviewerOnly?: true }[] }[] = (
+  ['Organisation and people', 'Work rules', 'Connections', 'Running Kainow'] as const
+).map((heading) => ({
+  heading,
+  items: SETTINGS_CATALOGUE.filter((s) => s.group === heading).map((s) => ({ href: s.href, text: s.title, ...(s.reviewerOnly ? { reviewerOnly: true as const } : {}) })),
+}));
 
 /** Settings pages whose own menu item is Settings (Operations and Security review have their own items). */
 const SETTINGS_PAGES = new Set([

@@ -40,8 +40,7 @@ import { ReportTypes } from './views/ReportTypes.tsx';
 import { Operations } from './views/Operations.tsx';
 import { OpsBanner, ProtectiveLine } from './views/OpsBanner.tsx';
 import { AppShell } from './ui/AppShell.tsx';
-import { PageHeader } from './ui/PageHeader.tsx';
-import { SETTINGS_GROUPS } from './ui/menu.ts';
+import { SettingsHub } from './views/SettingsHub.tsx';
 import { Definitions } from './views/Definitions.tsx';
 import { ResourceAdmin } from './views/ResourceAdmin.tsx';
 import { ResourceCatalogue } from './views/ResourceCatalogue.tsx';
@@ -59,27 +58,6 @@ function useHash(): string {
 
 export function go(path: string): void {
   window.location.hash = path;
-}
-
-const settingsGroupId = (heading: string) => `settings-${heading.replace(/\W+/g, '-').toLowerCase()}`;
-
-/** #/settings until the Settings hub arrives: every organisation-wide setting page by group (spec 7.8). */
-function SettingsLinks({ reviewer }: { reviewer: boolean }) {
-  return (
-    <main className="page">
-      <PageHeader title="Settings" intro="Organisation-wide settings. Project settings live inside each project." />
-      {SETTINGS_GROUPS.map((g) => (
-        <section key={g.heading} className="settings-area" aria-labelledby={settingsGroupId(g.heading)}>
-          <h2 id={settingsGroupId(g.heading)}>{g.heading}</h2>
-          <ul className="plain">
-            {g.items.filter((i) => reviewer || !i.reviewerOnly).map((i) => (
-              <li key={i.href}><a href={i.href}>{i.text}</a></li>
-            ))}
-          </ul>
-        </section>
-      ))}
-    </main>
-  );
 }
 
 export function SignIn({
@@ -355,7 +333,7 @@ export function App() {
   else if (isAdmin && adminPage === 'admin/analytics') page = <Analytics />;
   else if (isAdmin && adminPage === 'admin/analytics/definitions') page = <Definitions />;
   else if (isAdmin && adminPage === 'admin/operations') page = <Operations />;
-  else if (isAdmin && hash === '#/settings') page = <SettingsLinks reviewer={reviewer} />;
+  else if (isAdmin && hash === '#/settings') page = <SettingsHub reviewer={reviewer} />;
   else if (hash === '#/leadership' && hasGrant) page = <Leadership prefs={prefs} ready={prefsLoaded} failed={prefsFailed} onChange={savePrefs} />;
   else if (quarantineCase) page = <CasePage key={quarantineCase[1]} caseId={quarantineCase[1]} />;
   else if (securityPage) page = <SecurityReviewPage />;

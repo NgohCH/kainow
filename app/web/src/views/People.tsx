@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { ApiError, api } from '../api.ts';
 import { formatWhen } from '../format.ts';
+import type { RecoveryCustodian } from '../custodian.ts';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { SettingsPage } from '../ui/SettingsPage.tsx';
+import { StatTile } from '../ui/StatTile.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
+import type { Meaning } from '../ui/meanings.ts';
 
 interface Person {
   id: string;
@@ -12,6 +18,7 @@ interface Person {
 }
 
 const ACCOUNT_STATE = { invited: 'Invited', active: 'Active', disabled: 'Disabled' } as const;
+const ACCOUNT_MEANING: Record<Person['status'], Meaning> = { invited: 'planned', active: 'active', disabled: 'off' };
 
 export function People({ meId }: { meId: string }) {
   const [people, setPeople] = useState<Person[] | null>(null);
@@ -19,6 +26,10 @@ export function People({ meId }: { meId: string }) {
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
+  const [custodian, setCustodian] = useState<RecoveryCustodian | null>(null);
+  useEffect(() => {
+    api.get<RecoveryCustodian>('/organisation/recovery-custodian').then(setCustodian, () => setCustodian(null));
+  }, []);
 
   const load = useCallback(async () => {
     try {
@@ -29,7 +40,7 @@ export function People({ meId }: { meId: string }) {
   }, []);
   useEffect(() => void load(), [load]);
 
-  async function add(e: FormEvent) {
+  async function add(e: FormEvent, close: () => void) {
     e.preventDefault();
     setBusy(true);
     setError(null);
@@ -38,6 +49,7 @@ export function People({ meId }: { meId: string }) {
       setEmail('');
       setName('');
       await load();
+      close();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'Could not add this person.');
     } finally {
@@ -72,54 +84,68 @@ export function People({ meId }: { meId: string }) {
   }
 
   const active = people?.filter((p) => p.status === 'active' && p.role === 'enterprise_administrator').length ?? 0;
+  const disabled = people?.filter((p) => p.status === 'disabled').length ?? 0;
+  const recorded = custodian?.name && custodian.contact ? { name: custodian.name, contact: custodian.contact } : null;
 
-  return (
-    <main className="page narrow">
-      <h1>People</h1>
-      <p className="meta">
-        Everyone with an account. Administrators are added here; everyone else joins through a project invitation. Keep at least two active administrators, so one person
-        being locked out does not lock everyone out.
-      </p>
+  const columns: Column<Person>[] = [
+    { key: 'name', header: 'Name', sortValue: (p) => p.displayName.toLowerCase(), cell: (p) => <strong>{p.displayName}{p.id === meId ? ' (you)' : ''}</strong> },
+    { key: 'email', header: 'Email', sortValue: (p) => p.email.toLowerCase(), cell: (p) => p.email },
+    { key: 'role', header: 'Role', sortValue: (p) => p.role, cell: (p) => (p.role === 'enterprise_administrator' ? 'Administrator' : 'Member') },
+    { key: 'added', header: 'Added', sortValue: (p) => p.createdAt, cell: (p) => formatWhen(p.createdAt) },
+    { key: 'status', header: 'Account', sortValue: (p) => p.status, cell: (p) => <StatusLabel meaning={ACCOUNT_MEANING[p.status]} word={ACCOUNT_STATE[p.status]} /> },
+    {
+      key: 'action',
+      header: 'Action',
+      cell: (p) =>
+        p.status === 'disabled' ? (
+          <button onClick={() => void enable(p)} aria-label={`Enable ${p.displayName}`}>Enable</button>
+        ) : (
+          <button className="reject" onClick={() => void disable(p)} disabled={p.role === 'enterprise_administrator' && active < 2} aria-label={`Disable ${p.displayName}`}>
+            Disable
+          </button>
+        ),
+    },
+  ];
+
+  const glance = (
+    <>
       {error && <p role="alert" className="error">{error}</p>}
       {people && active < 2 && (
         <p className="warn">Only {active} active administrator. Add a second one now, and agree who holds recovery.</p>
       )}
-      {!people && !error && <p className="loading">Loading</p>}
-      {people && (
-        <ul className="list people">
-          {people.map((p) => (
-            <li key={p.id}>
-              <div className="person">
-                <strong>{p.displayName}{p.id === meId ? ' (you)' : ''}</strong>
-                <span className="meta">
-                  {p.email}, {p.role === 'enterprise_administrator' ? 'Administrator' : 'Member'}, added {formatWhen(p.createdAt)}
-                </span>
-              </div>
-              <span className={`badge ${p.status === 'disabled' ? 'badge-rejected' : 'badge-pending'}`}>{ACCOUNT_STATE[p.status]}</span>
-              {p.status === 'disabled' ? (
-                <button onClick={() => void enable(p)}>Enable</button>
-              ) : (
-                <button
-                  className="reject"
-                  onClick={() => void disable(p)}
-                  disabled={p.role === 'enterprise_administrator' && active < 2}
-                >
-                  Disable
-                </button>
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
-      <section className="panel" aria-label="Add an administrator">
-        <h2>Add an administrator</h2>
-        <form className="stack" onSubmit={add}>
-          <label>Name<input value={name} onChange={(e) => setName(e.target.value)} required /></label>
-          <label>Work email<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required /></label>
-          <button className="primary" disabled={busy}>Add administrator</button>
-        </form>
-        <p className="hint">They sign in with a code sent to this address. Nothing else is sent.</p>
-      </section>
+      <div className="stat-grid">
+        <StatTile label="Active administrators" value={String(active)} meaning={people ? (active < 2 ? 'attention' : 'ok') : undefined} word={active < 2 ? 'Add another' : 'Enough'} note="Keep at least two" />
+        <StatTile label="Disabled accounts" value={String(disabled)} />
+        <StatTile label="Recovery custodian" value={recorded ? recorded.name : 'Not recorded'} meaning={custodian ? (recorded ? 'ok' : 'attention') : undefined} word={recorded ? 'Recorded' : 'Needs attention'} note={recorded?.contact} href="#/organisation" />
+      </div>
+      <DataTable caption="Everyone with an account" columns={columns} rows={people ?? []} rowKey={(p) => p.id} loading={!people && !error} empty="Nobody has an account yet." />
+    </>
+  );
+
+  return (
+    <main className="page">
+      <SettingsPage
+        header={{
+          crumbs: [{ text: 'Settings', href: '#/settings' }],
+          title: 'Administrators',
+          intro: 'Everyone with an account. Administrators are added here; everyone else joins through a project invitation. Keep at least two active administrators, so one person being locked out does not lock everyone out.',
+        }}
+        glance={glance}
+        settings={[
+          {
+            key: 'invite',
+            title: 'Add an administrator',
+            current: <p className="meta">They sign in with a code sent to their work email. Nothing else is sent.</p>,
+            form: (close) => (
+              <form className="stack" onSubmit={(e) => void add(e, close)} aria-label="Add an administrator">
+                <label>Name<input value={name} onChange={(e) => setName(e.target.value)} required /></label>
+                <label>Work email<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required /></label>
+                <button className="primary" disabled={busy}>Add administrator</button>
+              </form>
+            ),
+          },
+        ]}
+      />
     </main>
   );
 }
