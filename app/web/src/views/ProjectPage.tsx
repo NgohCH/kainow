@@ -5,10 +5,8 @@ import {
   type ClosureOutcome,
   type ProjectRole,
   OUTCOME_LABEL,
-  STAGES,
   accessLabel,
   STATUS_LABEL,
-  SUBSTAGES,
   type TransitionOption,
   canManage,
   formatExpiry,
@@ -24,7 +22,8 @@ import { go } from '../App.tsx';
 import { type NeedsYouItem, type PersonalDashboard, type ProjectDashboard, dayLabel, plannedEndLabel } from '../dashboard.ts';
 import { todayUtc8 } from '../changes.ts';
 import { TASK_STATUS_LABEL, TASK_STATUS_MEANING, type TaskStatus } from '../records.ts';
-import { addDays, dueWithin, projectAttention, projectStageNames, stageSteps, taskStatusParts } from '../overview.ts';
+import { addDays, dueWithin, projectAttention, taskStatusParts } from '../overview.ts';
+import { stageFlowFrom, type ProjectStage } from '../ui/stages.ts';
 import { AttentionQueue } from '../ui/AttentionQueue.tsx';
 import { BinderTabs } from '../ui/BinderTabs.tsx';
 import { Box } from '../ui/Box.tsx';
@@ -228,6 +227,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
             <div><dt>Participating departments</dt><dd>{project.contributingDepartments.map((d) => d.name).join(', ')}</dd></div>
           )}
           <div><dt>Project Manager</dt><dd>{pms.length > 0 ? pms.map((m) => m.displayName).join(', ') : 'Not appointed'}</dd></div>
+          {project.stageTemplate && <div><dt>Stages</dt><dd>{project.stageTemplate.name}</dd></div>}
           {project.stage && (
             <div><dt>Stage</dt><dd>{`${project.stage.stage}${project.stage.substage ? `: ${project.stage.substage}` : ''} (${stageDuration(project.stage.startedAt)})`}</dd></div>
           )}
@@ -274,7 +274,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
       {view === 'drafts' && contentAllowed && <Drafts projectId={project.id} draftId={itemId} />}
       {view === 'review' && contentAllowed && <AssistReview projectId={project.id} roles={roles} />}
       {view === 'feedback' && contentAllowed && <Feedback projectId={project.id} />}
-      {view === 'settings' && <ProjectSettings projectId={project.id} showFinance={project.isAdmin || roles.some((r) => ['pm', 'deputy_pm', 'owner', 'sponsor'].includes(r))} />}
+      {view === 'settings' && <ProjectSettings project={project} reload={load} showFinance={project.isAdmin || roles.some((r) => ['pm', 'deputy_pm', 'owner', 'sponsor'].includes(r))} />}
       {view === 'outputs' && contentAllowed && (
         <ProjectOutputs
           key={itemId ?? 'register'}
@@ -607,7 +607,9 @@ function OverviewGlance({ project, contentAllowed, dashboard }: { project: Proje
   }, [project.id, contentAllowed]);
 
   const today = todayUtc8();
-  const steps = stageSteps(projectStageNames(), project.stage, project.status);
+  const flow = stageFlowFrom(project.stages, project.stagePeriods, new Date());
+  // A closed project has been through every stage.
+  const steps = project.status === 'closed' ? flow.map((s) => ({ name: s.name, state: 'done' as const })) : flow;
   const cancelled = (tasks ?? []).filter((t) => t.status === 'cancelled').length;
   const due = dueWithin(tasks ?? [], today, 14);
   const plannedEnd = dashboard.d ? plannedEndLabel(dashboard.d.measures.plannedEnd) : null;
@@ -683,10 +685,14 @@ function OverviewGlance({ project, contentAllowed, dashboard }: { project: Proje
   );
 }
 
+/** The stages a person may move the project into: the active ones, in the project's order. */
+const activeStages = (project: Project): ProjectStage[] => project.stages.filter((s) => s.status === 'active');
+
 function TransitionForm({ project, option, act, onDone }: { project: Project; option: TransitionOption; act: Act; onDone: () => void }) {
   const [reason, setReason] = useState('');
   const [outcome, setOutcome] = useState<ClosureOutcome | ''>(option.outcomes?.length === 1 ? option.outcomes[0] : '');
-  const [stage, setStage] = useState(project.stage?.stage ?? 'Execution');
+  const choices = activeStages(project);
+  const [stage, setStage] = useState(choices.find((s) => s.name === project.stage?.stage)?.name ?? choices[0]?.name ?? '');
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -723,8 +729,8 @@ function TransitionForm({ project, option, act, onDone }: { project: Project; op
         <label>
           Stage to continue in
           <select value={stage} onChange={(e) => setStage(e.target.value)}>
-            {STAGES.map((s) => (
-              <option key={s}>{s}</option>
+            {choices.map((s) => (
+              <option key={s.id}>{s.name}</option>
             ))}
           </select>
         </label>
@@ -742,7 +748,8 @@ function TransitionForm({ project, option, act, onDone }: { project: Project; op
 }
 
 function StageForm({ project, act, onDone }: { project: Project; act: Act; onDone: () => void }) {
-  const [stage, setStage] = useState(project.stage?.stage ?? 'Initiation');
+  const choices = activeStages(project);
+  const [stage, setStage] = useState(choices.find((s) => s.name === project.stage?.stage)?.name ?? choices[0]?.name ?? '');
   const [substage, setSubstage] = useState('');
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -753,8 +760,8 @@ function StageForm({ project, act, onDone }: { project: Project; act: Act; onDon
       <label>
         Stage
         <select value={stage} onChange={(e) => { setStage(e.target.value); setSubstage(''); }}>
-          {STAGES.map((s) => (
-            <option key={s}>{s}</option>
+          {choices.map((s) => (
+            <option key={s.id}>{s.name}</option>
           ))}
         </select>
       </label>
@@ -762,7 +769,7 @@ function StageForm({ project, act, onDone }: { project: Project; act: Act; onDon
         Substage (optional)
         <select value={substage} onChange={(e) => setSubstage(e.target.value)}>
           <option value="">None</option>
-          {SUBSTAGES[stage].map((s) => (
+          {(choices.find((c) => c.name === stage)?.substages ?? []).map((s) => (
             <option key={s}>{s}</option>
           ))}
         </select>

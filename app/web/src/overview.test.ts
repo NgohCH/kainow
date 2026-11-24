@@ -1,33 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { NeedsYouItem } from './dashboard.ts';
-import { STAGES } from './projects.ts';
-import { addDays, dueWithin, projectAttention, projectStageNames, stageSteps, taskStatusParts } from './overview.ts';
+import { addDays, dueWithin, projectAttention, taskStatusParts } from './overview.ts';
 import { QUESTION_STATUS_MEANING, RISK_STATUS_MEANING, TASK_STATUS_MEANING, decisionMeaning } from './records.ts';
-
-const NOW = new Date('2026-11-24T04:00:00Z'); // 12:00 UTC+8
-
-test('the stage list comes from one place: the fixed five stages for now', () => {
-  assert.deepEqual(projectStageNames(), STAGES);
-});
-
-test('stage steps mark earlier stages done, the current one with its days, later ones to come', () => {
-  const steps = stageSteps(STAGES, { stage: 'Execution', startedAt: '2026-11-14T02:00:00Z' }, 'active', NOW);
-  assert.deepEqual(steps.map((s) => s.state), ['done', 'done', 'current', 'todo', 'todo']);
-  assert.equal(steps[2].days, 10);
-  assert.equal(steps[0].days, undefined);
-});
-
-test('a stage started today counts 0 days; a draft without a stage has every stage to come', () => {
-  assert.equal(stageSteps(STAGES, { stage: 'Initiation', startedAt: '2026-11-24T01:00:00Z' }, 'active', NOW)[0].days, 0);
-  assert.ok(stageSteps(STAGES, null, 'draft', NOW).every((s) => s.state === 'todo'));
-});
-
-test('a closed project has every stage done; a stage not in the list is added as the current one', () => {
-  assert.ok(stageSteps(STAGES, { stage: 'Closure', startedAt: '2026-11-01T00:00:00Z' }, 'closed', NOW).every((s) => s.state === 'done'));
-  const odd = stageSteps(['A', 'B'], { stage: 'C', startedAt: '2026-11-24T00:00:00Z' }, 'active', NOW);
-  assert.deepEqual(odd.map((s) => `${s.name}:${s.state}`), ['A:done', 'B:done', 'C:current']);
-});
 
 test('task status parts count each status, leave cancelled tasks out, and keep a fixed order', () => {
   const tasks = ['completed', 'completed', 'in_progress', 'blocked', 'not_started', 'cancelled'].map((status) => ({ status }));

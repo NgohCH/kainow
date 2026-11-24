@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useState } from 'react';
-import { ApiError, api } from '../api.ts';
+import { ApiError, type Project, api } from '../api.ts';
 import { type ProjectAnalysisView, explanationSentence, getProjectAnalysis, inheritanceLines, projectReadOnlyMessage } from '../analysisSettings.ts';
 import type { FinanceSettingsView } from '../finance.ts';
 import { plural } from '../format.ts';
@@ -14,6 +14,7 @@ import { Holidays } from './Holidays.tsx';
 import { type Group, NOT_ALLOWED, NOT_EDITOR, NotificationSettingsForm, type ProjectView, SOURCE_TEXT, dayList, digestText } from './NotificationSettings.tsx';
 import { useRefreshCalendar } from './ProjectCalendar.tsx';
 import { ProjectFinanceSettings } from './ProjectFinanceSettings.tsx';
+import { StagesEditor, StagesSummary, stagesEditable } from './ProjectStages.tsx';
 import { ProjectOutputSettings, useOutputPolicy, who as outputWho } from './ProjectOutputSettings.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
@@ -45,7 +46,8 @@ interface HolidaysResponse { holidays: Array<{ removedAt: string | null }>; orga
  * this project) and who may change it; then each setting in its own box, whose form opens in place. Everyone who can
  * read the project sees the values; someone who may not change a setting opens its details and history instead.
  */
-export function ProjectSettings({ projectId, showFinance = false }: { projectId: string; showFinance?: boolean }) {
+export function ProjectSettings({ project, reload, showFinance = false }: { project: Project; reload: () => void; showFinance?: boolean }) {
+  const projectId = project.id;
   const [notices, setNotices] = useState<ProjectView | null>(null);
   const [holidays, setHolidays] = useState<{ own: number; organisation: number } | null>(null);
   const [analysis, setAnalysis] = useState<ProjectAnalysisView | null>(null);
@@ -178,6 +180,13 @@ export function ProjectSettings({ projectId, showFinance = false }: { projectId:
           }}
         />
       ),
+    },
+    {
+      key: 'stages',
+      title: 'Stages',
+      opener: stagesEditable(project) ? undefined : 'Details',
+      current: <StagesSummary project={project} />,
+      form: () => <StagesEditor project={project} reload={reload} />,
     },
     {
       key: 'analysis',

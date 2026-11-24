@@ -13,14 +13,6 @@ export type GrantKind = 'audit' | 'oversight';
 export type ClosureOutcome = 'delivered' | 'partially_delivered' | 'abandoned';
 
 export const ROLES: readonly ProjectRole[] = ['pm', 'deputy_pm', 'owner', 'sponsor', 'member'];
-export const STAGES: readonly string[] = ['Initiation', 'Planning', 'Execution', 'Review & Acceptance', 'Closure'];
-export const SUBSTAGES: Readonly<Record<string, readonly string[]>> = {
-  Initiation: ['Define Purpose', 'Identify Participants', 'Confirm Accountability'],
-  Planning: ['Define Scope', 'Break Down Work', 'Identify Resources', 'Approve Plan'],
-  Execution: ['In Progress', 'Monitoring & Follow-up'],
-  'Review & Acceptance': ['Review Deliverables', 'Resolve Outstanding Items', 'Confirm Acceptance'],
-  Closure: ['Record Outcome', 'Handover', 'Close Project'],
-};
 
 const ROLE_LABEL: Record<ProjectRole, string> = {
   pm: 'Project Manager',

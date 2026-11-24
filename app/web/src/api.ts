@@ -289,6 +289,7 @@ export interface Correction {
 
 // --- Projects (V1.0 sub-project 1) ---
 import type { ClosureOutcome, GrantKind, GrantState, MembershipState, ProjectRole, ProjectStatus } from './projects.ts';
+import type { ProjectStage } from './ui/stages.ts';
 
 export interface Department {
   id: string;
@@ -407,6 +408,9 @@ export interface Project {
   contributingDepartments: Array<{ id: string; name: string }>;
   stage: StagePeriod | null;
   stagePeriods: StagePeriod[];
+  /** The project's own stages, in order; retired ones keep their place (D131). */
+  stages: ProjectStage[];
+  stageTemplate: { id: string; name: string } | null;
   transitions: Transition[];
   memberships: Membership[];
   invitations: InvitationRow[];

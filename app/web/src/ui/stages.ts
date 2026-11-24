@@ -1,4 +1,5 @@
 /** Stage templates (D131, spec 14): the checks the server makes, shown in plain words before saving. */
+import type { Stage } from './graphics.ts';
 
 export interface TemplateStage { name: string; substages: string[] }
 export interface TemplateDraft { name: string; stages: TemplateStage[] }
@@ -46,4 +47,33 @@ export interface StageTemplate {
   createdByName: string;
   stages: TemplateStage[];
   projectsUsing?: number;
+}
+
+/** One of a project's own stages, as the project's page lists them (in order; retired ones keep their place). */
+export interface ProjectStage { id: string; name: string; substages: string[]; status: 'active' | 'retired' }
+
+/** Whole UTC+8 calendar days from an instant to now (0 on the day it happened). */
+function daysSince(iso: string, now: Date): number {
+  const day = (ms: number) => Math.floor((ms + 8 * 3_600_000) / 86_400_000);
+  return Math.max(0, day(now.getTime()) - day(new Date(iso).getTime()));
+}
+
+/**
+ * The stage flow from the project's own stages: active stages in order. Done = before the current one and has a
+ * period; current = the open period, with its days; the rest to do. A current stage that is retired stays in its
+ * place; one not in the list at all is added at the end, so the flow never hides where the project is.
+ */
+export function stageFlowFrom(
+  stages: readonly { name: string; status: 'active' | 'retired' }[],
+  periods: readonly { stage: string; startedAt: string; endedAt: string | null }[],
+  now: Date,
+): Stage[] {
+  const open = periods.find((p) => p.endedAt === null) ?? null;
+  const names = stages.filter((s) => s.status === 'active' || s.name === open?.stage).map((s) => s.name);
+  if (open && !names.includes(open.stage)) names.push(open.stage);
+  const at = open ? names.indexOf(open.stage) : -1;
+  const had = new Set(periods.map((p) => p.stage));
+  return names.map((name, i): Stage =>
+    i === at ? { name, state: 'current', days: daysSince(open!.startedAt, now) } : i < at && had.has(name) ? { name, state: 'done' } : { name, state: 'todo' },
+  );
 }
