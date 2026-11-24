@@ -273,6 +273,7 @@ const waiting = await api('POST', `/projects/${recordsId}/proposals`, { kind: 'a
 if (!waiting.proposal) throw new Error('proposal not recorded: ' + JSON.stringify(waiting));
 // Sub-project 11a: one AI proposal corrected (type changed, with a reason), so the review shows its Change history.
 must('correction', await api('POST', `/extractions/${runId}/items/${itemIds[0]}/edit`, { sourceVersionId: versionId, text: 'Ship on Friday', owner: 'Sam', due: 'Friday', kind: 'action', reason: 'This is work for Sam, not a decision' }));
+must('stage added', await api('POST', `/projects/${projectId}/stages`, { name: 'Accessibility check', position: 1, reason: 'The audit needs a recorded change' }));
 // The invitation link is written to the API log (LOG_SIGN_IN_CODES); read it after the invitation was sent.
 // Project invitations go out through the email outbox, so the worker writes them to its own log (KAINOW_WORKER_LOG).
 const inviteTokenFor = async (address) => {
@@ -286,6 +287,14 @@ const inviteTokenFor = async (address) => {
 };
 const inviteToken = await inviteTokenFor('sponsor.a11y@example.org');
 const handoverToken = await inviteTokenFor('next.a11y@example.org');
+/** The review's Change history is on screen, with the reason of the correction made above. */
+const mustSeeChangeHistory = async (page) => {
+  const seen = await page.evaluate(() => {
+    const heading = [...document.querySelectorAll('main h3')].find((h) => h.textContent.trim() === 'Change history');
+    return heading && heading.getClientRects().length > 0 ? heading.parentElement.textContent : null;
+  });
+  if (!seen?.includes('This is work for Sam, not a decision')) throw new Error('the review does not show the Change history with its reason');
+};
 // The Settings hub's pages (spec 7.8): every setting, at its own address.
 const SETTING_PAGES = [
   ['organisation (name, logos, colour)', '#/organisation'],
@@ -370,6 +379,7 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
   ];
   for (const [label, hash] of screens) {
     await goFresh(page, hash);
+    if (label.includes('with a Change history')) await mustSeeChangeHistory(page);
     await check(`${theme}: ${label}`, page);
   }
   // The person menu open, and (below 900 px) the side menu opened by its Menu button.
@@ -419,13 +429,22 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
   await goFresh(page, '#/projects');
   if (!(await clickButton(page, 'New project'))) throw new Error('no New project button');
   await wait(400);
-  const selects = await page.$$('main section[aria-label="New project"] select');
-  if (selects.length) {
-    const template = selects[selects.length - 1];
-    await template.select(await template.evaluate((e) => e.options[1]?.value ?? e.value));
-    await wait(200);
-  }
+  // The last list in the form is Type of project; another type than the one it starts with must be chosen.
+  const template = (await page.$$('main section[aria-label="New project"] select')).pop();
+  const types = template ? await template.evaluate((e) => ({ label: e.closest('label')?.textContent ?? '', now: e.value, all: [...e.options].map((o) => o.value) })) : null;
+  if (!types?.label.includes('Type of project')) throw new Error('the new project form has no Type of project list');
+  const other = types.all.find((v) => v !== types.now);
+  if (!other) throw new Error('Type of project offers nothing else to choose');
+  await template.select(other);
+  await wait(200);
+  if ((await template.evaluate((e) => e.value)) !== other) throw new Error('the type of project was not chosen');
   await check(`${theme}: new project form open (type of project chosen)`, page);
+  // The Stages box open: the list, Add a stage, and the Change history with one change.
+  await goFresh(page, `#/projects/${projectId}/settings`);
+  await page.click('main button[data-opener="stages"]');
+  await wait(400);
+  if (!(await page.$eval('#setting-form-stages', (e) => e.textContent)).includes('Added Accessibility check at place')) throw new Error('the Stages box does not show its Change history');
+  await check(`${theme}: Stages box open with its Change history`, page);
   await page.goto(`${base}/#/projects/${projectId}`, { waitUntil: 'networkidle0' });
   await page.reload({ waitUntil: 'networkidle0' });
   for (const b of await page.$$('main button')) {
