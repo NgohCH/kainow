@@ -41,6 +41,7 @@ import { OpsBanner, ProtectiveLine } from './views/OpsBanner.tsx';
 import { AppShell } from './ui/AppShell.tsx';
 import { SettingsHub } from './views/SettingsHub.tsx';
 import { Definitions } from './views/Definitions.tsx';
+import { StageTemplates } from './views/StageTemplates.tsx';
 import { ResourceAdmin } from './views/ResourceAdmin.tsx';
 import { ResourceCatalogue } from './views/ResourceCatalogue.tsx';
 import { DEFAULT_PREFS, applyAppearance, createPrefsSaver, type Prefs } from './prefs.ts';
@@ -322,7 +323,7 @@ export function App() {
   const summary = /^#\/summaries\/([0-9a-f-]{36})$/i.exec(hash);
   const thread = parseThreadHash(hash);
   const searching = isSearchHash(hash);
-  const adminPage = /^#\/(people|ai|departments|domains|organisation|approvals|notifications-settings|deliveries|go-live|escalated-feedback|leadership-grants|access-settings|storage|report-types|resources-admin|ai\/usage|admin\/analytics|admin\/analytics\/definitions|admin\/operations)$/.exec(hash)?.[1];
+  const adminPage = /^#\/(people|ai|departments|domains|organisation|approvals|notifications-settings|deliveries|go-live|escalated-feedback|leadership-grants|access-settings|storage|report-types|stage-templates|resources-admin|ai\/usage|admin\/analytics|admin\/analytics\/definitions|admin\/operations)$/.exec(hash)?.[1];
 
   let page;
   if (invitation) page = <Invitation token={invitation[1]} user={user} onSignedIn={setUser} />;
@@ -341,6 +342,7 @@ export function App() {
   else if (isAdmin && adminPage === 'access-settings') page = <AccessSettings />;
   else if (isAdmin && adminPage === 'storage') page = <StorageSettings />;
   else if (isAdmin && adminPage === 'report-types') page = <ReportTypes />;
+  else if (isAdmin && adminPage === 'stage-templates') page = <StageTemplates />;
   else if (isAdmin && adminPage === 'resources-admin') page = <ResourceAdmin />;
   else if (hash === '#/resource-catalogue' && (maintainer || isAdmin)) page = <ResourceCatalogue />;
   else if (isAdmin && adminPage === 'admin/analytics') page = <Analytics />;

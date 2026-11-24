@@ -13,6 +13,8 @@ import { StatTile } from '../ui/StatTile.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
 import { attentionFlags } from '../ui/home.ts';
 import { projectMeaning } from '../ui/meanings.ts';
+import type { StageTemplate } from '../ui/stages.ts';
+import { StageList } from './StageTemplates.tsx';
 
 const STATES: ProjectStatus[] = ['draft', 'planned', 'active', 'deferred', 'closed'];
 
@@ -168,12 +170,22 @@ function NewProject({ onCreated }: { onCreated: (p: Project) => void }) {
   const [owning, setOwning] = useState('');
   const [contributing, setContributing] = useState<string[]>([]);
   const [plannedEnd, setPlannedEnd] = useState('');
+  const [templates, setTemplates] = useState<StageTemplate[]>([]);
+  const [templateId, setTemplateId] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
     api.get<{ departments: Department[] }>('/departments').then((r) => setDepartments(r.departments), () => setDepartments([]));
+    api.get<{ templates: StageTemplate[] }>('/stage-templates').then(
+      (r) => {
+        setTemplates(r.templates);
+        setTemplateId((cur) => cur || (r.templates.find((t) => t.name === 'General') ?? r.templates[0])?.id || '');
+      },
+      () => setTemplates([]),
+    );
   }, []);
+  const chosen = templates.find((t) => t.id === templateId);
 
   async function submit(e: FormEvent) {
     e.preventDefault();
@@ -186,6 +198,7 @@ function NewProject({ onCreated }: { onCreated: (p: Project) => void }) {
         owningDepartmentId: owning,
         contributingDepartmentIds: contributing,
         plannedEnd: plannedEnd || null,
+        ...(templateId ? { stageTemplateId: templateId } : {}),
       });
       onCreated(r.project);
     } catch (err) {
@@ -233,6 +246,24 @@ function NewProject({ onCreated }: { onCreated: (p: Project) => void }) {
                 </label>
               ))}
           </fieldset>
+        )}
+        {templates.length > 0 && (
+          <div>
+            <label>
+              Type of project
+              <select required value={templateId} onChange={(e) => setTemplateId(e.target.value)}>
+                {templates.map((t) => (
+                  <option key={t.id} value={t.id}>{t.name}</option>
+                ))}
+              </select>
+            </label>
+            {chosen && (
+              <div className="template-preview" aria-live="polite">
+                <p className="meta">{chosen.description ? `${chosen.description} ` : ''}It starts in {chosen.stages[0]?.name}. Stages, in order:</p>
+                <StageList stages={chosen.stages} />
+              </div>
+            )}
+          </div>
         )}
         <label>
           Planned end (optional)

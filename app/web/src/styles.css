@@ -1015,3 +1015,10 @@ button.stat-tile[aria-pressed="true"] { border-color: var(--accent); box-shadow:
 .auth-card .ops-banner { border-radius: 6px; margin: 0 0 1rem; }
 .data-table code { overflow-wrap: anywhere; }
 .definitions-events .data-table td.cell-wide { min-width: 12rem; }
+
+/* Stage templates (D131) */
+.stage-list, .stage-editor, .substage-editor { margin: 0; padding-left: 1.4em; }
+.stage-editor, .substage-editor { list-style: none; padding-left: 0; }
+.stage-editor-item { border-top: 1px solid var(--rule); padding: 10px 0; }
+.substage-editor { padding-left: 16px; }
+.template-preview { margin-top: 6px; overflow-wrap: anywhere; }

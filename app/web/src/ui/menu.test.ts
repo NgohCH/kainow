@@ -36,6 +36,7 @@ test('a security reviewer gets Security review; grant holders and maintainers th
 
 test('currentMenuHref: settings pages mark Settings, project pages mark Projects', () => {
   assert.equal(currentMenuHref('#/deliveries'), '#/settings');
+  assert.equal(currentMenuHref('#/stage-templates'), '#/settings');
   assert.equal(currentMenuHref('#/ai/usage'), '#/settings');
   assert.equal(currentMenuHref('#/settings'), '#/settings');
   for (const g of SETTINGS_GROUPS) for (const i of g.items) {
