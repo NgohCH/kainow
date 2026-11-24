@@ -51,7 +51,7 @@ export interface ProjectDashboard {
 }
 
 export interface NeedsYouItem {
-  kind: 'approval' | 'minutes' | 'question' | 'copies' | 'deadline_review' | 'resources';
+  kind: 'approval' | 'minutes' | 'question' | 'copies' | 'deadline_review' | 'resources' | 'overdue' | 'blocked' | 'due_soon' | 'risk_review';
   projectId: string;
   projectName: string;
   label: string;
