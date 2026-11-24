@@ -1,7 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { NeedsYouItem } from '../dashboard.ts';
-import { SETTINGS_GROUPS, currentMenuHref, reviewCount, sideMenuGroups, type MenuContext } from './menu.ts';
+import { SETTINGS_GROUPS, currentMenuHref, sideMenuGroups, type MenuContext } from './menu.ts';
 
 const member: MenuContext = { isAdmin: false, hasGrant: false, maintainer: false, reviewer: false, reviewCount: 0 };
 const ID = '0f8fad5b-d9cb-469f-a165-70867728950e';
@@ -64,10 +63,4 @@ test('currentMenuHref: the other menu items and pages without one', () => {
   assert.equal(currentMenuHref('#/resource-catalogue'), '#/resource-catalogue');
   assert.equal(currentMenuHref('#/notifications'), '');
   assert.equal(currentMenuHref('#/search?q=budget'), '');
-});
-
-test('reviewCount counts the Review and decisions group only', () => {
-  const item = (kind: NeedsYouItem['kind']): NeedsYouItem => ({ kind, projectId: 'p', projectName: 'P', label: kind, since: null, link: '#/x' });
-  assert.equal(reviewCount([]), 0);
-  assert.equal(reviewCount(['approval', 'minutes', 'overdue', 'question', 'blocked', 'deadline_review', 'due_soon'].map((k) => item(k as NeedsYouItem['kind']))), 4);
 });

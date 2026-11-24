@@ -1,6 +1,4 @@
 /** The side menu (spec 6.1, D128): which groups and items a person sees, and which item a page belongs to. */
-import type { NeedsYouItem } from '../dashboard.ts';
-import { groupAttention } from './attention.ts';
 
 export type MenuHeading = 'Work' | 'Organisation' | 'Administration';
 export interface MenuItem { href: string; text: string; badge?: number }
@@ -102,9 +100,4 @@ export function currentMenuHref(hash: string): string {
   if (path.startsWith('admin/analytics/')) return '#/admin/analytics';
   if (first === 'security' || first === 'quarantine') return '#/security/cases';
   return '';
-}
-
-/** The Reviews badge: how many Needs you items are in the Review and decisions group. */
-export function reviewCount(needsYou: NeedsYouItem[]): number {
-  return groupAttention(needsYou).find((g) => g.group === 'review')?.items.length ?? 0;
 }

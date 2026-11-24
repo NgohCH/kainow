@@ -6,7 +6,8 @@ import { homeQuery } from '../dashboard.ts';
 import { DEFAULT_PREFS, type Prefs } from '../prefs.ts';
 import { Customise } from '../views/Customise.tsx';
 import { OpsBanner } from '../views/OpsBanner.tsx';
-import { currentMenuHref, reviewCount, sideMenuGroups, type MenuContext } from './menu.ts';
+import { reviewItems } from './home.ts';
+import { currentMenuHref, sideMenuGroups, type MenuContext } from './menu.ts';
 import { PERSON_BUTTON_ID, PersonMenu } from './PersonMenu.tsx';
 import { SideMenu } from './SideMenu.tsx';
 import { SpendMeter, TopBar, useSpend } from './TopBar.tsx';
@@ -25,7 +26,7 @@ function useReviewCount(hash: string): number {
     read.current = true;
     let stale = false;
     api.get<PersonalDashboard>(`/dashboard/me?${homeQuery(DEFAULT_PREFS.home, false)}`).then(
-      (d) => !stale && setCount(reviewCount(d.needsYou)),
+      (d) => !stale && setCount(reviewItems(d.needsYou).length),
       () => undefined,
     );
     return () => {

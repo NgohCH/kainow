@@ -21,6 +21,8 @@ import { Notifications } from './views/Notifications.tsx';
 import { NotificationsSettings } from './views/NotificationSettings.tsx';
 import { Projects } from './views/Projects.tsx';
 import { Home } from './views/Home.tsx';
+import { MyTasks } from './views/MyTasks.tsx';
+import { Reviews } from './views/Reviews.tsx';
 import { Review } from './views/Review.tsx';
 import { isSearchHash, Search } from './views/Search.tsx';
 import { AiAdmin } from './views/AiAdmin.tsx';
@@ -57,16 +59,6 @@ function useHash(): string {
 
 export function go(path: string): void {
   window.location.hash = path;
-}
-
-/** #/my-tasks and #/reviews until their pages arrive: the heading, what the page is for, and where the items are today. */
-function ComingPage({ title, intro, where }: { title: string; intro: string; where: string }) {
-  return (
-    <main className="page">
-      <PageHeader title={title} intro={intro} />
-      <p><a href="#/">{where}</a></p>
-    </main>
-  );
 }
 
 const settingsGroupId = (heading: string) => `settings-${heading.replace(/\W+/g, '-').toLowerCase()}`;
@@ -377,9 +369,9 @@ export function App() {
   else if (note) page = <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} />;
   else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | 'timeline' | 'outputs' | 'resources' | 'resources/report' | undefined) ?? 'overview'} itemId={project[3]} prefs={prefs} prefsReady={prefsLoaded} onPrefs={savePrefs} />;
   else if (hash === '#/projects') page = <Projects isAdmin={isAdmin} />;
-  else if (hash === '#/my-tasks') page = <ComingPage title="My tasks" intro="Your tasks in every project, by when they are due." where="See them under My tasks on Home" />;
-  else if (hash === '#/reviews') page = <ComingPage title="Reviews" intro="Proposals, minutes, questions and deadline reviews waiting for you." where="See them under Needs you on Home" />;
-  else page = <Home prefs={prefs} ready={prefsLoaded} failed={prefsFailed} onChange={savePrefs} />;
+  else if (hash === '#/my-tasks') page = <MyTasks />;
+  else if (hash === '#/reviews') page = <Reviews />;
+  else page = <Home userName={user.displayName} prefs={prefs} ready={prefsLoaded} failed={prefsFailed} onChange={savePrefs} />;
 
   return (
     <AppShell
