@@ -4,6 +4,8 @@
  * normalises every saved document, so these helpers only have to keep what they build valid.
  */
 
+import { contrastRatio, deriveScheme, type SchemeTokens } from './ui/colour.ts';
+
 export const HOME_SECTIONS = ['needsYou', 'myTasks', 'myProjects'] as const;
 export type HomeSection = (typeof HOME_SECTIONS)[number];
 
@@ -37,12 +39,15 @@ export const LEADERSHIP_FIXED_FIELDS: readonly string[] = LEADERSHIP_FIELDS.filt
 
 export type TimelineKind = 'stage' | 'status' | 'archive' | 'tasks_due' | 'risk_review' | 'resource_needed_by' | 'planned_end';
 export type Theme = 'light' | 'dark';
-export const ACCENT_KEYS = ['teal', 'blue', 'plum', 'slate'] as const;
+export const ACCENT_KEYS = ['red', 'teal', 'blue', 'plum', 'slate', 'organisation'] as const;
 export type AccentKey = (typeof ACCENT_KEYS)[number];
+export type FixedAccentKey = Exclude<AccentKey, 'organisation'>;
 
 export type Prefs = {
   theme: Theme;
   accent: AccentKey;
+  /** True once the person has picked a scheme; until then the installation default (organisation colour, else red) applies. */
+  accentChosen: boolean;
   home: { order: HomeSection[]; hidden: HomeSection[]; showCompleted: boolean; includeArchived: boolean };
   leadership: { fields: { order: string[]; hidden: string[] } };
   expanded: Record<string, boolean>;
@@ -51,7 +56,8 @@ export type Prefs = {
 
 export const DEFAULT_PREFS: Prefs = {
   theme: 'light',
-  accent: 'teal',
+  accent: 'red',
+  accentChosen: false,
   home: { order: [...HOME_SECTIONS], hidden: [], showCompleted: false, includeArchived: false },
   leadership: { fields: { order: LEADERSHIP_FIELDS.map((f) => f.key), hidden: [] } },
   expanded: {},
@@ -147,52 +153,98 @@ export const THEME_TOKENS: Record<Theme, ThemeTokens> = {
   },
 };
 
-/**
- * accent: text and controls on the page and surface; contrast: text on a block of the accent; deep: link and button text;
- * wash: a tint behind deep text.
- */
-export type AccentTokens = { accent: string; contrast: string; deep: string; wash: string };
+const scheme = (menu: string, menuInk: string, menuActive: string, accent: string, accentContrast: string, accentDeep: string, accentWash: string): SchemeTokens => ({
+  menu, menuInk, menuActive, accent, accentContrast, accentDeep, accentWash,
+});
 
-export const ACCENTS: Record<AccentKey, Record<Theme, AccentTokens>> = {
+/**
+ * The fixed schemes. menu, menuInk, menuActive: the side menu, its text and its active item. accent: text and controls on
+ * the page and surface. accentContrast: text on a block of the accent. accentDeep: link and button text. accentWash: a
+ * tint behind deep text. The organisation scheme is derived from its colour (schemeFor), so it is not listed here.
+ */
+export const ACCENTS: Record<FixedAccentKey, Record<Theme, SchemeTokens>> = {
+  red: {
+    light: scheme('#4a0912', '#ffffff', '#b0182e', '#b0182e', '#ffffff', '#8a1224', '#f9e0e4'),
+    dark: scheme('#3a0b14', '#f6eaec', '#7a1626', '#ff8a9a', '#2a0710', '#ffb3bf', '#43151f'),
+  },
   teal: {
-    light: { accent: '#0c6a6e', contrast: '#ffffff', deep: '#08494c', wash: '#d9ecea' },
-    dark: { accent: '#4fc1c6', contrast: '#08181a', deep: '#7fd9dc', wash: '#1c3b3d' },
+    light: scheme('#0a3d40', '#ffffff', '#0c6a6e', '#0c6a6e', '#ffffff', '#08494c', '#d9ecea'),
+    dark: scheme('#0b2f31', '#f2f6f6', '#14585c', '#4fc1c6', '#08181a', '#7fd9dc', '#1c3b3d'),
   },
   blue: {
-    light: { accent: '#1f55a8', contrast: '#ffffff', deep: '#17407f', wash: '#dbe6f6' },
-    dark: { accent: '#7fb0ff', contrast: '#08142a', deep: '#a9c8ff', wash: '#1d3050' },
+    light: scheme('#132f5e', '#ffffff', '#1f55a8', '#1f55a8', '#ffffff', '#17407f', '#dbe6f6'),
+    dark: scheme('#10233f', '#f2f6fb', '#1d4a8c', '#7fb0ff', '#08142a', '#a9c8ff', '#1d3050'),
   },
   plum: {
-    light: { accent: '#7a3a8f', contrast: '#ffffff', deep: '#5a2a6a', wash: '#eadcf0' },
-    dark: { accent: '#d29be6', contrast: '#1e0d26', deep: '#e3bff0', wash: '#392545' },
+    light: scheme('#3f1d4d', '#ffffff', '#7a3a8f', '#7a3a8f', '#ffffff', '#5a2a6a', '#eadcf0'),
+    dark: scheme('#2a1535', '#f6f0f9', '#5a2a6e', '#d29be6', '#1e0d26', '#e3bff0', '#392545'),
   },
   slate: {
-    light: { accent: '#4a5a68', contrast: '#ffffff', deep: '#333f4a', wash: '#e0e5ea' },
-    dark: { accent: '#a3b4c4', contrast: '#10181e', deep: '#c3cfdb', wash: '#2a343d' },
+    light: scheme('#26313b', '#ffffff', '#4a5a68', '#4a5a68', '#ffffff', '#333f4a', '#e0e5ea'),
+    dark: scheme('#1c252d', '#f1f4f7', '#3a4a58', '#a3b4c4', '#10181e', '#c3cfdb', '#2a343d'),
   },
 };
 
-function luminance(hex: string): number {
-  let h = hex.replace('#', '');
-  if (h.length === 3) h = [...h].map((c) => c + c).join('');
-  const [r, g, b] = [0, 2, 4].map((i) => {
-    const v = parseInt(h.slice(i, i + 2), 16) / 255;
-    return v <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4;
-  });
-  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+function mixHex(a: string, b: string, t: number): string {
+  const n = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+  const [x, y] = [n(a), n(b)];
+  return '#' + x.map((v, i) => Math.round(v + (y[i] - v) * t).toString(16).padStart(2, '0')).join('');
 }
 
-/** The WCAG contrast ratio of two colours, from 1 to 21. */
-export function contrastRatio(hexA: string, hexB: string): number {
-  const a = luminance(hexA);
-  const b = luminance(hexB);
-  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+/** The organisation scheme in the dark theme: the menu stays as derived; the accent is lightened until it reads on the dark page. */
+export function darkOrganisation(light: SchemeTokens): SchemeTokens {
+  const { surface, paper } = THEME_TOKENS.dark;
+  let accent = light.accent;
+  for (let t = 0.05; t <= 1 && (contrastRatio(accent, surface) < 4.5 || contrastRatio(accent, paper) < 4.5); t += 0.05) {
+    accent = mixHex(light.accent, '#ffffff', t);
+  }
+  const accentContrast = contrastRatio('#0b0b0b', accent) >= contrastRatio('#ffffff', accent) ? '#0b0b0b' : '#ffffff';
+  return {
+    menu: light.menu,
+    menuInk: '#ffffff',
+    menuActive: light.menuActive,
+    accent,
+    accentContrast,
+    accentDeep: mixHex(accent, '#ffffff', 0.3),
+    accentWash: mixHex(surface, light.accent, 0.25),
+  };
 }
 
-/** Puts the theme and accent on <html>, where styles.css reads them. */
-export function applyAppearance(prefs: Pick<Prefs, 'theme' | 'accent'>, root: HTMLElement = document.documentElement): void {
+/**
+ * The scheme to show. Until the person has chosen one, the installation default applies: the organisation colour when it
+ * works, else Red. A saved choice of the organisation scheme falls back to Red when the colour is gone or cannot be used.
+ */
+export function schemeFor(prefs: Pick<Prefs, 'theme' | 'accent' | 'accentChosen'>, orgColour: string | null): { key: AccentKey; tokens: SchemeTokens } {
+  const derived = orgColour ? deriveScheme(orgColour) : null;
+  const org = derived && derived.ok ? derived.scheme : null;
+  const key: AccentKey = !prefs.accentChosen ? (org ? 'organisation' : 'red') : prefs.accent === 'organisation' && !org ? 'red' : prefs.accent;
+  if (key === 'organisation' && org) return { key, tokens: prefs.theme === 'dark' ? darkOrganisation(org) : org };
+  const fixedKey: FixedAccentKey = key === 'organisation' ? 'red' : key;
+  return { key: fixedKey, tokens: ACCENTS[fixedKey][prefs.theme] };
+}
+
+const SCHEME_VARS: Record<keyof SchemeTokens, string> = {
+  menu: '--menu',
+  menuInk: '--menu-ink',
+  menuActive: '--menu-active',
+  accent: '--accent',
+  accentContrast: '--accent-contrast',
+  accentDeep: '--accent-deep',
+  accentWash: '--accent-wash',
+};
+
+/**
+ * Puts the theme and scheme on <html>. The fixed schemes come from the token blocks in styles.css; the organisation
+ * scheme has no block, so its values are set directly (and removed again when another scheme is shown).
+ */
+export function applyAppearance(prefs: Pick<Prefs, 'theme' | 'accent' | 'accentChosen'>, orgColour: string | null, root: HTMLElement = document.documentElement): void {
+  const { key, tokens } = schemeFor(prefs, orgColour);
   root.setAttribute('data-theme', prefs.theme);
-  root.setAttribute('data-accent', prefs.accent);
+  root.setAttribute('data-accent', key);
+  for (const [field, prop] of Object.entries(SCHEME_VARS)) {
+    if (key === 'organisation') root.style.setProperty(prop, tokens[field as keyof SchemeTokens]);
+    else root.style.removeProperty(prop);
+  }
 }
 
 /**

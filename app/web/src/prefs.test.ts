@@ -6,12 +6,15 @@ import {
   ACCENTS,
   DEFAULT_PREFS,
   THEME_TOKENS,
-  contrastRatio,
+  applyAppearance,
   expansionDefault,
   moveItem,
   moveSection,
+  schemeFor,
   setHidden,
+  type FixedAccentKey,
 } from './prefs.ts';
+import { contrastRatio } from './ui/colour.ts';
 
 const css = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
 
@@ -30,7 +33,7 @@ function rule(selector: string): Record<string, string> {
 
 test('contrastRatio matches the WCAG reference values', () => {
   assert.equal(contrastRatio('#000000', '#ffffff'), 21);
-  assert.equal(contrastRatio('#fff', '#fff'), 1);
+  assert.equal(contrastRatio('#ffffff', '#ffffff'), 1);
   assert.ok(Math.abs(contrastRatio('#777777', '#ffffff') - 4.48) < 0.01);
 });
 
@@ -67,7 +70,8 @@ test('setHidden hides and shows, but never a fixed key', () => {
 
 test('DEFAULT_PREFS has the server shape and values', () => {
   assert.equal(DEFAULT_PREFS.theme, 'light');
-  assert.equal(DEFAULT_PREFS.accent, 'teal');
+  assert.equal(DEFAULT_PREFS.accent, 'red');
+  assert.equal(DEFAULT_PREFS.accentChosen, false);
   assert.deepEqual(DEFAULT_PREFS.home, { order: ['needsYou', 'myTasks', 'myProjects'], hidden: [], showCompleted: false, includeArchived: false });
   assert.equal(DEFAULT_PREFS.leadership.fields.order[0], 'name');
   assert.equal(DEFAULT_PREFS.leadership.fields.order.length, 17);
@@ -76,23 +80,86 @@ test('DEFAULT_PREFS has the server shape and values', () => {
   assert.deepEqual(DEFAULT_PREFS.timeline, { hiddenKinds: [] });
 });
 
-test('every accent meets 4.5:1 text and 3:1 controls in both themes', () => {
-  assert.deepEqual([...ACCENT_KEYS], ['teal', 'blue', 'plum', 'slate']);
+const FIXED = Object.keys(ACCENTS) as FixedAccentKey[];
+
+test('every scheme meets 4.5:1 text and 3:1 controls in both themes', () => {
+  assert.deepEqual([...ACCENT_KEYS], ['red', 'teal', 'blue', 'plum', 'slate', 'organisation']);
+  assert.deepEqual(FIXED, ['red', 'teal', 'blue', 'plum', 'slate']);
   for (const theme of ['light', 'dark'] as const) {
     const { paper, surface } = THEME_TOKENS[theme];
-    for (const key of ACCENT_KEYS) {
+    for (const key of FIXED) {
       const a = ACCENTS[key][theme];
       const where = `${key} ${theme}`;
       for (const bg of [paper, surface]) {
         assert.ok(contrastRatio(a.accent, bg) >= 4.5, `${where}: accent as text on ${bg}`);
-        assert.ok(contrastRatio(a.deep, bg) >= 4.5, `${where}: deep as text on ${bg}`);
+        assert.ok(contrastRatio(a.accentDeep, bg) >= 4.5, `${where}: deep as text on ${bg}`);
       }
       assert.ok(contrastRatio(a.accent, surface) >= 3, `${where}: accent as a control`);
-      assert.ok(contrastRatio(a.contrast, a.accent) >= 4.5, `${where}: text on the accent`);
-      assert.ok(contrastRatio(a.deep, a.wash) >= 4.5, `${where}: text on the wash`);
-      assert.ok(contrastRatio(a.accent, a.wash) >= 3, `${where}: accent control on the wash`);
+      assert.ok(contrastRatio(a.accentContrast, a.accent) >= 4.5, `${where}: text on the accent`);
+      assert.ok(contrastRatio(a.accentDeep, a.accentWash) >= 4.5, `${where}: text on the wash`);
+      assert.ok(contrastRatio(a.accent, a.accentWash) >= 3, `${where}: accent control on the wash`);
+      assert.ok(contrastRatio(a.menuInk, a.menu) >= 4.5, `${where}: menu text on the menu`);
+      assert.ok(contrastRatio(a.menuInk, a.menuActive) >= 4.5, `${where}: menu text on the active item`);
+      assert.ok(contrastRatio(a.menuActive, a.menu) >= 1.2, `${where}: the active item shows against the menu`);
     }
   }
+});
+
+test('the Red scheme: accent #b0182e, menu #4a0912 or darker', () => {
+  assert.equal(ACCENTS.red.light.accent, '#b0182e');
+  assert.ok(contrastRatio(ACCENTS.red.light.menu, '#000000') >= contrastRatio('#4a0912', '#000000'));
+});
+
+test('schemeFor: red until chosen, the organisation colour when set, a chosen scheme wins', () => {
+  assert.equal(schemeFor({ ...DEFAULT_PREFS }, null).key, 'red');
+  assert.equal(schemeFor({ ...DEFAULT_PREFS }, '#1f55a8').key, 'organisation');
+  assert.equal(schemeFor({ ...DEFAULT_PREFS, accent: 'teal', accentChosen: true }, '#1f55a8').key, 'teal');
+  assert.equal(schemeFor({ ...DEFAULT_PREFS }, '#ffd84a').key, 'red', 'an unusable organisation colour is not used');
+  assert.equal(schemeFor({ ...DEFAULT_PREFS, accent: 'organisation', accentChosen: true }, '#1f55a8').key, 'organisation');
+  assert.equal(schemeFor({ ...DEFAULT_PREFS, accent: 'teal', accentChosen: true }, null).tokens, ACCENTS.teal.light);
+});
+
+test('schemeFor falls back to red', () => {
+  const chosen = { ...DEFAULT_PREFS, accent: 'organisation' as const, accentChosen: true };
+  assert.equal(schemeFor(chosen, null).key, 'red');
+  assert.equal(schemeFor(chosen, '#ffd84a').key, 'red');
+  assert.equal(schemeFor(chosen, null).tokens, ACCENTS.red.light);
+});
+
+test('the organisation scheme is readable in both themes', () => {
+  for (const theme of ['light', 'dark'] as const) {
+    const { paper, surface } = THEME_TOKENS[theme];
+    for (const colour of ['#1f55a8', '#b0182e', '#0c6a6e', '#2a1a6a']) {
+      const { key, tokens: a } = schemeFor({ ...DEFAULT_PREFS, theme }, colour);
+      const where = `${colour} ${theme}`;
+      assert.equal(key, 'organisation', where);
+      for (const bg of [paper, surface]) {
+        assert.ok(contrastRatio(a.accent, bg) >= 4.5, `${where}: accent on ${bg}`);
+        assert.ok(contrastRatio(a.accentDeep, bg) >= 4.5, `${where}: deep on ${bg}`);
+      }
+      assert.ok(contrastRatio(a.accentContrast, a.accent) >= 4.5, `${where}: text on the accent`);
+      assert.ok(contrastRatio(a.accentDeep, a.accentWash) >= 4.5, `${where}: text on the wash`);
+      assert.ok(contrastRatio(a.menuInk, a.menu) >= 4.5, `${where}: menu text`);
+      assert.ok(contrastRatio(a.menuInk, a.menuActive) >= 4.5, `${where}: menu text on the active item`);
+    }
+  }
+});
+
+test('applyAppearance sets the theme and scheme, and only sets variables for the organisation scheme', () => {
+  const props = new Map<string, string>();
+  const attrs = new Map<string, string>();
+  const root = {
+    setAttribute: (k: string, v: string) => attrs.set(k, v),
+    style: { setProperty: (k: string, v: string) => props.set(k, v), removeProperty: (k: string) => props.delete(k) },
+  } as unknown as HTMLElement;
+  applyAppearance({ ...DEFAULT_PREFS }, '#1f55a8', root);
+  assert.equal(attrs.get('data-accent'), 'organisation');
+  assert.equal(props.get('--menu-ink'), '#ffffff');
+  assert.equal(props.get('--accent'), '#1f55a8');
+  applyAppearance({ ...DEFAULT_PREFS, theme: 'dark', accent: 'plum', accentChosen: true }, '#1f55a8', root);
+  assert.equal(attrs.get('data-theme'), 'dark');
+  assert.equal(attrs.get('data-accent'), 'plum');
+  assert.equal(props.size, 0, 'the organisation values were removed');
 });
 
 test('the fixed surfaces keep readable text and visible marks in both themes', () => {
@@ -122,19 +189,23 @@ test('styles.css agrees with the token values in prefs.ts', () => {
   for (const theme of ['light', 'dark'] as const) {
     const block = rule(theme === 'light' ? ':root' : '[data-theme="dark"]');
     for (const [k, prop] of Object.entries(baseKeys)) same(block[prop], THEME_TOKENS[theme][k as keyof (typeof THEME_TOKENS)['light']]);
-    for (const key of ACCENT_KEYS) {
+    for (const key of FIXED) {
       const a = ACCENTS[key][theme];
       const r = rule(theme === 'light' ? `[data-accent="${key}"]` : `[data-theme="dark"][data-accent="${key}"]`);
+      same(r['--menu'], a.menu);
+      same(r['--menu-ink'], a.menuInk);
+      same(r['--menu-active'], a.menuActive);
       same(r['--accent'], a.accent);
-      same(r['--accent-contrast'], a.contrast);
-      same(r['--accent-deep'], a.deep);
-      same(r['--accent-wash'], a.wash);
+      same(r['--accent-contrast'], a.accentContrast);
+      same(r['--accent-deep'], a.accentDeep);
+      same(r['--accent-wash'], a.accentWash);
     }
   }
-  // The default (teal, light) is in :root too, so the page is right before preferences load.
+  // The default (red, light) is in :root too, so the page is right before preferences load.
   const root = rule(':root');
-  same(root['--accent'], ACCENTS.teal.light.accent);
-  same(root['--accent-contrast'], ACCENTS.teal.light.contrast);
+  same(root['--accent'], ACCENTS.red.light.accent);
+  same(root['--accent-contrast'], ACCENTS.red.light.accentContrast);
+  same(root['--menu'], ACCENTS.red.light.menu);
 });
 
 test('no colour is hard-coded outside the token blocks, and the AI-proposed rules stay dashed', () => {

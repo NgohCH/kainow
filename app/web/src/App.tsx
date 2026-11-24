@@ -260,7 +260,7 @@ export function App() {
       stale = true;
     };
   }, [user, saver]);
-  useEffect(() => applyAppearance(prefs), [prefs]);
+  useEffect(() => applyAppearance(prefs, branding?.colour ?? null), [prefs, branding]);
   const savePrefs = saver.save;
 
   // A designated security reviewer gets the Security review page; for anyone else the link stays hidden.

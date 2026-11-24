@@ -10,13 +10,14 @@ import {
   moveItem,
   moveSection,
   setHidden,
-  type AccentKey,
+  type FixedAccentKey,
   type HomeSection,
   type Prefs,
   type Theme,
 } from '../prefs.ts';
 
-const ACCENT_LABELS: Record<AccentKey, string> = { teal: 'Teal', blue: 'Blue', plum: 'Plum', slate: 'Slate' };
+const ACCENT_LABELS: Record<FixedAccentKey, string> = { red: 'Red', teal: 'Teal', blue: 'Blue', plum: 'Plum', slate: 'Slate' };
+const FIXED_ACCENTS = ACCENT_KEYS.filter((k): k is FixedAccentKey => k !== 'organisation');
 const THEME_LABELS: Record<Theme, string> = { light: 'Light', dark: 'Dark' };
 
 type Row = { key: string; label: string; fixed: boolean };
@@ -136,9 +137,9 @@ export function Customise({
             </fieldset>
             <fieldset>
               <legend>Accent colour</legend>
-              {ACCENT_KEYS.map((a) => (
+              {FIXED_ACCENTS.map((a) => (
                 <label key={a} className="choice">
-                  <input type="radio" name="customise-accent" checked={prefs.accent === a} onChange={() => save({ ...prefs, accent: a })} />
+                  <input type="radio" name="customise-accent" checked={prefs.accent === a} onChange={() => save({ ...prefs, accent: a, accentChosen: true })} />
                   <span className="swatch" aria-hidden="true" style={{ background: ACCENTS[a][prefs.theme].accent }} />
                   {ACCENT_LABELS[a]}
                 </label>

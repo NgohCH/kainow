@@ -1,5 +1,5 @@
-/* Colour tokens. Every colour in this file lives in a token block: the light base here, the dark overrides, and the four
-   accents. The values must agree with THEME_TOKENS and ACCENTS in prefs.ts (prefs.test.ts checks it, and checks the contrast). */
+/* Colour tokens. Every colour in this file lives in a token block: the light base here, the dark overrides, and the five
+   schemes (red, the default, is also in :root). The values must agree with THEME_TOKENS and ACCENTS in prefs.ts (prefs.test.ts checks it, and checks the contrast). */
 :root {
   --paper: #f4f7f6;
   --surface: #ffffff;
@@ -8,10 +8,39 @@
   --muted-wash: #e4eae9;
   --rule: #d3dddb;
   --control-border: #748886;
-  --accent: #0c6a6e;
+  --menu: #4a0912;
+  --menu-ink: #ffffff;
+  --menu-active: #b0182e;
+  --accent: #b0182e;
   --accent-contrast: #ffffff;
-  --accent-deep: #08494c;
-  --accent-wash: #d9ecea;
+  --accent-deep: #8a1224;
+  --accent-wash: #f9e0e4;
+  --m-draft: #5b6670;
+  --m-draft-wash: #e6e9ec;
+  --m-planned: #1d4f9a;
+  --m-planned-wash: #dbe6f6;
+  --m-active: #18703f;
+  --m-active-wash: #d7efe0;
+  --m-deferred: #8a5200;
+  --m-deferred-wash: #fbe8c8;
+  --m-closed: #45476a;
+  --m-closed-wash: #e4e3ef;
+  --m-overdue: #a8203a;
+  --m-overdue-wash: #f7dde2;
+  --m-review: #8a5200;
+  --m-review-wash: #fbe8c8;
+  --m-blocked: #6a3a88;
+  --m-blocked-wash: #eadcf0;
+  --m-due-soon: #1d4f9a;
+  --m-due-soon-wash: #dbe6f6;
+  --m-ok: #18703f;
+  --m-ok-wash: #d7efe0;
+  --m-attention: #8a5200;
+  --m-attention-wash: #fbe8c8;
+  --m-failing: #a8203a;
+  --m-failing-wash: #f7dde2;
+  --m-off: #5b6670;
+  --m-off-wash: #e6e9ec;
   --accent-wash-strong: #a9d8d4;
   --marker: #ffd84a;
   --marker-wash: #fff3bf;
@@ -51,51 +80,119 @@
   --question: #d29be6;
   --risk: #ff8fa3;
   --shadow: rgba(0, 0, 0, 0.6);
+  --m-draft: #a9b4bd;
+  --m-draft-wash: #2a3238;
+  --m-planned: #8fb4f0;
+  --m-planned-wash: #1d3050;
+  --m-active: #6fd09a;
+  --m-active-wash: #17392a;
+  --m-deferred: #f0b862;
+  --m-deferred-wash: #4a3510;
+  --m-closed: #b4b6e0;
+  --m-closed-wash: #2d2f4d;
+  --m-overdue: #ff8fa3;
+  --m-overdue-wash: #4a1a24;
+  --m-review: #f0b862;
+  --m-review-wash: #4a3510;
+  --m-blocked: #d9a8ee;
+  --m-blocked-wash: #3a2447;
+  --m-due-soon: #8fb4f0;
+  --m-due-soon-wash: #1d3050;
+  --m-ok: #6fd09a;
+  --m-ok-wash: #17392a;
+  --m-attention: #f0b862;
+  --m-attention-wash: #4a3510;
+  --m-failing: #ff8fa3;
+  --m-failing-wash: #4a1a24;
+  --m-off: #a9b4bd;
+  --m-off-wash: #2a3238;
 }
 
+[data-accent="red"] {
+  --menu: #4a0912;
+  --menu-ink: #ffffff;
+  --menu-active: #b0182e;
+  --accent: #b0182e;
+  --accent-contrast: #ffffff;
+  --accent-deep: #8a1224;
+  --accent-wash: #f9e0e4;
+}
 [data-accent="teal"] {
+  --menu: #0a3d40;
+  --menu-ink: #ffffff;
+  --menu-active: #0c6a6e;
   --accent: #0c6a6e;
   --accent-contrast: #ffffff;
   --accent-deep: #08494c;
   --accent-wash: #d9ecea;
 }
 [data-accent="blue"] {
+  --menu: #132f5e;
+  --menu-ink: #ffffff;
+  --menu-active: #1f55a8;
   --accent: #1f55a8;
   --accent-contrast: #ffffff;
   --accent-deep: #17407f;
   --accent-wash: #dbe6f6;
 }
 [data-accent="plum"] {
+  --menu: #3f1d4d;
+  --menu-ink: #ffffff;
+  --menu-active: #7a3a8f;
   --accent: #7a3a8f;
   --accent-contrast: #ffffff;
   --accent-deep: #5a2a6a;
   --accent-wash: #eadcf0;
 }
 [data-accent="slate"] {
+  --menu: #26313b;
+  --menu-ink: #ffffff;
+  --menu-active: #4a5a68;
   --accent: #4a5a68;
   --accent-contrast: #ffffff;
   --accent-deep: #333f4a;
   --accent-wash: #e0e5ea;
 }
+[data-theme="dark"][data-accent="red"] {
+  --menu: #3a0b14;
+  --menu-ink: #f6eaec;
+  --menu-active: #7a1626;
+  --accent: #ff8a9a;
+  --accent-contrast: #2a0710;
+  --accent-deep: #ffb3bf;
+  --accent-wash: #43151f;
+}
 [data-theme="dark"][data-accent="teal"] {
+  --menu: #0b2f31;
+  --menu-ink: #f2f6f6;
+  --menu-active: #14585c;
   --accent: #4fc1c6;
   --accent-contrast: #08181a;
   --accent-deep: #7fd9dc;
   --accent-wash: #1c3b3d;
 }
 [data-theme="dark"][data-accent="blue"] {
+  --menu: #10233f;
+  --menu-ink: #f2f6fb;
+  --menu-active: #1d4a8c;
   --accent: #7fb0ff;
   --accent-contrast: #08142a;
   --accent-deep: #a9c8ff;
   --accent-wash: #1d3050;
 }
 [data-theme="dark"][data-accent="plum"] {
+  --menu: #2a1535;
+  --menu-ink: #f6f0f9;
+  --menu-active: #5a2a6e;
   --accent: #d29be6;
   --accent-contrast: #1e0d26;
   --accent-deep: #e3bff0;
   --accent-wash: #392545;
 }
 [data-theme="dark"][data-accent="slate"] {
+  --menu: #1c252d;
+  --menu-ink: #f1f4f7;
+  --menu-active: #3a4a58;
   --accent: #a3b4c4;
   --accent-contrast: #10181e;
   --accent-deep: #c3cfdb;
