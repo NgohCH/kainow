@@ -46,6 +46,8 @@ export interface ProjectDashboard {
   resources: { byStatus: Record<LineStatus, number>; neededByPassed: number; overlapping: number };
   /** Figures only for financial-detail readers; the tracking value alone for anyone else. */
   finance: FinanceSummary;
+  /** Proposals waiting for review that this viewer may read (the Proposals tab's badge). */
+  proposals: { waiting: number };
   computedAt: string;
   coverage: string;
 }

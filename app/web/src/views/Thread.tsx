@@ -54,7 +54,7 @@ export function Thread({ projectId, threadId, meId, messageNo, answerId = null }
     return (
       <main className="page narrow">
         {error ? <p role="alert" className="error">{error}</p> : <p className="loading">Loading</p>}
-        <a href={`#/projects/${projectId}/notes`}>Back to Notes &amp; discussion</a>
+        <a href={`#/projects/${projectId}/discussion`}>Back to Discussion</a>
       </main>
     );
   }
@@ -176,7 +176,7 @@ function ThreadBody({ first, projectId, meId, messageNo, answerId, project }: { 
     return (
       <main className="page narrow">
         <p role="alert" className="error">{NOT_AVAILABLE}</p>
-        <a href={`#/projects/${projectId}/notes`}>Back to Notes &amp; discussion</a>
+        <a href={`#/projects/${projectId}/discussion`}>Back to Discussion</a>
       </main>
     );
   }
@@ -189,7 +189,7 @@ function ThreadBody({ first, projectId, meId, messageNo, answerId, project }: { 
 
   return (
     <main className={meeting ? 'page thread' : 'page narrow thread'}>
-      <p><a href={`#/projects/${projectId}/notes`}>Back to Notes &amp; discussion</a></p>
+      <p><a href={`#/projects/${projectId}/discussion`}>Back to Discussion</a></p>
       <h1>{t.title}</h1>
       <p className="meta">
         {meeting ? 'Meeting' : 'Discussion'}

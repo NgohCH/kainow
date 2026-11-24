@@ -18,15 +18,21 @@ import {
   stageDuration,
   transitionsFor,
 } from '../projects.ts';
-import { HumanProposals } from './HumanProposals.tsx';
+import { go } from '../App.tsx';
+import type { ProjectDashboard } from '../dashboard.ts';
+import { BinderTabs } from '../ui/BinderTabs.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
+import { projectMeaning } from '../ui/meanings.ts';
+import { projectTabs, tabForHash } from '../ui/projectTabs.ts';
+import { ProjectProposals } from './ProjectProposals.tsx';
+import { Review } from './Review.tsx';
 import { ProjectApprovals } from './ApprovalSettings.tsx';
 import { Closing, DelegationControl, type ClosedSummary, type ClosureView } from './Closing.tsx';
 import { DeadlineReview } from './DeadlineReview.tsx';
 import { AskPanel } from './AskPanel.tsx';
 import { AssistReview } from './AssistReview.tsx';
 import { Drafts } from './Drafts.tsx';
-import { mayReviewAnswers, mayReviewSummaries } from '../assist.ts';
-import { Discussion } from './Discussion.tsx';
+import { Discussion, Notes } from './Discussion.tsx';
 import { Work } from './Work.tsx';
 import { ProjectOutputs } from './ProjectOutputs.tsx';
 import { Resources } from './Resources.tsx';
@@ -47,11 +53,17 @@ import { DeletionsList } from './HistoryList.tsx';
 import { CopiesAwaitingList, HeldForReviewList } from './HeldReview.tsx';
 import { type Act, ArchivePanel, DepartmentMove, GrantsSection, HandoverForm, HoldActions } from './ProjectAccessPanels.tsx';
 
-type Tab = 'overview' | 'resources' | 'resources/report' | 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | 'timeline' | 'outputs';
+/** What the address shows: a tab's key (`resources/report` sits under Resources), or `run`, one run's review under Proposals. */
+export type ProjectView = 'overview' | 'resources' | 'resources/report' | 'people' | 'discussion' | 'notes' | 'proposals' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | 'timeline' | 'outputs' | 'run';
+type Tab = ProjectView;
+
+/** What the binder tabs' badges and lifecycle tabs need. */
+interface TabCounts { waiting: number; overdue: number; mayPrepare: boolean; deadlineTasks: number }
+const NO_COUNTS: TabCounts = { waiting: 0, overdue: 0, mayPrepare: false, deadlineTasks: 0 };
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
-export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, onPrefs }: { projectId: string; tab: Tab; meId: string; itemId?: string; prefs: Prefs; prefsReady: boolean; onPrefs: (next: Prefs) => Promise<void> }) {
+export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsReady, onPrefs }: { projectId: string; tab: Tab; meId: string; itemId?: string; runId?: string; prefs: Prefs; prefsReady: boolean; onPrefs: (next: Prefs) => Promise<void> }) {
   const [project, setProject] = useState<Project | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
@@ -63,6 +75,8 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
     wasAsking.current = asking;
   }, [asking]);
   const [notice, setNotice] = useState<string | null>(null);
+  // Goes up each time "Add notes" is chosen in the header: the Notes tab opens its form.
+  const [addNotes, setAddNotes] = useState(0);
 
   const load = useCallback(() => {
     api.get<{ project: Project }>(`/projects/${projectId}`).then(
@@ -73,6 +87,38 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
   useEffect(load, [load]);
   // A message about the last change belongs to the tab it was made on.
   useEffect(() => setNotice(null), [tab]);
+
+  // Badges and the lifecycle tabs, read again on each tab change so a finished review clears its badge.
+  const [counts, setCounts] = useState<TabCounts>(NO_COUNTS);
+  const status = project?.status;
+  const myRoles = project?.myRoles.join(',');
+  useEffect(() => {
+    if (!status || myRoles === undefined) return;
+    let stale = false;
+    const roles = myRoles ? myRoles.split(',') : [];
+    const pmOrDeputy = roles.some((r) => r === 'pm' || r === 'deputy_pm');
+    // The same reads the Overview makes: a 404 or refusal means nothing to show this person.
+    Promise.all([
+      api.get<ProjectDashboard>(`/projects/${projectId}/dashboard`).catch(() => null),
+      ['planned', 'active', 'deferred'].includes(status) && roles.length > 0
+        ? api.get<ClosureView>(`/projects/${projectId}/closure`).catch(() => null)
+        : null,
+      pmOrDeputy && ['active', 'deferred', 'closed'].includes(status)
+        ? api.get<{ tasks: unknown[] }>(`/projects/${projectId}/deadline-review`).catch(() => null)
+        : null,
+    ]).then(([dash, closure, review]) => {
+      if (stale) return;
+      setCounts({
+        waiting: dash?.proposals?.waiting ?? 0,
+        overdue: dash?.measures.overdue ?? 0,
+        mayPrepare: Boolean(closure?.mayPrepare),
+        deadlineTasks: review?.tasks.length ?? 0,
+      });
+    });
+    return () => {
+      stale = true;
+    };
+  }, [projectId, status, myRoles, tab]);
 
   /** Runs one change; shows the server's reason if it is refused, otherwise reloads the project. */
   const act = useCallback(
@@ -104,19 +150,23 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
   const roles = project.myRoles;
   // Members read the notes; so does an Audit or Oversight grant holder, read-only.
   const contentAllowed = roles.length > 0 || project.access !== null;
-  const tabs: Array<[Tab, string]> = [
-    ['overview', 'Overview'],
-    ['people', 'People'],
-    ...(contentAllowed ? ([['timeline', 'Timeline']] as Array<[Tab, string]>) : []),
-    ['resources', 'Resources'],
-    ...(contentAllowed ? ([['notes', 'Notes & discussion'], ['work', 'Work'], ['drafts', 'Drafts']] as Array<[Tab, string]>) : []),
-    ...(contentAllowed && (mayReviewAnswers(roles) || mayReviewSummaries(roles)) ? ([['review', 'Review']] as Array<[Tab, string]>) : []),
-    ...(contentAllowed ? ([['feedback', 'Feedback']] as Array<[Tab, string]>) : []),
-    ...(contentAllowed ? ([['outputs', 'Outputs']] as Array<[Tab, string]>) : []),
-    ...(project.inspectDeleted ? ([['deleted', 'Deleted items']] as Array<[Tab, string]>) : []),
-    ['settings', 'Settings'],
-    ...(mayViewAiTab(roles, project.isAdmin) ? ([['ai', 'AI']] as Array<[Tab, string]>) : []),
-  ];
+  // A person's proposal used to be linked as notes/<id>; it now sits on the Proposals tab.
+  const view: Tab = tab === 'notes' && itemId ? 'proposals' : tab;
+  const current = tabForHash(tab, itemId);
+  const tabs = projectTabs({
+    roles,
+    isAdmin: project.isAdmin,
+    contentAllowed,
+    inspectDeleted: Boolean(project.inspectDeleted),
+    status: project.status,
+    // Closing and Deadline review are tabs while they call for action, and while the person is on them.
+    closingNeeded: counts.mayPrepare || current === 'closing',
+    deadlineReview: counts.deadlineTasks > 0 || current === 'deadline-review',
+    deadlineTasks: counts.deadlineTasks,
+    mayViewAi: mayViewAiTab(roles, project.isAdmin),
+    waiting: counts.waiting,
+    overdue: counts.overdue,
+  });
   // The project's current people, for choosing assignees, requesters and responsible people.
   const people = [
     ...new Map(
@@ -127,50 +177,80 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
   ];
   const open = ['draft', 'planned', 'active'].includes(project.status);
   const base = `#/projects/${project.id}`;
+  // Notes are imported straight away by the managing roles; a Member submits them for one of those to publish.
+  const canAddNotes = roles.some((r) => r !== 'member') && open;
+  const canSubmitNotes = roles.length > 0 && !roles.some((r) => r !== 'member') && open;
+  const pms = project.memberships.filter((m) => m.role === 'pm' && (m.state === 'active' || m.state === 'on_hold'));
 
   return (
     <ProjectCalendarProvider projectId={project.id}>
     <main className="page">
-      <p className="no-print"><a href="#/">My Projects</a></p>
-      <div className="row">
-        <h1>{project.name}</h1>
-        <span className={`badge status-${project.status}`}>{STATUS_LABEL[project.status]}</span>
-      </div>
-      <p className="meta">
-        {project.owningDepartment.name}
-        {project.stage ? ` · ${project.stage.stage}${project.stage.substage ? `: ${project.stage.substage}` : ''} (${stageDuration(project.stage.startedAt)})` : ''}
-        {roles.length > 0
-          ? ` · You: ${roles.map(roleLabel).join(', ')}`
-          : project.access
-            ? ` · ${accessLabel(project.access)} (read-only)`
-            : project.isAdmin
-              ? ' · You manage appointments as an administrator'
-              : ''}
-        {project.archived ? ' · Archived' : ''}
-      </p>
-      {project.onHold && (
-        <p className="warn" role="status">
-          A member is On Hold — investigation needed. <a href={`#/projects/${project.id}/people`}>Open People</a>
-        </p>
-      )}
-      {project.missingAccountability && (
-        <p className="warn" role="status">
-          This project is missing {project.missingRoles.join(' and ')}. Existing work continues, but proposals cannot be approved until the role is filled.
-        </p>
-      )}
-      <EscalationFlags projectId={project.id} />
-      <nav aria-label="Project" className="tabs">
-        {tabs.map(([t, label]) => (
-          <a key={t} href={t === 'overview' ? base : `${base}/${t}`} aria-current={tab === t || (t === 'resources' && tab === 'resources/report') ? 'page' : undefined}>
-            {label}
-          </a>
-        ))}
-      </nav>
-      {contentAllowed && (
-        <p className="no-print">
-          <button type="button" ref={askButton} aria-expanded={asking} onClick={() => setAsking((v) => !v)}>Ask about this project</button>
-        </p>
-      )}
+      <header className="page-header project-header">
+        <nav aria-label="Breadcrumb" className="crumbs no-print">
+          <ol><li><a href="#/projects">Projects</a></li></ol>
+        </nav>
+        <div className="page-header-row">
+          <div className="project-title">
+            <h1>{project.name}</h1>
+            <StatusLabel meaning={projectMeaning(project.status)} word={STATUS_LABEL[project.status]} />
+            {project.archived && <StatusLabel meaning="off" word="Archived" />}
+          </div>
+          {contentAllowed && (
+            <div className="page-action decision no-print">
+              <button type="button" ref={askButton} aria-expanded={asking} onClick={() => setAsking((v) => !v)}>Ask about this project</button>
+              {(canAddNotes || canSubmitNotes) && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAddNotes((n) => n + 1);
+                    if (view !== 'notes') go(`${base}/notes`);
+                  }}
+                >
+                  {canAddNotes ? 'Add notes' : 'Submit notes'}
+                </button>
+              )}
+            </div>
+          )}
+        </div>
+        <dl className="project-facts">
+          <div><dt>Owning department</dt><dd>{project.owningDepartment.name}</dd></div>
+          {project.contributingDepartments.length > 0 && (
+            <div><dt>Participating departments</dt><dd>{project.contributingDepartments.map((d) => d.name).join(', ')}</dd></div>
+          )}
+          <div><dt>Project Manager</dt><dd>{pms.length > 0 ? pms.map((m) => m.displayName).join(', ') : 'Not appointed'}</dd></div>
+          {project.stage && (
+            <div><dt>Stage</dt><dd>{`${project.stage.stage}${project.stage.substage ? `: ${project.stage.substage}` : ''} (${stageDuration(project.stage.startedAt)})`}</dd></div>
+          )}
+          {(roles.length > 0 || project.access || project.isAdmin) && (
+            <div>
+              <dt>You</dt>
+              <dd>
+                {roles.length > 0
+                  ? roles.map(roleLabel).join(', ')
+                  : project.access
+                    ? `${accessLabel(project.access)} (read-only)`
+                    : 'You manage appointments as an administrator'}
+              </dd>
+            </div>
+          )}
+        </dl>
+        {project.onHold && (
+          <p className="warn" role="status">
+            A member is On Hold — investigation needed. <a href={`#/projects/${project.id}/people`}>Open People</a>
+          </p>
+        )}
+        {project.missingAccountability && (
+          <p className="warn" role="status">
+            This project is missing {project.missingRoles.join(' and ')}. Existing work continues, but proposals cannot be approved until the role is filled.
+          </p>
+        )}
+        <EscalationFlags projectId={project.id} />
+      </header>
+      <BinderTabs
+        label="Project"
+        current={current}
+        tabs={tabs.map((t) => ({ ...t, href: t.key === 'overview' ? base : `${base}/${t.key}` }))}
+      />
       {asking && contentAllowed && (
         <AskPanel
           projectId={project.id}
@@ -179,13 +259,13 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
       )}
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
-      {tab === 'overview' && <Overview project={project} act={act} contentAllowed={contentAllowed} />}
-      {tab === 'timeline' && contentAllowed && <Timeline projectId={project.id} prefs={prefs} ready={prefsReady} onChange={onPrefs} />}
-      {tab === 'drafts' && contentAllowed && <Drafts projectId={project.id} draftId={itemId} />}
-      {tab === 'review' && contentAllowed && <AssistReview projectId={project.id} roles={roles} />}
-      {tab === 'feedback' && contentAllowed && <Feedback projectId={project.id} />}
-      {tab === 'settings' && <ProjectSettings projectId={project.id} showFinance={project.isAdmin || roles.some((r) => ['pm', 'deputy_pm', 'owner', 'sponsor'].includes(r))} />}
-      {tab === 'outputs' && contentAllowed && (
+      {view === 'overview' && <Overview project={project} act={act} contentAllowed={contentAllowed} />}
+      {view === 'timeline' && contentAllowed && <Timeline projectId={project.id} prefs={prefs} ready={prefsReady} onChange={onPrefs} />}
+      {view === 'drafts' && contentAllowed && <Drafts projectId={project.id} draftId={itemId} />}
+      {view === 'review' && contentAllowed && <AssistReview projectId={project.id} roles={roles} />}
+      {view === 'feedback' && contentAllowed && <Feedback projectId={project.id} />}
+      {view === 'settings' && <ProjectSettings projectId={project.id} showFinance={project.isAdmin || roles.some((r) => ['pm', 'deputy_pm', 'owner', 'sponsor'].includes(r))} />}
+      {view === 'outputs' && contentAllowed && (
         <ProjectOutputs
           key={itemId ?? 'register'}
           projectId={project.id}
@@ -198,34 +278,34 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
           }}
         />
       )}
-      {tab === 'ai' && mayViewAiTab(roles, project.isAdmin) && <ProjectAi projectId={project.id} mayViewUsage={mayViewAiUsage(roles)} />}
-      {tab === 'deleted' && project.inspectDeleted && <DeletedItemsList projectId={project.id} />}
-      {tab === 'resources' && <Resources projectId={project.id} roles={roles} status={project.status} />}
-      {tab === 'resources/report' && <ResourcesReport projectId={project.id} />}
-      {tab === 'closing' && <Closing project={project} act={act} />}
-      {tab === 'deadline-review' && <DeadlineReview project={project} />}
-      {tab === 'people' && <People project={project} act={act} />}
-      {tab === 'notes' && contentAllowed && (
-        <>
-          <Discussion
-            projectId={project.id}
-            canAdd={roles.some((r) => r !== 'member') && open}
-            canSubmit={roles.length > 0 && !roles.some((r) => r !== 'member') && open}
-            canStart={roles.length > 0 && open}
-            canRestrict={roles.some((r) => r !== 'member') && open}
-            memberships={project.memberships}
-          />
-          <HumanProposals
-            projectId={project.id}
-            canPropose={roles.length > 0 && open}
-            canReview={roles.some((r) => r === 'owner' || r === 'sponsor') && ['planned', 'active'].includes(project.status)}
-            people={people}
-            meId={meId}
-            focusId={itemId}
-          />
-        </>
+      {view === 'ai' && mayViewAiTab(roles, project.isAdmin) && <ProjectAi projectId={project.id} mayViewUsage={mayViewAiUsage(roles)} />}
+      {view === 'deleted' && project.inspectDeleted && <DeletedItemsList projectId={project.id} />}
+      {view === 'resources' && <Resources projectId={project.id} roles={roles} status={project.status} />}
+      {view === 'resources/report' && <ResourcesReport projectId={project.id} />}
+      {view === 'closing' && <Closing project={project} act={act} />}
+      {view === 'deadline-review' && <DeadlineReview project={project} />}
+      {view === 'people' && <People project={project} act={act} />}
+      {view === 'discussion' && contentAllowed && (
+        <Discussion
+          projectId={project.id}
+          canStart={roles.length > 0 && open}
+          canRestrict={roles.some((r) => r !== 'member') && open}
+          memberships={project.memberships}
+        />
       )}
-      {tab === 'work' && contentAllowed && (
+      {view === 'notes' && contentAllowed && <Notes projectId={project.id} canAdd={canAddNotes} canSubmit={canSubmitNotes} addRequest={addNotes} />}
+      {view === 'proposals' && contentAllowed && (
+        <ProjectProposals
+          projectId={project.id}
+          canPropose={roles.length > 0 && open}
+          canReview={roles.some((r) => r === 'owner' || r === 'sponsor') && ['planned', 'active'].includes(project.status)}
+          people={people}
+          meId={meId}
+          focusId={itemId}
+        />
+      )}
+      {view === 'run' && runId && <Review key={runId} runId={runId} meId={meId} />}
+      {view === 'work' && contentAllowed && (
         <Work
           projectId={project.id}
           people={people}
@@ -240,6 +320,34 @@ export function ProjectPage({ projectId, tab, meId, itemId, prefs, prefsReady, o
     </main>
     </ProjectCalendarProvider>
   );
+}
+
+/**
+ * `#/runs/<id>` (email links point at it): the run's review inside its project, under the Proposals tab. The run says
+ * which project it belongs to; a run the person may not see shows the server's reason.
+ */
+export function RunInProject({ runId, meId, prefs, prefsReady, onPrefs }: { runId: string; meId: string; prefs: Prefs; prefsReady: boolean; onPrefs: (next: Prefs) => Promise<void> }) {
+  const [projectId, setProjectId] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useEffect(() => {
+    let stale = false;
+    api.get<{ projectId: string }>(`/extractions/${runId}`).then(
+      (r) => !stale && setProjectId(r.projectId),
+      (e: Error) => !stale && setError(e.message),
+    );
+    return () => {
+      stale = true;
+    };
+  }, [runId]);
+  if (!projectId) {
+    return (
+      <main className="page narrow">
+        {error ? <p role="alert" className="error">{error}</p> : <p className="loading">Loading</p>}
+        <a href="#/projects">Projects</a>
+      </main>
+    );
+  }
+  return <ProjectPage key={projectId} projectId={projectId} tab="run" runId={runId} meId={meId} prefs={prefs} prefsReady={prefsReady} onPrefs={onPrefs} />;
 }
 
 function Overview({ project, act, contentAllowed }: { project: Project; act: Act; contentAllowed: boolean }) {

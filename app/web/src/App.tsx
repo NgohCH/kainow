@@ -14,7 +14,7 @@ import { CasePage } from './views/HeldReview.tsx';
 import { SecurityReviewPage } from './views/SecurityReview.tsx';
 import { Setup } from './views/Setup.tsx';
 import { People } from './views/People.tsx';
-import { ProjectPage } from './views/ProjectPage.tsx';
+import { ProjectPage, RunInProject, type ProjectView } from './views/ProjectPage.tsx';
 import { GoLive } from './views/GoLive.tsx';
 import { Deliveries } from './views/Deliveries.tsx';
 import { Notifications } from './views/Notifications.tsx';
@@ -23,7 +23,6 @@ import { Projects } from './views/Projects.tsx';
 import { Home } from './views/Home.tsx';
 import { MyTasks } from './views/MyTasks.tsx';
 import { Reviews } from './views/Reviews.tsx';
-import { Review } from './views/Review.tsx';
 import { isSearchHash, Search } from './views/Search.tsx';
 import { AiAdmin } from './views/AiAdmin.tsx';
 import { MyAiUsage } from './views/AiUsage.tsx';
@@ -302,7 +301,7 @@ export function App() {
   }
   const note = /^#\/notes\/([0-9a-f-]{36})(?:\/v\/(\d+))?$/i.exec(hash);
   const run = /^#\/runs\/([0-9a-f-]{36})$/i.exec(hash);
-  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|notes|work|drafts|review|settings|ai|feedback|closing|deadline-review|deleted|timeline|outputs|resources\/report|resources)(?:\/([0-9a-f-]{36}))?)?$/i.exec(hash);
+  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|discussion|notes|proposals|work|drafts|review|settings|ai|feedback|closing|deadline-review|deleted|timeline|outputs|resources\/report|resources)(?:\/([0-9a-f-]{36}))?)?$/i.exec(hash);
   const deletedItem = /^#\/projects\/([0-9a-f-]{36})\/deleted\/([a-z]+)\/([0-9a-f-]{36})$/i.exec(hash);
   const quarantineCase = /^#\/quarantine\/cases\/([0-9a-f-]{36})(?:\/copies)?$/i.exec(hash);
   const securityPage = /^#\/security\/(cases|grants)$/.test(hash);
@@ -343,9 +342,9 @@ export function App() {
   else if (summary) page = <SummaryPage key={summary[1]} summaryId={summary[1]} />;
   else if (thread) page = <Thread key={thread.threadId} projectId={thread.projectId} threadId={thread.threadId} meId={user.id} messageNo={thread.messageNo} answerId={answerIdFromHash(hash)} />;
   else if (deletedItem) page = <DeletedItemPage key={deletedItem[3]} projectId={deletedItem[1]} kind={deletedItem[2]} itemId={deletedItem[3]} />;
-  else if (run) page = <Review runId={run[1]} meId={user.id} />;
+  else if (run) page = <RunInProject key={run[1]} runId={run[1]} meId={user.id} prefs={prefs} prefsReady={prefsLoaded} onPrefs={savePrefs} />;
   else if (note) page = <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} />;
-  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as 'people' | 'notes' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | 'timeline' | 'outputs' | 'resources' | 'resources/report' | undefined) ?? 'overview'} itemId={project[3]} prefs={prefs} prefsReady={prefsLoaded} onPrefs={savePrefs} />;
+  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as ProjectView | undefined) ?? 'overview'} itemId={project[3]} prefs={prefs} prefsReady={prefsLoaded} onPrefs={savePrefs} />;
   else if (hash === '#/projects') page = <Projects isAdmin={isAdmin} />;
   else if (hash === '#/my-tasks') page = <MyTasks />;
   else if (hash === '#/reviews') page = <Reviews />;

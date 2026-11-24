@@ -782,6 +782,7 @@ a.stat-tile.linked:hover { border-color: var(--accent); }
   .data-table thead { display: none; }
   .table-sort-select { display: flex; }
   .data-table, .data-table tbody, .data-table tr, .data-table th, .data-table td { display: block; }
+  .data-table caption { display: block; }
   .data-table tbody tr { border: 1px solid var(--muted-wash); border-radius: 6px; margin-bottom: 0.7rem; padding: 0.25rem 0; }
   .data-table tbody th, .data-table tbody td { border-bottom: 0; display: grid; grid-template-columns: minmax(6rem, 35%) 1fr; gap: 0.5rem; }
   .data-table tbody th::before, .data-table tbody td::before { content: attr(data-label); color: var(--muted); font-weight: 500; }
@@ -812,6 +813,19 @@ a.stat-tile.linked:hover { border-color: var(--accent); }
 .page-header-row { display: flex; flex-wrap: wrap; gap: 0.8rem 1.5rem; justify-content: space-between; align-items: flex-start; }
 .page-header h1 { font-family: var(--serif); font-size: 28px; line-height: 1.2; margin: 0; }
 .page-intro { margin: 0.3rem 0 0; color: var(--muted); font-size: 15px; }
+
+/* Project header (11a spec 6.3): above the binder tabs on every project tab. */
+.project-header .page-header-row > div:first-child { min-width: 0; }
+.project-title { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 0.8rem; }
+.project-title h1 { overflow-wrap: anywhere; }
+.project-header .page-action { margin: 0; }
+.project-facts { display: flex; flex-wrap: wrap; gap: 0.2rem 1.5rem; margin: 0.6rem 0 0; font-size: 14px; }
+.project-facts div { display: flex; flex-wrap: wrap; gap: 0 0.4rem; min-width: 0; }
+.project-facts dt { color: var(--muted); }
+.project-facts dt::after { content: ":"; }
+.project-facts dd { margin: 0; font-weight: 600; overflow-wrap: anywhere; }
+.project-header .warn { margin: 0.6rem 0 0; }
+.binder-tabs { margin: 0 0 1rem; }
 
 .setting-box { display: flex; flex-direction: column; gap: 0.35rem; background: var(--surface); border: 1px solid var(--muted-wash); border-radius: 6px; padding: 0.8rem 1rem; color: var(--ink); text-decoration: none; }
 .setting-box:hover { border-color: var(--accent); }

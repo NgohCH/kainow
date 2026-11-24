@@ -198,7 +198,7 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
     return () => window.removeEventListener('keydown', onKey);
   }, [items, selected, current, select, decide, pick, view, requests]);
 
-  if (error && !view) return <main className="page narrow"><p role="alert" className="error">{error}</p><a href="#/">Back to notes</a></main>;
+  if (error && !view) return <p role="alert" className="error">{error}</p>;
   if (!view) return <p className="loading">Loading</p>;
 
   const counts = { pending: 0, approved: 0, rejected: 0 };
@@ -206,10 +206,10 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
   const status = (id: string) => byId.get(id)?.reviewStatus ?? 'pending';
 
   return (
-    <main className="page review">
+    <div className="review">
       <p><a href={`#/notes/${view.source.sourceId}/v/${view.source.versionNo}`}>Back to {view.source.title}</a></p>
       <div className="row">
-        <h1>Review proposals</h1>
+        <h2>Review proposals</h2>
         <p className="tally" aria-live="polite">
           {counts.pending} to review, {counts.approved} approved, {counts.rejected} rejected
         </p>
@@ -510,7 +510,7 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
           ))}
         </section>
       </div>
-    </main>
+    </div>
   );
 }
 
