@@ -1,6 +1,8 @@
 import { Fragment, useEffect, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import { definitionParts } from '../analytics.ts';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { PageHeader } from '../ui/PageHeader.tsx';
 
 interface Definitions {
   version: string;
@@ -12,6 +14,19 @@ interface Definitions {
 function Text({ text }: { text: string }) {
   return <>{definitionParts(text).map((p, i) => (p.code ? <code key={i}>{p.text}</code> : <span key={i}>{p.text}</span>))}</>;
 }
+
+type EventRow = Definitions['events'][number];
+
+const EVENT_COLUMNS: Column<EventRow>[] = [
+  { key: 'name', header: 'Event', sortValue: (e) => e.name, cell: (e) => <code>{e.name}</code> },
+  { key: 'area', header: 'Area', sortValue: (e) => e.area.toLowerCase(), cell: (e) => e.area },
+  { key: 'meaning', header: 'Meaning', wide: true, cell: (e) => <Text text={e.meaning} /> },
+  { key: 'actor', header: 'Who acts', sortValue: (e) => e.actor.toLowerCase(), cell: (e) => e.actor },
+  { key: 'subject', header: 'About', cell: (e) => e.subject },
+  { key: 'table', header: 'Recorded in', sortValue: (e) => e.table, cell: (e) => <code>{e.table}</code> },
+  { key: 'measures', header: 'Measures', cell: (e) => (e.measurements.length > 0 ? e.measurements.join(', ') : 'None') },
+  { key: 'version', header: 'Version', sortValue: (e) => e.version, cell: (e) => e.version },
+];
 
 /** Administration → Analytics → Definitions (dashboards spec 7.5): every measure with its definition and version, and the event catalogue. */
 export function Definitions() {
@@ -30,14 +45,13 @@ export function Definitions() {
 
   return (
     <main className="page">
-      <p><a href="#/admin/analytics">Back to Analytics</a></p>
-      <h1>Definitions</h1>
+      <PageHeader crumbs={[{ text: 'Analytics', href: '#/admin/analytics' }]} title="Definitions" intro="Every measure with its definition and version, and the catalogue of recorded events." />
       {error && <p role="alert" className="error">{error}</p>}
       {!data && !error && <p className="loading">Loading</p>}
       {data && (
         <>
-          <section aria-labelledby="measures-heading">
-            <h2 id="measures-heading">Measures</h2>
+          <section aria-labelledby="measures-heading" className="box">
+            <h2 id="measures-heading" className="box-title">Measures</h2>
             <p className="meta">Measure definitions version {data.version}.</p>
             <dl className="definitions">
               {data.measures.map((m) => (
@@ -48,40 +62,10 @@ export function Definitions() {
               ))}
             </dl>
           </section>
-          <section aria-labelledby="events-heading">
-            <h2 id="events-heading">Event catalogue</h2>
+          <section aria-labelledby="events-heading" className="box definitions-events">
+            <h2 id="events-heading" className="box-title">Event catalogue</h2>
             <p className="meta">Every action Kainow records, where it is recorded, and the measures read from it.</p>
-            <div className="table-scroll">
-              <table className="table usage-table">
-                <caption className="visually-hidden">Event catalogue</caption>
-                <thead>
-                  <tr>
-                    <th scope="col">Event</th>
-                    <th scope="col">Area</th>
-                    <th scope="col">Meaning</th>
-                    <th scope="col">Who acts</th>
-                    <th scope="col">About</th>
-                    <th scope="col">Recorded in</th>
-                    <th scope="col">Measures</th>
-                    <th scope="col">Version</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {data.events.map((e) => (
-                    <tr key={`${e.table}:${e.name}`}>
-                      <th scope="row"><code>{e.name}</code></th>
-                      <td data-label="Area">{e.area}</td>
-                      <td data-label="Meaning"><Text text={e.meaning} /></td>
-                      <td data-label="Who acts">{e.actor}</td>
-                      <td data-label="About">{e.subject}</td>
-                      <td data-label="Recorded in"><code>{e.table}</code></td>
-                      <td data-label="Measures">{e.measurements.length > 0 ? e.measurements.join(', ') : 'None'}</td>
-                      <td data-label="Version">{e.version}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
+            <DataTable caption="Event catalogue" columns={EVENT_COLUMNS} rows={data.events} rowKey={(e) => `${e.table}:${e.name}`} empty="No events are catalogued." />
           </section>
         </>
       )}

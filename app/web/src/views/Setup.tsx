@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { api, type User } from '../api.ts';
 import type { Branding } from '../branding.ts';
-import { SignIn } from '../App.tsx';
+import { AuthFrame, SignIn } from '../App.tsx';
 import { type SetupKind, type SetupState, setupText } from '../setup.ts';
 
 type SetupStatus = { state: SetupState; email: string | null; kind?: SetupKind };
@@ -20,13 +20,15 @@ export function Setup({ token, branding, onSignedIn }: { token: string; branding
   const text = setupText(status.kind);
   if (status.state !== 'valid') {
     return (
-      <main className="signin">
-        <h1>{text.heading}</h1>
-        <p role="alert">{text.message(status.state)}</p>
-        <p>
-          <a href="#/">Go to sign-in</a>
-        </p>
-      </main>
+      <AuthFrame>
+        <main className="auth-card">
+          <h1>{text.heading}</h1>
+          <p role="alert" className="warn">{text.message(status.state)}</p>
+          <p>
+            <a href="#/">Go to sign-in</a>
+          </p>
+        </main>
+      </AuthFrame>
     );
   }
   return (

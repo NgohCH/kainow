@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { ApiError, api, setCsrfToken, type User } from './api.ts';
 import type { Branding } from './branding.ts';
 import { Invitation } from './views/Invitation.tsx';
@@ -110,8 +110,8 @@ export function SignIn({
     }
   }
 
-  return (
-    <Wrapper className="signin" aria-label={embedded ? "Sign in" : undefined}>
+  const form = (
+    <Wrapper className={embedded ? 'signin box' : 'signin auth-card'} aria-label={embedded ? 'Sign in' : undefined}>
       {branding && !embedded ? (
         <>
           <LogoImage branding={branding} place="signIn" />
@@ -119,7 +119,7 @@ export function SignIn({
           <p className="signin-to">Sign in to Kainow</p>
         </>
       ) : (
-        <Heading className="wordmark">Kainow</Heading>
+        <Heading className={embedded ? 'box-title' : 'wordmark'}>{embedded ? 'Sign in to answer' : 'Kainow'}</Heading>
       )}
       <p className="lede">{intro ?? 'Turn meeting notes into decisions and actions you have checked against the page.'}</p>
       {!embedded && <ProtectiveLine />}
@@ -157,6 +157,20 @@ export function SignIn({
         </form>
       )}
     </Wrapper>
+  );
+  return embedded ? form : <AuthFrame>{form}</AuthFrame>;
+}
+
+/**
+ * The frame of the pages seen before sign-in (sign-in, the setup link, an invitation): no side menu, a band in the
+ * installation's scheme colour (Red, or the organisation's colour) and the page in one box on it (spec 7.10).
+ */
+export function AuthFrame({ children }: { children: ReactNode }) {
+  return (
+    <div className="auth-frame">
+      <div className="auth-band" aria-hidden="true" />
+      {children}
+    </div>
   );
 }
 
@@ -280,7 +294,7 @@ export function App() {
     if (!isAdmin) return <BeingSetUp onSignOut={signOut} />;
     return (
       <>
-        <header className="topbar">
+        <header className="topbar onboarding-bar">
           <Letterhead branding={branding} place="header" />
           <span className="topbar-who">
             {user.displayName}

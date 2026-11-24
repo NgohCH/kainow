@@ -19,6 +19,7 @@ import {
 import { RestoreAction } from './DeleteRestore.tsx';
 import { DataTable, type Column } from '../ui/DataTable.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
+import { PageHeader } from '../ui/PageHeader.tsx';
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 const KINDS = new Set<string>(Object.keys(KIND_NOUN));
@@ -97,8 +98,14 @@ export function DeletedItemPage({ projectId, kind, itemId }: { projectId: string
 
   return (
     <main className="page narrow">
-      <p><a href={back}>Back to Deleted items</a></p>
-      <h1>{item.title}</h1>
+      <PageHeader
+        crumbs={[
+          { text: 'Projects', href: '#/projects' },
+          { text: project?.name ?? 'Project', href: `#/projects/${projectId}` },
+          { text: 'Deleted items', href: back },
+        ]}
+        title={item.title}
+      />
       <div className="box edge-left m-off">
         <p className="label-stack" role="note">
           <StatusLabel meaning="off" word="Deleted" />

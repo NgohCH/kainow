@@ -16,6 +16,10 @@ import {
   type SearchResponse,
   type SearchResult,
 } from '../search.ts';
+import { Box } from '../ui/Box.tsx';
+import { PageHeader } from '../ui/PageHeader.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
+import { projectMeaning } from '../ui/meanings.ts';
 
 export const isSearchHash = (hash: string): boolean => hash === '#/search' || hash.startsWith('#/search?');
 
@@ -168,8 +172,9 @@ export function Search({ hash }: { hash: string }) {
   const badInput = error?.status === 400;
 
   return (
-    <main className="search-page">
-      <h1>Search</h1>
+    <main className="page search-page">
+      <PageHeader title="Search" intro="Finds words in the projects you can see: notes, discussion, records and AI proposals." />
+      <Box>
       <form role="search" aria-label="Search" onSubmit={submit} className="stack search-form">
         <label>
           Words to find
@@ -202,6 +207,7 @@ export function Search({ hash }: { hash: string }) {
           Include archived projects
         </label>
       </details>
+      </Box>
 
       {state.project && (
         <p className="chips">
@@ -228,10 +234,10 @@ export function Search({ hash }: { hash: string }) {
             const shown = [...p.results, ...(state.project === p.id ? extra : [])];
             const access = accessText(p);
             return (
-              <section key={p.id} className="search-project" aria-labelledby={`sp-${p.id}`}>
-                <h2 id={`sp-${p.id}`}>{p.name}</h2>
+              <section key={p.id} className="search-project box" aria-labelledby={`sp-${p.id}`}>
+                <h2 id={`sp-${p.id}`} className="box-title">{p.name}</h2>
                 <p className="meta">
-                  {STATUS_LABEL[p.status]}
+                  <StatusLabel meaning={projectMeaning(p.status)} word={STATUS_LABEL[p.status]} />
                   {p.archived && ' · Archived'}
                   {access && ` · ${access}`}
                   {` · ${p.total} ${p.total === 1 ? 'match' : 'matches'}`}

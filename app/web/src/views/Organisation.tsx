@@ -9,8 +9,8 @@ import { StatusLabel } from '../ui/StatusLabel.tsx';
 function Page({ embedded, id, title, intro, children }: { embedded: boolean; id: string; title: string; intro: string; children: ReactNode }) {
   if (embedded) {
     return (
-      <section className="panel" aria-labelledby={id}>
-        <h2 id={id}>{title}</h2>
+      <section className="box" aria-labelledby={id}>
+        <h2 id={id} className="box-title">{title}</h2>
         <p className="meta">{intro}</p>
         {children}
       </section>

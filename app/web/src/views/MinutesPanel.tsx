@@ -173,8 +173,8 @@ export function MinutesPanel({
   const versions = minutes?.versions ?? [];
 
   return (
-    <aside className="panel minutes" aria-label="Draft minutes">
-      <h2>Draft minutes</h2>
+    <aside className="box minutes" aria-labelledby={`minutes-heading-${threadId}`}>
+      <h2 id={`minutes-heading-${threadId}`} className="box-title">Draft minutes</h2>
       {!minutes && <p className="loading">Loading</p>}
       {minutes && !shown && (
         <p className="empty">
@@ -183,7 +183,7 @@ export function MinutesPanel({
       )}
       {shown && banner && mode === 'view' && (
         <div className={banner.className} tabIndex={0} aria-label={`Version ${shown.versionNo} of the draft minutes`}>
-          <p className="badge ai-label">{banner.label}</p>
+          <p className="badge ai-label draft-label">{banner.label}</p>
           <QuarantineNote text={shown.quarantineLabel} />
           <p className="meta">
             Version {shown.versionNo}, {formatWhen(shown.createdAt)}, covers messages up to #{shown.coversThroughNo}
@@ -207,6 +207,7 @@ export function MinutesPanel({
       {mode === 'compare' && compare && (
         <section aria-label="Compare versions">
           <h3>Version {compare.a} compared with version {compare.b}</h3>
+          <p className="meta">Lines marked + were added and lines marked − were removed.</p>
           <div className="diff" role="group" aria-label="Differences">
             {diffLines(compare.aText, compare.bText).map((l, i) => (
               <div key={i} className={`diff-${l.kind}`}>
@@ -282,7 +283,7 @@ export function MinutesPanel({
       </div>
       {warning && <p className="warn" role="note">{warning}</p>}
       {confirming && shown && (
-        <div className="panel" role="group" aria-label={confirming === 'publish' ? 'Confirm publishing' : 'Confirm submitting'}>
+        <div className="panel confirm-panel" role="group" aria-label={confirming === 'publish' ? 'Confirm publishing' : 'Confirm submitting'}>
           <p>
             {confirming === 'publish'
               ? publishConfirmation(title, shown.versionNo, audience, memberships)

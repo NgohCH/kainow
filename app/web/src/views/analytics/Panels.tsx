@@ -33,6 +33,8 @@ import { awaitingLabel, cancelledLabel, completionLabel, dayLabel, lateLabel, on
 import { plural } from '../../format.ts';
 import { STATUS_LABEL } from '../../projects.ts';
 import { Bars } from '../Bars.tsx';
+import { StatusLabel } from '../../ui/StatusLabel.tsx';
+import { projectMeaning } from '../../ui/meanings.ts';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 
@@ -160,7 +162,7 @@ export function ProgressView({
       case 'owningDepartment':
         return r.owningDepartment;
       case 'status':
-        return STATUS_LABEL[r.status] ?? r.status;
+        return r.status in STATUS_LABEL ? <StatusLabel meaning={projectMeaning(r.status)} word={STATUS_LABEL[r.status]} /> : r.status;
       case 'stage':
         return stageText(r.stage);
       case 'completion': {
@@ -456,7 +458,7 @@ export function Drill({ stack, query, onDrill, onBack, onClose }: { stack: Drill
   const next: DrillLevel | null = t.level === 'org' ? 'department' : t.level === 'department' ? 'project' : null;
   const label = DRILL_LABELS[t.measure];
   return (
-    <section className="panel" aria-labelledby="drill-heading" aria-live="polite">
+    <section className="box drill" aria-labelledby="drill-heading" aria-live="polite">
       <div className="row">
         <h3 id="drill-heading">{label}: {t.name}</h3>
         <span className="inline-form">

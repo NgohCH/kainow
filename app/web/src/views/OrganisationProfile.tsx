@@ -15,8 +15,8 @@ const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did n
 function Wrap({ bare, id, title, children }: { bare: boolean; id: string; title: string; children: ReactNode }) {
   if (bare) return <div>{children}</div>;
   return (
-    <section className="panel" aria-labelledby={id}>
-      <h2 id={id}>{title}</h2>
+    <section className="box" aria-labelledby={id}>
+      <h2 id={id} className="box-title">{title}</h2>
       {children}
     </section>
   );

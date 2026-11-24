@@ -14,6 +14,8 @@ import {
   purposeLabel,
 } from '../ai.ts';
 import { formatWhen } from '../format.ts';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { PageHeader } from '../ui/PageHeader.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Could not load AI usage.');
 
@@ -47,100 +49,45 @@ function Total({ f }: { f: Figures }) {
   );
 }
 
+const num = (s: string) => Number(s) || 0;
+
 /** The columns every grouping shares, labelled as Confirmed, Uncertain and Reserved. */
-function FigureCells({ f }: { f: Figures }) {
-  return (
-    <>
-      <td data-label="Requests">{f.requests}</td>
-      <td data-label="Attempts">{f.attempts}</td>
-      <td data-label={amountLabel('confirmed')}>{formatMyr(f.confirmedMyr)}</td>
-      <td data-label={amountLabel('uncertain')}>{formatMyr(f.uncertainMyr)}</td>
-      <td data-label={amountLabel('reserved')}>{formatMyr(f.reservedMyr)}</td>
-      <td data-label="Counted"><Total f={f} /></td>
-    </>
-  );
+function figureColumns<T extends Figures>(): Column<T>[] {
+  return [
+    { key: 'requests', header: 'Requests', sortValue: (f) => f.requests, cell: (f) => f.requests },
+    { key: 'attempts', header: 'Attempts', sortValue: (f) => f.attempts, cell: (f) => f.attempts },
+    { key: 'confirmed', header: amountLabel('confirmed'), sortValue: (f) => num(f.confirmedMyr), cell: (f) => formatMyr(f.confirmedMyr) },
+    { key: 'uncertain', header: amountLabel('uncertain'), sortValue: (f) => num(f.uncertainMyr), cell: (f) => formatMyr(f.uncertainMyr) },
+    { key: 'reserved', header: amountLabel('reserved'), sortValue: (f) => num(f.reservedMyr), cell: (f) => formatMyr(f.reservedMyr) },
+    { key: 'counted', header: 'Counted', sortValue: (f) => num(f.usedMyr), cell: (f) => <Total f={f} /> },
+  ];
 }
 
-function FigureHead({ first }: { first: string }) {
-  return (
-    <thead>
-      <tr>
-        <th scope="col">{first}</th>
-        <th scope="col">Requests</th>
-        <th scope="col">Attempts</th>
-        <th scope="col">{amountLabel('confirmed')}</th>
-        <th scope="col">{amountLabel('uncertain')}</th>
-        <th scope="col">{amountLabel('reserved')}</th>
-        <th scope="col">Counted</th>
-      </tr>
-    </thead>
-  );
-}
+type GroupRow = Figures & { key: string; label: ReactNode; sortLabel: string };
 
-function Grouped({ caption, first, rows, empty }: { caption: string; first: string; rows: Array<{ key: string; label: ReactNode; f: Figures }>; empty: string }) {
-  if (rows.length === 0) return <section aria-label={caption}><h3>{caption}</h3><p className="meta">{empty}</p></section>;
-  return (
-    <section aria-label={caption}>
-      <h3>{caption}</h3>
-      <div className="table-scroll">
-        <table className="table usage-table">
-          <FigureHead first={first} />
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.key}>
-                <th scope="row" data-label={first}>{r.label}</th>
-                <FigureCells f={r.f} />
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  );
+function Grouped({ caption, first, rows, empty }: { caption: string; first: string; rows: GroupRow[]; empty: string }) {
+  const columns: Column<GroupRow>[] = [{ key: 'label', header: first, sortValue: (r) => r.sortLabel.toLowerCase(), cell: (r) => r.label }, ...figureColumns<GroupRow>()];
+  return <DataTable caption={caption} columns={columns} rows={rows} rowKey={(r) => r.key} empty={empty} />;
 }
 
 function Connections({ rows, withProject }: { rows: ConnectionFigures[]; withProject: boolean }) {
-  if (rows.length === 0) return <section aria-label="Attempts by connection"><h3>Attempts by connection</h3><p className="meta">No AI attempts this month.</p></section>;
-  return (
-    <section aria-label="Attempts by connection">
-      <h3>Attempts by connection</h3>
-      <div className="table-scroll">
-        <table className="table usage-table">
-          <thead>
-            <tr>
-              <th scope="col">Connection</th>
-              <th scope="col">Provider and model</th>
-              <th scope="col">Attempts</th>
-              <th scope="col">Failures</th>
-              <th scope="col">Fallbacks</th>
-              <th scope="col">Charged failures</th>
-              <th scope="col">Counted</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((r) => (
-              <tr key={r.connectionId}>
-                <th scope="row" data-label="Connection">{r.label}{withProject && r.projectName ? <span className="meta"> · {r.projectName}</span> : null}</th>
-                <td data-label="Provider and model">{PROVIDER_NAMES[r.provider] ?? r.provider} · {r.modelId}</td>
-                <td data-label="Attempts">{r.attempts}</td>
-                <td data-label="Failures">{r.failures}</td>
-                <td data-label="Fallbacks">{r.fallbacks}</td>
-                <td data-label="Charged failures">{r.chargedFailures}</td>
-                <td data-label="Counted"><Total f={r} /></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </section>
-  );
+  const columns: Column<ConnectionFigures>[] = [
+    { key: 'connection', header: 'Connection', sortValue: (r) => r.label.toLowerCase(), cell: (r) => <>{r.label}{withProject && r.projectName ? <span className="meta"> · {r.projectName}</span> : null}</> },
+    { key: 'model', header: 'Provider and model', cell: (r) => `${PROVIDER_NAMES[r.provider] ?? r.provider} · ${r.modelId}` },
+    { key: 'attempts', header: 'Attempts', sortValue: (r) => r.attempts, cell: (r) => r.attempts },
+    { key: 'failures', header: 'Failures', sortValue: (r) => r.failures, cell: (r) => r.failures },
+    { key: 'fallbacks', header: 'Fallbacks', sortValue: (r) => r.fallbacks, cell: (r) => r.fallbacks },
+    { key: 'charged', header: 'Charged failures', sortValue: (r) => r.chargedFailures, cell: (r) => r.chargedFailures },
+    { key: 'counted', header: 'Counted', sortValue: (r) => num(r.usedMyr), cell: (r) => <Total f={r} /> },
+  ];
+  return <DataTable caption="Attempts by connection" columns={columns} rows={rows} rowKey={(r) => r.connectionId} empty="No AI attempts this month." />;
 }
 
 function PeriodBox({ title, p, daily }: { title: string; p: PeriodFigures; daily?: boolean }) {
   const noLimit = daily && p.dailyLimitApplies === false;
   return (
-    <section className="panel" aria-label={title}>
-      <h3>{title}</h3>
+    <section className="box" aria-label={title}>
+      <h3 className="box-title">{title}</h3>
       <dl className="figures">
         <div><dt>Limit</dt><dd>{noLimit ? 'No daily limit applied' : p.limitMyr === null ? 'No allowance' : formatMyr(p.limitMyr)}</dd></div>
         <div><dt>{amountLabel('confirmed')}</dt><dd>{formatMyr(p.confirmedMyr)}</dd></div>
@@ -164,8 +111,8 @@ export function ProjectUsageView({ projectId }: { projectId: string }) {
     <div>
       <PeriodBox title="This month" p={data.month} />
       <PeriodBox title="Today" p={data.day} daily />
-      <Grouped caption="By person this month" first="Person" empty="Nobody has used AI in this project this month." rows={data.byPerson.map((r) => ({ key: r.userId, label: r.name, f: r }))} />
-      <Grouped caption="Started by Kainow, by kind of work" first="Kind of work" empty="Nothing was started automatically this month." rows={data.system.map((r) => ({ key: r.purpose, label: purposeLabel(r.purpose), f: r }))} />
+      <Grouped caption="By person this month" first="Person" empty="Nobody has used AI in this project this month." rows={data.byPerson.map((r) => ({ ...r, key: r.userId, label: r.name, sortLabel: r.name }))} />
+      <Grouped caption="Started by Kainow, by kind of work" first="Kind of work" empty="Nothing was started automatically this month." rows={data.system.map((r) => ({ ...r, key: r.purpose, label: purposeLabel(r.purpose), sortLabel: purposeLabel(r.purpose) }))} />
       <Connections rows={data.byConnection} withProject={false} />
     </div>
   );
@@ -180,11 +127,11 @@ export function OrganisationUsageView() {
       {!data.configured && <p className="warn">No AI limits are saved yet, so every AI request is refused.</p>}
       <PeriodBox title="This month" p={data.month} />
       <PeriodBox title="Today" p={data.day} daily />
-      <Grouped caption="By project this month" first="Project" empty="No project has used AI this month." rows={data.byProject.map((r) => ({ key: r.projectId, label: <a href={`#/projects/${r.projectId}/ai`}>{r.name}</a>, f: r }))} />
-      <Grouped caption="By person this month" first="Person" empty="Nobody has used AI this month." rows={data.byPerson.map((r) => ({ key: r.userId, label: r.name, f: r }))} />
+      <Grouped caption="By project this month" first="Project" empty="No project has used AI this month." rows={data.byProject.map((r) => ({ ...r, key: r.projectId, label: <a href={`#/projects/${r.projectId}/ai`}>{r.name}</a>, sortLabel: r.name }))} />
+      <Grouped caption="By person this month" first="Person" empty="Nobody has used AI this month." rows={data.byPerson.map((r) => ({ ...r, key: r.userId, label: r.name, sortLabel: r.name }))} />
       <Connections rows={data.byConnection} withProject />
-      <section aria-label="Before projects">
-        <h3>From before projects</h3>
+      <section aria-label="Before projects" className="box">
+        <h3 className="box-title">From before projects</h3>
         <p className="meta">Entries from before AI was set up per project count in the organisation totals above and in no project’s figures. This month: <Total f={data.beforeProjects} />.</p>
       </section>
     </div>
@@ -198,9 +145,9 @@ export function MyUsageView() {
   if (data.projects.length === 0) return <p className="empty">You have not used AI this month.</p>;
   return (
     <div>
-      <Grouped caption="Your use this month, by project" first="Project" empty="" rows={data.projects.map((r) => ({ key: r.projectId, label: <a href={`#/projects/${r.projectId}`}>{r.name}</a>, f: r }))} />
-      <section aria-label="Your personal allowance left">
-        <h3>Your personal allowance left</h3>
+      <Grouped caption="Your use this month, by project" first="Project" empty="" rows={data.projects.map((r) => ({ ...r, key: r.projectId, label: <a href={`#/projects/${r.projectId}`}>{r.name}</a>, sortLabel: r.name }))} />
+      <section aria-label="Your personal allowance left" className="box">
+        <h3 className="box-title">Your personal allowance left</h3>
         <ul className="plain">
           {data.projects.map((r) => (
             <li key={r.projectId}>
@@ -223,9 +170,8 @@ export function MyUsageView() {
 
 export function MyAiUsage() {
   return (
-    <main className="page narrow">
-      <h1>My AI use</h1>
-      <p className="meta">Only counts and amounts. No question, prompt, source title or answer is shown here.</p>
+    <main className="page">
+      <PageHeader title="My AI use" intro="Only counts and amounts. No question, prompt, source title or answer is shown here." />
       <MyUsageView />
     </main>
   );

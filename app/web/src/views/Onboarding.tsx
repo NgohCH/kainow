@@ -1,5 +1,7 @@
 import { useState } from 'react';
 import { ApiError, api } from '../api.ts';
+import { AuthFrame } from '../App.tsx';
+import { PageHeader } from '../ui/PageHeader.tsx';
 import { Departments, Domains } from './Organisation.tsx';
 import { LogoUploads, OrganisationName, useOrganisationProfile } from './OrganisationProfile.tsx';
 
@@ -27,18 +29,17 @@ export function Onboarding({ onFinished }: { onFinished: () => void }) {
 
   return (
     <main className="page narrow onboarding">
-      <h1>Set up your organisation</h1>
-      <p className="lede">
-        Before anyone can use Kainow, give your organisation's name, the email domains people sign in with, and at least one department. Logos are
-        optional. Until you finish, Kainow shows its own name and logo.
-      </p>
+      <PageHeader
+        title="Set up your organisation"
+        intro="Before anyone can use Kainow, give your organisation's name, the email domains people sign in with, and at least one department. Logos are optional. Until you finish, Kainow shows its own name and logo."
+      />
       {loadError && <p role="alert" className="error">{loadError}</p>}
       {profile && <OrganisationName current={profile.name} onSaved={reload} />}
       <Domains embedded />
       <Departments embedded />
       {profile && <LogoUploads profile={profile} onChanged={reload} />}
-      <section className="panel" aria-labelledby="finish-heading">
-        <h2 id="finish-heading">Finish setup</h2>
+      <section className="box" aria-labelledby="finish-heading">
+        <h2 id="finish-heading" className="box-title">Finish setup</h2>
         <p className="meta">Your organisation's name and logos then replace Kainow's, and everything opens. You can change them later on the Organisation screen.</p>
         {error && <p role="alert" className="error">{error}</p>}
         <button className="primary" disabled={busy} onClick={() => void finish()}>
@@ -52,10 +53,12 @@ export function Onboarding({ onFinished }: { onFinished: () => void }) {
 /** Shown to anyone else signed in while the organisation is not set up (possible only on an upgraded installation). */
 export function BeingSetUp({ onSignOut }: { onSignOut: () => void }) {
   return (
-    <main className="page narrow">
-      <h1>Kainow is being set up</h1>
-      <p>Kainow is being set up. Try again later.</p>
-      <button onClick={onSignOut}>Sign out</button>
-    </main>
+    <AuthFrame>
+      <main className="auth-card">
+        <h1>Kainow is being set up</h1>
+        <p>Kainow is being set up. Try again later.</p>
+        <button onClick={onSignOut}>Sign out</button>
+      </main>
+    </AuthFrame>
   );
 }

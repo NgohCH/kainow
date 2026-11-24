@@ -4,6 +4,8 @@ import { go } from '../App.tsx';
 import { todayUtc8 } from '../changes.ts';
 import { endMeeting, meetingStartConfirmation, presentCandidates, setPresent, startMeeting, type ThreadView, threadPath } from '../discussion.ts';
 import { AudienceChoice, AudiencePanel, namablePeople } from './AudiencePanel.tsx';
+import { Box } from '../ui/Box.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
 
@@ -59,6 +61,8 @@ export function MeetingControls({
 
   return (
     <>
+      <Box title="Meeting" meaning={ended ? 'closed' : 'active'}>
+      <p><StatusLabel meaning={ended ? 'closed' : 'active'} word={ended ? 'Ended' : 'In progress'} /></p>
       <fieldset className="present" disabled={ended || !thread.canPost || busy}>
         <legend>Present</legend>
         {candidates.length === 0 && <p className="meta">No one to mark present.</p>}
@@ -73,7 +77,7 @@ export function MeetingControls({
       </fieldset>
       {canEnd && !ended && !confirmEnd && <button type="button" onClick={() => setConfirmEnd(true)}>End meeting</button>}
       {canEnd && !ended && confirmEnd && (
-        <div className="panel" role="group" aria-label="Confirm ending the meeting">
+        <div className="panel confirm-panel" role="group" aria-label="Confirm ending the meeting">
           <p>End this meeting? No more messages, edits or changes to who is present can be made, and a final draft of the minutes is requested. A meeting is not reopened.</p>
           <span className="actions">
             <button type="button" className="primary" disabled={busy} onClick={() => void end()}>End meeting</button>
@@ -82,6 +86,7 @@ export function MeetingControls({
         </div>
       )}
       {error && <p role="alert" className="error">{error}</p>}
+      </Box>
       <AudiencePanel audience={thread.audience} memberships={memberships} canChange={canChangeAudience} onChanged={onAudienceChanged} />
     </>
   );
@@ -110,7 +115,7 @@ export function StartMeetingForm({ projectId, memberships, canRestrict }: { proj
   }
 
   return (
-    <section className="panel" aria-label="Start meeting">
+    <section className="box" aria-label="Start meeting">
       <form className="stack" onSubmit={start}>
         <label>
           Title

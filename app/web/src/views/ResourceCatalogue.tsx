@@ -3,6 +3,9 @@ import { ApiError, api } from '../api.ts';
 import { plural } from '../format.ts';
 import { EMPTY_ITEM as EMPTY, type ItemDraft, itemProblem } from '../resourceScreens.ts';
 import { useReturnFocus } from './useReturnFocus.ts';
+import { DataTable, type Column } from '../ui/DataTable.tsx';
+import { StatTile } from '../ui/StatTile.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 const KINDS: Array<[string, string]> = [['equipment', 'Equipment'], ['facility', 'Facility']];
@@ -46,7 +49,7 @@ function ItemForm({ initial, categories, editing, onSubmit, onCancel }: {
     setError(refused);
   }
   return (
-    <form className="panel stack" onSubmit={submit} aria-label={editing ? 'Edit item' : 'Add item'}>
+    <form className="box stack item-form" onSubmit={submit} aria-label={editing ? 'Edit item' : 'Add item'}>
       <div className="grid-2">
         <label>
           Kind
@@ -171,182 +174,215 @@ export function ResourceCatalogue({ embedded = false, bare = false, onChanged }:
   const shown = (items ?? []).filter((i) => (kind === '' || i.kind === kind) && (category === '' || i.categoryId === category) && (status === '' || i.status === status));
   const draftOf = (i: Item): ItemDraft => ({ kind: i.kind, reference: i.reference, name: i.name, categoryId: i.categoryId ?? '', description: i.description });
 
+  const editingItem = editing ? (items ?? []).find((i) => i.id === editing) : undefined;
+  // On its own page each part is a box; inside a settings box (bare) the parts are plain sections.
+  const partClass = bare ? 'catalogue-part' : 'box catalogue-part';
+  const subClass = bare ? undefined : 'box-title';
+
+  const categoryColumns: Column<Category>[] = [
+    { key: 'name', header: 'Category', sortValue: (c) => c.name.toLowerCase(), cell: (c) => c.name },
+    { key: 'status', header: 'Status', sortValue: (c) => c.status, cell: (c) => <StatusLabel meaning={c.status === 'active' ? 'ok' : 'off'} word={c.status === 'active' ? 'In use' : 'Retired'} /> },
+    {
+      key: 'actions',
+      header: 'Actions',
+      wide: true,
+      cell: (c) =>
+        renaming?.id === c.id ? (
+          <form
+            className="inline-form"
+            onSubmit={async (e) => {
+              e.preventDefault();
+              const refused = await run(() => api.put(`/resources/catalogue/categories/${c.id}`, { name: renaming.name }), 'Category renamed.');
+              if (refused) setError(refused);
+              else setRenaming(null);
+            }}
+          >
+            <label>
+              Name <input required maxLength={80} value={renaming.name} onChange={(e) => setRenaming({ id: c.id, name: e.target.value })} />
+            </label>
+            <button className="primary">Save</button>
+            <button type="button" onClick={() => setRenaming(null)}>Cancel</button>
+          </form>
+        ) : retiringCategory === c.id ? (
+          <RetireForm
+            label={c.name}
+            onCancel={() => setRetiringCategory(null)}
+            onRetire={async (reason) => {
+              const refused = await run(() => api.post(`/resources/catalogue/categories/${c.id}/retire`, { reason }), 'Category retired.');
+              if (!refused) {
+                focus.leaving('catalogue-heading');
+                setRetiringCategory(null);
+              }
+              return refused;
+            }}
+          />
+        ) : c.status === 'active' ? (
+          <span className="actions">
+            <button type="button" className="link-button" data-opener={`rename-${c.id}`} aria-label={`Rename ${c.name}`} onClick={() => setRenaming({ id: c.id, name: c.name })}>Rename</button>
+            <button type="button" className="link-button" data-opener={`retire-category-${c.id}`} aria-label={`Retire ${c.name}`} onClick={() => setRetiringCategory(c.id)}>Retire</button>
+          </span>
+        ) : (
+          <span className="meta">None: retired</span>
+        ),
+    },
+  ];
+
+  const itemColumns: Column<Item>[] = [
+    { key: 'reference', header: 'Reference', sortValue: (i) => i.reference.toLowerCase(), cell: (i) => i.reference },
+    { key: 'name', header: 'Name', sortValue: (i) => i.name.toLowerCase(), cell: (i) => <>{i.name}{i.description && <span className="row-note"><br />{i.description}</span>}</> },
+    { key: 'kind', header: 'Kind', sortValue: (i) => kindLabel(i.kind), cell: (i) => kindLabel(i.kind) },
+    { key: 'category', header: 'Category', sortValue: (i) => (i.categoryName ?? '').toLowerCase(), cell: (i) => i.categoryName ?? 'None' },
+    { key: 'lines', header: 'Projects with current lines', sortValue: (i) => i.projectsWithLines ?? -1, cell: (i) => (typeof i.projectsWithLines === 'number' ? plural(i.projectsWithLines, 'project') : 'Not shown') },
+    { key: 'status', header: 'Status', sortValue: (i) => i.status, cell: (i) => <StatusLabel meaning={i.status === 'active' ? 'ok' : 'off'} word={i.status === 'active' ? 'In use' : 'Retired'} /> },
+    {
+      key: 'actions',
+      header: 'Actions',
+      wide: true,
+      cell: (i) =>
+        retiring === i.id ? (
+          <RetireForm
+            label={i.reference}
+            onCancel={() => setRetiring(null)}
+            onRetire={async (reason) => {
+              const refused = await run(() => api.post(`/resources/catalogue/items/${i.id}/retire`, { reason }), 'Item retired.');
+              if (!refused) {
+                focus.leaving('catalogue-heading');
+                setRetiring(null);
+              }
+              return refused;
+            }}
+          />
+        ) : i.status === 'active' ? (
+          <span className="actions">
+            <button type="button" className="link-button" data-opener={`edit-${i.id}`} aria-label={`Edit ${i.reference}`} aria-expanded={editing === i.id} onClick={() => setEditing(editing === i.id ? null : i.id)}>Edit</button>
+            <button type="button" className="link-button" data-opener={`retire-${i.id}`} aria-label={`Retire ${i.reference}`} onClick={() => setRetiring(retiring === i.id ? null : i.id)}>Retire</button>
+          </span>
+        ) : (
+          <span className="meta">None: retired</span>
+        ),
+    },
+  ];
+
+  const intro = 'Shared equipment and facilities that projects choose from. A retired item stays on existing lines and cannot be chosen for new ones.';
   return (
     <Wrapper className={bare ? undefined : embedded ? 'panel' : 'page'} aria-labelledby="catalogue-heading">
-      {bare ? <h4 id="catalogue-heading" tabIndex={-1} className="visually-hidden">Resource catalogue</h4> : <Heading id="catalogue-heading" tabIndex={-1}>Resource catalogue</Heading>}
-      <p className="meta">Shared equipment and facilities that projects choose from. A retired item stays on existing lines and cannot be chosen for new ones.</p>
+      {bare ? (
+        <>
+          <h4 id="catalogue-heading" tabIndex={-1} className="visually-hidden">Resource catalogue</h4>
+          <p className="meta">{intro}</p>
+        </>
+      ) : embedded ? (
+        <>
+          <Heading id="catalogue-heading" tabIndex={-1}>Resource catalogue</Heading>
+          <p className="meta">{intro}</p>
+        </>
+      ) : (
+        <header className="page-header">
+          <div className="page-header-row">
+            <div>
+              <Heading id="catalogue-heading" tabIndex={-1}>Resource catalogue</Heading>
+              <p className="page-intro">{intro}</p>
+            </div>
+          </div>
+        </header>
+      )}
       <p role="status" aria-live="polite" className="ok">{notice ?? ''}</p>
       {error && <p role="alert" className="error">{error}</p>}
 
-      <Sub>Categories</Sub>
-      <form
-        className="inline-form"
-        onSubmit={async (e) => {
-          e.preventDefault();
-          const refused = await run(() => api.post('/resources/catalogue/categories', { name: newCategory }), 'Category added.');
-          if (refused) setError(refused);
-          else setNewCategory('');
-        }}
-      >
-        <label>
-          New category <input required maxLength={80} value={newCategory} onChange={(e) => setNewCategory(e.target.value)} />
-        </label>
-        <button className="primary">Add category</button>
-      </form>
-      {categories.length === 0 ? (
-        <p className="empty">No categories yet. Add one before adding items.</p>
-      ) : (
-        <ul className="list">
-          {categories.map((c) => (
-            <li key={c.id} className="row">
-              {renaming?.id === c.id ? (
-                <form
-                  className="inline-form"
-                  onSubmit={async (e) => {
-                    e.preventDefault();
-                    const refused = await run(() => api.put(`/resources/catalogue/categories/${c.id}`, { name: renaming.name }), 'Category renamed.');
-                    if (refused) setError(refused);
-                    else setRenaming(null);
-                  }}
-                >
-                  <label>
-                    Name <input required maxLength={80} value={renaming.name} onChange={(e) => setRenaming({ id: c.id, name: e.target.value })} />
-                  </label>
-                  <button className="primary">Save</button>
-                  <button type="button" onClick={() => setRenaming(null)}>Cancel</button>
-                </form>
-              ) : retiringCategory === c.id ? (
-                <RetireForm
-                  label={c.name}
-                  onCancel={() => setRetiringCategory(null)}
-                  onRetire={async (reason) => {
-                    const refused = await run(() => api.post(`/resources/catalogue/categories/${c.id}/retire`, { reason }), 'Category retired.');
-                    if (!refused) {
-                      focus.leaving('catalogue-heading');
-                      setRetiringCategory(null);
-                    }
-                    return refused;
-                  }}
-                />
-              ) : (
-                <>
-                  <span>
-                    {c.name}
-                    {c.status === 'retired' && <span className="meta"> (retired)</span>}
-                  </span>
-                  {c.status === 'active' && (
-                    <span>
-                      <button type="button" className="link-button" data-opener={`rename-${c.id}`} onClick={() => setRenaming({ id: c.id, name: c.name })}>Rename</button>{' '}
-                      <button type="button" className="link-button" data-opener={`retire-category-${c.id}`} onClick={() => setRetiringCategory(c.id)}>Retire</button>
-                    </span>
-                  )}
-                </>
-              )}
-            </li>
-          ))}
-        </ul>
+      {items && !bare && (
+        <div className="stat-grid">
+          <StatTile label="Items in use" value={String(items.filter((i) => i.status === 'active').length)} />
+          <StatTile label="Retired items" value={String(items.filter((i) => i.status === 'retired').length)} />
+          <StatTile label="Categories in use" value={String(categories.filter((c) => c.status === 'active').length)} />
+        </div>
       )}
 
-      <div className="row">
-        <Sub>Items</Sub>
-        <button type="button" className="primary" data-opener="add-item" aria-expanded={adding} onClick={() => setAdding((a) => !a)} disabled={categories.every((c) => c.status !== 'active')}>
-          + Add item
-        </button>
-      </div>
-      {adding && (
-        <ItemForm
-          initial={EMPTY}
-          categories={categories}
-          editing={false}
-          onCancel={() => setAdding(false)}
-          onSubmit={async (d) => {
-            const refused = await run(() => api.post('/resources/catalogue/items', { ...d, reference: d.reference.trim(), name: d.name.trim(), description: d.description.trim() }), 'Item added.');
-            if (!refused) setAdding(false);
-            return refused;
+      <section className={partClass} aria-labelledby="catalogue-categories">
+        <Sub id="catalogue-categories" className={subClass}>Categories</Sub>
+        <form
+          className="inline-form"
+          onSubmit={async (e) => {
+            e.preventDefault();
+            const refused = await run(() => api.post('/resources/catalogue/categories', { name: newCategory }), 'Category added.');
+            if (refused) setError(refused);
+            else setNewCategory('');
           }}
+        >
+          <label>
+            New category <input required maxLength={80} value={newCategory} onChange={(e) => setNewCategory(e.target.value)} />
+          </label>
+          <button className="primary">Add category</button>
+        </form>
+        <DataTable caption="Categories" columns={categoryColumns} rows={categories} rowKey={(c) => c.id} empty="No categories yet. Add one before adding items." loading={items === null && !error} />
+      </section>
+
+      <section className={partClass} aria-labelledby="catalogue-items">
+        <div className="settings-box-head">
+          <Sub id="catalogue-items" className={subClass}>Items</Sub>
+          <button type="button" className="primary" data-opener="add-item" aria-expanded={adding} onClick={() => setAdding((a) => !a)} disabled={categories.every((c) => c.status !== 'active')}>
+            + Add item
+          </button>
+        </div>
+        {adding && (
+          <ItemForm
+            initial={EMPTY}
+            categories={categories}
+            editing={false}
+            onCancel={() => setAdding(false)}
+            onSubmit={async (d) => {
+              const refused = await run(() => api.post('/resources/catalogue/items', { ...d, reference: d.reference.trim(), name: d.name.trim(), description: d.description.trim() }), 'Item added.');
+              if (!refused) setAdding(false);
+              return refused;
+            }}
+          />
+        )}
+        {editingItem && (
+          <ItemForm
+            key={editingItem.id}
+            initial={draftOf(editingItem)}
+            categories={categories}
+            editing
+            onCancel={() => setEditing(null)}
+            onSubmit={async (d) => {
+              const refused = await run(() => api.put(`/resources/catalogue/items/${editingItem.id}`, { ...d, reference: d.reference.trim(), name: d.name.trim(), description: d.description.trim() }), 'Item saved.');
+              if (!refused) setEditing(null);
+              return refused;
+            }}
+          />
+        )}
+        <form className="table-filters" aria-label="Filter items" onSubmit={(e) => e.preventDefault()}>
+          <label>
+            Kind
+            <select value={kind} onChange={(e) => setKind(e.target.value)}>
+              <option value="">All kinds</option>
+              {KINDS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
+            </select>
+          </label>
+          <label>
+            Category
+            <select value={category} onChange={(e) => setCategory(e.target.value)}>
+              <option value="">All categories</option>
+              {categories.map((c) => <option key={c.id} value={c.id}>{c.name}{c.status === 'retired' ? ' (retired)' : ''}</option>)}
+            </select>
+          </label>
+          <label>
+            Status
+            <select value={status} onChange={(e) => setStatus(e.target.value)}>
+              <option value="active">Active</option>
+              <option value="retired">Retired</option>
+              <option value="">Active and retired</option>
+            </select>
+          </label>
+        </form>
+        <DataTable
+          caption="Items"
+          columns={itemColumns}
+          rows={shown}
+          rowKey={(i) => i.id}
+          loading={items === null}
+          empty={items && items.length === 0 ? 'No items yet.' : 'No items match these filters.'}
         />
-      )}
-      <form className="inline-form" aria-label="Filter items" onSubmit={(e) => e.preventDefault()}>
-        <label>
-          Kind
-          <select value={kind} onChange={(e) => setKind(e.target.value)}>
-            <option value="">All kinds</option>
-            {KINDS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}
-          </select>
-        </label>
-        <label>
-          Category
-          <select value={category} onChange={(e) => setCategory(e.target.value)}>
-            <option value="">All categories</option>
-            {categories.map((c) => <option key={c.id} value={c.id}>{c.name}{c.status === 'retired' ? ' (retired)' : ''}</option>)}
-          </select>
-        </label>
-        <label>
-          Status
-          <select value={status} onChange={(e) => setStatus(e.target.value)}>
-            <option value="active">Active</option>
-            <option value="retired">Retired</option>
-            <option value="">Active and retired</option>
-          </select>
-        </label>
-      </form>
-      {!items ? (
-        <p className="loading">Loading</p>
-      ) : shown.length === 0 ? (
-        <p className="empty">{items.length === 0 ? 'No items yet.' : 'No items match these filters.'}</p>
-      ) : (
-        <ul className="list">
-          {shown.map((i) => (
-            <li key={i.id}>
-              {editing === i.id ? (
-                <ItemForm
-                  initial={draftOf(i)}
-                  categories={categories}
-                  editing
-                  onCancel={() => setEditing(null)}
-                  onSubmit={async (d) => {
-                    const refused = await run(() => api.put(`/resources/catalogue/items/${i.id}`, { ...d, reference: d.reference.trim(), name: d.name.trim(), description: d.description.trim() }), 'Item saved.');
-                    if (!refused) setEditing(null);
-                    return refused;
-                  }}
-                />
-              ) : (
-                <div className="row">
-                  <span>
-                    <strong>{i.reference}</strong> · {i.name}
-                    {i.status === 'retired' && <span className="meta"> (retired)</span>}
-                    <span className="meta">
-                      {' '}· {kindLabel(i.kind)}{i.categoryName ? ` · ${i.categoryName}` : ''}
-                      {typeof i.projectsWithLines === 'number' ? ` · ${plural(i.projectsWithLines, 'project')} with current lines` : ''}
-                    </span>
-                    {i.description && <span className="meta"> · {i.description}</span>}
-                  </span>
-                  {i.status === 'active' && (
-                    <span>
-                      <button type="button" className="link-button" data-opener={`edit-${i.id}`} aria-label={`Edit ${i.reference}`} onClick={() => setEditing(i.id)}>Edit</button>{' '}
-                      <button type="button" className="link-button" data-opener={`retire-${i.id}`} aria-label={`Retire ${i.reference}`} onClick={() => setRetiring(retiring === i.id ? null : i.id)}>Retire</button>
-                    </span>
-                  )}
-                </div>
-              )}
-              {retiring === i.id && (
-                <RetireForm
-                  label={i.reference}
-                  onCancel={() => setRetiring(null)}
-                  onRetire={async (reason) => {
-                    const refused = await run(() => api.post(`/resources/catalogue/items/${i.id}/retire`, { reason }), 'Item retired.');
-                    if (!refused) {
-                      focus.leaving('catalogue-heading');
-                      setRetiring(null);
-                    }
-                    return refused;
-                  }}
-                />
-              )}
-            </li>
-          ))}
-        </ul>
-      )}
+      </section>
     </Wrapper>
   );
 }

@@ -38,6 +38,8 @@ import { type Person, readersOf } from '../discussion.ts';
 import { formatWhen } from '../format.ts';
 import { AudienceChoice, namablePeople } from './AudiencePanel.tsx';
 import { ReasonForm } from './AssistReview.tsx';
+import { Box } from '../ui/Box.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
 const names = (people: Person[]) => people.map((p) => p.displayName).join(', ') || 'no one';
@@ -205,12 +207,16 @@ export function SummaryPage({ summaryId }: { summaryId: string }) {
   if (view.view === 'shared') {
     return (
       <main className="page narrow">
-        <h1 tabIndex={-1} ref={heading}>Shareable summary</h1>
-        <p className="meta">
-          <span className="ai-label">{view.label}</span> · {view.approved} · {view.from}
-        </p>
-        <QuarantineNote text={view.quarantineLabel} />
-        <p><a href={`#/notes/${view.sourceId}`}>Open as a note</a></p>
+        <header className="page-header">
+          <h1 tabIndex={-1} ref={heading}>Shareable summary</h1>
+        </header>
+        <Box>
+          <p className="meta">
+            <span className="ai-label">{view.label}</span> · {view.approved} · {view.from}
+          </p>
+          <QuarantineNote text={view.quarantineLabel} />
+          <p><a href={`#/notes/${view.sourceId}`}>Open as a note</a></p>
+        </Box>
         <div className="ai-proposed answer-text draft-text source" role="region" aria-label="Approved summary text">{view.body}</div>
       </main>
     );
@@ -290,11 +296,19 @@ export function SummaryPage({ summaryId }: { summaryId: string }) {
 
   return (
     <main className="page">
-      <p>
-        {v.canReview || v.approval ? <a href={`#/projects/${v.projectId}/review`}>Back to Review</a> : <a href={originalHref}>Back to {v.original.kind === 'meeting' ? 'the meeting' : 'the source'}</a>}
-      </p>
-      <h1 tabIndex={-1} ref={heading}>Shareable summary of {v.original.title}</h1>
+      <header className="page-header">
+        <nav aria-label="Breadcrumb" className="crumbs">
+          <ol>
+            <li>
+              {v.canReview || v.approval ? <a href={`#/projects/${v.projectId}/review`}>Back to Review</a> : <a href={originalHref}>Back to {v.original.kind === 'meeting' ? 'the meeting' : 'the source'}</a>}
+            </li>
+          </ol>
+        </nav>
+        <h1 tabIndex={-1} ref={heading}>Shareable summary of {v.original.title}</h1>
+      </header>
       <p><ReportSecret projectId={v.projectId} kind="summary" id={summaryId} label="this summary" /></p>
+      <Box title="About this summary" meaning={approvedNow ? 'ok' : 'review'}>
+      <p>{approvedNow ? <StatusLabel meaning="ok" word="Approved for sharing" /> : <StatusLabel meaning="review" word={v.approved ? "Newest version not approved" : "Not yet approved"} />}</p>
       <p className="meta">
         <span className="badge badge-pending">{FROM_RESTRICTED_LABEL}</span>{' '}
         {v.reviewLabel && <span className="badge badge-pending">{v.reviewLabel}</span>}{' '}
@@ -320,6 +334,7 @@ export function SummaryPage({ summaryId }: { summaryId: string }) {
           {v.approved.sourceId && <> <a href={`#/notes/${v.approved.sourceId}`}>Open the approved summary as a note</a></>}
         </p>
       )}
+      </Box>
       {(error ?? loadError) && <p role="alert" className="error">{error ?? loadError}</p>}
 
       {v.versions.length > 0 && (
@@ -365,8 +380,8 @@ export function SummaryPage({ summaryId }: { summaryId: string }) {
       {v.versions.length === 0 && !active && !v.notice && <p className="empty">This summary has no version yet.</p>}
 
       {cur && (
-        <section aria-labelledby="marks-heading" className="panel">
-          <h2 id="marks-heading" tabIndex={-1} ref={marksHeading}>Marked phrases and names</h2>
+        <section aria-labelledby="marks-heading" className="box">
+          <h2 id="marks-heading" className="box-title" tabIndex={-1} ref={marksHeading}>Marked phrases and names</h2>
           <p className="meta" role="status">{markProgress(marks)} In version {cur.no}.</p>
           <p className="hint">Each mark must be removed by editing the summary, or ticked Intended (you mean it to stay). Highlights in the text match this list.</p>
           {marks.length > 0 && (

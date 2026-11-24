@@ -33,6 +33,14 @@ import { MeetingControls } from './Meeting.tsx';
 import { MinutesPanel, useMinutes } from './MinutesPanel.tsx';
 import { SummaryRequest } from './SummaryView.tsx';
 import { useFocusItem } from './useFocusItem.ts';
+import { PageHeader } from '../ui/PageHeader.tsx';
+
+/** The crumbs above a thread or meeting: Projects, the project, its Discussion tab. */
+const threadCrumbs = (projectId: string, projectName: string | undefined) => [
+  { text: 'Projects', href: '#/projects' },
+  { text: projectName ?? 'Project', href: `#/projects/${projectId}` },
+  { text: 'Discussion', href: `#/projects/${projectId}/discussion` },
+];
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
 
@@ -189,9 +197,8 @@ function ThreadBody({ first, projectId, meId, messageNo, answerId, project }: { 
 
   return (
     <main className={meeting ? 'page thread' : 'page narrow thread'}>
-      <p><a href={`#/projects/${projectId}/discussion`}>Back to Discussion</a></p>
-      <h1>{t.title}</h1>
-      <p className="meta">
+      <PageHeader crumbs={threadCrumbs(projectId, project?.name)} title={t.title} />
+      <p className="meta thread-facts">
         {meeting ? 'Meeting' : 'Discussion'}
         {t.meetingDate ? ` · ${formatMeetingDate(t.meetingDate)}` : ''}
         {t.state === 'ended' ? ' · Ended' : ''}
@@ -199,6 +206,9 @@ function ThreadBody({ first, projectId, meId, messageNo, answerId, project }: { 
         {audienceLine}
         {restricted && <span className="badge badge-pending">{restricted}</span>}
         {changed && <span className="badge">{changed}</span>}
+      </p>
+      <p className="meta kind-key">
+        How to tell them apart: a message from a person has a solid outline and their name; an AI answer has a dashed outline and the ✦ AI answer label{meeting ? '; draft minutes have a dotted outline and a ✎ draft label' : ''}.
       </p>
       {meeting && (
         <MeetingControls
@@ -220,7 +230,8 @@ function ThreadBody({ first, projectId, meId, messageNo, answerId, project }: { 
 
       <div className={meeting ? 'meeting-split' : undefined}>
       <div>
-      <section aria-label="Messages">
+      <section aria-labelledby="messages-heading">
+        <h2 id="messages-heading" className="visually-hidden">Messages</h2>
         {t.messages.length === 0 && (t.aiAnswers ?? []).length === 0 && <p className="empty">No messages yet.</p>}
         <ol className="messages">
           {mergeTimeline(t.messages, t.aiAnswers ?? []).map((item) =>
@@ -252,7 +263,7 @@ function ThreadBody({ first, projectId, meId, messageNo, answerId, project }: { 
       </section>
 
       {t.canPost && (
-        <form className="stack composer" onSubmit={post}>
+        <form className="stack composer box" onSubmit={post}>
           {replyTarget && (
             <p className="meta">
               Replying to #{replyTarget.no} by {replyTarget.author.displayName}{' '}
@@ -384,7 +395,7 @@ function MessageItem({
   }
 
   return (
-    <li ref={item} id={`item-${m.no}`} tabIndex={-1} className={`message message-${m.state}`}>
+    <li ref={item} id={`item-${m.no}`} tabIndex={-1} className={`message human-message message-${m.state}`}>
       <p className="meta byline">
         {selectable && (
           <label className="check inline-check">

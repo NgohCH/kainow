@@ -7,6 +7,19 @@ import { defaultPrefs, openChoice, type Prefs } from '../prefs.ts';
 import { STATUS_LABEL } from '../projects.ts';
 import { budgetCardLines, resourcesCardText } from '../resourceScreens.ts';
 import { Customise } from './Customise.tsx';
+import { PageHeader } from '../ui/PageHeader.tsx';
+import { StatTile } from '../ui/StatTile.tsx';
+import { StatusLabel } from '../ui/StatusLabel.tsx';
+import { projectMeaning } from '../ui/meanings.ts';
+import type { ProjectStatus } from '../projects.ts';
+
+const isProjectStatus = (s: string | undefined): s is ProjectStatus => !!s && s in STATUS_LABEL;
+
+/** A count over the cards, or null when no card carries that field (it is hidden or not granted). */
+function total(cards: LeadershipCard[], key: 'overdue' | 'blocked'): number | null {
+  const shown = cards.filter((c) => typeof c[key] === 'number');
+  return shown.length === 0 ? null : shown.reduce((n, c) => n + (c[key] ?? 0), 0);
+}
 
 const ALL_STATUSES = ['draft', 'planned', 'active', 'deferred', 'closed'] as const;
 
@@ -32,7 +45,9 @@ function FieldRow({ k, c }: { k: string; c: LeadershipCard }) {
     case 'projectManager':
       return c.projectManager === undefined ? null : <><dt>Project Manager</dt><dd>{c.projectManager ?? 'None'}</dd></>;
     case 'status':
-      return c.status === undefined ? null : <><dt>Status</dt><dd>{STATUS_LABEL[c.status as keyof typeof STATUS_LABEL] ?? c.status}</dd></>;
+      return c.status === undefined ? null : (
+        <><dt>Status</dt><dd>{isProjectStatus(c.status) ? <StatusLabel meaning={projectMeaning(c.status)} word={STATUS_LABEL[c.status]} /> : c.status}</dd></>
+      );
     case 'stage':
       return c.stage === undefined ? null : (
         <><dt>Stage</dt><dd>{c.stage ? `${c.stage.stage}${c.stage.substage ? `, ${c.stage.substage}` : ''}, ${plural(c.stage.days, 'day')}` : 'None'}</dd></>
@@ -106,15 +121,16 @@ function Card({ c, keys, open, onToggle }: { c: LeadershipCard; keys: string[]; 
   const panel = `leadership-${c.id}`;
   const body = keys.filter((k) => !HEADER_KEYS.includes(k));
   return (
-    <li className="home-project">
+    <li className={`box leadership-card${flags.length > 0 ? ' edge-left m-attention' : ''}`}>
       <h3>
         <button type="button" className="disclosure" aria-expanded={open} aria-controls={open ? panel : undefined} onClick={onToggle}>
           {c.name ?? 'Project'}
         </button>
       </h3>
-      {flags.length > 0 && (
-        <ul className="chips-list" aria-label="Attention flags">
-          {flags.map((f) => <li key={f} className="chip-quiet">{f}</li>)}
+      {(flags.length > 0 || isProjectStatus(c.status)) && (
+        <ul className="flag-row" aria-label="Status and attention flags">
+          {isProjectStatus(c.status) && <li><StatusLabel meaning={projectMeaning(c.status)} word={STATUS_LABEL[c.status]} /></li>}
+          {flags.map((f) => <li key={f}><StatusLabel meaning="attention" word={f} /></li>)}
         </ul>
       )}
       {c.refresh && <p className="meta">{updatedLabel(c.refresh)}</p>}
@@ -173,19 +189,31 @@ export function Leadership({ prefs, ready, failed, onChange }: { prefs: Prefs; r
     if (ready) void save({ ...prefs, expanded: { ...prefs.expanded, ...patch } });
   };
   const setAll = (open: boolean) => choose(Object.fromEntries(ids.map((id) => [id, open])));
+  const flagged = cards.filter((c) => flagsOf(c).length > 0).length;
+  const overdueTotal = total(cards, 'overdue');
+  const blockedTotal = total(cards, 'blocked');
 
   return (
-    <main className="page narrow home">
-      <div className="row">
-        <h1>Leadership</h1>
-        {data && <span className="meta">{updatedLabel(data.computedAt)}</span>}
-      </div>
-      <p className="meta">A leadership grant shows these summary fields only. It does not give access to a project's content.</p>
+    <main className="page home leadership-page">
+      <PageHeader
+        title="Leadership"
+        intro="A leadership grant shows these summary fields only. It does not give access to a project's content."
+        action={data ? <span className="meta">{updatedLabel(data.computedAt)}</span> : undefined}
+      />
       {error && <p role="alert" className="error">{error}</p>}
       {saveError && <p role="alert" className="error">{saveError}</p>}
       {failed && !ready && <p role="alert" className="error">Your saved display choices could not be loaded, so the default fields are shown and they cannot be changed until they load.</p>}
 
-      <form className="panel stack" aria-label="Filters" onSubmit={(e) => e.preventDefault()}>
+      {data && (
+        <div className="stat-grid">
+          <StatTile label="Projects shown" value={String(cards.length)} />
+          <StatTile label="With attention flags" value={String(flagged)} meaning={flagged > 0 ? 'attention' : undefined} word={flagged > 0 ? 'Needs attention' : undefined} />
+          {overdueTotal !== null && <StatTile label="Overdue tasks" value={String(overdueTotal)} meaning={overdueTotal > 0 ? 'overdue' : undefined} />}
+          {blockedTotal !== null && <StatTile label="Blocked tasks" value={String(blockedTotal)} meaning={blockedTotal > 0 ? 'blocked' : undefined} />}
+        </div>
+      )}
+
+      <form className="box stack" aria-label="Filters" onSubmit={(e) => e.preventDefault()}>
         <fieldset>
           <legend>Status</legend>
           {ALL_STATUSES.map((s) => (
@@ -217,7 +245,7 @@ export function Leadership({ prefs, ready, failed, onChange }: { prefs: Prefs; r
 
       {!data && !error && <p className="loading">Loading</p>}
       {data && cards.length === 0 && <p className="empty">No projects in your leadership scope match these filters.</p>}
-      <ul className="plain home-projects">
+      <ul className="plain leadership-cards">
         {cards.map((c) => (
           <Card key={c.id} c={c} keys={keys.filter((k) => k in c)} open={isOpen(c.id)} onToggle={() => choose({ [c.id]: !isOpen(c.id) })} />
         ))}
