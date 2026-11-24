@@ -219,6 +219,28 @@ The `notice` service (same image, profile `updater`) serves the fixed "update fa
 
 **Not covered yet.** A real update end to end on Linux (a signed local release installed and updated, then a failing migration recovered) and the planned-outage aim; a real release, which follows the go-live history rewrite (`v1.0.0`); Safari, until the Product Owner's check.
 
+## Interface redesign (V1.0 sub-project 11a)
+
+Design: [`docs/superpowers/specs/2026-11-24-v1-interface-redesign-11a-design.md`](../docs/superpowers/specs/2026-11-24-v1-interface-redesign-11a-design.md); decisions D128 (navigation, Settings hub and page pattern), D129 (colour schemes and organisation colour), D130 (correcting a proposal) and D131 (stage templates); catalogue entries C111, C112 and C113. Migrations `0036_interface.sql` (organisation colour, `accentChosen`, the kind and reason of a proposal correction) and `0037_stage_templates.sql` (the templates, and a copy of General for every existing project). No permission changed.
+
+**Building blocks** are in `web/src/ui/`: the shell (`AppShell`, `SideMenu`, `TopBar`, `PersonMenu`), `PageHeader`, `Box`, `StatTile`, `StatusLabel`, `DataTable`, `AttentionQueue`, `BinderTabs`, `SettingBox`, `SettingsPage`, `StageFlow`, `StackedBar` and `ProgressBar`, with their wording and rules in pure `.ts` files beside them (tested). State and attention colours come from one table of meanings (`meanings.ts`); each always shows a word and a symbol.
+
+**New pages and addresses** (every older address still works):
+
+| Address | Page |
+| --- | --- |
+| `#/my-tasks` | My tasks: the person's tasks across projects, overdue first, with filters |
+| `#/reviews` | Reviews: everything waiting for the person's review or decision; the side menu's badge counts them |
+| `#/projects` | Projects: counts by state, then the projects table and New project (with Type of project) |
+| `#/settings` | Settings hub (Enterprise Administrator): four groups of setting boxes with their state; each opens the setting's own page at its existing address |
+| `#/stage-templates` | Stage templates (Enterprise Administrator) |
+| `#/projects/:id/discussion`, `/notes`, `/proposals` | The project's Discussion, Notes and Proposals tabs (the old single Notes & discussion tab, split) |
+| `#/runs/:id` | The AI review screen, now inside the project (Proposals is the current tab) |
+
+**New and changed endpoints:** `GET /admin/settings/summary` (Administrators only: each setting's state and up to three values); `PUT /organisation/colour` (`{ colour, reason }`; `colour` is served with `/organisation/branding`); `GET /projects/:projectId/proposal-runs` (runs with items still waiting, filtered like the notes list); `POST /extractions/:runId/items/:itemId/edit` accepts `kind` and `reason` (reason required when the kind changes); `GET`, `POST /stage-templates`, `PUT /stage-templates/:id`, `POST /stage-templates/:id/retire` and `/restore`; `POST /projects/:id/stages`, `/stages/order`, `/stages/:stageId/retire` and `/restore`; `/me/preferences` accepts `accent: 'red' | 'organisation'` and `accentChosen`. `GET /dashboard/me` adds the `overdue`, `blocked`, `due_soon` and `risk_review` kinds to Needs you.
+
+**Checks.** The accessibility pass (`tests/a11y/`) covers the new pages and states at 1200 px and 375 px and fails any state that scrolls sideways at 375 px; the browser smoke run (`tests/browsers/`) follows the side menu, binder tabs and person menu.
+
 ## Milestones
 
 | # | Milestone | Status |
