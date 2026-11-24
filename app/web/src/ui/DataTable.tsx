@@ -1,13 +1,31 @@
-import { useId, useMemo, useState, type ReactNode } from 'react';
+import { useEffect, useId, useMemo, useRef, useState, type ReactNode } from 'react';
 import { sortRows, type SortDir } from './table.ts';
 
 /** `wide` marks a cell that holds forms or long text: on narrow screens its label sits above it instead of beside it. */
 export interface Column<T> { key: string; header: string; cell: (row: T) => ReactNode; sortValue?: (row: T) => string | number; wide?: boolean }
 
+/** Whether the element's content is wider than the element, kept up to date as either changes size. */
+function useOverflows() {
+  const ref = useRef<HTMLDivElement>(null);
+  const [overflows, setOverflows] = useState(false);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const measure = () => setOverflows(el.scrollWidth > el.clientWidth);
+    const watch = new ResizeObserver(measure);
+    watch.observe(el);
+    for (const child of el.children) watch.observe(child);
+    measure();
+    return () => watch.disconnect();
+  }, []);
+  return [ref, overflows] as const;
+}
+
 /**
  * A semantic table: caption, column headers (a button when sortable, with aria-sort), empty and loading rows. Narrow
  * screens stack each row into labelled pairs (data-label). `rowId` gives each row an id (and makes it focusable) so a
- * link can open the page at that row.
+ * link can open the page at that row. A table wider than its place scrolls inside its own box, which then takes the
+ * keyboard focus so the arrow keys can scroll it.
  */
 export function DataTable<T>({ caption, columns, rows, rowKey, rowId, empty, loading, initialSort }: {
   caption: string; columns: Column<T>[]; rows: T[]; rowKey: (row: T) => string; rowId?: (row: T) => string; empty: string; loading?: boolean;
@@ -21,6 +39,7 @@ export function DataTable<T>({ caption, columns, rows, rowKey, rowId, empty, loa
   const toggle = (key: string) => setSort((s) => (s && s.key === key && s.dir === 'asc' ? { key, dir: 'desc' } : { key, dir: 'asc' }));
   const sortable = columns.filter((c) => c.sortValue);
   const uid = useId();
+  const [box, overflows] = useOverflows();
   return (
     <div className="data-table-wrap">
     {sortable.length > 0 && (
@@ -37,8 +56,9 @@ export function DataTable<T>({ caption, columns, rows, rowKey, rowId, empty, loa
         </select>
       </div>
     )}
+    <div ref={box} className="data-table-scroll" {...(overflows ? { role: 'region', tabIndex: 0, 'aria-labelledby': `${uid}-caption` } : {})}>
     <table className="data-table" aria-busy={loading || undefined}>
-      <caption>{caption}</caption>
+      <caption id={`${uid}-caption`}>{caption}</caption>
       <thead>
         <tr>
           {columns.map((c) => {
@@ -74,6 +94,7 @@ export function DataTable<T>({ caption, columns, rows, rowKey, rowId, empty, loa
         )}
       </tbody>
     </table>
+    </div>
     </div>
   );
 }

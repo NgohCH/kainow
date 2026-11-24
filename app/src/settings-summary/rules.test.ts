@@ -24,6 +24,7 @@ describe('settings summary rules', () => {
   test('leadership access needs attention when requests wait', () => {
     assert.equal(leadershipRule({ active: 2, scheduled: 0, waitingForAction: 1 }).state, 'attention');
     assert.equal(leadershipRule({ active: 2, scheduled: 0, waitingForAction: 0 }).state, 'ok');
+    assert.deepEqual(leadershipRule({ active: 2, scheduled: 0, waitingForAction: 1 }).values[2], { label: 'Holder not active', value: '1' });
   });
 
   test('storage is off when no destination is approved', () => {

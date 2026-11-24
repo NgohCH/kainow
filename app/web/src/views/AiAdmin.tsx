@@ -17,6 +17,7 @@ import {
   formatMyr,
   listModels,
   modelRows,
+  nearLimitState,
   nearestLimit,
   modelBody,
   modelDraft,
@@ -30,7 +31,6 @@ import { DataTable, type Column } from '../ui/DataTable.tsx';
 import { SettingsPage, type SettingsPageItem } from '../ui/SettingsPage.tsx';
 import { StatTile } from '../ui/StatTile.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
-import type { Meaning } from '../ui/meanings.ts';
 import { OrganisationUsageView } from './AiUsage.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'Something went wrong. Try again.');
@@ -283,6 +283,11 @@ function LimitsCurrent({ part, settings }: { part: LimitsPart; settings: OrgSett
   );
 }
 
+/** Until the spending limits are saved there is no record for the other boxes to change: they would send a blank exchange rate. */
+function LimitsFirst() {
+  return <p className="warn" role="status">No limits are saved yet, so every AI request is refused. Save the spending limits first; this can be changed after that.</p>;
+}
+
 /** The saved record has one reason, so each box shows its own fields and sends the whole record. */
 function LimitsForm({ part, settings, onSaved, onCancel }: { part: LimitsPart; settings: OrgSettings | null; onSaved: () => void; onCancel: () => void }) {
   const [form, setForm] = useState<OrgForm>(() => (settings ? orgDraft(settings) : EMPTY_ORG_FORM));
@@ -310,7 +315,7 @@ function LimitsForm({ part, settings, onSaved, onCancel }: { part: LimitsPart; s
   const label = part === 'spending' ? 'Spending limits' : part === 'places' ? 'AI requests at once' : 'Project policy and data handling';
   return (
     <form className="stack" onSubmit={save} aria-label={label}>
-      {!settings && <p className="warn">No limits are saved yet, so every AI request is refused. Save the spending limits first. The other boxes start from the usual defaults and save the whole record.</p>}
+      {!settings && <p className="warn">No limits are saved yet, so every AI request is refused. Save the exchange rate and the spending limits here first.</p>}
       {part === 'spending' && (
         <>
           <label>
@@ -376,19 +381,11 @@ function LimitsForm({ part, settings, onSaved, onCancel }: { part: LimitsPart; s
 
 const num = (v: string) => Number(v);
 
-const shareMeaning = (r: Near): { meaning: Meaning; word: string } => {
-  if (r.limit === null) return { meaning: 'off', word: 'No limit saved' };
-  const s = r.limit <= 0 ? 1 : r.used / r.limit;
-  if (s >= 1) return { meaning: 'failing', word: 'Limit reached' };
-  if (s >= 0.8) return { meaning: 'attention', word: 'Near its limit' };
-  return { meaning: 'ok', word: 'Within its limit' };
-};
-
 const money2 = (n: number) => formatMyr(n.toFixed(6));
 
 /** The ten projects that used the most this month, with their own monthly limits (the Administrator may read any project's limits). */
 function useNearest(usage: OrganisationUsage | null): { rows: Near[]; loading: boolean } {
-  const [limits, setLimits] = useState<Record<string, number | null> | null>(null);
+  const [limits, setLimits] = useState<Record<string, { limit: number | null; unread?: boolean }> | null>(null);
   const top = useMemo(() => [...(usage?.byProject ?? [])].sort((a, b) => num(b.usedMyr) - num(a.usedMyr)).slice(0, 10), [usage]);
   useEffect(() => {
     if (!usage) return;
@@ -397,8 +394,8 @@ function useNearest(usage: OrganisationUsage | null): { rows: Near[]; loading: b
     Promise.all(
       top.map((p) =>
         api.get<LimitsView>(`/projects/${p.projectId}/ai/limits`).then(
-          (v) => [p.projectId, v.project.monthlyLimitMyr === null ? null : num(v.project.monthlyLimitMyr)] as const,
-          () => [p.projectId, null] as const,
+          (v) => [p.projectId, { limit: v.project.monthlyLimitMyr === null ? null : num(v.project.monthlyLimitMyr) }] as const,
+          () => [p.projectId, { limit: null, unread: true }] as const,
         ),
       ),
     ).then((pairs) => !stale && setLimits(Object.fromEntries(pairs)));
@@ -406,7 +403,7 @@ function useNearest(usage: OrganisationUsage | null): { rows: Near[]; loading: b
       stale = true;
     };
   }, [usage, top]);
-  const rows = useMemo(() => (limits ? nearestLimit(top.map((p) => ({ projectId: p.projectId, name: p.name, used: num(p.usedMyr), limit: limits[p.projectId] ?? null }))).slice(0, 5) : []), [limits, top]);
+  const rows = useMemo(() => (limits ? nearestLimit(top.map((p) => ({ projectId: p.projectId, name: p.name, used: num(p.usedMyr), ...(limits[p.projectId] ?? { limit: null }) }))).slice(0, 5) : []), [limits, top]);
   return { rows, loading: !!usage && top.length > 0 && !limits };
 }
 
@@ -446,9 +443,9 @@ function Glance({ spend, models, usage, usageError, keyLoaded }: { spend: SpendV
   const nearColumns: Column<Near>[] = [
     { key: 'project', header: 'Project', sortValue: (r) => r.name.toLowerCase(), cell: (r) => <a href={`#/projects/${r.projectId}/ai`}>{r.name}</a> },
     { key: 'used', header: 'Used this month', sortValue: (r) => r.used, cell: (r) => money2(r.used) },
-    { key: 'limit', header: 'Monthly limit', sortValue: (r) => r.limit ?? -1, cell: (r) => (r.limit === null ? 'None saved' : money2(r.limit)) },
+    { key: 'limit', header: 'Monthly limit', sortValue: (r) => r.limit ?? -1, cell: (r) => (r.unread ? 'Could not be read' : r.limit === null ? 'None saved' : money2(r.limit)) },
     { key: 'share', header: 'Share used', sortValue: (r) => (r.limit && r.limit > 0 ? r.used / r.limit : -1), cell: (r) => (r.limit && r.limit > 0 ? `${Math.round((r.used / r.limit) * 100)}%` : '—') },
-    { key: 'status', header: 'Status', cell: (r) => { const s = shareMeaning(r); return <StatusLabel meaning={s.meaning} word={s.word} />; } },
+    { key: 'status', header: 'Status', cell: (r) => { const s = nearLimitState(r); return <StatusLabel meaning={s.meaning} word={s.word} />; } },
   ];
 
   return (
@@ -502,7 +499,7 @@ export function AiAdmin({ initialTab = 'models' }: { initialTab?: 'models' | 'li
     key,
     title,
     current: spend ? <LimitsCurrent part={key} settings={settings} /> : <p className="loading" role="status">Loading</p>,
-    form: (close) => (spend ? <LimitsForm part={key} settings={settings} onSaved={() => { load(); close(); }} onCancel={close} /> : null),
+    form: (close) => (spend && !settings && key !== 'spending' ? <LimitsFirst /> : spend ? <LimitsForm part={key} settings={settings} onSaved={() => { load(); close(); }} onCancel={close} /> : null),
   });
 
   const items: SettingsPageItem[] = [

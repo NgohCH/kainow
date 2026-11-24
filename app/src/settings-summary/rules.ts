@@ -87,7 +87,7 @@ export function leadershipRule(i: { active: number; scheduled: number; waitingFo
     [
       { label: 'Active', value: String(i.active) },
       { label: 'Scheduled', value: String(i.scheduled) },
-      { label: 'Waiting for action', value: String(i.waitingForAction) },
+      { label: 'Holder not active', value: String(i.waitingForAction) },
     ],
     waiting ? 'Some access is held by an account that is not Active.' : undefined,
   );

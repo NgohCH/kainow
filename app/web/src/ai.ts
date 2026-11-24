@@ -515,7 +515,18 @@ export function modelRows(models: ModelView[], usage: OrganisationUsage | null):
   return [...rows.values()].filter((r) => r.state !== 'withdrawn' || r.month > 0 || r.projects.length > 0);
 }
 
-export interface Near { projectId: string; name: string; used: number; limit: number | null }
+/** `unread`: the project's limits could not be read, so `limit` says nothing. */
+export interface Near { projectId: string; name: string; used: number; limit: number | null; unread?: boolean }
+
+/** The state of one project against its own monthly limit, in words. */
+export function nearLimitState(r: Near): { meaning: 'attention' | 'failing' | 'off' | 'ok'; word: string } {
+  if (r.unread) return { meaning: 'attention', word: 'Limit not read' };
+  if (r.limit === null) return { meaning: 'off', word: 'No limit saved' };
+  const s = r.limit <= 0 ? 1 : r.used / r.limit;
+  if (s >= 1) return { meaning: 'failing', word: 'Limit reached' };
+  if (s >= 0.8) return { meaning: 'attention', word: 'Near its limit' };
+  return { meaning: 'ok', word: 'Within its limit' };
+}
 
 /** Projects with use this month, nearest their own monthly limit first; a project with no limit saved comes last. */
 export function nearestLimit(rows: Near[]): Near[] {

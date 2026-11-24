@@ -19,6 +19,7 @@ import {
   modelDraft,
   modelRows,
   moveId,
+  nearLimitState,
   nearestLimit,
   orgBody,
   orgDraft,
@@ -255,4 +256,11 @@ test('connection states map to meanings: only Ready is calm', async () => {
   assert.equal(connectionMeaning('disabled'), 'off');
   assert.equal(connectionMeaning('key_rejected'), 'failing');
   assert.equal(connectionMeaning('waiting_for_key'), 'failing');
+});
+
+test('a limit that could not be read is not shown as "No limit saved"', () => {
+  assert.equal(nearLimitState({ projectId: 'a', name: 'A', used: 5, limit: null }).word, 'No limit saved');
+  assert.deepEqual(nearLimitState({ projectId: 'a', name: 'A', used: 5, limit: null, unread: true }), { meaning: 'attention', word: 'Limit not read' });
+  assert.equal(nearLimitState({ projectId: 'a', name: 'A', used: 8, limit: 10 }).word, 'Near its limit');
+  assert.equal(nearLimitState({ projectId: 'a', name: 'A', used: 1, limit: 0 }).word, 'Limit reached');
 });

@@ -59,6 +59,17 @@ function fromHsl(h: number, s: number, l: number): string {
   return '#' + [f(0), f(8), f(4)].map((v) => Math.round(v * 255).toString(16).padStart(2, '0')).join('');
 }
 
+/** How far the current menu item must stand out from the menu (beside its white edge and bold text). */
+const MENU_STEP = 1.5;
+
+/** The organisation colour as the current menu item, lightened for a colour as dark as the menu itself. */
+function activeOn(menu: string, accent: string): string {
+  let active = accent;
+  const [h, s, l] = toHsl(accent);
+  for (let step = 1; contrastRatio(active, menu) < MENU_STEP; step += 1) active = fromHsl(h, s, l + step);
+  return active;
+}
+
 /** The colour scheme made from an organisation colour, or the reason it cannot carry white text and visible links. */
 export function deriveScheme(hex: string): { ok: true; scheme: SchemeTokens } | { ok: false; reason: string } {
   if (!/^#[0-9a-f]{6}$/i.test(hex)) return { ok: false, reason: 'Use a colour written as # and six letters or digits, such as #b0182e.' };
@@ -73,7 +84,7 @@ export function deriveScheme(hex: string): { ok: true; scheme: SchemeTokens } | 
     scheme: {
       menu,
       menuInk: WHITE,
-      menuActive: accent,
+      menuActive: activeOn(menu, accent),
       accent,
       accentContrast: WHITE,
       accentDeep: fromHsl(h, s, l - 12),

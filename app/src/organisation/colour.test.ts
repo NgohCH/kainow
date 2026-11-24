@@ -22,6 +22,17 @@ describe('organisation colour', () => {
     assert.ok(contrastRatio('#ffffff', r.scheme.accentWash) < 1.3, 'the wash is nearly white');
   });
 
+  test('a very dark colour still shows which menu item is current', () => {
+    for (const hex of ['#1a0f40', '#000000', '#111111', '#0a1f44']) {
+      const r = deriveScheme(hex);
+      assert.equal(r.ok, true, hex);
+      if (!r.ok) return;
+      assert.equal(r.scheme.accent, hex);
+      assert.ok(contrastRatio(r.scheme.menu, r.scheme.menuActive) >= 1.5, `${hex}: ${r.scheme.menu} and ${r.scheme.menuActive}`);
+      assert.ok(contrastRatio('#ffffff', r.scheme.menuActive) >= 4.5, hex);
+    }
+  });
+
   test('deriveScheme rejects low contrast', () => {
     assert.deepEqual(deriveScheme('#ffd84a'), { ok: false, reason: COLOUR_TOO_LIGHT });
     assert.equal(COLOUR_TOO_LIGHT, 'This colour is too light for white text on buttons. Choose a darker shade.');

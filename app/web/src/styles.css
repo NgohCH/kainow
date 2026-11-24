@@ -829,7 +829,9 @@ a.stat-tile.linked:hover { border-color: var(--accent); }
 .meter > span { display: block; height: 100%; background: var(--accent); }
 
 /* A table wider than its box (between the stacked phone layout and a wide screen) scrolls inside the box, never the page. */
-.data-table-wrap { max-width: 100%; overflow-x: auto; }
+.data-table-wrap { max-width: 100%; }
+.data-table-scroll { max-width: 100%; overflow-x: auto; }
+.data-table-scroll:focus-visible { outline-offset: -3px; }
 .data-table { width: 100%; border-collapse: collapse; font-size: 13px; background: var(--surface); }
 .data-table caption { text-align: left; font-family: var(--serif); font-size: 18px; padding: 0 0 0.5rem; }
 .data-table th, .data-table td { text-align: left; padding: 0.5rem 0.7rem; border-bottom: 1px solid var(--muted-wash); vertical-align: top; }
