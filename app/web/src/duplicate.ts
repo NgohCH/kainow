@@ -32,6 +32,8 @@ export interface NotificationRow {
 }
 export interface OutputRow { inputFormats: string[] | null; outputFormats: string[] | null; exportRoles: string[] }
 
+export type NotCarried = 'requiredApprovals' | 'holidays' | 'calendar' | 'timings' | 'digest' | 'formats' | 'exportRoles';
+
 /** `GET /projects/:id/duplicate`. */
 export interface Offer {
   original: {
@@ -43,14 +45,16 @@ export interface Offer {
   settings: {
     requiredApprovals: number | null; notifications: NotificationRow; outputs: OutputRow;
     /** What the original has that a project may not set now: the new project uses the organisation's, for this reason. */
-    notCarried?: Array<{ setting: string; notCarried: true; reason: string }>;
+    notCarried: Array<{ setting: NotCarried; notCarried: true; reason: string }>;
   };
   mayChange: { calendar: boolean; timings: boolean; digest: boolean; formats: boolean; exportRoles: boolean };
   tasks: OfferedTopTask[];
   risks: Array<{ id: string; key: string; text: string }>;
   resources: OfferedLine[];
-  /** When this offer was read; sent back, so that a change made since for safety reasons is refused (409). */
-  asOf?: string;
+  /** Opaque: sent back as it came, so that a change made since for safety reasons is refused (409). */
+  asOf: string;
+  /** Why the project cannot be copied now, when it cannot. */
+  blocked?: string | { reason: string } | null;
   limits: { tasks: number; risks: number; resources: number; terms: number; termChars: number };
 }
 
@@ -91,8 +95,8 @@ export interface DupState {
   confirmed: Record<string, string>;
   /** Terms a refusal named, for the text it was about. */
   serverTerms: Record<string, { text: string; terms: string[] }>;
-  /** Texts typed here whose original changed before the offer was loaded again: to be checked once more. */
-  recheck: Record<string, string>;
+  /** By text key: the new text that took the place of what was typed, because the original changed. */
+  replaced: Record<string, string>;
 }
 
 export type Part = 'details' | 'departments' | 'stages' | 'holidays' | 'settings' | 'tasks' | 'risks' | 'resources';
@@ -153,14 +157,15 @@ export function foundFor(text: string, terms: readonly string[], server: { text:
   return server && plain(server.text) === plain(text) ? [...here, ...server.terms.filter((t) => !here.includes(t))] : here;
 }
 
-/** Why a carried text is asked about, and what a "Still correct" tick stands for: change the text, or find another term in it, and the question is asked again. */
-export interface Asked { found: string[]; changed: boolean; signature: string }
-export function askedAbout(text: string, terms: readonly string[], server: { text: string; terms: string[] } | undefined, recheck: string | undefined): Asked {
+/** The old terms a carried text holds, and what a "Still correct" tick stands for: change the text, or find another term in it, and the question is asked again. */
+export interface Asked { found: string[]; signature: string }
+export function askedAbout(text: string, terms: readonly string[], server: { text: string; terms: string[] } | undefined): Asked {
   const found = foundFor(text, terms, server);
-  const changed = recheck !== undefined && plain(recheck) === plain(text);
-  return { found, changed, signature: JSON.stringify([plain(text), found.map(plain).sort(), changed]) };
+  return { found, signature: JSON.stringify([plain(text), found.map(plain).sort()]) };
 }
-const asked = (s: DupState, t: { key: string; text: string }, terms: readonly string[]): Asked => askedAbout(t.text, terms, s.serverTerms[t.key], s.recheck[t.key]);
+const asked = (s: DupState, t: { key: string; text: string }, terms: readonly string[]): Asked => askedAbout(t.text, terms, s.serverTerms[t.key]);
+
+export const REPLACED = 'The original changed, so what you typed here was replaced.';
 
 /** A text around its old terms, in parts to mark; long text is cut to the words around the first one. */
 export function termParts(text: string, terms: readonly string[]): Array<{ text: string; hit: boolean }> {
@@ -236,7 +241,7 @@ export function startState(o: Offer): DupState {
     termsText: '',
     confirmed: {},
     serverTerms: {},
-    recheck: {},
+    replaced: {},
   };
 }
 
@@ -279,8 +284,8 @@ export function takeOutUnavailable(s: DupState, o: Offer, ids: readonly string[]
 }
 
 /**
- * `sendKey` is the server's key where this page needs one of its own (a substage added to a carried stage). A text of a row
- * the server has no key for (`keyless`) cannot be confirmed there: an old term in it must be changed.
+ * A text without a key of the original (`keyless`: a new stage, substage or holiday) is known to the server by its place
+ * (`sendKey`, `new:…`) and cannot be confirmed there: an old term in it must be changed.
  */
 export interface Carried { key: string; sendKey?: string; keyless?: boolean; text: string; what: string; part: Part }
 
@@ -296,15 +301,13 @@ export function carriedTexts(o: Offer, s: DupState): Carried[] {
     { key: 'name', text: s.name, what: 'The name', part: 'details' },
     { key: 'purpose', text: s.purpose, what: 'The purpose', part: 'details' },
   ];
-  for (const st of s.stages) {
-    const keyless = st.id === undefined;
-    out.push({ key: `stage:${st.uid}`, keyless, text: st.name, what: `Stage ${inQuotes(st.name, 'without a name')}`, part: 'stages' });
+  for (const [i, st] of s.stages.entries()) {
+    out.push({ key: `stage:${st.uid}`, ...(st.id ? {} : { keyless: true, sendKey: `new:stage:${i}` }), text: st.name, what: `Stage ${inQuotes(st.name, 'without a name')}`, part: 'stages' });
     for (const [n, x] of st.substages.entries()) {
-      // The server checks every substage of a carried stage, an added one under the key of its place.
-      out.push({ key: x.key ?? x.uid, keyless, ...(st.id ? { sendKey: x.key ?? `stage:${st.id}:substage:${n}` } : {}), text: x.name, what: `Substage ${inQuotes(x.name, 'without a name')}`, part: 'stages' });
+      out.push({ key: x.key ?? x.uid, ...(st.id && x.key ? {} : { keyless: true, sendKey: `new:stage:${i}:substage:${n}` }), text: x.name, what: `Substage ${inQuotes(x.name, 'without a name')}`, part: 'stages' });
     }
   }
-  for (const h of s.holidays) out.push({ key: `holiday:${h.uid}`, keyless: h.id === undefined, text: h.name, what: `Holiday ${inQuotes(h.name, 'without a name')}`, part: 'holidays' });
+  for (const [i, h] of s.holidays.entries()) out.push({ key: `holiday:${h.uid}`, ...(h.id ? {} : { keyless: true, sendKey: `new:holiday:${i}` }), text: h.name, what: `Holiday ${inQuotes(h.name, 'without a name')}`, part: 'holidays' });
   for (const t of allTasks(o)) {
     const d = s.tasks[t.id];
     if (!d.on) continue;
@@ -327,6 +330,12 @@ export function withServerTerms(s: DupState, o: Offer, named: ReadonlyArray<{ ke
     if (terms.length > 0) serverTerms[t.key] = { text: t.text, terms };
   }
   return { ...s, serverTerms };
+}
+
+/** Where what was typed has been replaced and not changed since, each with its field. */
+export function replacedOf(o: Offer, s: DupState): Problem[] {
+  const emptied = allTasks(o).filter((t) => s.tasks[t.id].on && s.tasks[t.id].description === '').map((t): Carried => ({ key: t.descriptionKey, text: '', what: `${t.parentId ? 'Subtask' : 'Task'} ${inQuotes(s.tasks[t.id].title, 'without a title')}: description`, part: 'tasks' }));
+  return [...carriedTexts(o, s), ...emptied].filter((t) => s.replaced[t.key] !== undefined && s.replaced[t.key] === t.text).map((t) => ({ part: t.part, field: fieldOf(t.key), text: `${t.what}. ${REPLACED}` }));
 }
 
 /** Ticks (or unticks) "Still correct" for one text as it stands now. */
@@ -372,7 +381,7 @@ export function problemsOf(o: Offer, s: DupState, active?: ReadonlySet<string>):
   const wanted = terms.slice(0, o.limits.terms);
   const holding = carried.flatMap((t) => {
     const a = asked(s, t, wanted);
-    const ask = a.found.length > 0 || a.changed || (t.key === 'purpose' && purposeUnchanged(o, s));
+    const ask = a.found.length > 0 || (t.key === 'purpose' && purposeUnchanged(o, s));
     const settled = s.confirmed[t.key] === a.signature && !(t.keyless && a.found.length > 0);
     return ask && !settled ? [{ ...t, ...a }] : [];
   });
@@ -382,7 +391,6 @@ export function problemsOf(o: Offer, s: DupState, active?: ReadonlySet<string>):
       const named = t.found.map((f) => `“${f}”`).join(', ');
       if (t.found.length > 0 && t.keyless) add(part, fieldOf(t.key), `${t.what} still holds ${named}. Change it.`);
       else if (t.found.length > 0) add(part, fieldOf(t.key), `${t.what} still holds ${named}. Change it or tick “Still correct”.`);
-      else if (t.changed) add(part, fieldOf(t.key), `${t.what}: the original has changed since you typed this. Check it, then change it or tick “Still correct”.`);
       else add(part, fieldOf(t.key), 'Change the purpose or tick “Still correct”.');
     }
   };
@@ -481,10 +489,10 @@ export function buildBody(o: Offer, s: DupState): Record<string, unknown> {
   const task = (t: OfferedTask) => ({ id: t.id, title: s.tasks[t.id].title, description: s.tasks[t.id].description, due: s.tasks[t.id].due || null });
   const confirmedNow = carriedTexts(o, s).flatMap((t) => {
     const a = asked(s, t, terms);
-    return s.confirmed[t.key] === a.signature ? [{ key: t.sendKey ?? t.key, held: a.found.length > 0 && !t.keyless }] : [];
+    return s.confirmed[t.key] === a.signature ? [{ key: t.key, held: a.found.length > 0 && !t.keyless }] : [];
   });
   return {
-    ...(o.asOf === undefined ? {} : { asOf: o.asOf }),
+    asOf: o.asOf,
     name: s.name,
     plannedEnd: s.noPlannedEnd ? null : s.plannedEnd,
     noPlannedEnd: s.noPlannedEnd,
@@ -514,6 +522,12 @@ export function buildBody(o: Offer, s: DupState): Record<string, unknown> {
   };
 }
 
+/** Why the project cannot be copied now, or null. */
+export const blockedReason = (o: Offer): string | null => (typeof o.blocked === 'string' ? o.blocked : o.blocked?.reason) || null;
+
+/** Why something the original has is not carried into the new project, in the server's words. */
+export const notCarriedReason = (o: Offer, setting: NotCarried): string | undefined => o.settings.notCarried.find((n) => n.setting === setting)?.reason;
+
 /** The part of the page a refusal in words is about; null when it could be any (such as the credential check). */
 export function refusalPart(message: string): Part | null {
   const rules: Array<[RegExp, Part]> = [
@@ -529,6 +543,39 @@ export function refusalPart(message: string): Part | null {
   // The credential check names no field.
   if (/^Not posted/i.test(message)) return null;
   return rules.find(([words]) => words.test(message))?.[1] ?? null;
+}
+
+/** What a refused Create says, and what can be done about it. */
+export interface Refusal {
+  message: string;
+  part: Part | null;
+  problems: string[];
+  loadAgain: boolean;
+  /** Beside Load again: what it does. */
+  hint: string | null;
+  /** No answer, or one that says nothing about what happened. */
+  uncertain: boolean;
+  /** The project the same Create made a moment ago. */
+  created: string | null;
+}
+
+export function readRefusal(status: number, said: string, body: unknown): Refusal {
+  const data = (body && typeof body === 'object' ? body : {}) as { problems?: unknown; projectId?: unknown };
+  const created = status === 409 && typeof data.projectId === 'string' ? data.projectId : null;
+  const problems = Array.isArray(data.problems) ? data.problems.filter((p): p is string => typeof p === 'string') : [];
+  const message = status === 413 ? 'There is too much text to copy at once. Take out some tasks or shorten descriptions.' : said;
+  const loadAgain = created === null && (status === 400 || status === 409);
+  const underReview = status === 409 && /is under review/.test(said);
+  return {
+    message, problems, created, loadAgain,
+    part: problems.length > 0 || status === 409 ? null : refusalPart(message),
+    hint: !loadAgain
+      ? null
+      : underReview
+        ? 'You can load again now and go on with this page; Create works once the review has ended.'
+        : 'The original may have changed since you opened this page. Loading it again keeps what you typed, except where the original itself changed.',
+    uncertain: status === 0 || (status >= 500 && status !== 503),
+  };
 }
 
 // ---------------------------------------------------------------------------------------------------------------
@@ -556,38 +603,36 @@ export function mergeOffer(before: Offer, now: Offer, s: DupState): { state: Dup
     removed[kind] = (removed[kind] ?? 0) + 1;
   };
 
-  const rows = <T extends { on: boolean }>(kind: string, typed: Record<string, T>, wasRows: Record<string, T>, freshRows: Record<string, T>): Record<string, T> => {
+  const replaced = { ...s.replaced };
+  /** Text: what was typed on an unchanged original stands. Where the original changed (it may have been cleaned), the new one takes its place. */
+  const text = (key: string, typed: string, old: string, next: string): string => {
+    if (old === next) return typed;
+    if (typed !== old && typed !== next) replaced[key] = next;
+    return next;
+  };
+  const rows = <T extends { on: boolean }>(kind: string, typed: Record<string, T>, freshRows: Record<string, T>, merge: (id: string, typed: T, now: T) => T): Record<string, T> => {
     for (const id of Object.keys(typed)) if (!freshRows[id]) gone(kind);
     return Object.fromEntries(
       Object.entries(freshRows).map(([id, f]) => {
-        if (typed[id]) return [id, { ...mergeFields(typed[id], wasRows[id], f), on: typed[id].on }];
+        if (typed[id]) return [id, { ...merge(id, typed[id], f), on: typed[id].on }];
         added++;
         return [id, { ...f, on: false }];
       }),
     );
   };
-  // Nothing is sent again from the old page except what the person typed: a substage untouched here is the new one, or gone.
-  const recheck = { ...s.recheck };
-  const substages = (t: StageDraft, w: StageDraft, f: StageDraft | null): StageDraft['substages'] => [
+  /** Gone rows are dropped with what was typed in them; rows added here stay. */
+  const substages = (t: StageDraft, w: StageDraft, f: StageDraft): StageDraft['substages'] => [
     ...t.substages.flatMap((x) => {
+      if (x.key === undefined) return [x];
       const old = w.substages.find((y) => y.key === x.key);
-      if (x.key === undefined || !old) return [x];
-      const next = f?.substages.find((y) => y.key === x.key);
-      if (next) return [{ ...x, name: keep(x.name, old.name, next.name) }];
-      if (x.name === old.name) return [];
-      const uid = newUid();
-      recheck[uid] = x.name;
-      return [{ uid, name: x.name }];
+      const next = f.substages.find((y) => y.key === x.key);
+      if (old && next) return [{ ...x, name: text(x.key, x.name, old.name, next.name) }];
+      gone('substage');
+      return [];
     }),
-    ...(f?.substages.filter((x) => !w.substages.some((y) => y.key === x.key)) ?? []),
+    ...f.substages.filter((x) => !w.substages.some((y) => y.key === x.key)),
   ];
-  const goneStage = (t: StageDraft, w: StageDraft): StageDraft | null => {
-    const kept = { ...t, name: t.name === w.name ? '' : t.name, substages: substages(t, w, null) };
-    return kept.name === '' && kept.substages.length === 0 ? null : kept;
-  };
-  const goneHoliday = (t: HolidayDraft, w: HolidayDraft): HolidayDraft | null => (same(t, w) ? null : { ...t, name: t.name === w.name ? '' : t.name });
-  // Stages and holidays keep the order on the page; one that is gone stays as a new one when it was changed by hand.
-  const listed = <T extends { uid: string; id?: string; name: string }>(kind: 'stage' | 'holiday', typed: T[], wasRows: T[], freshRows: T[], merge: (typed: T, was: T, now: T) => T, typedOnly: (typed: T, was: T) => T | null): T[] => {
+  const listed = <T extends { uid: string; id?: string }>(kind: 'stage' | 'holiday', typed: T[], wasRows: T[], freshRows: T[], merge: (typed: T, was: T, now: T) => T, left: (typed: T) => T[]): T[] => {
     const out: T[] = [];
     for (const row of typed) {
       const w = wasRows.find((x) => x.id !== undefined && x.id === row.id);
@@ -596,12 +641,7 @@ export function mergeOffer(before: Offer, now: Offer, s: DupState): { state: Dup
       else if (w && f) out.push(merge(row, w, f));
       else {
         gone(kind);
-        const kept = w ? typedOnly(row, w) : null;
-        if (kept) {
-          const uid = newUid();
-          out.push({ ...kept, id: undefined, uid });
-          if (kept.name !== '') recheck[`${kind}:${uid}`] = kept.name;
-        }
+        out.push(...left(row));
       }
     }
     for (const f of freshRows) {
@@ -610,6 +650,11 @@ export function mergeOffer(before: Offer, now: Offer, s: DupState): { state: Dup
       out.push(f);
     }
     return out;
+  };
+  /** Of a stage that is gone, only the substages added here stay, in a stage that needs a name. */
+  const leftOfStage = (t: StageDraft): StageDraft[] => {
+    const own = t.substages.filter((x) => x.key === undefined);
+    return own.length === 0 ? [] : [{ uid: newUid(), name: '', substages: own }];
   };
 
   // What projects may no longer set goes back to the organisation's, whatever was typed: it could not be created.
@@ -622,25 +667,20 @@ export function mergeOffer(before: Offer, now: Offer, s: DupState): { state: Dup
   if (!may.formats) Object.assign(outputs, { inputFormats: fresh.outputs.inputFormats, outputFormats: fresh.outputs.outputFormats });
   if (!may.exportRoles) outputs.exportRoles = fresh.outputs.exportRoles;
 
-  let tasks = rows('task', s.tasks, was.tasks, fresh.tasks);
+  const offered = new Map(allTasks(now).map((t) => [t.id, t]));
+  let tasks = rows('task', s.tasks, fresh.tasks, (id, t, f) => {
+    const o = offered.get(id) as OfferedTask;
+    const w = was.tasks[id];
+    return { ...t, title: text(o.titleKey, t.title, w.title, f.title), description: text(o.descriptionKey, t.description, w.description, f.description) };
+  });
   // A subtask is never copied without what it belongs to.
   for (const t of allTasks(now)) if (t.parentId && tasks[t.id].on && !tasks[t.parentId]?.on) tasks = { ...tasks, [t.id]: { ...tasks[t.id], on: false } };
 
-  // A text typed over one that has since changed is kept, and asked about once more.
-  const textsOf = (o: Offer, all: DupState) => new Map(carriedTexts(o, all).map((t) => [t.key, t.text]));
-  const every = (d: DupState): DupState => ({ ...d, risks: Object.fromEntries(Object.entries(d.risks).map(([id, r]) => [id, { ...r, on: true }])) });
-  const wasTexts = textsOf(before, every(was));
-  const freshTexts = textsOf(now, every(fresh));
-  const on = <T extends { on: boolean }>(all: Record<string, T>) => Object.fromEntries(Object.entries(all).map(([id, r]) => [id, { ...r, on: true }]));
-  for (const [k, text] of textsOf(before, { ...s, tasks: on(s.tasks), risks: on(s.risks), resources: on(s.resources) })) {
-    const old = wasTexts.get(k) ?? '';
-    const next = freshTexts.get(k) ?? '';
-    if (old !== next && text !== old && text !== next) recheck[k] = text;
-  }
   return {
     state: {
       ...mergeFields(s, was, fresh),
-      recheck,
+      replaced,
+      purpose: text('purpose', s.purpose, was.purpose, fresh.purpose),
       termsText: s.termsText,
       confirmed: s.confirmed,
       serverTerms: s.serverTerms,
@@ -648,11 +688,13 @@ export function mergeOffer(before: Offer, now: Offer, s: DupState): { state: Dup
       requiredApprovals: now.settings.requiredApprovals === null ? null : keep(s.requiredApprovals, was.requiredApprovals, fresh.requiredApprovals),
       notifications,
       outputs,
-      stages: listed('stage', s.stages, was.stages, fresh.stages, (t, w, f) => ({ ...t, name: keep(t.name, w.name, f.name), substages: substages(t, w, f) }), goneStage),
-      holidays: !may.calendar ? [] : listed('holiday', s.holidays, was.holidays, fresh.holidays, (t, w, f) => ({ ...t, date: keep(t.date, w.date, f.date), name: keep(t.name, w.name, f.name) }), goneHoliday),
+      stages: listed('stage', s.stages, was.stages, fresh.stages, (t, w, f) => ({ ...t, name: text(`stage:${t.uid}`, t.name, w.name, f.name), substages: substages(t, w, f) }), leftOfStage),
+      holidays: !may.calendar
+        ? []
+        : listed('holiday', s.holidays, was.holidays, fresh.holidays, (t, w, f) => ({ ...t, date: keep(t.date, w.date, f.date), name: text(`holiday:${t.uid}`, t.name, w.name, f.name) }), () => []),
       tasks,
-      risks: rows('risk', s.risks, was.risks, fresh.risks),
-      resources: rows('resource line', s.resources, was.resources, fresh.resources),
+      risks: rows('risk', s.risks, fresh.risks, (id, t, f) => ({ ...t, text: text(now.risks.find((r) => r.id === id)?.key ?? id, t.text, was.risks[id].text, f.text) })),
+      resources: rows('resource line', s.resources, fresh.resources, (id, t, f) => ({ ...mergeFields(t, was.resources[id], f), description: text(`resource:${id}`, t.description, was.resources[id].description, f.description) })),
     },
     removed,
     added,
@@ -660,11 +702,11 @@ export function mergeOffer(before: Offer, now: Offer, s: DupState): { state: Dup
 }
 
 /** What loading again did, in plain words. */
-export function mergedLine(removed: Removed, added: number): string {
+export function mergedLine(removed: Removed, added: number, replaced = 0): string {
   const gone = Object.entries(removed).map(([kind, n]) => `${n} ${kind}${n === 1 ? '' : 's'}`);
   return [
-    'Loaded again. What you typed is kept.',
-    gone.length > 0 ? `Taken out because it can no longer be copied: ${gone.join(', ')}.` : '',
+    replaced === 0 ? 'Loaded again. What you typed is kept.' : `Loaded again. What you typed is kept, except in ${replaced} ${replaced === 1 ? 'place' : 'places'} where the original changed.`,
+    gone.length > 0 ? `Taken out because it can no longer be copied, with what you typed there: ${gone.join(', ')}.` : '',
     added > 0 ? `Newly offered: ${added}. Newly offered tasks, risks and resources are not ticked.` : '',
   ].filter((x) => x !== '').join(' ');
 }
@@ -692,5 +734,5 @@ export const startPage = (loaded: Loaded): Page => ({ loaded, dup: startState(lo
 export function loadedAgain(page: Page, next: Loaded, unavailable: readonly string[]): Page {
   const { offer } = page.loaded;
   const merged = mergeOffer(offer, next.offer, takeOutUnavailable(page.dup, offer, unavailable));
-  return { loaded: next, dup: merged.state, notice: mergedLine(merged.removed, merged.added), departmentNames: { ...page.departmentNames, ...namesOf(next) } };
+  return { loaded: next, dup: merged.state, notice: mergedLine(merged.removed, merged.added, replacedOf(next.offer, merged.state).length), departmentNames: { ...page.departmentNames, ...namesOf(next) } };
 }

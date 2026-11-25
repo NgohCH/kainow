@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { type HolidayDraft, type NotificationDraft, type OwnSetting, type StageDraft, type Offer, fieldOf, newUid } from '../duplicate.ts';
+import { type HolidayDraft, type NotificationDraft, type OwnSetting, type StageDraft, fieldOf, newUid, notCarriedReason } from '../duplicate.ts';
 import { EXPORT_ROLES, EXPORT_ROLE_LABEL, formatLabel } from '../outputs.ts';
 import { UNITS } from '../resources.ts';
 import { WEEKDAY_NAMES } from '../settings.ts';
@@ -46,7 +46,7 @@ export function DuplicateStages(props: PartProps) {
                     const subKey = sub.key ?? sub.uid;
                     return (
                       <li key={sub.uid}>
-                        <CarriedField {...carriedProps(subKey, props)} text={sub.name} keyless={!st.id}>
+                        <CarriedField {...carriedProps(subKey, props)} text={sub.name} keyless={!st.id || !sub.key}>
                           {(note) => (
                             <label>
                               Substage {n + 1} of {name}
@@ -72,14 +72,12 @@ export function DuplicateStages(props: PartProps) {
 }
 
 const FROM_ORGANISATION = 'From the organisation. The Administrator has not allowed projects to change this.';
-/** Why something the original has is not carried into the new project, in the server's words. */
-const reasonFor = (offer: Offer, setting: string): string | undefined => offer.settings.notCarried?.find((n) => n.setting === setting)?.reason;
 
 /** The project's own holidays, where projects may have them. */
 export function DuplicateHolidays(props: PartProps) {
   const { offer, state, update } = props;
   const may = offer.mayChange.calendar;
-  if (!may) return <p className="meta">{reasonFor(offer, 'holidays') ?? FROM_ORGANISATION}</p>;
+  if (!may) return <p className="meta">{notCarriedReason(offer, 'holidays') ?? FROM_ORGANISATION}</p>;
   const set = (change: (list: HolidayDraft[]) => HolidayDraft[]) => update((s) => ({ ...s, holidays: change(s.holidays) }));
   const edit = (uid: string, change: Partial<HolidayDraft>) => set((l) => l.map((h) => (h.uid === uid ? { ...h, ...change } : h)));
   return (
@@ -149,7 +147,7 @@ export function DuplicateSettings({ offer, state, update, approved }: PartProps 
   const toggle = <T,>(list: T[], v: T, on: boolean) => (on ? [...list, v] : list.filter((x) => x !== v));
 
   const formats = (label: string, id: string, setting: OwnSetting<string[]>, kept: string[] | null, offered: string[] | undefined, set: (v: OwnSetting<string[]>) => void) => (
-    <OwnChoice label={label} may={mayChange.formats} reason={reasonFor(offer, 'formats')} own={setting.own} onOwn={(own) => set({ own, value: own && setting.value.length === 0 ? (kept ?? offered ?? []) : setting.value })}>
+    <OwnChoice label={label} may={mayChange.formats} reason={notCarriedReason(offer, 'formats')} own={setting.own} onOwn={(own) => set({ own, value: own && setting.value.length === 0 ? (kept ?? offered ?? []) : setting.value })}>
       <fieldset id={id} tabIndex={-1}>
         <legend>{label}: only these</legend>
         {[...new Set([...(offered ?? []), ...(kept ?? []), ...setting.value])].map((f) => (
@@ -166,7 +164,7 @@ export function DuplicateSettings({ offer, state, update, approved }: PartProps 
       <fieldset className="settings-group stack">
         <legend>Approvals</legend>
         {settings.requiredApprovals === null ? (
-          <p className="meta">{reasonFor(offer, 'requiredApprovals') ?? 'As many approvals as the organisation requires.'} The new project's Owner or a Sponsor can change it later.</p>
+          <p className="meta">{notCarriedReason(offer, 'requiredApprovals') ?? 'As many approvals as the organisation requires.'} The new project's Owner or a Sponsor can change it later.</p>
         ) : (
           <label>
             Required approvals
@@ -180,7 +178,7 @@ export function DuplicateSettings({ offer, state, update, approved }: PartProps 
       </fieldset>
       <fieldset className="settings-group stack">
         <legend>Calendar and reminders</legend>
-        <OwnChoice label="Day counting" may={mayChange.calendar} reason={reasonFor(offer, 'calendar')} own={n.dayCounting.own} onOwn={(own) => notify({ dayCounting: { ...n.dayCounting, own } })}>
+        <OwnChoice label="Day counting" may={mayChange.calendar} reason={notCarriedReason(offer, 'calendar')} own={n.dayCounting.own} onOwn={(own) => notify({ dayCounting: { ...n.dayCounting, own } })}>
           <label>
             Count in
             <select value={n.dayCounting.value} onChange={(e) => notify({ dayCounting: { own: true, value: e.target.value as 'working' | 'calendar' } })}>
@@ -189,7 +187,7 @@ export function DuplicateSettings({ offer, state, update, approved }: PartProps 
             </select>
           </label>
         </OwnChoice>
-        <OwnChoice label="Working weekdays" may={mayChange.calendar} reason={reasonFor(offer, 'calendar')} own={n.weekdays.own} onOwn={(own) => notify({ weekdays: { ...n.weekdays, own } })}>
+        <OwnChoice label="Working weekdays" may={mayChange.calendar} reason={notCarriedReason(offer, 'calendar')} own={n.weekdays.own} onOwn={(own) => notify({ weekdays: { ...n.weekdays, own } })}>
           <fieldset id="dup-weekdays" tabIndex={-1}>
             <legend>Working weekdays of this project</legend>
             <div className="weekdays">
@@ -201,14 +199,14 @@ export function DuplicateSettings({ offer, state, update, approved }: PartProps 
             </div>
           </fieldset>
         </OwnChoice>
-        <OwnChoice label="Reminder days before the due date" may={mayChange.timings} reason={reasonFor(offer, 'timings')} own={n.leadDays.own} onOwn={(own) => notify({ leadDays: { ...n.leadDays, own } })}>
+        <OwnChoice label="Reminder days before the due date" may={mayChange.timings} reason={notCarriedReason(offer, 'timings')} own={n.leadDays.own} onOwn={(own) => notify({ leadDays: { ...n.leadDays, own } })}>
           <label>
             Days before
             <input id="dup-lead-days" value={n.leadDays.value} onChange={(e) => notify({ leadDays: { own: true, value: e.target.value } })} />
             <span className="hint">One to three whole numbers, 1–30, separated by commas. For example: 7, 1</span>
           </label>
         </OwnChoice>
-        <OwnChoice label="Escalation delay after the due date" may={mayChange.timings} reason={reasonFor(offer, 'timings')} own={n.escalationDays.own} onOwn={(own) => notify({ escalationDays: { ...n.escalationDays, own } })}>
+        <OwnChoice label="Escalation delay after the due date" may={mayChange.timings} reason={notCarriedReason(offer, 'timings')} own={n.escalationDays.own} onOwn={(own) => notify({ escalationDays: { ...n.escalationDays, own } })}>
           <label>
             Days after
             <input id="dup-escalation" type="number" min={1} max={10} value={n.escalationDays.value} onChange={(e) => notify({ escalationDays: { own: true, value: e.target.value } })} />
@@ -218,7 +216,7 @@ export function DuplicateSettings({ offer, state, update, approved }: PartProps 
       <fieldset className="settings-group stack">
         <legend>Action-item email schedule</legend>
         {!mayChange.digest ? (
-          <p className="meta">{reasonFor(offer, 'digest') ?? 'No schedule. The Administrator has not allowed projects to change this.'}</p>
+          <p className="meta">{notCarriedReason(offer, 'digest') ?? 'No schedule. The Administrator has not allowed projects to change this.'}</p>
         ) : (
           <label className="check">
             <input type="checkbox" checked={n.digest.enabled} onChange={(e) => digest({ enabled: e.target.checked })} /> Send the action-item email on a schedule
@@ -266,7 +264,7 @@ export function DuplicateSettings({ offer, state, update, approved }: PartProps 
         ) : (
           <div>
             <p className="dup-setting-name">Who may export</p>
-            <p className="meta">{reasonFor(offer, 'exportRoles') ?? FROM_ORGANISATION} {state.outputs.exportRoles.map((r) => (EXPORT_ROLE_LABEL as Record<string, string>)[r] ?? r).join(', ')}.</p>
+            <p className="meta">{notCarriedReason(offer, 'exportRoles') ?? FROM_ORGANISATION} {state.outputs.exportRoles.map((r) => (EXPORT_ROLE_LABEL as Record<string, string>)[r] ?? r).join(', ')}.</p>
           </div>
         )}
       </fieldset>

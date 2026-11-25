@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { type DupState, type Offer, type Part, type Problem, askedAbout, confirmText, fieldOf, termParts } from '../duplicate.ts';
+import { type DupState, type Offer, type Part, type Problem, REPLACED, askedAbout, confirmText, fieldOf, termParts } from '../duplicate.ts';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
 
 /** Changes the review page's state from what it is at that moment. The same function for the page's whole life. */
@@ -31,7 +31,7 @@ export function PartError({ refusal, part }: { refusal: { message: string; part:
  * the words around the term and "Still correct". `mustDecide` asks about the text whatever it holds (the purpose as it was).
  */
 export function CarriedField({
-  id, text, terms, confirmed, server, recheck, offer, update, mustDecide = false, mustChange = false, keyless = false, children,
+  id, text, terms, confirmed, server, replaced, offer, update, mustDecide = false, mustChange = false, keyless = false, children,
 }: {
   /** The text's key. */
   id: string;
@@ -39,7 +39,8 @@ export function CarriedField({
   terms: readonly string[];
   confirmed: string | undefined;
   server: DupState['serverTerms'][string] | undefined;
-  recheck: string | undefined;
+  /** The text that took the place of what was typed here (the original changed). */
+  replaced: string | undefined;
   offer: Offer;
   update: Update;
   mustDecide?: boolean;
@@ -50,6 +51,7 @@ export function CarriedField({
   /** The field itself; it is given the id of the note about it. */
   children: (noteId: string | undefined) => ReactNode;
 }) {
+  const isReplaced = replaced !== undefined && replaced === text;
   if (mustChange) {
     return (
       <div className="carried asked open">
@@ -58,9 +60,16 @@ export function CarriedField({
       </div>
     );
   }
-  const asked = askedAbout(text, terms, server, recheck);
-  const ask = asked.found.length > 0 || asked.changed || mustDecide;
-  if (!ask) return <div className="carried">{children(undefined)}</div>;
+  const asked = askedAbout(text, terms, server);
+  const ask = asked.found.length > 0 || mustDecide;
+  if (!ask) {
+    return (
+      <div className={isReplaced ? 'carried asked open' : 'carried'}>
+        {children(isReplaced ? `${fieldOf(id)}-note` : undefined)}
+        {isReplaced && <p id={`${fieldOf(id)}-note`} className="carried-note"><StatusLabel meaning="attention" word={REPLACED} /></p>}
+      </div>
+    );
+  }
   const noTick = keyless && asked.found.length > 0;
   const ok = !noTick && confirmed === asked.signature;
   const note = `${fieldOf(id)}-note`;
@@ -69,9 +78,10 @@ export function CarriedField({
       {children(note)}
       <div className="carried-note">
         <div id={note}>
+          {isReplaced && <p className="carried-text"><StatusLabel meaning="attention" word={REPLACED} /></p>}
           <StatusLabel
             meaning={ok ? 'ok' : 'attention'}
-            word={ok ? 'Confirmed as still correct' : asked.found.length > 0 ? `Holds ${asked.found.length === 1 ? 'an old term' : 'old terms'}${noTick ? ': change it' : ''}` : asked.changed ? 'The original has changed since you typed this' : 'As in the original'}
+            word={ok ? 'Confirmed as still correct' : asked.found.length > 0 ? `Holds ${asked.found.length === 1 ? 'an old term' : 'old terms'}${noTick ? ': change it' : ''}` : 'As in the original'}
           />
           {asked.found.length > 0 && (
             <p className="carried-text">
@@ -90,7 +100,7 @@ export function CarriedField({
 
 /** The props of a CarriedField for one key of the state. */
 export const carriedProps = (id: string, { offer, state, terms, update }: PartProps) => ({
-  id, terms, offer, update, confirmed: state.confirmed[id], server: state.serverTerms[id], recheck: state.recheck[id],
+  id, terms, offer, update, confirmed: state.confirmed[id], server: state.serverTerms[id], replaced: state.replaced[id],
 });
 
 const SHOWN = 8;

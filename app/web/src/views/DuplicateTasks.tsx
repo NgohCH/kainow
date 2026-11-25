@@ -14,13 +14,13 @@ interface RowProps {
   descriptionTick: string | undefined;
   titleServer: Server;
   descriptionServer: Server;
-  titleRecheck: string | undefined;
-  descriptionRecheck: string | undefined;
+  titleReplaced: string | undefined;
+  descriptionReplaced: string | undefined;
   update: Update;
 }
 
 /** One task or subtask. Drawn again only when it changes itself, so that hundreds of them stay quick to type in. */
-const TaskRow = memo(function TaskRow({ task, depth, draft, offer, terms, titleTick, descriptionTick, titleServer, descriptionServer, titleRecheck, descriptionRecheck, update }: RowProps) {
+const TaskRow = memo(function TaskRow({ task, depth, draft, offer, terms, titleTick, descriptionTick, titleServer, descriptionServer, titleReplaced, descriptionReplaced, update }: RowProps) {
   const what = depth === 0 ? 'Task' : 'Subtask';
   const edit = useCallback((change: Partial<TaskDraft>) => update((s) => ({ ...s, tasks: { ...s.tasks, [task.id]: { ...s.tasks[task.id], ...change } } })), [task.id, update]);
   return (
@@ -34,7 +34,7 @@ const TaskRow = memo(function TaskRow({ task, depth, draft, offer, terms, titleT
       </label>
       {draft.on && (
         <div className="dup-task-fields">
-          <CarriedField id={task.titleKey} text={draft.title} terms={terms} confirmed={titleTick} server={titleServer} recheck={titleRecheck} offer={offer} update={update}>
+          <CarriedField id={task.titleKey} text={draft.title} terms={terms} confirmed={titleTick} server={titleServer} replaced={titleReplaced} offer={offer} update={update}>
             {(note) => (
               <label>
                 Title
@@ -42,7 +42,7 @@ const TaskRow = memo(function TaskRow({ task, depth, draft, offer, terms, titleT
               </label>
             )}
           </CarriedField>
-          <CarriedField id={task.descriptionKey} text={draft.description} terms={terms} confirmed={descriptionTick} server={descriptionServer} recheck={descriptionRecheck} offer={offer} update={update}>
+          <CarriedField id={task.descriptionKey} text={draft.description} terms={terms} confirmed={descriptionTick} server={descriptionServer} replaced={descriptionReplaced} offer={offer} update={update}>
             {(note) => (
               <label>
                 Description (optional)
@@ -95,12 +95,12 @@ export const DuplicateTasks = memo(function DuplicateTasks({ offer, state, terms
             descriptionTick={state.confirmed[task.descriptionKey]}
             titleServer={state.serverTerms[task.titleKey]}
             descriptionServer={state.serverTerms[task.descriptionKey]}
-            titleRecheck={state.recheck[task.titleKey]}
-            descriptionRecheck={state.recheck[task.descriptionKey]}
+            titleReplaced={state.replaced[task.titleKey]}
+            descriptionReplaced={state.replaced[task.descriptionKey]}
             update={update}
           />
         ))}
       </ul>
     </>
   );
-}, (a, b) => a.offer === b.offer && a.terms === b.terms && a.update === b.update && a.state.tasks === b.state.tasks && a.state.confirmed === b.state.confirmed && a.state.serverTerms === b.state.serverTerms && a.state.recheck === b.state.recheck);
+}, (a, b) => a.offer === b.offer && a.terms === b.terms && a.update === b.update && a.state.tasks === b.state.tasks && a.state.confirmed === b.state.confirmed && a.state.serverTerms === b.state.serverTerms && a.state.replaced === b.state.replaced);

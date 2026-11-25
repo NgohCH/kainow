@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import {
-  type DupState, type Offer, buildBody, loadedAgain, purposeUnchanged, startPage, carriedTexts, chooseAllTasks, chooseTask, confirmText, copiedFromText, findIn, mergeOffer, parseDuplicateHash, problemsOf, refusalPart,
+  type DupState, type Offer, REPLACED, blockedReason, buildBody, notCarriedReason, replacedOf, readRefusal, loadedAgain, purposeUnchanged, startPage, carriedTexts, chooseAllTasks, chooseTask, confirmText, copiedFromText, findIn, mergeOffer, parseDuplicateHash, problemsOf, refusalPart,
   startState, takeOutUnavailable, termParts, termsOf, withServerTerms,
 } from './duplicate.ts';
 
 const P = '00000000-0000-4000-8000-000000000001';
 const offer = (over: Partial<Offer> = {}): Offer => ({
+  asOf: '2026-11-25T00:00:00.000Z~0:0:0',
   original: {
     id: P, name: 'Harbour survey 2026', purpose: 'Survey the harbour for Example Customer.', purposeKey: 'purpose', plannedEnd: '2026-12-31',
     owningDepartment: { id: 'd1', name: 'Surveys', retired: false }, contributingDepartments: [],
@@ -17,6 +18,7 @@ const offer = (over: Partial<Offer> = {}): Offer => ({
     requiredApprovals: null,
     notifications: { dayCounting: null, weekdays: null, leadDays: null, escalationDays: null, digestEnabled: false, digestFrequency: null, digestWeekday: null, digestTime: null },
     outputs: { inputFormats: null, outputFormats: null, exportRoles: ['pm', 'deputy', 'owner', 'sponsor'] },
+    notCarried: [],
   },
   mayChange: { calendar: true, timings: true, digest: true, formats: true, exportRoles: true },
   tasks: [
@@ -114,16 +116,52 @@ test('terms the server found that this page did not are asked about until change
   assert.deepEqual(problemsOf(o, confirmText(s, o, 'task:t4:title', true)), []);
 });
 
-test('a substage added to a carried stage is checked too, and confirmed under the key of its place', () => {
+test('terms the server names under a new: key mark the row in that place', () => {
   const o = offer();
-  let s = { ...settled(startState(o)), termsText: 'zebra' };
-  s = { ...s, stages: [{ ...s.stages[0], substages: [...s.stages[0].substages, { uid: 'n5', name: 'Zebra day' }] }] };
-  assert.deepEqual(problemsOf(o, s).map((p) => p.field), ['dup-n5']);
-  s = confirmText(s, o, 'n5', true);
-  assert.deepEqual(problemsOf(o, s), []);
-  assert.deepEqual(body(o, s).confirmedKeys, ['stage:s1:substage:2']);
-  const named = withServerTerms({ ...s, termsText: '' }, o, [{ key: 'stage:s1:substage:2', term: 'ZEBRA' }]);
-  assert.deepEqual(named.serverTerms, { n5: { text: 'Zebra day', terms: ['ZEBRA'] } });
+  let s: DupState = settled(startState(o));
+  s = {
+    ...s,
+    stages: [{ ...s.stages[0], substages: [...s.stages[0].substages, { uid: 'n5', name: 'Zebra day' }] }, { uid: 'n6', name: 'Zebra stage', substages: [{ uid: 'n7', name: 'Zebra step' }] }],
+    holidays: [...s.holidays, { uid: 'n8', date: '2027-01-01', name: 'Zebra fest' }],
+  };
+  const keys = ['new:stage:0:substage:2', 'new:stage:1', 'new:stage:1:substage:0', 'new:holiday:1'];
+  const named = withServerTerms(s, o, keys.map((key) => ({ key, term: 'ZEBRA' })));
+  assert.deepEqual(Object.keys(named.serverTerms), ['n5', 'stage:n6', 'n7', 'holiday:n8']);
+  assert.deepEqual(problemsOf(o, named).map((p) => p.field), ['dup-n5', 'dup-stage:n6', 'dup-n7', 'dup-holiday:n8']);
+  assert.ok(problemsOf(o, named).every((p) => !/Still correct/.test(p.text)), 'none can be confirmed');
+  assert.deepEqual(body(o, confirmText(named, o, 'n5', true)).confirmedKeys, []);
+  const here = { ...s, termsText: 'zebra' };
+  assert.deepEqual(problemsOf(o, here).map((p) => p.field), problemsOf(o, named).map((p) => p.field), 'the page finds the same by itself');
+});
+
+test('asOf is sent back as it came', () => {
+  const o = offer({ asOf: '2026-11-25T10:00:00.000Z~3:1:7' });
+  assert.equal(body(o, startState(o)).asOf, '2026-11-25T10:00:00.000Z~3:1:7');
+});
+
+test('a refused Create: the three conflicts, an old page, what the server lists, and no answer', () => {
+  const open = readRefusal(409, 'Something in the original is under review for a suspected credential. Create the copy when the review has ended.', {});
+  assert.deepEqual([open.loadAgain, open.created, open.uncertain, open.hint], [true, null, false, 'You can load again now and go on with this page; Create works once the review has ended.']);
+  const since = readRefusal(409, 'Something in the original was put under review or cleaned after you opened this page. Load the project again.', {});
+  assert.deepEqual([since.loadAgain, since.created], [true, null]);
+  assert.match(since.hint!, /keeps what you typed/);
+  const twice = readRefusal(409, 'You created this project a moment ago.', { projectId: P });
+  assert.deepEqual([twice.loadAgain, twice.created], [false, P]);
+  assert.equal(readRefusal(400, 'Load the project again.', {}).loadAgain, true);
+  const listed = readRefusal(400, 'A. B.', { problems: ['A.', 'B.', 5] });
+  assert.deepEqual([listed.problems, listed.part, listed.loadAgain], [['A.', 'B.'], null, true]);
+  assert.equal(readRefusal(400, 'Choose an active owning department.', null).part, 'departments');
+  assert.equal(readRefusal(0, 'Cannot reach', undefined).uncertain, true);
+  assert.equal(readRefusal(500, 'x', undefined).uncertain, true);
+  assert.equal(readRefusal(503, 'read only', undefined).uncertain, false);
+  assert.match(readRefusal(413, 'x', undefined).message, /too much text/);
+});
+
+test('why a setting of the original is not carried, by its name', () => {
+  const reason = "The Administrator does not let projects set their own digest now, so the new project uses the organisation's.";
+  const o = offer({ settings: { ...offer().settings, notCarried: [{ setting: 'digest', notCarried: true, reason }] } });
+  assert.equal(notCarriedReason(o, 'digest'), reason);
+  assert.equal(notCarriedReason(o, 'formats'), undefined);
 });
 
 test('limits on the terms themselves', () => {
@@ -175,14 +213,15 @@ test('what would be refused is named beside its field: blanks, doubles, retired 
 test('settings: the body says what is on screen, and bad values are named', () => {
   const o = offer();
   const s = settled(startState(o));
-  assert.deepEqual(body(o, s).settings, o.settings);
+  const { notCarried: _none, ...sent } = o.settings;
+  assert.deepEqual(body(o, s).settings, sent);
   assert.deepEqual(body(o, { ...s, notifications: { ...s.notifications, leadDays: { own: true, value: '7, 1' } } }).settings.notifications.leadDays, [7, 1]);
   assert.equal(problemsOf(o, { ...s, notifications: { ...s.notifications, leadDays: { own: true, value: 'soon' } } })[0].field, 'dup-lead-days');
   assert.equal(problemsOf(o, { ...s, notifications: { ...s.notifications, weekdays: { own: true, value: [] } } })[0].field, 'dup-weekdays');
   assert.equal(problemsOf(o, { ...s, outputs: { ...s.outputs, exportRoles: [] } })[0].field, 'dup-export-roles');
   const digest = offer({ settings: { ...o.settings, notifications: { ...o.settings.notifications, digestEnabled: true, digestFrequency: 'weekly', digestWeekday: 2, digestTime: '08:30' } } });
   const ds = startState(digest);
-  assert.deepEqual(body(digest, ds).settings, digest.settings);
+  assert.deepEqual(body(digest, ds).settings, { ...sent, notifications: digest.settings.notifications });
   assert.deepEqual(body(digest, { ...ds, notifications: { ...ds.notifications, digest: { ...ds.notifications.digest, enabled: false } } }).settings.notifications, o.settings.notifications);
 });
 
@@ -209,7 +248,7 @@ test('Load again keeps what was typed, takes the new text where nothing was, and
   const next = offer({
     original: { ...o.original, purpose: 'A cleaned purpose.' },
     tasks: [
-      { ...o.tasks[0], title: 'Plan again', description: 'New words', subtasks: [o.tasks[0].subtasks[0]] },
+      { ...o.tasks[0], description: 'New words', subtasks: [o.tasks[0].subtasks[0]] },
       { id: 't9', title: 'Late task', titleKey: 'task:t9:title', description: null, descriptionKey: 'task:t9:description', subtasks: [] },
     ],
     risks: [],
@@ -226,30 +265,64 @@ test('Load again keeps what was typed, takes the new text where nothing was, and
   assert.ok(problemsOf(next, m.state).some((p) => p.field === 'dup-purpose'), 'the new purpose has not been confirmed');
 });
 
-test('Load again: nothing from the old page is sent again but what was typed, and typed text whose original changed is asked about once more', () => {
-  const o = offer({ asOf: 'first' });
+test('Load again: what was typed over a text that has changed is replaced, with a note at the field and at the top', () => {
+  const o = offer();
   let s = settled(startState(o), o);
-  s = { ...s, stages: [{ ...s.stages[0], substages: [s.stages[0].substages[0], { ...s.stages[0].substages[1], name: 'Opening day' }] }] };
-  s = { ...s, tasks: { ...s.tasks, t4: { ...s.tasks.t4, title: 'Report for the quay' } } };
+  s = {
+    ...s,
+    purpose: 'Survey the quay for Example Customer, password 1234',
+    stages: [{ ...s.stages[0], name: 'Start of hunter2', substages: [{ ...s.stages[0].substages[0], name: 'Prepare hunter2' }, s.stages[0].substages[1]] }],
+    holidays: [{ ...s.holidays[0], name: 'Closing hunter2', date: '2027-12-25' }],
+    tasks: { ...s.tasks, t1: { ...s.tasks.t1, title: 'Plan hunter2 for the quay', description: 'For the quay', due: '2027-05-05' }, t4: { ...s.tasks.t4, title: 'My report' } },
+    risks: { r1: { on: true, text: 'Storms hunter2' } },
+    resources: { ...s.resources, l2: { ...s.resources.l2, description: 'Divers hunter2', quantity: '3', unit: 'days' } },
+  };
   const next = offer({
-    asOf: 'second',
-    stages: [{ ...o.stages[0], substages: [{ key: 'stage:s1:substage:0', name: 'Cleaned' }] }],
-    tasks: [o.tasks[0], { ...o.tasks[1], title: 'Cleaned report' }],
+    original: { ...o.original, purpose: '[credential removed]' },
+    stages: [{ ...o.stages[0], name: '[credential removed] a', substages: [{ key: 'stage:s1:substage:0', name: '[credential removed] b' }, o.stages[0].substages[1]] }],
+    holidays: [{ ...o.holidays[0], name: '[credential removed] c' }],
+    tasks: [{ ...o.tasks[0], title: '[credential removed] d' }, o.tasks[1]],
+    risks: [{ ...o.risks[0], text: '[credential removed] e' }],
+    resources: [o.resources[0], { ...o.resources[1], description: '[credential removed] f' }],
   });
-  let m = mergeOffer(o, next, s).state;
-  assert.deepEqual(m.stages[0].substages.map((x) => [x.key, x.name]), [['stage:s1:substage:0', 'Cleaned'], [undefined, 'Opening day']]);
-  assert.equal(m.tasks.t4.title, 'Report for the quay');
-  const day = m.stages[0].substages[1].uid;
-  assert.deepEqual(problemsOf(next, m).map((p) => p.field), [`dup-${day}`, 'dup-task:t4:title']);
-  m = confirmText(m, next, day, true);
-  assert.deepEqual(problemsOf(next, m).map((p) => p.field), ['dup-task:t4:title']);
-  assert.match(problemsOf(next, m)[0].text, /original has changed/);
-  assert.deepEqual(problemsOf(next, confirmText(m, next, 'task:t4:title', true)), []);
-  assert.deepEqual(problemsOf(next, { ...m, tasks: { ...m.tasks, t4: { ...m.tasks.t4, title: 'Summary' } } }), []);
-  assert.equal(body(o, s).asOf, 'first');
-  assert.equal(body(next, m).asOf, 'second');
-  const gone = mergeOffer(o, offer({ stages: [] }), s).state.stages;
-  assert.deepEqual(gone.map((x) => [x.id, x.name, x.substages.map((y) => y.name)]), [[undefined, '', ['Opening day']]], 'the untouched name is not sent again');
+  const { state: m } = mergeOffer(o, next, s);
+  assert.equal(JSON.stringify(body(next, m)).includes('hunter2'), false);
+  assert.equal(JSON.stringify(body(next, m)).includes('1234'), false);
+  assert.deepEqual([m.tasks.t1.title, m.tasks.t1.description, m.tasks.t1.due, m.tasks.t4.title], ['[credential removed] d', 'For the quay', '2027-05-05', 'My report']);
+  assert.deepEqual([m.name, m.holidays[0].date, m.resources.l2.quantity], ['Quay survey', '2027-12-25', '3']);
+  assert.deepEqual(replacedOf(next, m).map((p) => p.field), ['dup-purpose', 'dup-stage:s1', 'dup-stage:s1:substage:0', 'dup-holiday:h1', 'dup-task:t1:title', 'dup-risk:r1', 'dup-resource:l2']);
+  assert.ok(replacedOf(next, m).every((p) => p.text.endsWith(REPLACED)));
+  assert.equal(REPLACED, 'The original changed, so what you typed here was replaced.');
+  const again = { ...m, tasks: { ...m.tasks, t1: { ...m.tasks.t1, title: 'New wording' } } };
+  assert.equal(replacedOf(next, again).some((p) => p.field === 'dup-task:t1:title'), false, 'the note goes once the text is changed');
+  const cleared = mergeOffer(o, offer({ tasks: [{ ...o.tasks[0], description: null }, o.tasks[1]] }), s).state;
+  assert.deepEqual([cleared.tasks.t1.description, replacedOf(o, cleared).map((p) => p.field)], ['', ['dup-task:t1:description']], 'also where nothing is left');
+  assert.deepEqual(replacedOf(o, mergeOffer(o, offer({ tasks: [o.tasks[0], { ...o.tasks[1], title: 'Changed' }] }), startState(o)).state), [], 'no note where nothing was typed');
+});
+
+test('Load again: a row that is gone is dropped with what was typed in it; rows added here stay', () => {
+  const o = offer();
+  let s = startState(o);
+  s = {
+    ...s,
+    stages: [{ ...s.stages[0], name: 'My start', substages: [{ ...s.stages[0].substages[0], name: 'My prepare' }, { uid: 'n1', name: 'Added step' }] }, { uid: 'n2', name: 'Added stage', substages: [] }],
+    holidays: [{ ...s.holidays[0], name: 'My day' }, { uid: 'n3', date: '2027-01-01', name: 'Added day' }],
+  };
+  const m = mergeOffer(o, offer({ stages: [], holidays: [] }), s);
+  assert.deepEqual(m.state.stages.map((x) => [x.name, x.substages.map((y) => y.name)]), [['', ['Added step']], ['Added stage', []]], 'an added substage stays, in a stage that still needs a name');
+  assert.deepEqual(m.state.holidays.map((x) => x.name), ['Added day']);
+  assert.equal(m.removed.stage, 1);
+  assert.equal(m.removed.holiday, 1);
+  const sub = mergeOffer(o, offer({ stages: [{ ...o.stages[0], substages: [o.stages[0].substages[1]] }] }), s);
+  assert.deepEqual(sub.state.stages[0].substages.map((x) => x.name), ['Added step']);
+  assert.equal(sub.removed.substage, 1);
+  assert.deepEqual(mergeOffer(o, offer({ stages: [{ id: 's7', key: 'stage:s7', name: 'Fresh', substages: [] }] }), startState(o)).state.stages.map((x) => x.name), ['Fresh']);
+});
+
+test('a reason the project cannot be copied now is said', () => {
+  assert.equal(blockedReason(offer()), null);
+  assert.equal(blockedReason(offer({ blocked: 'Under review.' })), 'Under review.');
+  assert.equal(blockedReason(offer({ blocked: { reason: 'Under review.' } })), 'Under review.');
 });
 
 test('Load again: a setting projects may no longer have goes back to the organisation', () => {
@@ -266,16 +339,6 @@ test('a subtask never stays ticked under a task that is not', () => {
   const next = offer({ tasks: [{ ...o.tasks[0], subtasks: [o.tasks[0].subtasks[0], { ...o.tasks[0].subtasks[1], parentId: 't8' }, { ...o.tasks[0].subtasks[0], id: 't8', parentId: 't1' }] }] });
   const m = mergeOffer(o, next, s).state;
   assert.deepEqual([m.tasks.t8.on, m.tasks.t3.on], [false, false]);
-});
-
-test('a stage or holiday that is gone but was changed by hand is kept as a new one', () => {
-  const o = offer();
-  const s = startState(o);
-  const edited = { ...s, stages: [{ ...s.stages[0], name: 'My start' }] };
-  const next = offer({ stages: [{ id: 's7', key: 'stage:s7', name: 'Fresh', substages: [] }], holidays: [] });
-  assert.deepEqual(mergeOffer(o, next, edited).state.stages.map((x) => [x.id, x.name]), [[undefined, 'My start'], ['s7', 'Fresh']]);
-  assert.deepEqual(mergeOffer(o, next, s).state.stages.map((x) => x.name), ['Fresh']);
-  assert.deepEqual(mergeOffer(o, next, s).state.holidays, []);
 });
 
 test('what the server named as gone can be taken out with the rest kept', () => {
@@ -312,24 +375,6 @@ test('rows without an id are checked for old terms; with no key to confirm them 
   for (const k of ['stage:n1', 'n2', 'holiday:n3']) s = confirmText(s, o, k, true);
   assert.equal(problemsOf(o, s).length, 3, 'a tick does not settle them');
   assert.deepEqual(body(o, s).confirmedKeys, []);
-});
-
-test('Load again: an edited row that is gone from the offer is asked about under its new identity', () => {
-  const o = offer();
-  let s = settled({ ...startState(o), termsText: '' });
-  s = { ...s, stages: [{ ...s.stages[0], name: 'My start', substages: [{ ...s.stages[0].substages[0], name: 'My prepare' }] }], holidays: [{ ...s.holidays[0], name: 'My day' }] };
-  const next = offer({ stages: [], holidays: [] });
-  const m = mergeOffer(o, next, s).state;
-  const asks = problemsOf(next, m);
-  assert.deepEqual(asks.map((p) => p.field), [`dup-stage:${m.stages[0].uid}`, `dup-${m.stages[0].substages[0].uid}`, `dup-holiday:${m.holidays[0].uid}`]);
-  assert.ok(asks.every((p) => /original has changed/.test(p.text)));
-  let done = m;
-  for (const p of asks) done = confirmText(done, next, p.field.slice(4), true);
-  assert.deepEqual(problemsOf(next, done), []);
-  assert.equal(problemsOf(next, { ...m, termsText: 'my start' }).find((p) => p.field.startsWith('dup-stage'))!.text.includes('my start'), true, 'old terms are looked for in it too');
-  // A substage whose key is gone from a stage that stays.
-  const kept = mergeOffer(o, offer({ stages: [{ ...o.stages[0], substages: [] }] }), s).state;
-  assert.ok(problemsOf(o, kept).some((p) => p.field === `dup-${kept.stages[0].substages[0].uid}` && /original has changed/.test(p.text)));
 });
 
 test('Load again merges into what is on the page when the answer comes, and offer and input change together', () => {

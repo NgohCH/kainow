@@ -2,7 +2,7 @@ import { useCallback, useDeferredValue, useEffect, useMemo, useReducer, useRef, 
 import { ApiError, api, setCsrfToken, type Department, type Project, type User } from '../api.ts';
 import { go } from '../App.tsx';
 import { plural } from '../format.ts';
-import { type DupState, type Loaded, type Offer, type Page, type Part, allTasks, buildBody, fieldOf, loadedAgain, problemsOf, purposeUnchanged, refusalPart, startPage, termsOf, withServerTerms } from '../duplicate.ts';
+import { type DupState, type Loaded, type Offer, type Page, type Refusal, allTasks, buildBody, fieldOf, loadedAgain, problemsOf, blockedReason, purposeUnchanged, readRefusal, replacedOf, startPage, termsOf, withServerTerms } from '../duplicate.ts';
 import { Box } from '../ui/Box.tsx';
 import { PageHeader } from '../ui/PageHeader.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
@@ -49,25 +49,7 @@ export function DuplicateProject({ projectId, meId }: { projectId: string; meId:
   return <Review first={loaded} meId={meId} />;
 }
 
-interface Refusal { message: string; part: Part | null; problems: string[]; loadAgain: boolean; uncertain: boolean; created: string | null }
-
-/** What a failed Create says, and what can be done about it. */
-function readRefusal(e: unknown): Refusal {
-  const data = (e instanceof ApiError ? e.data : null) as { problems?: unknown; projectId?: unknown } | null;
-  const created = typeof data?.projectId === 'string' ? data.projectId : null;
-  const problems = Array.isArray(data?.problems) ? data.problems.filter((p): p is string => typeof p === 'string') : [];
-  const status = e instanceof ApiError ? e.status : 0;
-  const message = status === 413 ? 'There is too much text to copy at once. Take out some tasks or shorten descriptions.' : errText(e);
-  return {
-    message,
-    problems,
-    part: problems.length > 0 ? null : refusalPart(message),
-    loadAgain: created === null && (status === 400 || status === 409),
-    // No answer, or one that says nothing about what happened.
-    uncertain: status === 0 || (status >= 500 && status !== 503),
-    created,
-  };
-}
+const refusalOf = (e: unknown): Refusal => readRefusal(e instanceof ApiError ? e.status : 0, errText(e), e instanceof ApiError ? e.data : null);
 
 function Review({ first, meId }: { first: Loaded; meId: string }) {
   // The offer and what was made of it are one state: they are never drawn from different loads.
@@ -101,6 +83,8 @@ function Review({ first, meId }: { first: Loaded; meId: string }) {
   const termsText = useDeferredValue(state.termsText);
   const terms = useMemo(() => termsOf(termsText).slice(0, offer.limits.terms), [termsText, offer.limits.terms]);
   const problems = useMemo(() => problemsOf(deferred.loaded.offer, deferred.dup, new Set(deferred.loaded.departments.map((d) => d.id))), [deferred]);
+  const replaced = useMemo(() => replacedOf(deferred.loaded.offer, deferred.dup), [deferred]);
+  const blocked = blockedReason(offer);
   const has = (field: string) => problems.some((p) => p.field === field);
   useEffect(() => {
     if (refusal) errorBox.current?.focus();
@@ -144,7 +128,7 @@ function Review({ first, meId }: { first: Loaded; meId: string }) {
         const named = data.terms;
         update((s) => withServerTerms(s, offer, named));
       }
-      setRefusal(readRefusal(e));
+      setRefusal(refusalOf(e));
       unavailable.current = e instanceof ApiError && Array.isArray((e.data as { unavailable?: unknown } | null)?.unavailable) ? (e.data as { unavailable: string[] }).unavailable : [];
       setCreating(false);
     }
@@ -160,7 +144,7 @@ function Review({ first, meId }: { first: Loaded; meId: string }) {
       setRefusal(null);
       unavailable.current = [];
     } catch (e) {
-      setRefusal((r) => ({ ...(r ?? readRefusal(e)), message: `The original could not be loaded again: ${errText(e)} What you typed is kept.`, part: null, problems: [], loadAgain: true, uncertain: false, created: null }));
+      setRefusal((r) => ({ ...(r ?? refusalOf(e)), message: `The original could not be loaded again: ${errText(e)} What you typed is kept.`, part: null, problems: [], loadAgain: true, uncertain: false, created: null, hint: null }));
     } finally {
       setLoading(false);
     }
@@ -184,6 +168,18 @@ function Review({ first, meId }: { first: Loaded; meId: string }) {
         intro="Nothing is created until you press Create. Everything below is filled in from the original: change whatever differs for the new project."
       />
       {notice && <p ref={noticeBox} tabIndex={-1} className="ok">{notice}</p>}
+
+      {blocked && (
+        <Box title="This project cannot be copied now" meaning="blocked">
+          <p>{blocked}</p>
+          <button type="button" disabled={busy} onClick={() => void loadAgain()}>Load again</button>
+        </Box>
+      )}
+      {replaced.length > 0 && (
+        <Box title="Replaced when you loaded again" meaning="attention">
+          <ProblemList problems={replaced} projectId={id} all={allProblems} onAll={() => setAllProblems((a) => !a)} />
+        </Box>
+      )}
 
       <Box title="What you still need to change" meaning={problems.length > 0 ? 'attention' : 'ok'}>
         <p role="status"><StatusLabel meaning={problems.length > 0 ? 'attention' : 'ok'} word={left} /></p>
@@ -318,6 +314,7 @@ function Review({ first, meId }: { first: Loaded; meId: string }) {
         <p className="meta">Not copied: people, notes, discussions, decisions, questions, outputs, files, history, budget, AI settings, access and change requests. The original is not changed.</p>
         <p><StatusLabel meaning={problems.length > 0 ? 'attention' : 'ok'} word={left} /></p>
         {problems.length > 0 && list}
+        {blocked && <p className="error">{blocked}</p>}
         {refusal && (
           <div ref={errorBox} tabIndex={-1} role="group" aria-label="Why the project was not created" className="stack">
             {refusal.created !== null && <p>{refusal.message} <a href={`#/projects/${refusal.created}`} onClick={() => leaveGuard.release()}>Open the new project</a></p>}
@@ -326,14 +323,14 @@ function Review({ first, meId }: { first: Loaded; meId: string }) {
             {refusal.uncertain && <p>It may have been created all the same: look in <a href="#/projects" target="_blank" rel="noreferrer">Projects (opens in a new tab)</a> before you press Create again.</p>}
             {refusal.loadAgain && (
               <div>
-                <p className="meta">The original may have changed since you opened this page. Loading it again keeps what you typed.</p>
+                {refusal.hint && <p className="meta">{refusal.hint}</p>}
                 <button type="button" disabled={busy} onClick={() => void loadAgain()}>Load again</button>
               </div>
             )}
           </div>
         )}
         <div className="decision">
-          <button type="button" className="primary" disabled={busy || problems.length > 0} onClick={() => void create()}>{busy ? 'Working' : 'Create project'}</button>
+          <button type="button" className="primary" disabled={busy || problems.length > 0 || blocked !== null} onClick={() => void create()}>{busy ? 'Working' : 'Create project'}</button>
           <a href={`#/projects/${id}`}>Cancel</a>
         </div>
       </Box>
