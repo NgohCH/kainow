@@ -149,6 +149,16 @@
 - [ ] Tests (RED): project order by each rule and tie; urgency order inside; counts add up to the original list (items with `count` > 1 included); two projects with one name stay apart; filters drop empty projects; one project; nothing at all keeps today's wording.
 - [ ] Implement; `npm test`, build; demo as load-001 at 1280 and 375 px, keyboard included. Commit `feat(web): needs you and tasks grouped by project (D141)`.
 
+### Task 15: Resource catalogue: add the first item (web; with Task 14)
+
+Reported by the Product Owner, 25 November 2026: with no category, "+ Add item" is greyed out and nothing near it says why.
+
+**Files:** Modify `ResourceCatalogue.tsx`, `resourceScreens.ts` and its test; `SecurityReview.tsx`, `DeadlineReview.tsx`, `SummaryView.tsx`, `People.tsx` where a button is off with no visible reason.
+
+- [ ] Tests (RED): `itemProblem` accepts a new category name in place of a chosen one; a blank, over-long or already used name is refused in plain words.
+- [ ] "+ Add item" always works. The form's Category offers "New category" with a name field (chosen already when there are none); saving adds the category, then the item. If the item is refused, the new category stays and is selected, and the form says so. Each listed button that can be off says why beside it.
+- [ ] `npm test`, build; demo as load-001. Commit `fix(web): the first catalogue item can be added`.
+
 ### Task 11: Checks and documents (runs last)
 
 - [ ] Accessibility audit: task page (each status), My profile, Projects History, rename form, Home and My tasks grouped by project, Duplicate project (empty, with old terms highlighted, refused), authorise several, three tab styles (1200 and 375 px, Light and Dark); the audit fails on any violation or sideways scroll.
