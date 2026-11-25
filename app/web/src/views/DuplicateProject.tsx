@@ -1,7 +1,9 @@
 import { useCallback, useDeferredValue, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { ApiError, api, setCsrfToken, type Department, type Project, type User } from '../api.ts';
 import { go } from '../App.tsx';
+import { dayLabel } from '../dashboard.ts';
 import { plural } from '../format.ts';
+import { PROPOSALS_START } from '../projects.ts';
 import { type DupState, type Loaded, type Offer, type Page, type Refusal, allTasks, buildBody, fieldOf, loadedAgain, problemsOf, blockedReason, purposeUnchanged, readRefusal, replacedOf, startPage, termsOf, withServerTerms } from '../duplicate.ts';
 import { Box } from '../ui/Box.tsx';
 import { PageHeader } from '../ui/PageHeader.tsx';
@@ -89,9 +91,10 @@ function Review({ first, meId }: { first: Loaded; meId: string }) {
   useEffect(() => {
     if (refusal) errorBox.current?.focus();
   }, [refusal]);
+  // After every Load again, also one that says the same as the last: the button it was pressed on is off meanwhile.
   useEffect(() => {
     if (notice) noticeBox.current?.focus();
-  }, [notice]);
+  }, [notice, page.loaded]);
 
   const set = useCallback((change: Partial<DupState>) => update((s) => ({ ...s, ...change })), [update]);
   const part = { offer, state, terms, update };
@@ -204,7 +207,7 @@ function Review({ first, meId }: { first: Loaded; meId: string }) {
             <label>
               Planned end
               <input id="dup-planned-end" type="date" aria-describedby={has('dup-planned-end') ? 'dup-planned-end-note' : undefined} disabled={state.noPlannedEnd} value={state.noPlannedEnd ? '' : state.plannedEnd} onChange={(e) => set({ plannedEnd: e.target.value })} />
-              <span className="hint">{offer.original.plannedEnd ? `The original ends on ${offer.original.plannedEnd}.` : 'The original has no planned end.'}</span>
+              <span className="hint">{offer.original.plannedEnd ? `The original ends on ${dayLabel(offer.original.plannedEnd)}.` : 'The original has no planned end.'}</span>
             </label>
             {has('dup-planned-end') && <p id="dup-planned-end-note" className="carried-note"><StatusLabel meaning="attention" word="Must be changed" /></p>}
             <label className="check">
@@ -311,6 +314,7 @@ function Review({ first, meId }: { first: Loaded; meId: string }) {
           A new Draft project with you as its only member and Project Manager: {plural(state.stages.length, 'stage')}, {plural(chosenTasks.length - subtasks, 'task')} and {plural(subtasks, 'subtask')} as proposals,{' '}
           {plural(offer.risks.filter((r) => state.risks[r.id].on).length, 'risk')} as proposals and {plural(offer.resources.filter((l) => state.resources[l.id].on).length, 'resource line')}.
         </p>
+        <p>{PROPOSALS_START}</p>
         <p className="meta">Not copied: people, notes, discussions, decisions, questions, outputs, files, history, budget, AI settings, access and change requests. The original is not changed.</p>
         <p><StatusLabel meaning={problems.length > 0 ? 'attention' : 'ok'} word={left} /></p>
         {problems.length > 0 && list}

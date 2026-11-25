@@ -1,6 +1,13 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { formatExpiry, membershipStateLabel, roleLabel, rolesText, transitionsFor } from './projects.ts';
+import { formatExpiry, membershipStateLabel, proposalsStopped, roleLabel, rolesText, transitionsFor } from './projects.ts';
+
+test('where nothing can be authorised the Proposals tab says why and what to do', () => {
+  assert.match(proposalsStopped('draft')!, /^Nothing can be authorised while the project is a Draft\. Start the project to authorise proposals/);
+  assert.match(proposalsStopped('deferred')!, /Deferred\. Resume the project/);
+  assert.match(proposalsStopped('closed')!, /Closed\. Reopen the project/);
+  assert.deepEqual([proposalsStopped('planned'), proposalsStopped('active')], [null, null]);
+});
 
 test('roles and membership states read as words', () => {
   assert.equal(roleLabel('pm'), 'Project Manager');

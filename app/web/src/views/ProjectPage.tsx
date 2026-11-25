@@ -16,6 +16,8 @@ import {
   membershipStateLabel,
   roleLabel,
   transitionsFor,
+  PROPOSALS_START,
+  proposalsStopped,
 } from '../projects.ts';
 import { go } from '../App.tsx';
 import { type NeedsYouItem, type PersonalDashboard, type ProjectDashboard, dayLabel, plannedEndLabel } from '../dashboard.ts';
@@ -274,6 +276,9 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
       )}
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
+      {view === 'overview' && project.copiedFrom && project.status === 'draft' && roles.length > 0 && (
+        <p className="warn">What was copied waits on <a href={`${base}/proposals`}>Proposals</a>. {PROPOSALS_START}</p>
+      )}
       {view === 'overview' && <Overview project={project} act={act} contentAllowed={contentAllowed} />}
       {view === 'timeline' && contentAllowed && <Timeline projectId={project.id} prefs={prefs} ready={prefsReady} onChange={onPrefs} />}
       {view === 'drafts' && contentAllowed && <Drafts projectId={project.id} draftId={itemId} />}
@@ -309,6 +314,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
         />
       )}
       {view === 'notes' && contentAllowed && <Notes projectId={project.id} canAdd={canAddNotes} canSubmit={canSubmitNotes} addRequest={addNotes} onAddHandled={() => setAddNotes(0)} />}
+      {view === 'proposals' && contentAllowed && proposalsStopped(project.status) && <p className="warn">{proposalsStopped(project.status)}</p>}
       {view === 'proposals' && contentAllowed && (
         <ProjectProposals
           projectId={project.id}

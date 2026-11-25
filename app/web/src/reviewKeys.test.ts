@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { cardForKey, mayTakeFocus, openingSelection, reviewOwnsKey, stepCard, type KeyTarget } from './reviewKeys.ts';
+import { cardForKey, mayAct, mayTakeFocus, openingSelection, reviewOwnsKey, stepCard, type KeyTarget } from './reviewKeys.ts';
+
+test('a and r do what their buttons do: nothing for an authorised proposal, a waiting one, one being saved, or without the right', () => {
+  const free = { allowed: true, hasRecord: false, waiting: false, saving: false, ready: true };
+  assert.equal(mayAct(free), true);
+  for (const over of [{ allowed: false }, { hasRecord: true }, { waiting: true }, { saving: true }, { ready: false }]) assert.equal(mayAct({ ...free, ...over }), false, JSON.stringify(over));
+});
 
 /** A stand-in element: its tag and the selectors it sits inside. */
 const el = (tagName: string, inside: string[] = []): KeyTarget => ({

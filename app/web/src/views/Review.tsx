@@ -10,7 +10,7 @@ import { plural } from '../format.ts';
 import { KINDS, correctionLine, kindWord, needsReason, originalLine, setAsideWarning } from '../ui/corrections.ts';
 import { REVIEW_STATUS_LABEL } from '../records.ts';
 import { canMarkByOffset, evidenceView, occurrenceChoiceText } from '../discussion.ts';
-import { cardForKey, mayTakeFocus, openingSelection, reviewOwnsKey, stepCard } from '../reviewKeys.ts';
+import { cardForKey, mayAct, mayTakeFocus, openingSelection, reviewOwnsKey, stepCard } from '../reviewKeys.ts';
 import { buildSegments, contextAround, markedSpan } from '../segments.ts';
 import { placeLink, recordHref } from '../proposalLinks.ts';
 import { useFocusItem } from './useFocusItem.ts';
@@ -248,13 +248,14 @@ export function Review({ runId, focusId, meId }: { runId: string; focusId?: stri
       }
       const id = cardForKey(focused, selected);
       const current = id ? byId.get(id) : undefined;
-      if (current && e.key === 'a' && view?.permissions.approve && canApprove(current, pick) && !current.record) setAuthorising(current.id);
-      // While an authorisation waits for more approvers, its panel's Reject is the way to reject.
-      else if (current && e.key === 'r' && view?.permissions.reject && !pendingAuthorisation(requests, current.id)) void decide(current, 'rejected');
+      if (!current || !view) return;
+      const its = { hasRecord: current.record !== null && current.record !== undefined, waiting: pendingAuthorisation(requests, current.id) !== undefined, saving: saving.has(current.id) };
+      if (e.key === 'a' && mayAct({ ...its, allowed: view.permissions.approve, ready: canApprove(current, pick) })) setAuthorising(current.id);
+      else if (e.key === 'r' && mayAct({ ...its, allowed: view.permissions.reject, ready: current.reviewStatus !== 'rejected' })) void decide(current, 'rejected');
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [items, byId, selected, moveTo, decide, pick, view, requests]);
+  }, [items, byId, selected, moveTo, decide, pick, view, requests, saving]);
 
   if (error && !view) return <p role="alert" className="error">{error}</p>;
   if (!view) return <p className="loading">Loading</p>;

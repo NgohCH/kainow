@@ -23,6 +23,27 @@ export const CREDENTIAL_MARKER = '[credential removed]';
 /** The words that carry the marker's meaning without colour (screen readers hear these, and they print). */
 export const MARKER_EQUIVALENT = 'credential removed';
 
+/**
+ * Where a case's project was copied to or from (D140): Kainow does not search those projects by itself. Someone who may
+ * not know a project's name is told whom to ask.
+ */
+export interface Copies { copiedTo?: { projects: Array<{ id: string; name: string }>; others: number }; copiedFrom?: { id: string; name: string } | { hidden: true } | null }
+
+export function copiesText(copiedTo: Copies['copiedTo'], copiedFrom: Copies['copiedFrom']): string | null {
+  const to = copiedTo ?? { projects: [], others: 0 };
+  const from = copiedFrom ?? null;
+  if (to.projects.length === 0 && to.others === 0 && from === null) return null;
+  const others = to.others === 0 ? [] : [`${to.others} ${to.projects.length > 0 ? 'other ' : ''}${to.others === 1 ? 'project' : 'projects'}`];
+  const copied = [...to.projects.map((p) => p.name), ...others];
+  const unnamed = to.others > 0 || (from !== null && !('name' in from));
+  return [
+    copied.length > 0 ? `This project was copied to ${copied.join(', ')}.` : '',
+    from !== null ? `This project was copied from ${'name' in from ? from.name : 'another project'}.` : '',
+    'Check these projects too.',
+    unnamed ? 'Ask an Enterprise Administrator which projects they are.' : '',
+  ].filter((x) => x !== '').join(' ');
+}
+
 export const MIN_MARK = 4;
 export const REASON_MAX = 1000;
 
@@ -221,7 +242,7 @@ export interface Disclosures {
   emails: Array<{ at: string; recipients: number }>;
   audienceSize: number;
 }
-export interface SecurityCase {
+export interface SecurityCase extends Copies {
   caseId: string;
   projectId: string;
   project: string;

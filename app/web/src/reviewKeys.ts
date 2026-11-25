@@ -26,6 +26,13 @@ export function reviewOwnsKey(target: KeyTarget | null, root: { contains(node: u
 export const cardForKey = (focused: string | null, selected: string | null): string | null =>
   focused !== null && focused !== selected ? null : selected;
 
+/**
+ * Whether the a key or the r key may act on a proposal: exactly where its button is there and not greyed out. `waiting`
+ * is an authorisation waiting for more approvers, whose own panel approves or rejects it; `ready` is the button's own condition.
+ */
+export const mayAct = (p: { allowed: boolean; hasRecord: boolean; waiting: boolean; saving: boolean; ready: boolean }): boolean =>
+  p.allowed && !p.hasRecord && !p.waiting && !p.saving && p.ready;
+
 /** Where j (next) or k (previous) goes from the focused card, else the selected one; null at an end. */
 export function stepCard(key: 'j' | 'k', ids: string[], focused: string | null, selected: string | null): string | null {
   const at = ids.indexOf(focused ?? selected ?? '');
