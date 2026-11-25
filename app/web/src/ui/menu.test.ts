@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { test } from 'node:test';
-import { SETTINGS_GROUPS, currentMenuHref, sideMenuGroups, type MenuContext } from './menu.ts';
+import { PROFILE_HREF, SETTINGS_GROUPS, currentMenuHref, sideMenuGroups, type MenuContext } from './menu.ts';
 
 const member: MenuContext = { isAdmin: false, hasGrant: false, maintainer: false, reviewer: false, reviewCount: 0 };
 const ID = '0f8fad5b-d9cb-469f-a165-70867728950e';
@@ -64,4 +65,14 @@ test('currentMenuHref: the other menu items and pages without one', () => {
   assert.equal(currentMenuHref('#/resource-catalogue'), '#/resource-catalogue');
   assert.equal(currentMenuHref('#/notifications'), '');
   assert.equal(currentMenuHref('#/search?q=budget'), '');
+});
+
+test('My profile is at #/me, opened from the person menu: no side menu entry is highlighted or added (D134)', () => {
+  assert.equal(PROFILE_HREF, '#/me');
+  assert.equal(currentMenuHref(PROFILE_HREF), '');
+  const everything = sideMenuGroups({ isAdmin: true, hasGrant: true, maintainer: true, reviewer: true, reviewCount: 1 });
+  assert.ok(everything.every((g) => g.items.every((i) => i.href !== PROFILE_HREF)));
+  const read = (f: string) => readFileSync(new URL(f, import.meta.url), 'utf8');
+  assert.match(read('../App.tsx'), /hash === PROFILE_HREF\) page = <MyProfile /);
+  assert.match(read('./PersonMenu.tsx'), /href=\{PROFILE_HREF\}/);
 });

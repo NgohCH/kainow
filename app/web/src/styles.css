@@ -259,10 +259,7 @@ a.spend { color: var(--accent-deep); text-decoration: underline; }
 .person-panel { position: absolute; right: 0; top: calc(100% + 0.4rem); z-index: 30; width: min(20rem, calc(100vw - 2rem)); max-height: calc(100vh - 5rem); overflow-y: auto; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 0.75rem 1rem; box-shadow: 0 6px 18px var(--shadow); }
 .person-panel ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 0.6rem; }
 .person-panel li + li { border-top: 1px solid var(--rule); padding-top: 0.6rem; }
-.person-panel fieldset { border: 0; margin: 0 0 0.5rem; padding: 0; }
-.person-panel legend { font-weight: 600; font-size: 13px; padding: 0; margin-bottom: 0.25rem; }
-.person-panel .choice { display: flex; align-items: center; font-weight: 400; padding: 0.15rem 0; }
-.person-action { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 0.4rem 0.25rem; color: var(--accent-deep); }
+.person-action { display: block; width: 100%; text-align: left; border: 0; background: none; padding: 0.4rem 0.25rem; color: var(--accent-deep); font-weight: 600; text-decoration: none; }
 .person-action:hover { background: var(--accent-wash); }
 .person-signout { display: grid; gap: 0.15rem; }
 
@@ -865,11 +862,47 @@ a.stat-tile.linked:hover { border-color: var(--accent); }
 .attention-where { font-size: 13px; color: var(--muted); }
 .attention-empty { color: var(--muted); }
 
-.binder-tabs ul { list-style: none; margin: 0; padding: 0; display: flex; flex-wrap: wrap; gap: 0.3rem; border-bottom: 3px solid var(--accent); }
-.binder-tabs a { display: inline-flex; align-items: center; gap: 0.4rem; padding: 0.45rem 0.9rem; border: 1px solid var(--muted-wash); border-bottom: 0; border-radius: 6px 6px 0 0; background: var(--surface); color: var(--ink); text-decoration: none; font-size: 15px; }
-.binder-tabs a:hover { background: var(--accent-wash); }
-.binder-tabs a.open { background: var(--accent); border-color: var(--accent); color: var(--accent-contrast); font-weight: 600; }
-.tab-badge { font-size: 12px; font-weight: 600; min-width: 1.4em; text-align: center; padding: 0 0.35em; border-radius: 999px; background: var(--mw); color: var(--mc); }
+/* Tabs in the person's style (D135). The same rules draw a project's tabs and the previews on My profile. Each row of
+   wrapped tabs stands on its own line: every slot draws the line across the whole row, under its neighbours. */
+.tab-row { list-style: none; margin: 0; display: flex; flex-wrap: wrap; isolation: isolate; }
+.tab-slot { position: relative; display: flex; min-width: 0; max-width: 100%; }
+.tab { position: relative; display: inline-flex; align-items: center; gap: 0.4rem; min-width: 0; border-style: solid; font-size: 15px; font-weight: 500; text-decoration: none; overflow-wrap: anywhere; }
+a.tab:hover { text-decoration: underline; }
+a.tab:focus-visible { z-index: 2; }
+
+/* Boxes: separate buttons, a gap before the content. */
+:is([data-tabs="boxes"] .binder-tabs, .tabs-boxes) .tab-row { gap: 0.5rem; padding: 0 0 0.25rem; align-items: center; }
+:is([data-tabs="boxes"] .binder-tabs, .tabs-boxes) .tab { border-width: 2px; border-color: var(--muted); border-radius: 8px; padding: 0.4rem 0.8rem; background: var(--surface); color: var(--ink); }
+:is([data-tabs="boxes"] .binder-tabs, .tabs-boxes) .tab.open { border-color: var(--accent); padding: 0.55rem 1rem; background: var(--accent); color: var(--accent-contrast); font-weight: 700; }
+
+/* Both kinds of divider: the row overhangs its sides a little, so a focus outline on the first tab is not cut. */
+:is([data-tabs="grey"] .binder-tabs, .tabs-grey, [data-tabs="tinted"] .binder-tabs, .tabs-tinted) .tab-row { gap: 0.5rem 0.3rem; margin: 0 -6px; padding: 0 6px; overflow-x: clip; }
+:is([data-tabs="grey"] .binder-tabs, .tabs-grey, [data-tabs="tinted"] .binder-tabs, .tabs-tinted) .tab-slot { align-items: flex-end; }
+:is([data-tabs="grey"] .binder-tabs, .tabs-grey, [data-tabs="tinted"] .binder-tabs, .tabs-tinted) .tab-slot::after { content: ""; position: absolute; left: -200vw; width: 400vw; bottom: 0; pointer-events: none; }
+
+/* Grey dividers: the open one raised and filled, the line below in the accent. */
+:is([data-tabs="grey"] .binder-tabs, .tabs-grey) .tab-slot { padding-bottom: 4px; }
+:is([data-tabs="grey"] .binder-tabs, .tabs-grey) .tab-slot::after { border-bottom: 4px solid var(--accent); }
+:is([data-tabs="grey"] .binder-tabs, .tabs-grey) .tab { border-width: 2px 2px 0; border-color: var(--muted); border-radius: 8px 8px 0 0; padding: 0.35rem 0.8rem; background: var(--muted-wash); color: var(--ink); }
+:is([data-tabs="grey"] .binder-tabs, .tabs-grey) .tab.open { border-color: var(--accent); padding: 0.65rem 0.9rem; background: var(--accent); color: var(--accent-contrast); font-weight: 700; }
+
+/* Tinted dividers: the open one is the colour of the page and covers the line, so it joins the page below. */
+:is([data-tabs="tinted"] .binder-tabs, .tabs-tinted) .tab-slot { padding-bottom: 2px; }
+:is([data-tabs="tinted"] .binder-tabs, .tabs-tinted) .tab-slot::after { border-bottom: 2px solid var(--accent-deep); }
+:is([data-tabs="tinted"] .binder-tabs, .tabs-tinted) .tab { border-width: 2px 2px 0; border-color: var(--accent-deep); border-radius: 8px 8px 0 0; padding: 0.35rem 0.8rem; background: var(--accent-wash); color: var(--accent-deep); }
+:is([data-tabs="tinted"] .binder-tabs, .tabs-tinted) .tab.open { z-index: 1; border-color: var(--accent-deep); border-top-color: var(--accent); border-top-width: 6px; margin-bottom: -2px; padding: 0.45rem 0.9rem calc(0.45rem + 2px); background: var(--paper); color: var(--accent-deep); font-weight: 700; }
+
+@media (forced-colors: active) {
+  :is([data-tabs="boxes"] .binder-tabs, .tabs-boxes, [data-tabs="grey"] .binder-tabs, .tabs-grey) .tab.open { forced-color-adjust: none; background: Highlight; border-color: Highlight; color: HighlightText; outline-color: CanvasText; }
+  .tab .tab-badge { forced-color-adjust: none; background: Canvas; color: CanvasText; }
+}
+
+/* A drawn example of each style beside its choice. */
+.tab-style-choice .choice { flex-wrap: wrap; gap: 0.3rem 0; }
+.tab-style-name { flex: 0 0 8.5rem; }
+.tab-preview { flex: 0 1 auto; min-width: 0; max-width: 100%; padding: 0.5rem 0.75rem 0.6rem; background: var(--paper); border: 1px solid var(--control-border); border-radius: 6px; overflow: hidden; }
+.tab-preview .tab { font-size: 12px; }
+.tab-badge { flex: none; font-size: 12px; font-weight: 600; line-height: 1.4; min-width: 1.4em; text-align: center; padding: 0 0.35em; border: 1px solid currentColor; border-radius: 999px; background: var(--mw); color: var(--mc); }
 
 .page-header { margin: 0 0 1.2rem; }
 .crumbs ol { list-style: none; display: flex; flex-wrap: wrap; gap: 0.3rem; margin: 0 0 0.3rem; padding: 0; font-size: 13px; }
@@ -1067,3 +1100,7 @@ button.stat-tile[aria-pressed="true"] { border-color: var(--accent); box-shadow:
 .stage-editor-item { border-top: 1px solid var(--rule); padding: 10px 0; }
 .substage-editor { padding-left: 16px; }
 .template-preview { margin-top: 6px; overflow-wrap: anywhere; }
+
+/* My profile (D134) */
+.my-profile .data-table-wrap { margin: 0 0 1.5rem; }
+.my-profile .facts dd, .my-profile .data-table { overflow-wrap: anywhere; }

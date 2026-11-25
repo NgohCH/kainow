@@ -2,6 +2,9 @@
 
 import { SETTINGS_CATALOGUE } from './settings.ts';
 
+/** My profile (D134): opened from the person menu, so it belongs to no side menu item. */
+export const PROFILE_HREF = '#/me';
+
 export type MenuHeading = 'Work' | 'Organisation' | 'Administration';
 export interface MenuItem { href: string; text: string; badge?: number }
 export interface MenuGroup { heading: MenuHeading; items: MenuItem[] }
@@ -58,7 +61,7 @@ const SETTINGS_PAGES = new Set([
 
 const OWN_ITEMS = new Set(['my-tasks', 'reviews', 'projects', 'leadership', 'my-ai-usage', 'resource-catalogue', 'admin/operations', 'admin/analytics']);
 
-/** The menu item a page belongs to (its href), or '' when it belongs to none (notifications, search). */
+/** The menu item a page belongs to (its href), or '' when it belongs to none (notifications, search, My profile). */
 export function currentMenuHref(hash: string): string {
   const path = (hash.startsWith('#') ? hash.slice(1) : hash).split('?')[0].replace(/^\/+|\/+$/g, '');
   if (path === '') return '#/';

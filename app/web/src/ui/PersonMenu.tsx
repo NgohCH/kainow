@@ -1,22 +1,16 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
-import type { Prefs } from '../prefs.ts';
-import { AppearanceChoice, useSaveStatus } from '../views/Customise.tsx';
+import { PROFILE_HREF } from './menu.ts';
 
 export const PERSON_BUTTON_ID = 'person-menu-button';
 
 /**
- * The person menu (spec 6.2): a disclosure button with the person's name, opening Customise, Colour scheme, Light or dark,
+ * The person menu (spec 6.2): a disclosure button with the person's name, opening My profile, Customise,
  * Sign out and Sign out everywhere. Escape closes it and returns focus to the button; so does a click outside it, without
  * moving focus. It closes when the page changes.
  */
 export function PersonMenu({
   name,
   hash,
-  prefs,
-  orgColour,
-  ready,
-  failed,
-  onPrefs,
   onCustomise,
   onSignOut,
   onSignOutEverywhere,
@@ -24,11 +18,6 @@ export function PersonMenu({
 }: {
   name: string;
   hash: string;
-  prefs: Prefs;
-  orgColour: string | null;
-  ready: boolean;
-  failed: boolean;
-  onPrefs: (next: Prefs) => Promise<void>;
   onCustomise: () => void;
   onSignOut: () => void;
   onSignOutEverywhere: () => void;
@@ -37,7 +26,6 @@ export function PersonMenu({
 }) {
   const [open, setOpen] = useState(false);
   const wrap = useRef<HTMLDivElement>(null);
-  const { save, status, error } = useSaveStatus(onPrefs);
 
   useEffect(() => setOpen(false), [hash]);
   useEffect(() => {
@@ -70,6 +58,20 @@ export function PersonMenu({
           {extra}
           <ul>
             <li>
+              {/* The link goes away with the menu, so focus moves to the page it opens. */}
+              <a
+                className="person-action"
+                href={PROFILE_HREF}
+                aria-current={hash === PROFILE_HREF ? 'page' : undefined}
+                onClick={() => {
+                  setOpen(false);
+                  document.getElementById('main')?.focus();
+                }}
+              >
+                My profile
+              </a>
+            </li>
+            <li>
               <button
                 type="button"
                 className="person-action"
@@ -80,13 +82,6 @@ export function PersonMenu({
               >
                 Customise
               </button>
-            </li>
-            <li>
-              {failed && !ready && <p role="alert" className="error">Your saved preferences have not loaded, so they cannot be changed now. Reload the page to try again.</p>}
-              <fieldset className="plain-fieldset person-appearance" disabled={!ready}>
-                <AppearanceChoice prefs={prefs} orgColour={orgColour} save={save} name="person-menu" />
-              </fieldset>
-              <span role={error ? 'alert' : 'status'} className={error ? 'error' : 'meta'}>{status}</span>
             </li>
             <li className="person-signout">
               <button type="button" className="person-action" onClick={onSignOut}>Sign out</button>

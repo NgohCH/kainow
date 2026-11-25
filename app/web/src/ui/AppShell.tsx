@@ -111,11 +111,6 @@ export function AppShell({
           <PersonMenu
             name={userName}
             hash={hash}
-            prefs={prefs}
-            orgColour={orgColour}
-            ready={prefsLoaded}
-            failed={prefsFailed}
-            onPrefs={onPrefs}
             onCustomise={() => setCustomising(true)}
             onSignOut={onSignOut}
             onSignOutEverywhere={onSignOutEverywhere}

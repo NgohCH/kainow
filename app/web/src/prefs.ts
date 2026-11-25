@@ -43,11 +43,17 @@ export const ACCENT_KEYS = ['red', 'teal', 'blue', 'plum', 'slate', 'organisatio
 export type AccentKey = (typeof ACCENT_KEYS)[number];
 export type FixedAccentKey = Exclude<AccentKey, 'organisation'>;
 
+export const TAB_STYLES = ['boxes', 'grey', 'tinted'] as const;
+export type TabStyle = (typeof TAB_STYLES)[number];
+export const TAB_STYLE_LABELS: Record<TabStyle, string> = { boxes: 'Boxes', grey: 'Grey dividers', tinted: 'Tinted dividers' };
+
 export type Prefs = {
   theme: Theme;
   accent: AccentKey;
   /** True once the person has picked a scheme; until then the installation default (organisation colour, else red) applies. */
   accentChosen: boolean;
+  /** How a project's tabs look (D135). */
+  tabStyle: TabStyle;
   home: { order: HomeSection[]; hidden: HomeSection[]; showCompleted: boolean; includeArchived: boolean };
   leadership: { fields: { order: string[]; hidden: string[] } };
   expanded: Record<string, boolean>;
@@ -58,6 +64,7 @@ export const DEFAULT_PREFS: Prefs = {
   theme: 'light',
   accent: 'red',
   accentChosen: false,
+  tabStyle: 'boxes',
   home: { order: [...HOME_SECTIONS], hidden: [], showCompleted: false, includeArchived: false },
   leadership: { fields: { order: LEADERSHIP_FIELDS.map((f) => f.key), hidden: [] } },
   expanded: {},
@@ -243,13 +250,14 @@ const SCHEME_VARS: Record<keyof SchemeTokens, string> = {
 };
 
 /**
- * Puts the theme and scheme on <html>. The fixed schemes come from the token blocks in styles.css; the organisation
+ * Puts the theme, scheme and tab style on <html>. The fixed schemes come from the token blocks in styles.css; the organisation
  * scheme has no block, so its values are set directly (and removed again when another scheme is shown).
  */
-export function applyAppearance(prefs: Pick<Prefs, 'theme' | 'accent' | 'accentChosen'>, orgColour: string | null, root: HTMLElement = document.documentElement): void {
+export function applyAppearance(prefs: Pick<Prefs, 'theme' | 'accent' | 'accentChosen' | 'tabStyle'>, orgColour: string | null, root: HTMLElement = document.documentElement): void {
   const { key, tokens } = schemeFor(prefs, orgColour);
   root.setAttribute('data-theme', prefs.theme);
   root.setAttribute('data-accent', key);
+  root.setAttribute('data-tabs', prefs.tabStyle);
   for (const [field, prop] of Object.entries(SCHEME_VARS)) {
     if (key === 'organisation') root.style.setProperty(prop, tokens[field as keyof SchemeTokens]);
     else root.style.removeProperty(prop);
