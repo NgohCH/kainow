@@ -69,8 +69,27 @@ Unique-name rules on swept columns ignore values holding the credential marker, 
 
 ## 12. Verification
 
-Server and web tests for every rule above; leak tests for the task page, description and links; accessibility audit of the new pages and all three tab styles at 1200 and 375 px, Light and Dark; browser smoke; walkthrough on the demo; full server suite. Catalogue: C114 (person's department), C115 (tab style). Migration 0040.
+Server and web tests for every rule above; leak tests for the task page, description and links; accessibility audit of the new pages and all three tab styles at 1200 and 375 px, Light and Dark; browser smoke; walkthrough on the demo; full server suite. Catalogue: C114 (person's department), C115 (tab style). Migrations 0040 and 0041.
 
 ## 13. Builder's own calls
 
 The address names; description length; renaming past periods as well as the current one; Draft and Planned counting as current; "Past roles" listing revoked roles without their reason.
+
+## 14. Duplicate project (D140; added by the Product Owner, 25 November 2026)
+
+**Why.** Work repeats for another customer or another year with small differences. Starting from a blank project wastes the Project Manager's time; carrying everything over would leak one customer's information to another's members.
+
+**Approaches.** (1) Duplicate from a project, with a review page (chosen). (2) Save a project as a reusable template: one more thing to maintain, and duplicating covers the cases given.
+
+- **Who:** a current Project Manager of the original who may also create projects (the existing eligibility rule). The original may be in any state, archived included. An Enterprise Administrator without the Project Manager role may not.
+- **Result:** one new Draft project with that person as its only member (Project Manager), created all at once or not at all. Nothing exists before Create; leaving the page warns of unsaved input. The original is not changed, apart from an audit entry.
+- **Must be decided before Create (checked by the server too):** a name different from the original's, ignoring case and surrounding spaces; a planned end date that differs from the original's, or "No planned end" chosen; the purpose edited or ticked "still correct".
+- **Old terms:** the Project Manager may list up to ten words or phrases (customer, year). Every carried text holding one is highlighted; each must be changed or confirmed as still correct. Matching ignores case. The terms themselves are not stored.
+- **Copied, editable before Create:** purpose; owning and contributing departments (a retired one must be replaced or removed); stages and substages in use, starting in the first; project holidays; required approvals; notification settings; output settings. Output settings copy only choices that do not name a person, address, folder or connection.
+- **Tasks and subtasks:** title and description, the Project Manager choosing which; a subtask needs its parent. Cancelled and Deleted tasks, and anything held or under quarantine, are not offered. Each kept task becomes a **human proposal** in the new project with its subtasks, an optional new due date and no assignee; assignee and any missing due date are given at authorisation. Old dates, assignees, status, history and evidence are not copied.
+- **Risks:** offered, none ticked; kept ones become proposals with their wording only.
+- **Resources:** planned lines copied as item and quantity, without dates, people or amounts of money. A line whose catalogue item is retired is not offered.
+- **Never copied:** people, roles, invitations, access grants; notes, minutes, discussions, decisions, questions, outputs, drafts, summaries, files, history; budget and spending; AI connection, limits and analysis settings; leadership access; audiences; change requests; feedback.
+- **Approval:** copied proposals carry "Copied from <original>" and follow the normal authorisation rules, the required number of approvals included. An Owner or Sponsor can authorise several at once on one page, each needing its assignee and due date; each is authorised separately, so one failure does not undo the others and is named.
+- **Leak rule:** the original's name and a link appear only to someone who may open the original. Everyone else sees "Copied from another project".
+- **Limits:** 500 tasks and subtasks, 200 risks, 200 resource lines per duplication; more is refused with the counts and nothing is created.

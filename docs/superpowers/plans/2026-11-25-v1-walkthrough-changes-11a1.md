@@ -14,7 +14,7 @@
 
 - No new npm dependency. No permission, audience or lifecycle rule becomes wider. Every existing `#/…` address keeps working.
 - No real organisation name or domain anywhere; dummy data uses "Example Organisation" and `example.org`.
-- Next free numbers: decisions D133–D139, catalogue C114–C115, migration `0040_walkthrough.sql` (check again on main before merging). Shipped migrations are never edited.
+- Next free numbers: decisions D133–D140, catalogue C114–C115, migrations `0040_walkthrough.sql` and `0041_duplicate_project.sql` (check again on main before merging). Shipped migrations are never edited.
 - New text columns: in the quarantine registry, credential-checked on entry, length limits in the relaxed form of 0039. Audit detail holds ids, kinds and counts only.
 - Colours only in the token block of `styles.css`, mirrored in `prefs.ts`, contrast-checked: text 4.5:1, edges 3:1. Never colour alone. No sideways page scroll at 375 px.
 - Dates in UTC+8.
@@ -28,6 +28,8 @@
 3. A person whose department is retired afterwards: the profile still loads and saves other changes (Task 3).
 4. Renaming a stage while another person changes to it: one wins, the other gets a plain message, never two names for one period (Task 5).
 5. A project deferred, resumed, then closed: each bar stops on the right day, with no negative or doubled days (Task 6).
+6. A task held for a credential, or a restricted one, in the original: never offered or copied, even when its id is sent directly (Task 12).
+7. A new member of the copy: no field, link, audit line or error shows the original's name (Tasks 12 and 13).
 
 ---
 
@@ -116,9 +118,31 @@
 - [ ] Tests (RED): current/Deferred/Closed/archived grouping; Home lists current only; a stopped bar is not Current, ends on its day and says why; stage flow for a Deferred project; rename draft checks.
 - [ ] Implement; `npm test`, build; demo: rename a stage, defer and close a test project. Commit `feat(web): stage rename, project history, stopped stages (D137, D138)`.
 
-### Task 11: Checks and documents
+### Task 12: Duplicate project (server; runs after Task 10, before Task 11)
 
-- [ ] Accessibility audit: task page (each status), My profile, Projects History, rename form, three tab styles (1200 and 375 px, Light and Dark); the audit fails on any violation or sideways scroll.
+**Files:** Create `app/migrations/0041_duplicate_project.sql`, `app/src/projects/duplicate.ts` (pure checks), `duplicate.service.ts`, `duplicate.controller.ts`, `duplicate.http.test.ts`, `duplicate.test.ts`; Modify `projects.service.ts` (share creation), `app/src/records/records.service.ts`, quarantine registry, analytics audit catalogue, `migrate.test.ts`.
+
+**Interfaces — Produces:**
+- Columns: `projects.copied_from_id uuid NULL`, `human_proposals.copied_from_project_id uuid NULL`, `human_proposals.proposed_subtasks jsonb NULL` (`{title, description, due}[]`, registered).
+- `GET /projects/:id/duplicate` → everything offered (spec §14), with a stable key per text.
+- `POST /projects/:id/duplicate {name, plannedEnd, noPlannedEnd, purpose, purposeConfirmed, owningDepartmentId, contributingDepartmentIds, stages, holidays, settings, tasks, risks, resources, oldTerms, confirmedKeys}` → project detail; refusals in plain words, 400; nothing created on any refusal.
+- `findTerms(texts: {key, text}[], terms): {key, term}[]`; `duplicateProblems(...)`: string[].
+- `POST /projects/:id/proposals/authorise-many {items: {proposalId, assigneeId, dueOn, subtasks}[]}` → `{ results: {proposalId, ok, error?}[] }`, each through the existing single authorisation.
+- Project detail and proposal views gain `copiedFrom: { id, name } | { hidden: true } | null`.
+
+- [ ] Tests (RED): each copied kind and each never-copied kind (compare counts in every project-scoped table, so a new table cannot be missed); each required decision refused alone; old terms found ignoring case, confirmed, changed; held, Deleted, cancelled and foreign ids refused; Member, Deputy, expired PM, held PM and Administrator-only 403 or 404 as today; ineligible email refused; limits; failure midway creates nothing; a new member sees `hidden`; authorise-many with one bad item, with two required approvals, and by a Member (403); cleaning a credential inside `proposed_subtasks`.
+- [ ] Implement; run projects, records, changes, quarantine, resources, golive, analytics, migrate tests: PASS. Commit `feat(projects): duplicate a project (D140)`.
+
+### Task 13: Duplicate project (web; runs after Task 12, before Task 11)
+
+**Files:** Create `app/web/src/views/DuplicateProject.tsx`, `app/web/src/duplicate.ts`, `duplicate.test.ts`; Modify `App.tsx` (`#/projects/<id>/duplicate`), `ProjectPage.tsx` (action for the PM), `HumanProposals.tsx` (copied label, Authorise several).
+
+- [ ] Tests (RED): Create is off with the list of what is still needed; highlighting and confirming; choosing a subtask chooses its parent and dropping a parent drops its subtasks; leaving warns; `copiedFrom` wording.
+- [ ] Implement with the 11a building blocks (boxes in the order: what must change, details, settings, tasks, risks, resources, review and create); `npm test`, build; demo at 1280 and 375 px: duplicate Load Project 16, authorise three copied tasks at once as Owner. Commit `feat(web): duplicate a project and authorise several proposals (D140)`.
+
+### Task 11: Checks and documents (runs last)
+
+- [ ] Accessibility audit: task page (each status), My profile, Projects History, rename form, Duplicate project (empty, with old terms highlighted, refused), authorise several, three tab styles (1200 and 375 px, Light and Dark); the audit fails on any violation or sideways scroll.
 - [ ] Browser smoke follows a task link, the profile and each tab style; run in the four browsers.
-- [ ] Documents: D133–D139, C114–C115, INSTALL.md, app/README.md, CHANGELOG, screenshots; tests for the two 11a fixes left unchecked (AI limits first save, Deliveries count).
+- [ ] Documents: D133–D140, C114–C115, INSTALL.md, app/README.md, CHANGELOG, screenshots; tests for the two 11a fixes left unchecked (AI limits first save, Deliveries count).
 - [ ] Full server suite once at the end, in the background. Commit `docs: 11a.1 decisions, catalogue and checks`.
