@@ -196,6 +196,47 @@ export function itemProblem(d: ItemDraft, categories: readonly NamedCategory[] =
   return null;
 }
 
+export interface CatalogueCategory {
+  id: string;
+  name: string;
+  status: 'active' | 'retired';
+}
+
+/**
+ * Saves an item, its new category first. Returns the refusal, or null, and the name of the category that was added: when
+ * the item is then refused, the category stays, selected.
+ */
+export async function saveItem(
+  d: ItemDraft,
+  send: {
+    /** `POST /resources/catalogue/categories`: the server answers `{ category }`. */
+    addCategory: (name: string) => Promise<{ category: CatalogueCategory }>;
+    sendItem: (body: Omit<ItemDraft, 'newCategory'>) => Promise<unknown>;
+    onCategory: (c: CatalogueCategory) => void;
+    errText: (e: unknown) => string;
+  },
+): Promise<{ refused: string | null; added: string | null }> {
+  let categoryId = d.categoryId;
+  let added: string | null = null;
+  if (categoryId === NEW_CATEGORY) {
+    try {
+      const { category } = await send.addCategory(d.newCategory.trim());
+      categoryId = category.id;
+      added = category.name;
+      send.onCategory(category);
+    } catch (e) {
+      return { refused: send.errText(e), added: null };
+    }
+  }
+  try {
+    await send.sendItem({ kind: d.kind, reference: d.reference.trim(), name: d.name.trim(), categoryId, description: d.description.trim() });
+    return { refused: null, added };
+  } catch (e) {
+    const why = send.errText(e);
+    return { refused: added === null ? why : `The category ${added} was added and is selected. The item was not saved: ${why}`, added };
+  }
+}
+
 // ---- Organisation finance settings (spec 8.1) -------------------------------------------------------------------------------
 
 export interface OrgFinanceForm {

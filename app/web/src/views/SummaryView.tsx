@@ -410,9 +410,9 @@ export function SummaryPage({ summaryId }: { summaryId: string }) {
 
       {!editing && !approving && !reviewing && (
         <div className="actions">
-          {v.canEdit && <button type="button" ref={editButton} disabled={!isNewest} onClick={startEdit}>Edit</button>}
+          {v.canEdit && <button type="button" ref={editButton} disabled={!isNewest} aria-describedby={isNewest ? undefined : 'newest-why'} onClick={startEdit}>Edit</button>}
           {v.canAskApproval && cur && (
-            <button type="button" disabled={busy || !isNewest} onClick={(e) => void act(() => askSummaryApproval(v.id, cur.no), 'Approval was asked for: the Project Manager, Owner and Sponsors were told', e.currentTarget)}>
+            <button type="button" disabled={busy || !isNewest} aria-describedby={isNewest ? undefined : 'newest-why'} onClick={(e) => void act(() => askSummaryApproval(v.id, cur.no), 'Approval was asked for: the Project Manager, Owner and Sponsors were told', e.currentTarget)}>
               {cur.approvalRequested ? 'Ask for approval again' : 'Ask for approval'}
             </button>
           )}
@@ -437,7 +437,7 @@ export function SummaryPage({ summaryId }: { summaryId: string }) {
         </div>
       )}
       {!isNewest && !editing && !approving && !reviewing && (v.canEdit || v.canAskApproval) && (
-        <p className="meta">Editing and asking for approval work on the newest version.</p>
+        <p id="newest-why" className="meta">Editing and asking for approval work on the newest version.</p>
       )}
       {v.approval && !editing && (
         <p id="approve-why" className="meta">

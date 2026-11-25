@@ -1,5 +1,5 @@
 import { useId, useState, type ReactNode } from 'react';
-import { type HeaderCount, type ProjectBox, shownRows, startsOpen } from './byProject.ts';
+import { type HeaderCount, type ProjectBox, distinctNames, shownRows, startsOpen } from './byProject.ts';
 import { StatusLabel } from './StatusLabel.tsx';
 
 /** Each kind keeps one width in every box, so the columns line up down the page. The `head` column names its row. */
@@ -22,6 +22,7 @@ export function ProjectGroups<P extends ProjectBox, R>({ boxes, headingLevel, la
   const uid = useId();
   const [open, setOpen] = useState<Record<string, boolean>>({});
   const [all, setAll] = useState<Record<string, boolean>>({});
+  const names = distinctNames(boxes);
   const H = `h${headingLevel}` as 'h2' | 'h3';
   return (
     <div className="project-groups">
@@ -33,7 +34,7 @@ export function ProjectGroups<P extends ProjectBox, R>({ boxes, headingLevel, la
         return (
           <div key={p.projectId} className="project-group">
             <div className="project-group-head">
-              <button type="button" className="project-group-toggle" aria-expanded={isOpen} aria-controls={isOpen ? body : undefined} aria-label={`${label} in ${p.projectName}`} onClick={() => setOpen((o) => ({ ...o, [p.projectId]: !isOpen }))}>
+              <button type="button" className="project-group-toggle" aria-expanded={isOpen} aria-controls={isOpen ? body : undefined} aria-label={`${label} in ${names[index]}`} onClick={() => setOpen((o) => ({ ...o, [p.projectId]: !isOpen }))}>
                 <span aria-hidden="true">{isOpen ? '▾' : '▸'}</span>
               </button>
               <H className="project-group-name"><a href={`#/projects/${p.projectId}`}>{p.projectName}</a></H>
@@ -47,7 +48,7 @@ export function ProjectGroups<P extends ProjectBox, R>({ boxes, headingLevel, la
               <div id={body}>
                 {/* The roles keep it a table for screen readers where narrow screens lay it out as blocks. */}
                 <table className="group-table" role="table">
-                  <caption className="visually-hidden">{label} in {p.projectName}</caption>
+                  <caption className="visually-hidden">{label} in {names[index]}</caption>
                   <thead role="rowgroup">
                     <tr role="row">{columns.map((c) => <th key={c.kind} scope="col" role="columnheader" className={`group-${c.kind}`}>{c.header}</th>)}</tr>
                   </thead>
@@ -65,7 +66,7 @@ export function ProjectGroups<P extends ProjectBox, R>({ boxes, headingLevel, la
                 </table>
                 {list.length > shownRows(list, false).length && (
                   <button type="button" className="quiet" aria-expanded={isAll} onClick={() => setAll((a) => ({ ...a, [p.projectId]: !isAll }))}>
-                    {isAll ? 'Show fewer' : `Show all ${list.length}`}<span className="visually-hidden"> in {p.projectName}</span>
+                    {isAll ? 'Show fewer' : `Show all ${list.length}`}<span className="visually-hidden"> in {names[index]}</span>
                   </button>
                 )}
               </div>

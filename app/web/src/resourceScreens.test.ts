@@ -10,6 +10,7 @@ import {
   NEW_CATEGORY,
   itemProblem,
   newItem,
+  saveItem,
   nextAction,
   orgSettingsProblem,
   resourceCountsLine,
@@ -129,6 +130,55 @@ test('a new item starts on New category only when no category is in use', () => 
   assert.equal(newItem([]).categoryId, NEW_CATEGORY);
   assert.equal(newItem([{ name: 'Old', status: 'retired' }]).categoryId, NEW_CATEGORY);
   assert.equal(newItem([{ name: 'Rooms', status: 'active' }]).categoryId, '');
+});
+
+/** The catalogue routes as the server answers them (catalogue.controller.ts): each wraps what it saved. */
+const CATEGORY = { id: '0190aaaa-0000-7000-8000-000000000001', name: 'Tools', status: 'active' as const };
+function senders(refuse: { category?: string; item?: string } = {}) {
+  const calls: unknown[] = [];
+  return {
+    calls,
+    addCategory: async (name: string) => {
+      calls.push(['category', name]);
+      if (refuse.category) throw new Error(refuse.category);
+      return { category: CATEGORY };
+    },
+    sendItem: async (body: { kind: string; reference: string; name: string; categoryId: string; description: string }) => {
+      calls.push(['item', body]);
+      if (refuse.item) throw new Error(refuse.item);
+      return { item: { id: 'i1', ...body, status: 'active' } };
+    },
+    onCategory: (c: { id: string }) => void calls.push(['selected', c.id]),
+    errText: (e: unknown) => (e as Error).message,
+  };
+}
+const DRAFT = { kind: 'equipment', reference: ' P-04 ', name: ' Projector ', categoryId: NEW_CATEGORY, newCategory: ' Tools ', description: '' };
+const BODY = { kind: 'equipment', reference: 'P-04', name: 'Projector', categoryId: CATEGORY.id, description: '' };
+
+test('a new category is added and selected, then the item is sent with its id', async () => {
+  const s = senders();
+  assert.deepEqual(await saveItem(DRAFT, s), { refused: null, added: 'Tools' });
+  assert.deepEqual(s.calls, [['category', 'Tools'], ['selected', CATEGORY.id], ['item', BODY]]);
+});
+test('a refused category sends no item', async () => {
+  const s = senders({ category: 'A current category already uses this name.' });
+  assert.deepEqual(await saveItem(DRAFT, s), { refused: 'A current category already uses this name.', added: null });
+  assert.deepEqual(s.calls, [['category', 'Tools']]);
+});
+test('a refused item leaves its new category, selected, and says so', async () => {
+  const s = senders({ item: 'A current item already uses this reference.' });
+  assert.deepEqual(await saveItem(DRAFT, s), { refused: 'The category Tools was added and is selected. The item was not saved: A current item already uses this reference.', added: 'Tools' });
+  assert.deepEqual(s.calls[1], ['selected', CATEGORY.id]);
+});
+test('with a category chosen, only the item is sent, and its refusal is said as it is', async () => {
+  const s = senders({ item: 'This item is retired.' });
+  assert.deepEqual(await saveItem({ ...DRAFT, categoryId: 'c1', newCategory: '' }, s), { refused: 'This item is retired.', added: null });
+  assert.deepEqual(s.calls, [['item', { ...BODY, categoryId: 'c1' }]]);
+});
+test('an edit to a new category sends the new id, never the old one', async () => {
+  const s = senders();
+  await saveItem({ kind: 'facility', reference: 'R-1', name: 'Room', categoryId: NEW_CATEGORY, newCategory: 'Tools', description: 'Old text' }, s);
+  assert.deepEqual(s.calls.at(-1), ['item', { kind: 'facility', reference: 'R-1', name: 'Room', categoryId: CATEGORY.id, description: 'Old text' }]);
 });
 test('itemProblem follows the catalogue limits', () => {
   const ok = { kind: 'equipment', reference: 'P-04', name: 'Projector', categoryId: 'c1', newCategory: '', description: '' };

@@ -868,8 +868,8 @@ a.stat-tile.linked:hover { border-color: var(--accent); }
 .project-group-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 0.5rem; padding: 0.35rem 0.9rem 0.35rem 0.4rem; background: var(--paper); border-radius: 6px; }
 .project-group-toggle { flex: none; width: 2rem; height: 2rem; padding: 0; border: 0; background: none; color: var(--accent); font-size: 1.1rem; line-height: 1; cursor: pointer; }
 .project-group-name { flex: 1 1 12rem; min-width: 0; margin: 0; font-family: inherit; font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; }
-.project-group-name a { color: var(--ink); text-decoration: none; }
-.project-group-name a:hover { text-decoration: underline; }
+.project-group-name a { color: var(--ink); text-decoration: underline; }
+.project-group-name a:hover { color: var(--accent); }
 .project-group-counts { list-style: none; display: flex; flex-wrap: wrap; align-items: center; gap: 0.2rem 0.9rem; margin: 0; padding: 0; }
 .project-group-counts .status-label, .group-table .status-label { background: none; padding: 0; }
 .project-group-plain { font-size: 13px; color: var(--muted); }

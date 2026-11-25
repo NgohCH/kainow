@@ -79,6 +79,15 @@ export function taskCounts(p: TaskBox): HeaderCount[] {
   return all.filter((c) => c.n > 0).map(({ key, meaning, n, word }) => ({ key, meaning, word: `${n} ${word}` }));
 }
 
+/** The boxes' names for buttons and tables; projects with one name are numbered. */
+export function distinctNames(boxes: readonly { projectName: string }[]): string[] {
+  return boxes.map(({ projectName }, i) => {
+    const same = boxes.filter((b) => b.projectName === projectName).length;
+    const place = boxes.slice(0, i + 1).filter((b) => b.projectName === projectName).length;
+    return same === 1 ? projectName : `${projectName} (${place} of ${same} with this name)`;
+  });
+}
+
 const FIRST_OPEN = 3;
 const FIRST_ROWS = 5;
 

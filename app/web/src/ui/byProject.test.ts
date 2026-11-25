@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { NeedsYouItem } from '../dashboard.ts';
-import { type ProjectCount, attentionByProject, attentionCounts, itemDate, shownRows, startsOpen, taskCounts, tasksByProject } from './byProject.ts';
+import { type ProjectCount, attentionByProject, attentionCounts, distinctNames, itemDate, shownRows, startsOpen, taskCounts, tasksByProject } from './byProject.ts';
 import type { TaskRow } from './home.ts';
 
 const item = (projectId: string, kind: NeedsYouItem['kind'], more: Partial<NeedsYouItem> = {}): NeedsYouItem => ({ kind, projectId, projectName: projectId, label: kind, since: null, link: '#/x', ...more });
@@ -51,6 +51,10 @@ test('two projects with one name stay apart', () => {
   const same = { projectName: 'Same' };
   assert.equal(attentionByProject([item('a', 'overdue', same), item('b', 'overdue', same)]).length, 2);
   assert.equal(tasksByProject([row('a', 'later', '2026-12-01', same), row('b', 'later', '2026-12-01', same)]).length, 2);
+});
+test('projects with one name get names that tell them apart', () => {
+  const box = (projectId: string, projectName: string) => ({ projectId, projectName });
+  assert.deepEqual(distinctNames([box('a', 'Same'), box('b', 'Other'), box('c', 'Same')]), ['Same (1 of 2 with this name)', 'Other', 'Same (2 of 2 with this name)']);
 });
 test('a project with no match after a filter is not listed', () => {
   const rows = [row('a', 'later', '2026-12-01', { status: 'blocked' }), row('b', 'later')];

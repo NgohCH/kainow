@@ -1,7 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import { plural } from '../format.ts';
-import { type ItemDraft, NEW_CATEGORY, itemProblem, newItem } from '../resourceScreens.ts';
+import { type ItemDraft, NEW_CATEGORY, type CatalogueCategory as Category, itemProblem, newItem, saveItem } from '../resourceScreens.ts';
 import { useReturnFocus } from './useReturnFocus.ts';
 import { DataTable, type Column } from '../ui/DataTable.tsx';
 import { StatTile } from '../ui/StatTile.tsx';
@@ -22,12 +22,6 @@ interface Item {
   status: 'active' | 'retired';
   projectsWithLines?: number;
 }
-interface Category {
-  id: string;
-  name: string;
-  status: 'active' | 'retired';
-}
-
 function ItemForm({ initial, categories, editing, onSubmit, onCancel, focusFirst = false }: {
   initial: ItemDraft;
   categories: Category[];
@@ -96,7 +90,7 @@ function ItemForm({ initial, categories, editing, onSubmit, onCancel, focusFirst
       {error && <p role="alert" className="error">{error}</p>}
       <div className="decision">
         <button className="primary" disabled={busy}>{editing ? 'Save item' : 'Add item'}</button>
-        <button type="button" onClick={onCancel}>Cancel</button>
+        <button type="button" disabled={busy} onClick={onCancel}>Cancel</button>
       </div>
     </form>
   );
@@ -138,6 +132,8 @@ export function ResourceCatalogue({ embedded = false, bare = false, onChanged }:
   const Wrapper = bare ? 'div' : embedded ? 'section' : 'main';
   const Heading = embedded ? 'h2' : 'h1';
   const Sub = bare ? 'h4' : 'h3';
+  /** While an item is being saved, the buttons that would close its form wait, so a refusal is never lost. */
+  const saving = useRef(false);
   const [items, setItems] = useState<Item[] | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -186,22 +182,27 @@ export function ResourceCatalogue({ embedded = false, bare = false, onChanged }:
     }
   }
 
-  /** Saves an item; a new category is added first and, when the item is then refused, stays and is selected. */
-  async function saveItem(d: ItemDraft, onCategory: (id: string) => void, send: (body: object) => Promise<unknown>, done: string): Promise<string | null> {
-    let categoryId = d.categoryId;
-    const name = d.newCategory.trim();
-    const isNew = categoryId === NEW_CATEGORY;
-    if (isNew) {
-      const refused = await run(async () => {
-        const added = await api.post<Category>('/resources/catalogue/categories', { name });
-        categoryId = added.id;
-        setCategories((c) => [...c, added]);
-        onCategory(added.id);
-      }, `Category ${name} added.`);
-      if (refused) return refused;
+  /** Saves an item, its new category first. Whatever was refused, the list is read again: the category may be there. */
+  async function submitItem(d: ItemDraft, onCategory: (id: string) => void, sendItem: (body: object) => Promise<unknown>, done: string): Promise<string | null> {
+    setNotice(null);
+    saving.current = true;
+    const { refused, added } = await saveItem(d, {
+      addCategory: (name) => api.post('/resources/catalogue/categories', { name }),
+      sendItem,
+      onCategory: (c) => {
+        setCategories((all) => [...all, c]);
+        onCategory(c.id);
+      },
+      errText,
+    });
+    saving.current = false;
+    const words = [added && `Category ${added} added.`, refused === null && done].filter(Boolean).join(' ');
+    if (words) {
+      setNotice(words);
+      onChanged?.();
     }
-    const refused = await run(() => send({ kind: d.kind, reference: d.reference.trim(), name: d.name.trim(), categoryId, description: d.description.trim() }), isNew ? `Category ${name} added. ${done}` : done);
-    return refused && isNew ? `The category ${name} was added and is selected. The item was not saved: ${refused}` : refused;
+    if (words || d.categoryId === NEW_CATEGORY) load();
+    return refused;
   }
 
   const shown = (items ?? []).filter((i) => (kind === '' || i.kind === kind) && (category === '' || i.categoryId === category) && (status === '' || i.status === status));
@@ -287,7 +288,7 @@ export function ResourceCatalogue({ embedded = false, bare = false, onChanged }:
           />
         ) : i.status === 'active' ? (
           <span className="actions">
-            <button type="button" className="link-button" data-opener={`edit-${i.id}`} aria-label={`Edit ${i.reference}`} aria-expanded={editing === i.id} onClick={() => setEditing(editing === i.id ? null : i.id)}>Edit</button>
+            <button type="button" className="link-button" data-opener={`edit-${i.id}`} aria-label={`Edit ${i.reference}`} aria-expanded={editing === i.id} onClick={() => !saving.current && setEditing(editing === i.id ? null : i.id)}>Edit</button>
             <button type="button" className="link-button" data-opener={`retire-${i.id}`} aria-label={`Retire ${i.reference}`} onClick={() => setRetiring(retiring === i.id ? null : i.id)}>Retire</button>
           </span>
         ) : (
@@ -352,10 +353,15 @@ export function ResourceCatalogue({ embedded = false, bare = false, onChanged }:
       <section className={partClass} aria-labelledby="catalogue-items">
         <div className="settings-box-head">
           <Sub id="catalogue-items" className={subClass}>Items</Sub>
-          <button type="button" className="primary" data-opener="add-item" aria-expanded={adding} onClick={() => setAdding((a) => !a)}>
+          <button type="button" className="primary" data-opener="add-item" aria-expanded={adding} onClick={() => {
+            if (saving.current) return;
+            if (!adding && items === null) load();
+            setAdding(!adding);
+          }}>
             + Add item
           </button>
         </div>
+        {adding && !items && <p className="meta">{error ? 'The catalogue could not be loaded, so an item cannot be added yet. Reload the page to try again.' : 'Loading the catalogue…'}</p>}
         {adding && items && (
           <ItemForm
             initial={newItem(categories)}
@@ -363,7 +369,7 @@ export function ResourceCatalogue({ embedded = false, bare = false, onChanged }:
             editing={false}
             onCancel={() => setAdding(false)}
             onSubmit={async (d, onCategory) => {
-              const refused = await saveItem(d, onCategory, (body) => api.post('/resources/catalogue/items', body), 'Item added.');
+              const refused = await submitItem(d, onCategory, (body) => api.post('/resources/catalogue/items', body), 'Item added.');
               if (!refused) setAdding(false);
               return refused;
             }}
@@ -378,7 +384,7 @@ export function ResourceCatalogue({ embedded = false, bare = false, onChanged }:
             focusFirst
             onCancel={() => setEditing(null)}
             onSubmit={async (d, onCategory) => {
-              const refused = await saveItem(d, onCategory, (body) => api.put(`/resources/catalogue/items/${editingItem.id}`, body), 'Item saved.');
+              const refused = await submitItem(d, onCategory, (body) => api.put(`/resources/catalogue/items/${editingItem.id}`, body), 'Item saved.');
               if (!refused) setEditing(null);
               return refused;
             }}
