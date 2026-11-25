@@ -56,7 +56,7 @@ export function CarriedField({
     return (
       <div className="carried asked open">
         {children(`${fieldOf(id)}-note`)}
-        <p id={`${fieldOf(id)}-note`} className="carried-note"><StatusLabel meaning="attention" word="Must be changed" /></p>
+        <p id={`${fieldOf(id)}-note`} className="carried-note"><StatusLabel meaning="attention" word={isReplaced ? `${REPLACED} It must be changed.` : 'Must be changed'} /></p>
       </div>
     );
   }

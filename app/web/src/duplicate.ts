@@ -594,7 +594,7 @@ function mergeFields<T extends object>(typed: T, was: T, now: T): T {
 export type Removed = Record<string, number>;
 
 /** The page after loading the offer again: typed input kept, what is gone taken out, what is new unticked. */
-export function mergeOffer(before: Offer, now: Offer, s: DupState): { state: DupState; removed: Removed; added: number } {
+export function mergeOffer(before: Offer, now: Offer, s: DupState): { state: DupState; removed: Removed; added: number; replacedNow: string[]; settingsBack: boolean } {
   const was = startState(before);
   const fresh = startState(now);
   const removed: Removed = {};
@@ -604,10 +604,14 @@ export function mergeOffer(before: Offer, now: Offer, s: DupState): { state: Dup
   };
 
   const replaced = { ...s.replaced };
+  const replacedNow: string[] = [];
   /** Text: what was typed on an unchanged original stands. Where the original changed (it may have been cleaned), the new one takes its place. */
   const text = (key: string, typed: string, old: string, next: string): string => {
     if (old === next) return typed;
-    if (typed !== old && typed !== next) replaced[key] = next;
+    if (typed !== old && typed !== next) {
+      replaced[key] = next;
+      replacedNow.push(fieldOf(key));
+    } else if (replaced[key] === typed) replaced[key] = next; // Replaced before and not seen to: the note follows.
     return next;
   };
   const rows = <T extends { on: boolean }>(kind: string, typed: Record<string, T>, freshRows: Record<string, T>, merge: (id: string, typed: T, now: T) => T): Record<string, T> => {
@@ -660,12 +664,16 @@ export function mergeOffer(before: Offer, now: Offer, s: DupState): { state: Dup
   // What projects may no longer set goes back to the organisation's, whatever was typed: it could not be created.
   const may = now.mayChange;
   const notifications = mergeFields(s.notifications, was.notifications, fresh.notifications);
+  const asTyped = JSON.stringify([notifications, mergeFields(s.outputs, was.outputs, fresh.outputs)]);
   if (!may.calendar) Object.assign(notifications, { dayCounting: fresh.notifications.dayCounting, weekdays: fresh.notifications.weekdays });
   if (!may.timings) Object.assign(notifications, { leadDays: fresh.notifications.leadDays, escalationDays: fresh.notifications.escalationDays });
   if (!may.digest) notifications.digest = fresh.notifications.digest;
   const outputs = mergeFields(s.outputs, was.outputs, fresh.outputs);
   if (!may.formats) Object.assign(outputs, { inputFormats: fresh.outputs.inputFormats, outputFormats: fresh.outputs.outputFormats });
   if (!may.exportRoles) outputs.exportRoles = fresh.outputs.exportRoles;
+
+  const settingsBack = asTyped !== JSON.stringify([notifications, outputs]);
+  if (!may.calendar) for (const _ of s.holidays) gone('holiday');
 
   const offered = new Map(allTasks(now).map((t) => [t.id, t]));
   let tasks = rows('task', s.tasks, fresh.tasks, (id, t, f) => {
@@ -680,6 +688,7 @@ export function mergeOffer(before: Offer, now: Offer, s: DupState): { state: Dup
     state: {
       ...mergeFields(s, was, fresh),
       replaced,
+      name: text('name', s.name, was.name, fresh.name),
       purpose: text('purpose', s.purpose, was.purpose, fresh.purpose),
       termsText: s.termsText,
       confirmed: s.confirmed,
@@ -698,15 +707,18 @@ export function mergeOffer(before: Offer, now: Offer, s: DupState): { state: Dup
     },
     removed,
     added,
+    replacedNow,
+    settingsBack,
   };
 }
 
 /** What loading again did, in plain words. */
-export function mergedLine(removed: Removed, added: number, replaced = 0): string {
+export function mergedLine(removed: Removed, added: number, replaced: number, settingsBack: boolean): string {
   const gone = Object.entries(removed).map(([kind, n]) => `${n} ${kind}${n === 1 ? '' : 's'}`);
   return [
     replaced === 0 ? 'Loaded again. What you typed is kept.' : `Loaded again. What you typed is kept, except in ${replaced} ${replaced === 1 ? 'place' : 'places'} where the original changed.`,
     gone.length > 0 ? `Taken out because it can no longer be copied, with what you typed there: ${gone.join(', ')}.` : '',
+    settingsBack ? "Settings projects may no longer set are the organisation's again." : '',
     added > 0 ? `Newly offered: ${added}. Newly offered tasks, risks and resources are not ticked.` : '',
   ].filter((x) => x !== '').join(' ');
 }
@@ -734,5 +746,5 @@ export const startPage = (loaded: Loaded): Page => ({ loaded, dup: startState(lo
 export function loadedAgain(page: Page, next: Loaded, unavailable: readonly string[]): Page {
   const { offer } = page.loaded;
   const merged = mergeOffer(offer, next.offer, takeOutUnavailable(page.dup, offer, unavailable));
-  return { loaded: next, dup: merged.state, notice: mergedLine(merged.removed, merged.added, replacedOf(next.offer, merged.state).length), departmentNames: { ...page.departmentNames, ...namesOf(next) } };
+  return { loaded: next, dup: merged.state, notice: mergedLine(merged.removed, merged.added, replacedOf(next.offer, merged.state).filter((p) => merged.replacedNow.includes(p.field)).length, merged.settingsBack), departmentNames: { ...page.departmentNames, ...namesOf(next) } };
 }

@@ -186,7 +186,7 @@ function Review({ first, meId }: { first: Loaded; meId: string }) {
         {problems.length > 0 ? list : <p className="meta">You can create the project at the end of this page.</p>}
       </Box>
 
-      <fieldset className="dup-fields" disabled={creating}>
+      <fieldset className="dup-fields" disabled={busy}>
       <legend className="visually-hidden">The new project</legend>
       <Box title="What must be different">
         <PartError refusal={refusal} part="details" />
@@ -317,7 +317,7 @@ function Review({ first, meId }: { first: Loaded; meId: string }) {
         {blocked && <p className="error">{blocked}</p>}
         {refusal && (
           <div ref={errorBox} tabIndex={-1} role="group" aria-label="Why the project was not created" className="stack">
-            {refusal.created !== null && <p>{refusal.message} <a href={`#/projects/${refusal.created}`} onClick={() => leaveGuard.release()}>Open the new project</a></p>}
+            {refusal.created !== null && <p>{refusal.message} <a href={`#/projects/${refusal.created}`} onClick={(e) => !(e.ctrlKey || e.metaKey || e.shiftKey || e.altKey) && leaveGuard.release()}>Open the new project</a></p>}
             {refusal.created === null && <p className="error">The project was not created{refusal.uncertain ? ' as far as Kainow can tell' : ''}. {refusal.problems.length === 0 && refusal.message}</p>}
             {refusal.problems.length > 0 && <ul>{refusal.problems.map((p) => <li key={p} className="error">{p}</li>)}</ul>}
             {refusal.uncertain && <p>It may have been created all the same: look in <a href="#/projects" target="_blank" rel="noreferrer">Projects (opens in a new tab)</a> before you press Create again.</p>}

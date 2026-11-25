@@ -300,6 +300,44 @@ test('Load again: what was typed over a text that has changed is replaced, with 
   assert.deepEqual(replacedOf(o, mergeOffer(o, offer({ tasks: [o.tasks[0], { ...o.tasks[1], title: 'Changed' }] }), startState(o)).state), [], 'no note where nothing was typed');
 });
 
+test('Load again: the name follows the same rule, whatever was typed over it', () => {
+  const o = offer({ original: { ...offer().original, name: 'Harbour hunter2 2026' } });
+  const s = { ...settled(startState(o), o), name: 'Harbour hunter2 2027' };
+  const next = offer({ original: { ...o.original, name: 'Harbour [credential removed] 2026' } });
+  const m = mergeOffer(o, next, s).state;
+  assert.equal(m.name, 'Harbour [credential removed] 2026');
+  assert.deepEqual(replacedOf(next, m).map((p) => p.field), ['dup-name']);
+  assert.deepEqual(problemsOf(next, m).map((p) => p.field), ['dup-name'], 'it must be changed again');
+  assert.equal(mergeOffer(o, o, s).state.name, 'Harbour hunter2 2027', 'an unchanged original leaves it');
+});
+
+test('Load again twice: the note stays, moves with a further change, and the line counts only what this load replaced', () => {
+  const o = offer();
+  const depts = [{ id: 'd1', name: 'Surveys', status: 'active' as const }];
+  const titled = (title: string) => offer({ tasks: [o.tasks[0], { ...o.tasks[1], title }] });
+  const load = (p: ReturnType<typeof startPage>, next: Offer) => loadedAgain(p, { offer: next, departments: depts, approved: null }, []);
+  let page = startPage({ offer: o, departments: depts, approved: null });
+  page = { ...page, dup: { ...page.dup, tasks: { ...page.dup.tasks, t4: { ...page.dup.tasks.t4, title: 'Mine' } } } };
+  page = load(page, titled('Second'));
+  assert.match(page.notice!, /except in 1 place/);
+  page = load(page, titled('Second'));
+  assert.equal(replacedOf(page.loaded.offer, page.dup).length, 1, 'the note stays');
+  assert.doesNotMatch(page.notice!, /except/);
+  page = load(page, titled('Third'));
+  assert.deepEqual(replacedOf(page.loaded.offer, page.dup).map((p) => p.field), ['dup-task:t4:title'], 'and follows the next change');
+  assert.doesNotMatch(page.notice!, /except/, 'nothing typed was replaced by this load');
+});
+
+test('Load again: holidays and settings projects may no longer have are named in the line', () => {
+  const o = offer();
+  const depts = [{ id: 'd1', name: 'Surveys', status: 'active' as const }];
+  let page = startPage({ offer: o, departments: depts, approved: null });
+  page = { ...page, dup: { ...page.dup, holidays: [...page.dup.holidays, { uid: 'n1', date: '2027-01-01', name: 'Mine' }], notifications: { ...page.dup.notifications, weekdays: { own: true, value: [1] } } } };
+  const after = loadedAgain(page, { offer: offer({ mayChange: { ...o.mayChange, calendar: false }, holidays: [] }), departments: depts, approved: null }, []);
+  assert.match(after.notice!, /2 holidays/);
+  assert.match(after.notice!, /Settings projects may no longer set are the organisation's again\./);
+});
+
 test('Load again: a row that is gone is dropped with what was typed in it; rows added here stay', () => {
   const o = offer();
   let s = startState(o);
