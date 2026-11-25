@@ -1,6 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import {
+  type LimitsPart,
   type LimitsView,
   type ModelForm,
   type ModelView,
@@ -16,6 +17,7 @@ import {
   boundsText,
   formatMyr,
   listModels,
+  limitsFirst,
   modelRows,
   nearLimitState,
   nearestLimit,
@@ -244,7 +246,6 @@ function ModelsCurrent({ models, reload }: { models: ModelView[]; reload: () => 
 // Organisation limits and policy: one saved record, shown and changed in three boxes
 // ---------------------------------------------------------------------------------------------------------------
 
-type LimitsPart = 'spending' | 'places' | 'policy';
 
 const EMPTY_ORG_FORM: OrgForm = { rate: '', monthly: '', dailyMode: 'not_applied', daily: '', userMode: 'not_applied', user: '', ceilingMode: 'not_applied', ceiling: '', maySetLimits: false, mayManageConnections: false, attempts: '3', timeout: '120', concurrency: '2', reason: '' };
 
@@ -283,7 +284,6 @@ function LimitsCurrent({ part, settings }: { part: LimitsPart; settings: OrgSett
   );
 }
 
-/** Until the spending limits are saved there is no record for the other boxes to change: they would send a blank exchange rate. */
 function LimitsFirst() {
   return <p className="warn" role="status">No limits are saved yet, so every AI request is refused. Save the spending limits first; this can be changed after that.</p>;
 }
@@ -499,7 +499,7 @@ export function AiAdmin({ initialTab = 'models' }: { initialTab?: 'models' | 'li
     key,
     title,
     current: spend ? <LimitsCurrent part={key} settings={settings} /> : <p className="loading" role="status">Loading</p>,
-    form: (close) => (spend && !settings && key !== 'spending' ? <LimitsFirst /> : spend ? <LimitsForm part={key} settings={settings} onSaved={() => { load(); close(); }} onCancel={close} /> : null),
+    form: (close) => (spend && limitsFirst(key, settings !== null) ? <LimitsFirst /> : spend ? <LimitsForm part={key} settings={settings} onSaved={() => { load(); close(); }} onCancel={close} /> : null),
   });
 
   const items: SettingsPageItem[] = [

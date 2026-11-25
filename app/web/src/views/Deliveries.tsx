@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, api } from '../api.ts';
-import { failuresFirst, lastDay, needsAction } from '../deliveries.ts';
+import { failuresFirst, lastDay, moreLoaded, needsAction } from '../deliveries.ts';
 import { formatWhen } from '../format.ts';
 import { DataTable, type Column } from '../ui/DataTable.tsx';
 import { PageHeader } from '../ui/PageHeader.tsx';
@@ -50,12 +50,8 @@ export function DeliveryHistory({ path, onResend, reloadKey = 0, onLoaded }: { p
         const page = await api.get<Page>(cursor ? `${path}?before=${encodeURIComponent(cursor)}` : path);
         setRows((r) => (cursor ? [...r, ...page.items] : page.items));
         setNext(page.more ? page.next : null);
-        // A fresh list starts again at the newest 50, so an earlier "more loaded" no longer holds.
-        if (!cursor) setAdded(null);
-        else {
-          setAdded(`${page.items.length} more ${page.items.length === 1 ? 'email' : 'emails'} loaded.`);
-          setTimeout(() => addedBox.current?.focus(), 0);
-        }
+        setAdded(moreLoaded(cursor !== null, page.items.length));
+        if (cursor) setTimeout(() => addedBox.current?.focus(), 0);
       } catch (e) {
         setError(errText(e));
       } finally {

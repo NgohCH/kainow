@@ -515,6 +515,10 @@ export function modelRows(models: ModelView[], usage: OrganisationUsage | null):
   return [...rows.values()].filter((r) => r.state !== 'withdrawn' || r.month > 0 || r.projects.length > 0);
 }
 
+export type LimitsPart = 'spending' | 'places' | 'policy';
+/** Until the spending limits are saved there is no record for the other boxes to change: they would send a blank exchange rate. */
+export const limitsFirst = (part: LimitsPart, saved: boolean): boolean => !saved && part !== 'spending';
+
 /** `unread`: the project's limits could not be read, so `limit` says nothing. */
 export interface Near { projectId: string; name: string; used: number; limit: number | null; unread?: boolean }
 
