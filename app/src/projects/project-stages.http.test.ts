@@ -68,6 +68,30 @@ describe("a project's own stages (D131)", { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(p.stages[2].substages, ['In Progress', 'Monitoring & Follow-up']);
   });
 
+  test('two stages whose names were cleaned to the same text can both still be chosen, by substage', async () => {
+    const id = await research();
+    const name = 'Trial [credential removed]';
+    for (const [i, sub] of ['First pass', 'Second pass'].entries()) {
+      await t.pool.query(
+        `INSERT INTO project_stages (id, project_id, position, name, substages, added_at) VALUES (gen_random_uuid(), $1, $2, $3, $4, now())`,
+        [id, 20 + i, name, [sub]],
+      );
+    }
+    const cleaned = (await stages(id)).filter((s) => s.name === name);
+    for (const s of cleaned) {
+      const r = await pm.request('POST', `/projects/${id}/stage`, { stage: name, substage: s.substages[0] });
+      assert.equal(r.status, 200, s.substages[0]);
+    }
+    // The test clock stands still, so the two events have no order: each stage is named once.
+    const { rows } = await t.pool.query(`SELECT detail->>'stageId' AS id FROM audit_events WHERE action = 'project.stage' AND subject_id = $1`, [id]);
+    assert.deepEqual(rows.map((r) => r.id).sort(), cleaned.map((s) => s.id).sort(), 'the audit names the stage that has the substage');
+    assert.equal((await pm.request('POST', `/projects/${id}/stage`, { stage: name, substage: 'Third pass' })).status, 400);
+    // While either is current neither can be retired; moving on frees both.
+    assert.equal((await pm.request('POST', `/projects/${id}/stages/${cleaned[0].id}/retire`, { reason })).status, 409);
+    assert.equal((await pm.request('POST', `/projects/${id}/stage`, { stage: 'Analysis' })).status, 200);
+    assert.equal((await pm.request('POST', `/projects/${id}/stages/${cleaned[0].id}/retire`, { reason })).status, 200);
+  });
+
   test('a retired or unknown template is refused', async () => {
     await t.pool.query(`UPDATE stage_templates SET status = 'retired' WHERE id = $1`, [EVENT.id]);
     for (const stageTemplateId of [EVENT.id, '00000000-0000-4000-8000-000000000000', 'not-an-id', 7]) {

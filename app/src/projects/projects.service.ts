@@ -588,7 +588,9 @@ export class ProjectsService {
       await client.query('BEGIN');
       await this.access.authorize(user, 'project.stage', id, client, true);
       // Any of the project's own active stages may be next (stages are not sequential, C09).
-      const chosen = (await loadStages(client, id)).find((s) => s.status === 'active' && s.name === stage);
+      // Two names can be equal once a credential was removed from each: the one with the substage asked for is meant.
+      const named = (await loadStages(client, id)).filter((s) => s.status === 'active' && s.name === stage);
+      const chosen = named.find((s) => substage !== null && s.substages.includes(substage)) ?? named[0];
       if (stage === null || !chosen) throw new BadRequestException('Choose a stage.');
       if (substage !== null && !chosen.substages.includes(substage)) throw new BadRequestException(`Choose a substage of ${stage}.`);
       refuseSecretsIn(input.reason);

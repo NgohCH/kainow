@@ -647,6 +647,46 @@ describe('cleaning engine (spec 7.4)', { skip: SKIP_NO_DB }, () => {
     }
   });
 
+  test('stages whose names differ only in the removed text are cleaned and restored', async () => {
+    const project = await newProject();
+    const task = await seedTask(project, 'Rotate the key');
+    const marks = ['Q7!z', 'W8?y'];
+    const names = marks.map((m) => `Rollout ${m}`);
+    const ids = [uuidv7(), uuidv7()];
+    for (const [i, id] of ids.entries()) {
+      await pool.query(`INSERT INTO project_stages (id, project_id, position, name, added_by, added_at) VALUES ($1, $2, $3, $4, $5, now())`, [id, project, 9 + i, names[i], user]);
+    }
+    const read = async () => (await pool.query(`SELECT name FROM project_stages WHERE id = ANY($1::uuid[]) ORDER BY position`, [ids])).rows.map((r) => r.name);
+    const { caseId } = await clean(project, 'task', task, marks);
+    assert.deepEqual(await read(), [`Rollout ${MARKER}`, `Rollout ${MARKER}`]);
+    const r = await tx((c) => restoreOriginals(c, key, caseId));
+    assert.deepEqual(r.changed, []);
+    assert.deepEqual(await read(), names);
+    await assert.rejects(pool.query(`UPDATE project_stages SET name = $2 WHERE id = $1`, [ids[1], names[0]]), (e: { code?: string }) => e.code === '23505');
+  });
+
+  test('a full-length description of a task and of a proposed action is cleaned and restored', async () => {
+    const project = await newProject();
+    const mark = 'Q7!z';
+    const description = `${'d'.repeat(4000 - mark.length - 1)} ${mark}`;
+    assert.equal(description.length, 4000);
+    const task = await seedTask(project, 'Rotate the key');
+    await pool.query(`UPDATE tasks SET description = $2 WHERE id = $1`, [task, description]);
+    const proposal = uuidv7();
+    await pool.query(
+      `INSERT INTO human_proposals (id, project_id, kind, text, proposed_by, proposed_at, description) VALUES ($1, $2, 'action', 'Rotate the key', $3, now(), $4)`,
+      [proposal, project, user, description],
+    );
+    for (const [table, kind, id] of [['tasks', 'task', task], ['human_proposals', 'human_proposal', proposal]] as const) {
+      const read = async () => (await pool.query(`SELECT description FROM ${table} WHERE id = $1`, [id])).rows[0].description as string;
+      const { caseId } = await clean(project, kind, id, [mark]);
+      assert.equal(await read(), description.replace(mark, MARKER), table);
+      const r = await tx((c) => restoreOriginals(c, key, caseId));
+      assert.deepEqual(r.changed, []);
+      assert.equal(await read(), description, table);
+    }
+  });
+
   test('a full-length reason for a correction is cleaned and restored', async () => {
     const project = await newProject();
     const { version } = await seedSource(project, 'Notes.');

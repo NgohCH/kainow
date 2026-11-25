@@ -276,7 +276,7 @@ const TABLES: TableDef[] = [
     table: 'human_proposals',
     project: `t.project_id ${P}`,
     owner: { kind: `'human_proposal'`, id: 't.id' },
-    text: ['text', 'owner', 'due', 'reject_reason'],
+    text: ['text', 'owner', 'due', 'reject_reason', 'description'],
     items: { human_proposal: `t.id ${P}` },
   },
 
@@ -338,7 +338,7 @@ const TABLES: TableDef[] = [
     table: 'tasks',
     project: `t.project_id ${P}`,
     owner: { kind: `'task'`, id: 't.id' },
-    text: ['title', 'owner_as_written', 'delete_reason'],
+    text: ['title', 'owner_as_written', 'delete_reason', 'description'],
     items: { task: `t.id ${P}` },
   },
   {
