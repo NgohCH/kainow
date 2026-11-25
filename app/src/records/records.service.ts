@@ -130,6 +130,18 @@ export class RecordsService {
     return rows[0] ? { kind: rows[0].kind, id: rows[0].id } : null;
   }
 
+  /** `existingRecord` of many people's proposals at once, by proposal. */
+  private async recordsOfProposals(proposalIds: string[]): Promise<Map<string, Created['record']>> {
+    const { rows } = await this.pool.query(
+      `SELECT 'task' AS kind, id, origin_proposal_id AS proposal FROM tasks WHERE origin_proposal_id = ANY($1::uuid[]) AND depth = 0
+       UNION ALL SELECT 'decision', id, origin_proposal_id FROM decisions WHERE origin_proposal_id = ANY($1::uuid[])
+       UNION ALL SELECT 'question', id, origin_proposal_id FROM questions WHERE origin_proposal_id = ANY($1::uuid[])
+       UNION ALL SELECT 'risk', id, origin_proposal_id FROM risks WHERE origin_proposal_id = ANY($1::uuid[])`,
+      [proposalIds],
+    );
+    return new Map(rows.map((r) => [r.proposal as string, { kind: r.kind, id: r.id }]));
+  }
+
   /** Authorise one extraction proposal: approve it and create its record, once (V1.0 proposals §7), through an authorise_proposal request. */
   async authoriseItem(user: AuthUser, runId: string, itemId: string, body: Record<string, unknown>): Promise<Authorised> {
     if (!UUID.test(itemId)) throw new NotFoundException();
@@ -357,11 +369,12 @@ export class RecordsService {
       [projectId],
     );
     const copiedFrom = await copiedFromViews(this.pool, this.access, user, rows.map((r) => r.copiedFromId as string | null));
+    const records = await this.recordsOfProposals(rows.map((r) => r.id as string));
     const out = [];
     for (const { copiedFromId, ...r } of rows) {
       // The written due, read against the day it was proposed (UTC+8), so the Authorise form can pre-fill the date.
       const dueReading = readDue({ due: r.due, dueEvent: null, meetingDate: todayUtc8(new Date(r.proposedAt)) });
-      out.push({ ...r, copiedFrom: copiedFrom(copiedFromId), dueReading, label: HUMAN_LABEL, record: await this.existingRecord(this.pool, { proposalId: r.id }), recordOpens: false });
+      out.push({ ...r, copiedFrom: copiedFrom(copiedFromId), dueReading, label: HUMAN_LABEL, record: records.get(r.id) ?? null, recordOpens: false });
     }
     // Whether each record is in view today (neither Deleted nor held), so that its link leads somewhere.
     const live = await this.pool.query<{ id: string }>(
@@ -641,12 +654,14 @@ export class RecordsService {
       )
     ).rows;
     const parent = tasks.find((t) => t.id === view.parentId);
+    // A parent this viewer's lists do not show (held or Deleted) is not shown through its subtask either.
+    const ownOnly = parent ? {} : { parentId: null, dueAfterParent: false, parentCancelled: false };
     // "Due soon" by the one rule (D135); a task that is overdue or waits for a deadline review shows that instead.
     const open = view.status !== 'completed' && view.status !== 'cancelled' && !view.deadlineReviewRequired && view.dueOn >= ctx.today;
     const dueSoon = open && view.dueOn <= dueSoonEnd(ctx.today, (await loadEffective(this.pool, ctx.project.id)).cal);
     const block = view.status === 'blocked' ? history.filter((h) => h.kind === 'blocked').at(-1) : undefined;
     return {
-      task: { ...view, description: more.description as string | null, dueSoon },
+      task: { ...view, ...ownOnly, description: more.description as string | null, dueSoon },
       history,
       parent: parent ? { id: parent.id, title: parent.title } : null,
       subtasks: tasks.filter((t) => t.parentId === view.id).map((t) => ({ id: t.id, title: t.title, status: t.status, dueOn: t.dueOn })),

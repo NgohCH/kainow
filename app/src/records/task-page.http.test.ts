@@ -245,6 +245,10 @@ describe('the task page', { skip: SKIP_NO_DB }, () => {
     await t.pool.query(`UPDATE tasks SET held_case_id = $2 WHERE id = $1`, [top, await addCase('task', top)]);
     const orphan = await get(ben, b);
     assert.deepEqual([orphan.status, orphan.body.parent, orphan.body.task.id], [200, null, b]);
+    // Nothing the parent's own date or status would tell either.
+    await t.pool.query(`UPDATE tasks SET status = 'cancelled', due_on = '2026-11-01' WHERE id = $1`, [top]);
+    const { parentId, dueAfterParent, parentCancelled } = (await get(ben, b)).body.task;
+    assert.deepEqual({ parentId, dueAfterParent, parentCancelled }, { parentId: null, dueAfterParent: false, parentCancelled: false });
     assert.ok(!JSON.stringify(orphan.body).includes('Top'));
   });
 
@@ -377,7 +381,7 @@ describe('the task page', { skip: SKIP_NO_DB }, () => {
   });
 
   test('the list reads every proposal in a fixed number of queries', async () => {
-    const count = async () => {
+    const count = async (read: () => Promise<unknown>) => {
       let n = 0;
       const pool = t.app.get(PG_POOL);
       const original = pool.query;
@@ -386,15 +390,22 @@ describe('the task page', { skip: SKIP_NO_DB }, () => {
         return original.apply(pool, args);
       };
       try {
-        await records(ben);
+        await read();
       } finally {
         pool.query = original;
       }
       return n;
     };
     await authoriseHuman((await propose()).body.proposal.id);
-    const few = await count();
-    for (let i = 0; i < 4; i += 1) await authoriseHuman((await propose()).body.proposal.id);
-    assert.equal(await count(), few);
+    const proposals = () => ben.request('GET', `/projects/${projectId}/proposals`);
+    const few = [await count(() => records(ben)), await count(proposals)];
+    const made: string[] = [];
+    for (let i = 0; i < 4; i += 1) made.push((await authoriseHuman((await propose()).body.proposal.id)).body.record.id);
+    await propose();
+    assert.deepEqual([await count(() => records(ben)), await count(proposals)], few);
+    const listed = (await proposals()).body.proposals;
+    const shown = listed.map((p: { record: { kind: string; id: string } | null }) => p.record);
+    for (const id of made) assert.deepEqual(shown.filter((r: { id: string } | null) => r?.id === id), [{ kind: 'task', id }]);
+    assert.equal(shown.filter((r: unknown) => r === null).length, 1, 'the one that was not authorised');
   });
 });
