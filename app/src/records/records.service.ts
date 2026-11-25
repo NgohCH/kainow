@@ -356,8 +356,15 @@ export class RecordsService {
     for (const r of rows) {
       // The written due, read against the day it was proposed (UTC+8), so the Authorise form can pre-fill the date.
       const dueReading = readDue({ due: r.due, dueEvent: null, meetingDate: todayUtc8(new Date(r.proposedAt)) });
-      out.push({ ...r, dueReading, label: HUMAN_LABEL, record: await this.existingRecord(this.pool, { proposalId: r.id }) });
+      out.push({ ...r, dueReading, label: HUMAN_LABEL, record: await this.existingRecord(this.pool, { proposalId: r.id }), recordOpens: false });
     }
+    // Whether each record is in view today (neither Deleted nor held), so that its link leads somewhere.
+    const live = await this.pool.query<{ id: string }>(
+      `SELECT x.id FROM unnest($1::text[], $2::uuid[]) AS x(kind, id) WHERE ${liveRecordRefSql('x.kind', 'x.id')}`,
+      [out.map((p) => p.record?.kind ?? null), out.map((p) => p.record?.id ?? null)],
+    );
+    const opens = new Set(live.rows.map((r) => r.id));
+    for (const p of out) p.recordOpens = p.record !== null && opens.has(p.record.id);
     return { proposals: out };
   }
 

@@ -40,7 +40,7 @@ test('a blocked task says why, who blocked it and when (UTC+8)', () => {
 });
 
 test('a proposal opens at its existing address', () => {
-  assert.equal(proposalHref(P, { kind: 'run', runId: 'r', itemId: 'i' }), '#/runs/r');
+  assert.equal(proposalHref(P, { kind: 'run', runId: 'r', itemId: 'i' }), '#/runs/r/i');
   assert.equal(proposalHref(P, { kind: 'human', proposalId: T }), `#/projects/${P}/proposals/${T}`);
 });
 

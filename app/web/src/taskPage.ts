@@ -43,8 +43,8 @@ export function blockedLine(b: { reason: string | null; by: string; at: string }
 }
 
 export type ProposalRef = { kind: 'run'; runId: string; itemId: string } | { kind: 'human'; proposalId: string };
-/** Where a task's proposal is shown: the run's page, or the person's proposal on the Proposals tab. */
-export const proposalHref = (projectId: string, p: ProposalRef): string => (p.kind === 'run' ? `#/runs/${p.runId}` : `#/projects/${projectId}/proposals/${p.proposalId}`);
+/** Where a record's proposal is shown: its item on the run's page, or the person's proposal on the Proposals tab. */
+export const proposalHref = (projectId: string, p: ProposalRef): string => (p.kind === 'run' ? `#/runs/${p.runId}/${p.itemId}` : `#/projects/${projectId}/proposals/${p.proposalId}`);
 
 const CHANGED: Record<string, string> = { title: 'Wording', description: 'Description', assigneeId: 'Assignee', dueOn: 'Due date' };
 

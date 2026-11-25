@@ -316,7 +316,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
           focusId={itemId}
         />
       )}
-      {view === 'run' && runId && <Review key={runId} runId={runId} meId={meId} />}
+      {view === 'run' && runId && <Review key={runId} runId={runId} focusId={itemId} meId={meId} />}
       {view === 'task' && itemId && (
         <TaskPage
           key={itemId}
@@ -351,7 +351,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
  * `#/runs/<id>` (email links point at it): the run's review inside its project, under the Proposals tab. The run says
  * which project it belongs to; a run the person may not see shows the server's reason.
  */
-export function RunInProject({ runId, meId, prefs, prefsReady, onPrefs }: { runId: string; meId: string; prefs: Prefs; prefsReady: boolean; onPrefs: (next: Prefs) => Promise<void> }) {
+export function RunInProject({ runId, itemId, meId, prefs, prefsReady, onPrefs }: { runId: string; itemId?: string; meId: string; prefs: Prefs; prefsReady: boolean; onPrefs: (next: Prefs) => Promise<void> }) {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -372,7 +372,7 @@ export function RunInProject({ runId, meId, prefs, prefsReady, onPrefs }: { runI
       </main>
     );
   }
-  return <ProjectPage key={projectId} projectId={projectId} tab="run" runId={runId} meId={meId} prefs={prefs} prefsReady={prefsReady} onPrefs={onPrefs} />;
+  return <ProjectPage key={projectId} projectId={projectId} tab="run" runId={runId} itemId={itemId} meId={meId} prefs={prefs} prefsReady={prefsReady} onPrefs={onPrefs} />;
 }
 
 function Overview({ project, act, contentAllowed }: { project: Project; act: Act; contentAllowed: boolean }) {

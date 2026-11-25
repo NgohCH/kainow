@@ -7,7 +7,7 @@ import { CLOCK, type Clock } from '../auth/tokens';
 import { uuidv7 } from '../common/uuid7';
 import { PROPOSAL_REJECTED_REASON, lockPendingAuthorisation, rejectPendingAuthorisation } from '../changes/end-pending';
 import { PG_POOL } from '../db/database.module';
-import { liveSourceSql, notHeldSql, refuseHeld } from '../history/deleted-sql';
+import { liveRecordRefSql, liveSourceSql, notHeldSql, refuseHeld } from '../history/deleted-sql';
 import { QUOTE_CHANGED_TEXT, quoteChangedItems } from '../quarantine/clean';
 import { POSSIBLE_COPY_TEXT, possibleCopyLabelSql, possibleCopySql } from '../quarantine/labels';
 import { audienceVisibleSql } from '../discussion/audience';
@@ -155,6 +155,9 @@ export interface ProposalRun {
   sourceId: string;
   /** The note's title, or the possible-copy label while the note is one (as the notes list shows it). */
   sourceTitle: string;
+  sourceKind: 'notes' | 'minutes' | 'summary' | 'discussion';
+  /** The discussion whose transcript was read (where its source link goes); null for every other kind, minutes too. */
+  threadId: string | null;
   versionNo: number;
   finishedAt: string;
   /** Proposals still waiting for review; held proposals are left out of both counts, as the review screen leaves them out. */
@@ -187,6 +190,7 @@ export async function proposalRuns(db: Queryable, projectId: string, userId: str
   const { rows } = await db.query(
     `SELECT r.id AS "runId", s.id AS "sourceId",
             CASE WHEN ${possibleCopySql('source', 's.id')} OR ${possibleCopySql('thread', 's.thread_id')} THEN '${POSSIBLE_COPY_TEXT}' ELSE s.title END AS "sourceTitle",
+            s.kind AS "sourceKind", CASE WHEN s.kind = 'discussion' THEN s.thread_id END AS "threadId",
             v.version_no AS "versionNo", COALESCE(r.finished_at, r.created_at) AS "finishedAt",
             (count(*) FILTER (WHERE i.review_status = 'pending'))::int AS waiting, count(*)::int AS total
        FROM ${LISTED_RUN_ITEMS}
@@ -333,7 +337,12 @@ export class ExtractionService {
                  SELECT 'task' AS kind, id FROM tasks WHERE origin_item_id = i.id AND depth = 0
                  UNION ALL SELECT 'decision', id FROM decisions WHERE origin_item_id = i.id
                  UNION ALL SELECT 'question', id FROM questions WHERE origin_item_id = i.id
-                 UNION ALL SELECT 'risk', id FROM risks WHERE origin_item_id = i.id) x LIMIT 1) AS record
+                 UNION ALL SELECT 'risk', id FROM risks WHERE origin_item_id = i.id) x LIMIT 1) AS record,
+              EXISTS (SELECT 1 FROM (
+                 SELECT 'task' AS kind, id FROM tasks WHERE origin_item_id = i.id AND depth = 0
+                 UNION ALL SELECT 'decision', id FROM decisions WHERE origin_item_id = i.id
+                 UNION ALL SELECT 'question', id FROM questions WHERE origin_item_id = i.id
+                 UNION ALL SELECT 'risk', id FROM risks WHERE origin_item_id = i.id) x WHERE ${liveRecordRefSql('x.kind', 'x.id')}) AS "recordOpens"
          FROM extraction_items i
          ${LATEST_EDIT}
         WHERE i.run_id = $1 AND ${notHeldSql('i')} ORDER BY i.position`,
@@ -359,7 +368,10 @@ export class ExtractionService {
     const flagged = shaped.map((i) => ({ ...i, sourceFlag: flags.get(i.id) ?? null, discussionEvidence: evidence.get(i.id) ?? null, quoteChanged: quoteChanged.has(i.id) ? QUOTE_CHANGED_TEXT : null }));
     Object.assign(run.rows[0], meeting);
     const src = await this.pool.query(
-      `SELECT s.id AS "sourceId", s.title, s.kind AS "sourceKind", v.version_no AS "versionNo"
+      // The viewer may read the source's content here; `opens` says whether its own page (or discussion) answers today.
+      `SELECT s.id AS "sourceId", s.title, s.kind AS "sourceKind", v.version_no AS "versionNo",
+              CASE WHEN s.kind = 'discussion' THEN s.thread_id END AS "threadId",
+              ${liveSourceSql('s')} AND (s.kind <> 'discussion' OR EXISTS (SELECT 1 FROM discussion_threads lt WHERE lt.id = s.thread_id AND ${notHeldSql('lt')})) AS opens
          FROM extraction_runs r JOIN source_versions v ON v.id = r.source_version_id JOIN sources s ON s.id = v.source_id
         WHERE r.id = $1`,
       [runId],

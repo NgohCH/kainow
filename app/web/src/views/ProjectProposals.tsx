@@ -1,15 +1,16 @@
 import { useEffect, useState } from 'react';
 import { api } from '../api.ts';
 import { formatWhen } from '../format.ts';
+import { type SourceAddress, sourceHref } from '../proposalLinks.ts';
 import { DataTable, type Column } from '../ui/DataTable.tsx';
 import { HumanProposals } from './HumanProposals.tsx';
 import type { Person } from './AuthoriseForm.tsx';
 
 /** One extraction run of the project, as `GET /projects/:projectId/proposal-runs` lists it. */
-interface ProposalRun { runId: string; sourceId: string; sourceTitle: string; versionNo: number; finishedAt: string; waiting: number; total: number }
+interface ProposalRun extends SourceAddress { runId: string; sourceTitle: string; finishedAt: string; waiting: number; total: number }
 
-const columns: Column<ProposalRun>[] = [
-  { key: 'source', header: 'Source and version', sortValue: (r) => r.sourceTitle.toLowerCase(), cell: (r) => `${r.sourceTitle}, version ${r.versionNo}` },
+const columnsFor = (projectId: string): Column<ProposalRun>[] => [
+  { key: 'source', header: 'Source and version', sortValue: (r) => r.sourceTitle.toLowerCase(), cell: (r) => <SourceLink projectId={projectId} run={r} /> },
   { key: 'finished', header: 'Finished', sortValue: (r) => r.finishedAt, cell: (r) => formatWhen(r.finishedAt) },
   { key: 'waiting', header: 'Waiting', sortValue: (r) => r.waiting, cell: (r) => `${r.waiting} of ${r.total}` },
   {
@@ -22,6 +23,13 @@ const columns: Column<ProposalRun>[] = [
     ),
   },
 ];
+
+/** The run's source, linked: the runs listed are those whose source the reader may open. */
+function SourceLink({ projectId, run }: { projectId: string; run: ProposalRun }) {
+  const href = sourceHref(projectId, run);
+  const text = `${run.sourceTitle}, version ${run.versionNo}`;
+  return href ? <a href={href}>{text}</a> : <>{text}</>;
+}
 
 /** The Proposals tab: the AI's proposals from each run on the project's notes and discussions (waiting first), then people's own proposals. */
 export function ProjectProposals({
@@ -52,6 +60,7 @@ export function ProjectProposals({
     };
   }, [projectId]);
 
+  const columns = columnsFor(projectId);
   const waiting = (runs ?? []).filter((r) => r.waiting > 0);
   const reviewed = (runs ?? []).filter((r) => r.waiting === 0);
   return (

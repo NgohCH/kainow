@@ -24,7 +24,7 @@ import {
   type TaskStatus,
   historyLine,
 } from '../records.ts';
-import { taskHref } from '../taskPage.ts';
+import { type ProposalRef, proposalHref, taskHref } from '../taskPage.ts';
 import { flagSentence, mayDeleteRecord } from '../history.ts';
 import type { ProjectRole, ProjectStatus } from '../projects.ts';
 import { DeleteAction } from './DeleteRestore.tsx';
@@ -71,6 +71,7 @@ export interface TaskView {
   follows: { id: string | null; title: string } | null;
   followedBy: { id: string | null; title: string } | null;
   reviewFlags: ReviewFlag[];
+  proposal?: ProposalRef | null;
 }
 interface QuestionView {
   id: string;
@@ -82,6 +83,7 @@ interface QuestionView {
   answers: Array<{ answer: string; author: string; at: string }>;
   mayAct: QuestionAction[];
   reviewFlags: ReviewFlag[];
+  proposal?: ProposalRef | null;
 }
 interface RiskView {
   id: string;
@@ -97,6 +99,7 @@ interface RiskView {
   handedOverTo: { projectId: string; name: string } | null;
   handedOverFrom: { projectId: string; name: string } | null;
   reviewFlags: ReviewFlag[];
+  proposal?: ProposalRef | null;
 }
 interface DecisionView {
   id: string;
@@ -111,6 +114,7 @@ interface DecisionView {
   replacedBy: { id: string | null; statement: string } | null;
   changeWaiting: boolean;
   mayAct: Array<'supersede' | 'withdraw'>;
+  proposal?: ProposalRef | null;
 }
 export interface Records {
   tasks: TaskView[];
@@ -373,6 +377,16 @@ export function Evidence({ source, projectId }: { source: EvidenceSource; projec
   );
 }
 
+/** The proposal a record came from, when the reader may open it (the server gives it only then). */
+export function ProposalLink({ proposal, projectId, title }: { proposal: ProposalRef | null | undefined; projectId: string; title: string }) {
+  if (!proposal) return null;
+  return (
+    <p className="meta">
+      <a href={proposalHref(projectId, proposal)}>Open its proposal<span className="visually-hidden">: {title}</span></a>
+    </p>
+  );
+}
+
 type TaskForm = TaskAction | 'amend' | 'subtask' | 'cancel' | 'followup';
 
 interface TaskActionsProps {
@@ -393,6 +407,7 @@ function TaskDetails(props: TaskActionsProps) {
         </p>
       )}
       {t.source && <Evidence source={t.source} projectId={projectId} />}
+      <ProposalLink proposal={t.proposal} projectId={projectId} title={t.title} />
       <TaskActions {...props} withHistory />
     </div>
   );
@@ -530,6 +545,7 @@ function DecisionDetails({ projectId, d, work, propose, mayDelete, onChanged }: 
   return (
     <div className="work-details">
       {notes.length > 0 && <p className="meta">{notes.join(' · ')}</p>}
+      <ProposalLink proposal={d.proposal} projectId={projectId} title={d.statement} />
       <QuarantineBar projectId={projectId} kind="decision" id={d.id} label={`decision “${d.statement}”`} quarantineLabel={d.quarantineLabel} onReported={() => onChanged('Reported. The decision is held while the text is removed.')} />
       {open === null && ((d.mayAct.length > 0 && !d.changeWaiting) || mayDelete) && (
         <div className="decision">
@@ -558,6 +574,7 @@ function QuestionDetails({ projectId, q, act, canClear, mayDelete, onChanged }: 
   const [value, setValue] = useState('');
   return (
     <div className="work-details">
+      <ProposalLink proposal={q.proposal} projectId={projectId} title={q.text} />
       <QuarantineBar projectId={projectId} kind="question" id={q.id} label={`question “${q.text}”`} quarantineLabel={q.quarantineLabel} onReported={() => onChanged('Reported. The question is held while the text is removed.')} />
       <Flags flags={q.reviewFlags} canClear={canClear} />
       {q.answers.length > 0 ? (
@@ -624,6 +641,7 @@ function RiskDetails({ projectId, r, people, act, canClear, mayDelete, onChanged
   return (
     <div className="work-details">
       {notes.length > 0 && <p className="meta">{notes.join(' · ')}</p>}
+      <ProposalLink proposal={r.proposal} projectId={projectId} title={r.description} />
       <Flags flags={r.reviewFlags} canClear={canClear} />
       <QuarantineBar projectId={projectId} kind="risk" id={r.id} label={`risk “${r.description}”`} quarantineLabel={r.quarantineLabel} onReported={() => onChanged('Reported. The risk is held while the text is removed.')} />
       {open === null ? (

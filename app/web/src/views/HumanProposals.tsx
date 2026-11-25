@@ -2,6 +2,7 @@ import { type FormEvent, useCallback, useEffect, useState } from 'react';
 import { QuarantineNote, ReportSecret } from './ReportSecret.tsx';
 import { ApiError, api, type DueReading } from '../api.ts';
 import { formatWhen } from '../format.ts';
+import { recordHref } from '../proposalLinks.ts';
 import { AuthoriseForm, DescriptionField, type Person } from './AuthoriseForm.tsx';
 import { useFocusItem } from './useFocusItem.ts';
 import { ChangeRequestPanel, pendingAuthorisation, useRequests } from './ChangeRequest.tsx';
@@ -23,6 +24,8 @@ interface Proposal {
   rejectReason: string | null;
   label: string;
   record: { kind: string; id: string } | null;
+  /** The record is in view today: it can be linked to. */
+  recordOpens?: boolean;
   dueReading: DueReading;
 }
 
@@ -144,7 +147,10 @@ export function HumanProposals({
                 {p.owner ? ` · who: ${p.owner}` : ''}
                 {p.due ? ` · by when: ${p.due}` : ''}
                 {p.reviewStatus === 'rejected' ? ` · rejected: ${p.rejectReason}` : ''}
-                {p.record ? ' · authorised (see the Work tab)' : ''}
+                {p.record && !p.recordOpens ? ' · authorised (see the Work tab)' : ''}
+                {p.record && p.recordOpens && (
+                  <> · <a href={recordHref(projectId, p.record)}>authorised: open the {p.record.kind}<span className="visually-hidden"> “{p.text}”</span></a></>
+                )}
               </span>
               <ReportSecret projectId={projectId} kind="human_proposal" id={p.id} label="this proposal" onReported={() => void load()} />
               {canReview && p.reviewStatus === 'pending' && authorising !== p.id && rejecting !== p.id && !pendingAuthorisation(requests, p.id) && (

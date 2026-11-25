@@ -6,14 +6,14 @@ import { formatWhen } from '../format.ts';
 import { mayDeleteRecord } from '../history.ts';
 import type { ProjectRole, ProjectStatus } from '../projects.ts';
 import { TASK_STATUS_LABEL, TASK_STATUS_MEANING, type TaskHistoryEntry, type TaskStatus, historyLine } from '../records.ts';
-import { NO_DESCRIPTION, type ProposalRef, blockedLine, historyChanges, proposalHref, statusMeaning, taskHref } from '../taskPage.ts';
+import { NO_DESCRIPTION, type ProposalRef, blockedLine, historyChanges, statusMeaning, taskHref } from '../taskPage.ts';
 import { Box } from '../ui/Box.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
 import type { Person } from './AuthoriseForm.tsx';
 import type { WorkContext } from './ChangeForms.tsx';
 import { ChangeRequestPanel } from './ChangeRequest.tsx';
 import { ModeLabel } from './ProjectCalendar.tsx';
-import { Evidence, type Records, TaskActions, TaskLabels, type TaskView } from './Work.tsx';
+import { Evidence, ProposalLink, type Records, TaskActions, TaskLabels, type TaskView } from './Work.tsx';
 import { useRecordChanges } from './useRecordChanges.ts';
 
 interface TaskReply {
@@ -179,7 +179,7 @@ export function TaskPage({
       </Box>
       <Box title="Source" headingLevel={3}>
         {t.source ? <Evidence source={t.source} projectId={projectId} /> : <p className="meta">No quote from a note or discussion.</p>}
-        {reply.proposal && <p><a href={proposalHref(projectId, reply.proposal)}>Open its proposal</a></p>}
+        <ProposalLink proposal={reply.proposal} projectId={projectId} title={t.title} />
       </Box>
       <Box title="Subtasks" headingLevel={3}>
         {reply.subtasks.length === 0 ? (

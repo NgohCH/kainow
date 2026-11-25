@@ -41,6 +41,7 @@ import { Operations } from './views/Operations.tsx';
 import { OpsBanner, ProtectiveLine } from './views/OpsBanner.tsx';
 import { AppShell } from './ui/AppShell.tsx';
 import { PROFILE_HREF } from './ui/menu.ts';
+import { parseNoteHash, parseRunHash } from './proposalLinks.ts';
 import { parseProjectHash } from './ui/projectTabs.ts';
 import { SettingsHub } from './views/SettingsHub.tsx';
 import { Definitions } from './views/Definitions.tsx';
@@ -317,8 +318,8 @@ export function App() {
       </>
     );
   }
-  const note = /^#\/notes\/([0-9a-f-]{36})(?:\/v\/(\d+))?$/i.exec(hash);
-  const run = /^#\/runs\/([0-9a-f-]{36})$/i.exec(hash);
+  const note = parseNoteHash(hash);
+  const run = parseRunHash(hash);
   const project = parseProjectHash(hash);
   const deletedItem = /^#\/projects\/([0-9a-f-]{36})\/deleted\/([a-z]+)\/([0-9a-f-]{36})$/i.exec(hash);
   const quarantineCase = /^#\/quarantine\/cases\/([0-9a-f-]{36})(?:\/copies)?$/i.exec(hash);
@@ -362,8 +363,8 @@ export function App() {
   else if (summary) page = <SummaryPage key={summary[1]} summaryId={summary[1]} />;
   else if (thread) page = <Thread key={thread.threadId} projectId={thread.projectId} threadId={thread.threadId} meId={user.id} messageNo={thread.messageNo} answerId={answerIdFromHash(hash)} />;
   else if (deletedItem) page = <DeletedItemPage key={deletedItem[3]} projectId={deletedItem[1]} kind={deletedItem[2]} itemId={deletedItem[3]} />;
-  else if (run) page = <RunInProject key={run[1]} runId={run[1]} meId={user.id} prefs={prefs} prefsReady={prefsLoaded} onPrefs={savePrefs} />;
-  else if (note) page = <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} />;
+  else if (run) page = <RunInProject key={run.runId} runId={run.runId} itemId={run.itemId} meId={user.id} prefs={prefs} prefsReady={prefsLoaded} onPrefs={savePrefs} />;
+  else if (note) page = <NoteDetail sourceId={note.sourceId} versionNo={note.versionNo} place={note.place} />;
   else if (project) page = <ProjectPage key={project.projectId} projectId={project.projectId} meId={user.id} tab={project.tab as ProjectView} itemId={project.itemId} prefs={prefs} prefsReady={prefsLoaded} onPrefs={savePrefs} />;
   else if (hash === '#/projects') page = <Projects isAdmin={isAdmin} />;
   else if (hash === '#/my-tasks') page = <MyTasks />;

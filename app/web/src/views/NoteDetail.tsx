@@ -15,6 +15,8 @@ import { SummaryRequest } from './SummaryView.tsx';
 import { Intake } from './Intake.tsx';
 import { SubmissionReview } from './Submissions.tsx';
 import { Box } from '../ui/Box.tsx';
+import { type Place, notePlace } from '../proposalLinks.ts';
+import { useFocusItem } from './useFocusItem.ts';
 import { PageHeader } from '../ui/PageHeader.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
 import type { Meaning } from '../ui/meanings.ts';
@@ -59,7 +61,8 @@ const STATUS_MEANING: Record<Run['status'], Meaning> = {
   blocked: 'blocked',
 };
 
-export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionNo: number | null }) {
+/** `place`: the passage a proposal's link points at; it is marked, scrolled to and focused once the text has loaded. */
+export function NoteDetail({ sourceId, versionNo, place }: { sourceId: string; versionNo: number | null; place: Place | null }) {
   const [detail, setDetail] = useState<Detail | null>(null);
   const [text, setText] = useState<string | null>(null);
   const [runs, setRuns] = useState<Run[]>([]);
@@ -121,6 +124,11 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
       setStarting(false);
     }
   }
+
+  const marked = text === null ? null : notePlace(text, place);
+  // The address is part of the id, so following another link focuses again.
+  const placeId = place ? `place-${current}-${place.start}-${place.end}` : undefined;
+  useFocusItem(placeId, marked !== null && version !== undefined);
 
   if (error && !detail) return <main className="page narrow"><p role="alert" className="error">{error}</p><a href="#/projects">Projects</a></main>;
   if (!detail || !version) return <p className="loading">Loading</p>;
@@ -223,7 +231,17 @@ export function NoteDetail({ sourceId, versionNo }: { sourceId: string; versionN
               {version.storage !== 'stored' && <span className="hint">The notes work as usual in Kainow while the files wait to be stored.</span>}
             </p>
           )}
-          <div className="source" tabIndex={0}>{text ?? 'Loading'}</div>
+          <div className="source" tabIndex={0}>
+            {marked ? (
+              <>
+                {marked.before}
+                <mark id={`item-${placeId}`} tabIndex={-1}>{marked.match}</mark>
+                {marked.after}
+              </>
+            ) : (
+              (text ?? 'Loading')
+            )}
+          </div>
         </section>
         {published && src.kind !== 'discussion' && src.mayExtract !== false && (
         <aside aria-labelledby="note-proposals-heading" className="box">

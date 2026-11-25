@@ -262,6 +262,8 @@ export interface Item {
   record: { kind: 'task' | 'decision' | 'question' | 'risk'; id: string } | null;
   /** Approved before records existed: it still needs authorising to become a record. */
   approvedWithoutRecord: boolean;
+  /** The record is in view today (neither Deleted nor held): it can be linked to. */
+  recordOpens?: boolean;
   /** Set when the quote lies in a discussion message that is now hidden or deleted, or the source is Deleted. */
   sourceFlag?: 'deleted' | 'hidden' | 'source_deleted' | null;
   /** Set when the quote was cleaned of a credential and needs a second look. */
