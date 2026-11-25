@@ -187,10 +187,11 @@ export function App() {
   const hash = useHash();
   const [user, setUser] = useState<User | null | undefined>(undefined);
   const [branding, setBranding] = useState<Branding | null>(null);
+  const [brandingRead, setBrandingRead] = useState(false);
 
   // The organisation's name and logos (Kainow's own until setup is finished). Public, so the sign-in page has them.
   const loadBranding = useCallback(() => {
-    api.get<Branding>('/organisation/branding').then(setBranding, () => setBranding(null));
+    api.get<Branding>('/organisation/branding').then(setBranding, () => setBranding(null)).finally(() => setBrandingRead(true));
   }, []);
   useEffect(loadBranding, [loadBranding]);
 
@@ -217,6 +218,9 @@ export function App() {
     );
   }, []);
 
+  // Until the organisation is set up the server refuses everything below; it is read once setup is finished.
+  const member = brandingRead && branding?.registered !== false ? user : null;
+
   // Personal display preferences: loaded once signed in, saved at once on each change, and applied to <html>.
   const [prefs, setPrefs] = useState<Prefs>(DEFAULT_PREFS);
   const [prefsLoaded, setPrefsLoaded] = useState(false);
@@ -225,7 +229,7 @@ export function App() {
   useEffect(() => {
     setPrefsLoaded(false);
     setPrefsFailed(false);
-    if (!user) {
+    if (!member) {
       saver.loaded(DEFAULT_PREFS);
       return;
     }
@@ -241,38 +245,38 @@ export function App() {
     return () => {
       stale = true;
     };
-  }, [user, saver]);
+  }, [member, saver]);
   useEffect(() => applyAppearance(prefs, branding?.colour ?? null), [prefs, branding]);
   const savePrefs = saver.save;
 
   // A designated security reviewer gets the Security review page; for anyone else the link stays hidden.
   const [reviewer, setReviewer] = useState(false);
   useEffect(() => {
-    if (!user) return setReviewer(false);
+    if (!member) return setReviewer(false);
     api.get<{ reviewer: boolean }>('/security/me').then((r) => setReviewer(r.reviewer), () => setReviewer(false));
-  }, [user]);
+  }, [member]);
 
   // "Leadership" shows only for someone holding an Active leadership grant.
   const [hasGrant, setHasGrant] = useState(false);
   useEffect(() => {
-    if (!user) return setHasGrant(false);
+    if (!member) return setHasGrant(false);
     let stale = false;
     api.get<{ hasGrant: boolean }>('/leadership/me').then((r) => !stale && setHasGrant(r.hasGrant), () => !stale && setHasGrant(false));
     return () => {
       stale = true;
     };
-  }, [user, hash === '#/leadership']);
+  }, [member, hash === '#/leadership']);
 
   // "Resource catalogue" shows for the Administrator and for people the Administrator named as catalogue maintainers.
   const [maintainer, setMaintainer] = useState(false);
   useEffect(() => {
-    if (!user) return setMaintainer(false);
+    if (!member) return setMaintainer(false);
     let stale = false;
     api.get<{ maintainer: boolean }>('/resources/catalogue/me').then((r) => !stale && setMaintainer(r.maintainer), () => !stale && setMaintainer(false));
     return () => {
       stale = true;
     };
-  }, [user]);
+  }, [member]);
 
   const signOut = useCallback(async () => {
     if (!leaveGuard.mayLeave()) return;
@@ -289,7 +293,7 @@ export function App() {
     go('#/');
   }, []);
 
-  if (user === undefined) return <p className="loading">Loading</p>;
+  if (user === undefined || (user !== null && !brandingRead)) return <p className="loading">Loading</p>;
   // An invitation link works before sign-in: it shows the invitation and then asks the person to sign in.
   const invitation = /^#\/invitations\/([A-Za-z0-9_-]{20,})$/.exec(hash);
   const setupLink = /^#\/setup\/([A-Za-z0-9_-]{20,})$/.exec(hash);
@@ -312,7 +316,7 @@ export function App() {
             <button className="quiet" onClick={signOut}>Sign out</button>
           </span>
         </header>
-        <OpsBanner hash={hash} isAdmin />
+        <OpsBanner hash={hash} isAdmin settingUp />
         <div id="main">
           <Onboarding
             onFinished={() => {

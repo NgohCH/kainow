@@ -6,14 +6,16 @@ import { StatusLabel } from '../ui/StatusLabel.tsx';
 /**
  * Under the top bar on every page: protective read-only mode (or update maintenance) and the scheduled update for
  * everyone; the failed-update warning and the backup or storage warning for an Enterprise Administrator. It is a
- * background read: when it fails it shows nothing, never an error.
+ * background read: when it fails it shows nothing, never an error. While the organisation is being set up (`settingUp`) the
+ * server gives none, so only a restart is told.
  */
-export function OpsBanner({ hash, isAdmin }: { hash: string; isAdmin: boolean }) {
+export function OpsBanner({ hash, isAdmin, settingUp = false }: { hash: string; isAdmin: boolean; settingUp?: boolean }) {
   const [banner, setBanner] = useState<BannerData | null>(null);
   // Kainow stopped for an update (spec 7.2): api.ts retries /health every 15 s and reloads the page when it answers.
   const [restarting, setRestarting] = useState(isRestarting());
   useEffect(() => onRestarting(setRestarting), []);
   useEffect(() => {
+    if (settingUp) return;
     let live = true;
     const refresh = () => {
       api.get<BannerData>('/operations/banner').then(
@@ -30,7 +32,7 @@ export function OpsBanner({ hash, isAdmin }: { hash: string; isAdmin: boolean })
       window.removeEventListener('operations-changed', refresh);
     };
     // A new page (hash) reads it again, so a change is seen when moving about.
-  }, [hash]);
+  }, [hash, settingUp]);
   if (restarting) {
     return (
       <div className="ops-banner" role="status" aria-label="Notices about Kainow">
