@@ -84,7 +84,7 @@ V1.0 supports limited personalisation directly on the dashboard:
 | Arrangement | Reorder permitted dashboard sections and project cards. |
 | Optional information | Show or hide optional sections. |
 | Navigation | Save project expansion/collapse preferences. |
-| Reset | Restore the default layout/preferences. |
+| Reset | Restore the defaults of what the panel shows; colours and tabs chosen on My profile stay. |
 
 - Preferences are saved per user and affect that user's presentation only.
 - Filters, displayed sections, category selections and default sorting are configurable within permitted access.

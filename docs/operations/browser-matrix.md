@@ -5,7 +5,7 @@ Kainow supports the **current and previous major releases of Edge, Chrome, Firef
 How each is checked:
 
 - **Automated**: the smoke run in `tests/browsers/` (README there): the same journey of 16 steps (19 since sub-project 11a.1: also a task's own page, My profile and each tab style) (sign in with a code, Projects from the side menu, a project, the Work tab, a task's progress saved, a discussion comment, a note, the AI review screen for a finished run (inserted into the test database by `tests/browsers/review-run.mjs`, since the test installation has no AI) with a decision authorised there, a person's proposal authorised, the personal and project dashboards, Analytics and Operations as Administrator, sign out from the person menu), each step checking what is on screen and that no console error was logged. Desktop is 1280×800, phone 390×844, tablet 820×1180 (Chrome and WebKit only). Results: `tests/browsers/results/<date>.md`.
-- **By hand**: Safari on a Mac, iPhone and iPad, by the Product Owner with `docs/operations/safari-check.md` (the same steps; its setup makes the AI run with `review-run.mjs`).
+- **By hand**: Safari on a Mac, iPhone and iPad, by the Product Owner with `docs/operations/safari-check.md` (the same journey in its own steps: its 6a is the smoke run's step 7 and its 12a the run's 14 and 15, so the numbers differ; its setup makes the AI run with `review-run.mjs`).
 
 ## Sub-project 11a.1, the walkthrough changes (checked 25 November 2026)
 

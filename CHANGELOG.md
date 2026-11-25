@@ -18,7 +18,7 @@ Each release has a section headed `## X.Y.Z`. The release script (`scripts/relea
 - Proposals, sources and records link to one another, to the exact passage or message (D136).
 - Stages can be renamed, with a reason (D137). Projects shows Current projects first and a History of Deferred and Closed ones; a stage stops on the day its project is deferred or closed (D138).
 - **"Due soon" now means up to seven working days ahead by the project's calendar, everywhere the words appear (D139); counts in the figures can change.** The reminder emails are unchanged.
-- Duplicate project (D140): a Project Manager starts a new Draft project from an existing one, reviewing everything carried over before anything is created; and an Owner or Sponsor can authorise several proposals at once. A credential case names the projects its project was copied to or from.
+- Duplicate project (D140): a Project Manager starts a new Draft project from an existing one, reviewing everything carried over before anything is created; and an Owner or Sponsor can authorise several proposals at once. A copy says that its proposals wait until it is started, and the page says when an open credential case stops a copy. A credential case names the projects its project was copied to or from.
 - Home and My tasks are grouped by project, with a choice to group My tasks by due date (D141).
 - The first resource catalogue item can be added with a new category in the same form.
 - Two stage names that clean to the same text can no longer stop a credential from being removed.
