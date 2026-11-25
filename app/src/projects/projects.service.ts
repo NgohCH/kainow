@@ -21,6 +21,7 @@ import { grantState } from './grants';
 import { type ClosureOutcome, checkTransition } from './lifecycle';
 import { type MembershipRow, membershipState, requiredRolesCheck, separationCheck } from './membership';
 import { type ProjectStatus, PROJECT_STATUSES } from './matrix';
+import { clipPeriods } from './stage-periods';
 import { TEMPLATE_LIMITS } from './stage-templates';
 import { refuseSecrets } from '../discussion/messages';
 
@@ -30,6 +31,17 @@ export interface ProjectStage {
   name: string;
   substages: string[];
   status: 'active' | 'retired';
+}
+
+/** A project in the list of the person's own projects. */
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  status: ProjectStatus;
+  owningDepartment: string;
+  stage: { stage: string; substage: string | null } | null;
+  deferred: { on: string; reason: string | null } | null;
+  closed: { on: string; outcome: ClosureOutcome | null } | null;
 }
 
 /** The project's stages in their order, retired ones in their place. */
@@ -245,11 +257,12 @@ export class ProjectsService {
   async list(user: AuthUser) {
     const ids = await this.access.visibleProjectIds(user.id);
     const projects = [];
+    const summaries = await this.summaries(ids);
     for (const id of ids) {
       // A held membership or a suspended grant leaves a candidate with no access: it is simply not listed.
       const ctx = await this.access.load(id, user);
       if (!ctx || (ctx.roles.length === 0 && ctx.grantKinds.length === 0)) continue;
-      const p = await this.summary(id);
+      const p = summaries.get(id) as ProjectSummary;
       projects.push({
         ...p,
         myRoles: ctx.roles,
@@ -293,15 +306,27 @@ export class ProjectsService {
     return { projects, all };
   }
 
-  private async summary(id: string) {
-    const { rows } = await this.pool.query(
+  /**
+   * Name, status, department and latest stage; for a Deferred or Closed project also since when (UTC+8) and why (D138).
+   * Only for people with a role or a grant in the project, who read the same reason and outcome in its detail: the
+   * administrator's list of every project does not use it.
+   */
+  private async summaries(ids: string[]): Promise<Map<string, ProjectSummary>> {
+    const { rows } = await this.pool.query<ProjectSummary>(
       `SELECT p.id, p.name, p.status, d.name AS "owningDepartment",
               (SELECT json_build_object('stage', s.stage, 'substage', s.substage) FROM project_stage_periods s
-                WHERE s.project_id = p.id AND s.ended_at IS NULL) AS stage
-         FROM projects p JOIN departments d ON d.id = p.owning_department_id WHERE p.id = $1`,
-      [id],
+                WHERE s.project_id = p.id AND s.ended_at IS NULL) AS stage,
+              CASE WHEN p.status = 'deferred' AND x."on" IS NOT NULL THEN json_build_object('on', x."on", 'reason', x.reason) END AS deferred,
+              CASE WHEN p.status = 'closed' AND x."on" IS NOT NULL THEN json_build_object('on', x."on", 'outcome', p.closure_outcome) END AS closed
+         FROM projects p JOIN departments d ON d.id = p.owning_department_id
+         LEFT JOIN LATERAL (
+           SELECT to_char(t.at AT TIME ZONE 'Asia/Kuala_Lumpur', 'YYYY-MM-DD') AS "on", t.reason FROM project_transitions t
+            WHERE t.project_id = p.id AND t.to_status = p.status ORDER BY t.at DESC, t.id DESC LIMIT 1
+         ) x ON p.status IN ('deferred', 'closed')
+        WHERE p.id = ANY($1::uuid[])`,
+      [ids],
     );
-    return rows[0];
+    return new Map(rows.map((r) => [r.id, r]));
   }
 
   async detail(user: AuthUser, id: string) {
@@ -332,8 +357,8 @@ export class ProjectsService {
         [id],
       )
     ).rows;
-    const stagePeriods = (
-      await this.pool.query(
+    const storedPeriods = (
+      await this.pool.query<{ stage: string; substage: string | null; startedAt: Date; endedAt: Date | null; reason: string | null }>(
         `SELECT stage, substage, started_at AS "startedAt", ended_at AS "endedAt", reason FROM project_stage_periods
           WHERE project_id = $1 ORDER BY started_at, id`,
         [id],
@@ -347,6 +372,7 @@ export class ProjectsService {
         [id],
       )
     ).rows;
+    const stagePeriods = clipPeriods(storedPeriods, transitions);
     // The project team sees pending invitations (V1.0 invitation rules, section 4); never the token.
     const now = this.now();
     const invitations = (
@@ -362,7 +388,8 @@ export class ProjectsService {
       ...p,
       invitations,
       contributingDepartments: contributing,
-      stage: stagePeriods.find((s) => s.endedAt === null) ?? null,
+      // The latest stage, also while Deferred or Closed (resuming offers it); `stopped` says it is not under way.
+      stage: stagePeriods.find((_, i) => storedPeriods[i].endedAt === null) ?? null,
       stagePeriods,
       stages: await loadStages(this.pool, id),
       stageChanges: await loadStageChanges(this.pool, id),

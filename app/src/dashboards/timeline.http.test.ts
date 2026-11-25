@@ -184,7 +184,7 @@ describe('project timeline endpoint', { skip: SKIP_NO_DB }, () => {
     );
     const r = await get();
     assert.equal(r.status, 200);
-    assert.deepEqual(r.body.stagePeriods, [{ stage: 'Initiation', substage: null, startedOn: '2026-06-01', endedOn: null }]);
+    assert.deepEqual(r.body.stagePeriods, [{ stage: 'Initiation', substage: null, startedOn: '2026-06-01', endedOn: null, stopped: null }]);
     // The list itself has no stage line in the window: the bars need stagePeriods to draw the open period.
     assert.deepEqual(lines(r.body).filter((l) => l.kind === 'stage'), []);
     // A period that ended inside the window is returned too.
@@ -200,6 +200,38 @@ describe('project timeline endpoint', { skip: SKIP_NO_DB }, () => {
     const days = async (from: string) => (await get(`?from=${from}&to=2026-12-31`)).body.stagePeriods.map((p: { startedOn: string; endedOn: string }) => [p.startedOn, p.endedOn]);
     assert.deepEqual(await days('2026-07-01'), [['2026-06-01', '2026-07-01']]);
     assert.deepEqual(await days('2026-07-02'), []);
+  });
+
+  test('a deferral or closure ends the bar, and the list says so on the same day (D138)', async () => {
+    const at = (day: string) => `${day}T02:00:00Z`;
+    const move = (from: string, to: string, when: string) =>
+      t.pool.query(`INSERT INTO project_transitions (id, project_id, from_status, to_status, actor_id, at) VALUES ($1, $2, $3, $4, $5, $6)`, [uuidv7(), projectId, from, to, ids.pm, when]);
+    const bars = (b: { stagePeriods: Record<string, unknown>[] }) => b.stagePeriods.map((p) => [p.stage, p.startedOn, p.endedOn, p.stopped]);
+    const stageLines = (b: Parameters<typeof lines>[0]) => lines(b).filter((l) => l.kind === 'stage').map((l) => [l.day, l.label]);
+
+    // Deferred at 00:30 on 5 Nov (UTC+8): the stored period is still open.
+    await move('active', 'deferred', '2026-11-04T16:30:00Z');
+    let r = await get();
+    assert.deepEqual(bars(r.body), [['Initiation', '2026-11-01', '2026-11-05', 'deferred']]);
+    assert.deepEqual(stageLines(r.body), [['2026-11-01', 'Initiation started'], ['2026-11-05', 'Initiation stopped when deferred']]);
+
+    // Resumed on 7 Nov into Execution, then closed on 8 Nov.
+    await move('deferred', 'active', at('2026-11-07'));
+    await t.pool.query(`UPDATE project_stage_periods SET ended_at = $2 WHERE project_id = $1`, [projectId, at('2026-11-07')]);
+    await t.pool.query(`INSERT INTO project_stage_periods (id, project_id, stage, started_at, started_by) VALUES ($1, $2, 'Execution', $3, $4)`, [uuidv7(), projectId, at('2026-11-07'), ids.pm]);
+    await move('active', 'closed', at('2026-11-08'));
+    r = await get();
+    assert.deepEqual(bars(r.body), [['Initiation', '2026-11-01', '2026-11-05', 'deferred'], ['Execution', '2026-11-07', '2026-11-08', 'closed']]);
+    assert.deepEqual(stageLines(r.body), [
+      ['2026-11-01', 'Initiation started'], ['2026-11-05', 'Initiation stopped when deferred'],
+      ['2026-11-07', 'Execution started'], ['2026-11-08', 'Execution stopped when closed'],
+    ]);
+    const stop = lines(r.body).find((l) => l.label === 'Initiation stopped when deferred');
+    assert.equal((stop?.detail as { durationDays: number }).durationDays, 4);
+    // A window after the stop does not show it, though the stored period ran on to 7 Nov.
+    assert.deepEqual(bars((await get('?from=2026-11-06&to=2026-11-30')).body).map((b) => b[0]), ['Execution']);
+    const stored = (await t.pool.query(`SELECT ended_at FROM project_stage_periods WHERE project_id = $1 ORDER BY started_at`, [projectId])).rows;
+    assert.deepEqual(stored.map((s) => s.ended_at?.toISOString() ?? null), ['2026-11-07T02:00:00.000Z', null], 'stored periods do not change');
   });
 
   test('Deleted task drops out of a due-day count', async () => {

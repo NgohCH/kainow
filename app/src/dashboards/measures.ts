@@ -8,7 +8,8 @@ import { liveRecordSql } from '../history/deleted-sql';
 import { escalationFlagsFor } from '../notifications/escalation-flags';
 import { type Effective, loadEffectiveMany } from '../notifications/settings';
 import type { ProjectStatus } from '../projects/matrix';
-import { type MembershipRow, requiredRolesCheck } from '../projects/membership';
+import { type MembershipRow, requiredRolesCheck, todayUtc8 } from '../projects/membership';
+import { type TransitionTime, clipPeriods } from '../projects/stage-periods';
 import { type TaskStatus, taskIndicators } from '../records/tasks';
 import { dueSoonEnd } from './due-soon';
 
@@ -47,7 +48,7 @@ export const MEASURE_DEFINITIONS: readonly { key: string; label: string; definit
   {
     key: 'stage',
     label: 'Stage and stage duration',
-    definition: 'The open `project_stage_periods` row: stage, substage and whole days since `started_at`, as the existing Overview shows (`stageDuration`).',
+    definition: 'The latest stage (the open `project_stage_periods` row): stage, substage and whole days since `started_at` (UTC+8 days). In a Deferred or Closed project the days stop on the day it was deferred or closed.',
   },
   {
     key: 'plannedEnd',
@@ -132,7 +133,7 @@ export interface ProjectMeasures {
   overdue: number;
   blocked: number;
   dueSoon: number;
-  /** The open stage period; null only for a project without one. */
+  /** The open stage period, its days stopping at a deferral or closure (D138); null only for a project without one. */
   stage: { stage: string; substage: string | null; days: number } | null;
   plannedEnd: PlannedEnd;
   questions: { open: number; answered: number };
@@ -190,6 +191,12 @@ export function plannedEnd(planned: string | null, today: string): PlannedEnd {
   return days >= 0 ? { state: 'ahead', days } : { state: 'ended', daysAgo: -days };
 }
 
+/** Whole days in the open stage: to today, or to the deferral or closure that stopped it. */
+function stageDays(startedAt: Date, transitions: TransitionTime[], today: string): number {
+  const [period] = clipPeriods([{ startedAt, endedAt: null }], transitions);
+  return Math.max(0, daysBetween(todayUtc8(startedAt), period.endedOn ?? today));
+}
+
 /** The UTC+8 calendar day of a timestamptz column, as 'YYYY-MM-DD'. */
 const dayUtc8 = (column: string): string => `to_char(${column} AT TIME ZONE 'Asia/Kuala_Lumpur', 'YYYY-MM-DD')`;
 
@@ -212,15 +219,22 @@ export async function loadProjectMeasures(
       `SELECT p.id, p.status, to_char(p.planned_end, 'YYYY-MM-DD') AS "plannedEnd",
               (SELECT ${dayUtc8('tr.at')} FROM project_transitions tr WHERE tr.project_id = p.id AND tr.to_status = 'deferred' ORDER BY tr.at DESC, tr.id DESC LIMIT 1) AS "deferredOn",
               (SELECT ${dayUtc8('tr.at')} FROM project_transitions tr WHERE tr.project_id = p.id AND tr.to_status = 'closed' ORDER BY tr.at DESC, tr.id DESC LIMIT 1) AS "closedOn",
-              s.stage, s.substage, ${dayUtc8('s.started_at')} AS "stageStartedOn"
+              s.stage, s.substage, s.started_at AS "stageStartedAt"
          FROM projects p LEFT JOIN project_stage_periods s ON s.project_id = p.id AND s.ended_at IS NULL
         WHERE p.id = ANY($1::uuid[])`,
       [ids],
     )
   ).rows as Array<{
     id: string; status: ProjectStatus; plannedEnd: string | null; deferredOn: string | null; closedOn: string | null;
-    stage: string | null; substage: string | null; stageStartedOn: string | null;
+    stage: string | null; substage: string | null; stageStartedAt: Date | null;
   }>;
+
+  const transitions = (
+    await db.query(
+      `SELECT project_id AS "projectId", to_status AS "to", at FROM project_transitions WHERE project_id = ANY($1::uuid[]) ORDER BY at, id`,
+      [ids],
+    )
+  ).rows as Array<TransitionTime & { projectId: string }>;
 
   // Every live task; a leaf has no live subtask (Deleted and uncleaned held subtasks do not count).
   const tasks = (
@@ -286,6 +300,7 @@ export async function loadProjectMeasures(
     return m;
   };
   const tasksBy = group(tasks);
+  const transitionsBy = group(transitions);
   const membersBy = group(memberships);
   const escalationsBy = group(escalations);
   const questionsBy = new Map(questions.map((q) => [q.projectId, q]));
@@ -312,7 +327,7 @@ export async function loadProjectMeasures(
       overdue: indicators.filter((i) => i.overdue).length,
       blocked: all.filter((t) => t.status === 'blocked').length,
       dueSoon: unfinished.filter((t) => t.dueOn >= today && t.dueOn <= soonEnd).length,
-      stage: p.stage === null ? null : { stage: p.stage, substage: p.substage, days: Math.max(0, daysBetween(p.stageStartedOn as string, today)) },
+      stage: p.stage === null ? null : { stage: p.stage, substage: p.substage, days: stageDays(p.stageStartedAt as Date, transitionsBy.get(p.id) ?? [], today) },
       plannedEnd: plannedEnd(p.plannedEnd, today),
       questions: { open: questionsBy.get(p.id)?.open ?? 0, answered: questionsBy.get(p.id)?.answered ?? 0 },
       risks: { bySeverity, significant: bySeverity.high + bySeverity.critical, overdueReviews: r?.overdueReviews ?? 0 },
