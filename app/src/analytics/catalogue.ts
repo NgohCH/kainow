@@ -47,6 +47,7 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
     ['user.created_for_task', 'An account was made when a task was assigned to a new address.'],
     ['user.disabled', 'An Administrator disabled an account.'],
     ['user.enabled', 'An Administrator enabled an account again.'],
+    ['person.department_changed', 'A person’s department was set, changed or cleared, by themselves or an Administrator.'],
     ['setup.invitation_issued', 'The setup invitation for the first Administrator was issued.'],
     ['setup.invitation_superseded', 'A setup invitation was replaced by a newer one.'],
     ['setup.accepted', 'The first Administrator accepted the setup invitation.'],
