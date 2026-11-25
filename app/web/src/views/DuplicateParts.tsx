@@ -26,7 +26,7 @@ export function DuplicateStages(props: PartProps) {
           const name = st.name || 'this stage';
           return (
             <li key={st.uid} className="stage-editor-item">
-              <CarriedField {...carriedProps(key, props)} text={st.name}>
+              <CarriedField {...carriedProps(key, props)} text={st.name} keyless={!st.id}>
                 {(note) => (
                   <label>
                     Stage {i + 1}
@@ -46,7 +46,7 @@ export function DuplicateStages(props: PartProps) {
                     const subKey = sub.key ?? sub.uid;
                     return (
                       <li key={sub.uid}>
-                        <CarriedField {...carriedProps(subKey, props)} text={sub.name} terms={st.id ? props.terms : []}>
+                        <CarriedField {...carriedProps(subKey, props)} text={sub.name} keyless={!st.id}>
                           {(note) => (
                             <label>
                               Substage {n + 1} of {name}
@@ -91,7 +91,7 @@ export function DuplicateHolidays(props: PartProps) {
           const key = `holiday:${h.uid}`;
           return (
             <li key={h.uid} className="dup-row">
-              <CarriedField {...carriedProps(key, props)} text={h.name} terms={h.id ? props.terms : []}>
+              <CarriedField {...carriedProps(key, props)} text={h.name} keyless={!h.id}>
                 {(note) => (
                   <div className="dup-holiday">
                     <label>

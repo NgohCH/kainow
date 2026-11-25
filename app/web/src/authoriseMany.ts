@@ -41,6 +41,9 @@ export function startItem(p: ManyProposal, people: PersonLike[]): ItemTerms {
   };
 }
 
+/** Whether an item holds something typed or ticked. */
+export const isTyped = (draft: { on: boolean; terms: ItemTerms }, start: ItemTerms): boolean => draft.on || JSON.stringify(draft.terms) !== JSON.stringify(start);
+
 const hasPerson = (t: { assignee: string; email: string }): boolean => (t.assignee === INVITE ? /^[^@\s]+@[^@\s]+$/.test(t.email.trim()) : t.assignee !== '');
 
 /** What one item still needs, or null. */

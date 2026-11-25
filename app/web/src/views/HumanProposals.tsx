@@ -8,6 +8,7 @@ import { type ProposedSubtask, manyCandidates } from '../authoriseMany.ts';
 import type { CopiedFrom } from '../duplicate.ts';
 import { AuthoriseSeveral } from './AuthoriseSeveral.tsx';
 import { CopiedFromLabel } from './CopiedFromLabel.tsx';
+import { leaveGuard } from '../ui/leaveGuard.ts';
 import { useFocusItem } from './useFocusItem.ts';
 import { ChangeRequestPanel, pendingAuthorisation, useRequests } from './ChangeRequest.tsx';
 import { waitingLine, type RequestView } from '../changes.ts';
@@ -75,6 +76,13 @@ export function HumanProposals({
 
   const candidates = useMemo(() => manyCandidates(proposals, new Set(requests.filter((r) => r.kind === 'authorise_proposal' && r.status === 'pending').map((r) => r.target.id))), [proposals, requests]);
 
+  /** Typed terms are not thrown away unasked. */
+  function closeSeveral() {
+    if (!leaveGuard.mayLeave()) return;
+    setSeveral(false);
+    severalButton.current?.focus();
+  }
+
   async function run(work: () => Promise<unknown>, done: string | ((result: unknown) => string)) {
     setError(null);
     setNotice(null);
@@ -102,7 +110,7 @@ export function HumanProposals({
       <div className="row">
         <h2 id="human-proposals-heading">Proposals from people</h2>
         {canReview && (candidates.length > 1 || several) && (
-          <button ref={severalButton} className="quiet" onClick={() => setSeveral((s) => !s)} aria-expanded={several}>
+          <button ref={severalButton} className="quiet" onClick={() => (several ? closeSeveral() : setSeveral(true))} aria-expanded={several}>
             {several ? 'Close authorise several' : 'Authorise several'}
           </button>
         )}
@@ -120,10 +128,7 @@ export function HumanProposals({
           proposals={candidates}
           people={people}
           onDone={load}
-          onClose={() => {
-            setSeveral(false);
-            severalButton.current?.focus();
-          }}
+          onClose={closeSeveral}
         />
       )}
       {open && (

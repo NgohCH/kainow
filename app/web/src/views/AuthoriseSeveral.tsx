@@ -1,6 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, api } from '../api.ts';
-import { type ItemTerms, type ManyProposal, type ManyResult, type SubtaskTerms, MAX_AT_ONCE, buildItems, itemProblem, resultLine, startItem } from '../authoriseMany.ts';
+import { type ItemTerms, type ManyProposal, type ManyResult, type SubtaskTerms, MAX_AT_ONCE, buildItems, isTyped, itemProblem, resultLine, startItem } from '../authoriseMany.ts';
 import type { CopiedFrom } from '../duplicate.ts';
 import { recordHref } from '../proposalLinks.ts';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
@@ -95,7 +95,7 @@ export function AuthoriseSeveral({ projectId, proposals, people, onDone, onClose
 
   const chosen = proposals.filter((p) => draftOf(p.id).on);
   const waiting = chosen.filter((p) => itemProblem(draftOf(p.id).terms) !== null);
-  useLeaveGuard(proposals.some((p) => drafts[p.id] !== undefined && drafts[p.id].on));
+  useLeaveGuard(proposals.some((p) => drafts[p.id] !== undefined && isTyped(drafts[p.id], (starts.get(p.id) as Draft).terms)));
   useEffect(() => {
     if (results.length > 0) resultBox.current?.focus();
   }, [results]);
@@ -110,6 +110,7 @@ export function AuthoriseSeveral({ projectId, proposals, people, onDone, onClose
       return;
     }
     setBusy(true);
+    setResults([]);
     try {
       const titles = new Map(chosen.map((p) => [p.id, p.text]));
       const r = await api.post<{ results: ManyResult[] }>(`/projects/${projectId}/proposals/authorise-many`, { items: buildItems(chosen.map((p) => [p.id, draftOf(p.id).terms])) });

@@ -2,7 +2,7 @@ import { useCallback, useDeferredValue, useEffect, useMemo, useReducer, useRef, 
 import { ApiError, api, setCsrfToken, type Department, type Project, type User } from '../api.ts';
 import { go } from '../App.tsx';
 import { plural } from '../format.ts';
-import { type DupState, type Offer, type Part, allTasks, buildBody, fieldOf, mergeOffer, mergedLine, problemsOf, refusalPart, startState, takeOutUnavailable, termsOf, withServerTerms } from '../duplicate.ts';
+import { type DupState, type Loaded, type Offer, type Page, type Part, allTasks, buildBody, fieldOf, loadedAgain, problemsOf, purposeUnchanged, refusalPart, startPage, termsOf, withServerTerms } from '../duplicate.ts';
 import { Box } from '../ui/Box.tsx';
 import { PageHeader } from '../ui/PageHeader.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
@@ -13,8 +13,6 @@ import { DuplicateHolidays, DuplicateResources, DuplicateRisks, DuplicateSetting
 import { DuplicateTasks } from './DuplicateTasks.tsx';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
-
-interface Loaded { offer: Offer; departments: Department[]; approved: { input: string[]; output: string[] } | null }
 
 async function loadAll(projectId: string): Promise<Loaded> {
   const [offer, departments, outputs] = await Promise.all([
@@ -64,7 +62,7 @@ function readRefusal(e: unknown): Refusal {
     message,
     problems,
     part: problems.length > 0 ? null : refusalPart(message),
-    loadAgain: problems.length === 0 && created === null && (status === 400 || status === 409),
+    loadAgain: created === null && (status === 400 || status === 409),
     // No answer, or one that says nothing about what happened.
     uncertain: status === 0 || (status >= 500 && status !== 503),
     created,
@@ -72,13 +70,23 @@ function readRefusal(e: unknown): Refusal {
 }
 
 function Review({ first, meId }: { first: Loaded; meId: string }) {
-  const [loaded, setLoaded] = useState(first);
-  const { offer, departments, approved } = loaded;
+  // The offer and what was made of it are one state: they are never drawn from different loads.
+  const [page, change] = useReducer((p: Page, next: (p: Page) => Page) => next(p), first, startPage);
+  const { loaded: { offer, departments, approved }, dup: state, notice } = page;
   const id = offer.original.id;
-  const [state, update] = useReducer((s: DupState, change: (s: DupState) => DupState) => change(s), first.offer, startState);
-  const [busy, setBusy] = useState(false);
+  const update = useCallback((edit: (s: DupState) => DupState) => change((p) => ({ ...p, dup: edit(p.dup) })), []);
+  const [creating, setCreating] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const busy = creating || loading;
+  // Create may answer after the person has chosen to leave.
+  const mounted = useRef(false);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const [refusal, setRefusal] = useState<Refusal | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const [allProblems, setAllProblems] = useState(false);
   // What a refusal named as no longer available.
   const unavailable = useRef<string[]>([]);
@@ -89,10 +97,11 @@ function Review({ first, meId }: { first: Loaded; meId: string }) {
   useLeaveGuard(unsaved);
 
   // Finding old terms and what is left to change may wait a moment; what is typed may not.
-  const deferred = useDeferredValue(state);
+  const deferred = useDeferredValue(page);
   const termsText = useDeferredValue(state.termsText);
   const terms = useMemo(() => termsOf(termsText).slice(0, offer.limits.terms), [termsText, offer.limits.terms]);
-  const problems = useMemo(() => problemsOf(offer, deferred), [offer, deferred]);
+  const problems = useMemo(() => problemsOf(deferred.loaded.offer, deferred.dup, new Set(deferred.loaded.departments.map((d) => d.id))), [deferred]);
+  const has = (field: string) => problems.some((p) => p.field === field);
   useEffect(() => {
     if (refusal) errorBox.current?.focus();
   }, [refusal]);
@@ -100,7 +109,7 @@ function Review({ first, meId }: { first: Loaded; meId: string }) {
     if (notice) noticeBox.current?.focus();
   }, [notice]);
 
-  const set = useCallback((change: Partial<DupState>) => update((s) => ({ ...s, ...change })), []);
+  const set = useCallback((change: Partial<DupState>) => update((s) => ({ ...s, ...change })), [update]);
   const part = { offer, state, terms, update };
 
   async function post(): Promise<{ project: Project }> {
@@ -120,12 +129,13 @@ function Review({ first, meId }: { first: Loaded; meId: string }) {
   }
 
   async function create() {
-    if (problemsOf(offer, state).length > 0) return;
-    setBusy(true);
+    if (problemsOf(offer, state, new Set(departments.map((d) => d.id))).length > 0) return;
+    setCreating(true);
     setRefusal(null);
-    setNotice(null);
+    change((p) => ({ ...p, notice: null }));
     try {
       const r = await post();
+      if (!mounted.current) return;
       leaveGuard.release();
       go(`#/projects/${r.project.id}`);
     } catch (e) {
@@ -136,31 +146,31 @@ function Review({ first, meId }: { first: Loaded; meId: string }) {
       }
       setRefusal(readRefusal(e));
       unavailable.current = e instanceof ApiError && Array.isArray((e.data as { unavailable?: unknown } | null)?.unavailable) ? (e.data as { unavailable: string[] }).unavailable : [];
-      setBusy(false);
+      setCreating(false);
     }
   }
 
   /** Reads the original again and keeps what was typed. */
   async function loadAgain() {
-    setBusy(true);
+    setLoading(true);
     try {
       const next = await loadAll(id);
-      const merged = mergeOffer(offer, next.offer, takeOutUnavailable(state, offer, unavailable.current));
-      update(() => merged.state);
-      setLoaded(next);
+      const gone = unavailable.current;
+      change((p) => loadedAgain(p, next, gone));
       setRefusal(null);
-      setNotice(mergedLine(merged.removed, merged.added));
       unavailable.current = [];
     } catch (e) {
       setRefusal((r) => ({ ...(r ?? readRefusal(e)), message: `The original could not be loaded again: ${errText(e)} What you typed is kept.`, part: null, problems: [], loadAgain: true, uncertain: false, created: null }));
     } finally {
-      setBusy(false);
+      setLoading(false);
     }
   }
 
   const chosenTasks = allTasks(offer).filter((t) => state.tasks[t.id].on);
   const subtasks = chosenTasks.filter((t) => t.parentId !== null).length;
-  const retiredKept = offer.original.contributingDepartments.filter((d) => d.retired && !departments.some((x) => x.id === d.id));
+  const inUse = new Set(departments.map((d) => d.id));
+  // Also the original's own retired ones, so that unticking one can be taken back.
+  const retiredKept = [...new Set([...offer.original.contributingDepartments.map((d) => d.id), ...state.contributing])].filter((d) => !inUse.has(d)).map((d) => ({ id: d, name: page.departmentNames[d] ?? 'A department' }));
   const list = (
     <ProblemList problems={problems} projectId={id} all={allProblems} onAll={() => setAllProblems((a) => !a)} />
   );
@@ -173,17 +183,19 @@ function Review({ first, meId }: { first: Loaded; meId: string }) {
         title="Duplicate project"
         intro="Nothing is created until you press Create. Everything below is filled in from the original: change whatever differs for the new project."
       />
-      {notice && <p ref={noticeBox} role="status" tabIndex={-1} className="ok">{notice}</p>}
+      {notice && <p ref={noticeBox} tabIndex={-1} className="ok">{notice}</p>}
 
       <Box title="What you still need to change" meaning={problems.length > 0 ? 'attention' : 'ok'}>
         <p role="status"><StatusLabel meaning={problems.length > 0 ? 'attention' : 'ok'} word={left} /></p>
         {problems.length > 0 ? list : <p className="meta">You can create the project at the end of this page.</p>}
       </Box>
 
+      <fieldset className="dup-fields" disabled={creating}>
+      <legend className="visually-hidden">The new project</legend>
       <Box title="What must be different">
         <PartError refusal={refusal} part="details" />
         <div className="stack">
-          <CarriedField {...carriedProps('name', part)} text={state.name} mustChange={problems.some((p) => p.field === 'dup-name')}>
+          <CarriedField {...carriedProps('name', part)} text={state.name} mustChange={has('dup-name')}>
             {(note) => (
               <label>
                 Name
@@ -192,18 +204,18 @@ function Review({ first, meId }: { first: Loaded; meId: string }) {
               </label>
             )}
           </CarriedField>
-          <div className={`stack carried${problems.some((p) => p.field === 'dup-planned-end') ? ' asked open' : ''}`}>
+          <div className={`stack carried${has('dup-planned-end') ? ' asked open' : ''}`}>
             <label>
               Planned end
-              <input id="dup-planned-end" type="date" disabled={state.noPlannedEnd} value={state.noPlannedEnd ? '' : state.plannedEnd} onChange={(e) => set({ plannedEnd: e.target.value })} />
+              <input id="dup-planned-end" type="date" aria-describedby={has('dup-planned-end') ? 'dup-planned-end-note' : undefined} disabled={state.noPlannedEnd} value={state.noPlannedEnd ? '' : state.plannedEnd} onChange={(e) => set({ plannedEnd: e.target.value })} />
               <span className="hint">{offer.original.plannedEnd ? `The original ends on ${offer.original.plannedEnd}.` : 'The original has no planned end.'}</span>
             </label>
-            {problems.some((p) => p.field === 'dup-planned-end') && <StatusLabel meaning="attention" word="Must be changed" />}
+            {has('dup-planned-end') && <p id="dup-planned-end-note" className="carried-note"><StatusLabel meaning="attention" word="Must be changed" /></p>}
             <label className="check">
               <input type="checkbox" checked={state.noPlannedEnd} onChange={(e) => set({ noPlannedEnd: e.target.checked })} /> No planned end
             </label>
           </div>
-          <CarriedField {...carriedProps('purpose', part)} text={state.purpose} mustDecide={state.purpose.trim() === offer.original.purpose.trim()}>
+          <CarriedField {...carriedProps('purpose', part)} text={state.purpose} mustDecide={purposeUnchanged(offer, state)}>
             {(note) => (
               <label>
                 Purpose
@@ -222,6 +234,7 @@ function Review({ first, meId }: { first: Loaded; meId: string }) {
       </Box>
 
       <Box title="Details">
+        <PartError refusal={refusal} part="departments" />
         <div className="stack">
           <label>
             Owning department
@@ -234,6 +247,7 @@ function Review({ first, meId }: { first: Loaded; meId: string }) {
               }}
             >
               <option value="">Choose a department</option>
+              {state.owning !== '' && !inUse.has(state.owning) && <option value={state.owning}>{page.departmentNames[state.owning] ?? 'A department'} (retired: choose another)</option>}
               {departments.map((d) => <option key={d.id} value={d.id}>{d.name}</option>)}
             </select>
             {offer.original.owningDepartment.retired && <span className="hint">The original's department, {offer.original.owningDepartment.name}, is retired.</span>}
@@ -294,6 +308,8 @@ function Review({ first, meId }: { first: Loaded; meId: string }) {
         </Box>
       </div>
 
+      </fieldset>
+
       <Box title="Review and create" meaning={problems.length > 0 ? 'attention' : 'ok'}>
         <p>
           A new Draft project with you as its only member and Project Manager: {plural(state.stages.length, 'stage')}, {plural(chosenTasks.length - subtasks, 'task')} and {plural(subtasks, 'subtask')} as proposals,{' '}
@@ -303,7 +319,7 @@ function Review({ first, meId }: { first: Loaded; meId: string }) {
         <p><StatusLabel meaning={problems.length > 0 ? 'attention' : 'ok'} word={left} /></p>
         {problems.length > 0 && list}
         {refusal && (
-          <div ref={errorBox} tabIndex={-1} role="alert" className="stack">
+          <div ref={errorBox} tabIndex={-1} role="group" aria-label="Why the project was not created" className="stack">
             {refusal.created !== null && <p>{refusal.message} <a href={`#/projects/${refusal.created}`} onClick={() => leaveGuard.release()}>Open the new project</a></p>}
             {refusal.created === null && <p className="error">The project was not created{refusal.uncertain ? ' as far as Kainow can tell' : ''}. {refusal.problems.length === 0 && refusal.message}</p>}
             {refusal.problems.length > 0 && <ul>{refusal.problems.map((p) => <li key={p} className="error">{p}</li>)}</ul>}

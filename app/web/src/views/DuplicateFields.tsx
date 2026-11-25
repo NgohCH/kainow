@@ -31,7 +31,7 @@ export function PartError({ refusal, part }: { refusal: { message: string; part:
  * the words around the term and "Still correct". `mustDecide` asks about the text whatever it holds (the purpose as it was).
  */
 export function CarriedField({
-  id, text, terms, confirmed, server, recheck, offer, update, mustDecide = false, mustChange = false, children,
+  id, text, terms, confirmed, server, recheck, offer, update, mustDecide = false, mustChange = false, keyless = false, children,
 }: {
   /** The text's key. */
   id: string;
@@ -43,6 +43,8 @@ export function CarriedField({
   offer: Offer;
   update: Update;
   mustDecide?: boolean;
+  /** The server has no key to confirm it under: an old term in it must be changed. */
+  keyless?: boolean;
   /** The text cannot stay as it is (the name), so there is nothing to confirm. */
   mustChange?: boolean;
   /** The field itself; it is given the id of the note about it. */
@@ -59,7 +61,8 @@ export function CarriedField({
   const asked = askedAbout(text, terms, server, recheck);
   const ask = asked.found.length > 0 || asked.changed || mustDecide;
   if (!ask) return <div className="carried">{children(undefined)}</div>;
-  const ok = confirmed === asked.signature;
+  const noTick = keyless && asked.found.length > 0;
+  const ok = !noTick && confirmed === asked.signature;
   const note = `${fieldOf(id)}-note`;
   return (
     <div className={`carried asked ${ok ? 'confirmed' : 'open'}`}>
@@ -68,7 +71,7 @@ export function CarriedField({
         <div id={note}>
           <StatusLabel
             meaning={ok ? 'ok' : 'attention'}
-            word={ok ? 'Confirmed as still correct' : asked.found.length > 0 ? `Holds ${asked.found.length === 1 ? 'an old term' : 'old terms'}` : asked.changed ? 'The original has changed since you typed this' : 'As in the original'}
+            word={ok ? 'Confirmed as still correct' : asked.found.length > 0 ? `Holds ${asked.found.length === 1 ? 'an old term' : 'old terms'}${noTick ? ': change it' : ''}` : asked.changed ? 'The original has changed since you typed this' : 'As in the original'}
           />
           {asked.found.length > 0 && (
             <p className="carried-text">
@@ -76,10 +79,10 @@ export function CarriedField({
             </p>
           )}
         </div>
-        <label className="check">
+        {!noTick && <label className="check">
           <input type="checkbox" checked={ok} aria-describedby={note} onChange={(e) => update((s) => confirmText(s, offer, id, e.target.checked))} />
           Still correct
-        </label>
+        </label>}
       </div>
     </div>
   );
