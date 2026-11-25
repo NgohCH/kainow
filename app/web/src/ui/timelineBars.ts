@@ -5,8 +5,10 @@
  */
 import { dayLabel, type TimelineLine } from '../dashboard.ts';
 import type { TimelineKind } from '../prefs.ts';
+import { STOPPED_LABEL, type Stopped } from './graphics.ts';
 
-export interface StagePeriod { stage: string; substage: string | null; startedOn: string; endedOn: string | null }
+/** `stopped` says what stopped the stage when the project was deferred or closed while it ran; `endedOn` is then that day (D138). */
+export interface StagePeriod { stage: string; substage: string | null; startedOn: string; endedOn: string | null; stopped?: Stopped | null }
 
 export interface TimelineBar {
   stage: string;
@@ -14,6 +16,7 @@ export interface TimelineBar {
   startPct: number;
   endPct: number;
   current: boolean;
+  stopped: Stopped | null;
   /** The period's real start when it began before the window (the bar starts at the window's edge); otherwise null. */
   clippedStart: string | null;
   days: number;
@@ -158,19 +161,21 @@ export function barsLayout(input: {
   const bars: TimelineBar[] = input.periods
     .filter((p) => p.startedOn <= to && (p.endedOn ?? today) >= from)
     .map((p) => {
+      const stopped = p.stopped ?? null;
       const current = p.endedOn === null;
       const end = p.endedOn ?? today;
       const days = Math.max(0, daysBetween(p.startedOn, end));
       const name = p.substage ? `${p.stage} (${p.substage})` : p.stage;
       const text = current
         ? `${name}: ${dayLabel(p.startedOn)} to today, ${plural(days, 'day', 'days')}, current.`
-        : `${name}: ${dayLabel(p.startedOn)} to ${dayLabel(end)}, ${plural(days, 'day', 'days')}.`;
+        : `${name}: ${dayLabel(p.startedOn)} to ${dayLabel(end)}, ${plural(days, 'day', 'days')}${stopped ? `, ${STOPPED_LABEL[stopped].toLowerCase()}` : ''}.`;
       return {
         stage: p.stage,
         substage: p.substage,
         startPct: at(p.startedOn),
         endPct: at(end),
         current,
+        stopped,
         clippedStart: p.startedOn < from ? p.startedOn : null,
         days,
         text,

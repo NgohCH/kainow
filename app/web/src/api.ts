@@ -305,6 +305,9 @@ export interface ProjectSummary {
   status: ProjectStatus;
   owningDepartment: string;
   stage: { stage: string; substage: string | null } | null;
+  /** Set while the project is Deferred, or Closed: the UTC+8 day and the reason or outcome (D138). */
+  deferred: { on: string; reason: string | null } | null;
+  closed: { on: string; outcome: ClosureOutcome | null } | null;
   myRoles: ProjectRole[];
   missingAccountability: boolean;
   /** Set when the person reads this project through an Audit or Oversight grant only. */
@@ -385,6 +388,8 @@ export interface StagePeriod {
   substage: string | null;
   startedAt: string;
   endedAt: string | null;
+  /** What stopped it, when the project was deferred or closed while it ran; `endedAt` is then that moment (D138). */
+  stopped: 'deferred' | 'closed' | null;
   reason: string | null;
 }
 

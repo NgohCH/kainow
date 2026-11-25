@@ -945,7 +945,8 @@ a.tab:focus-visible { z-index: 2; }
 .stage { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 13px; padding: 0.3rem 0.7rem; border: 1px solid var(--muted-wash); border-radius: 6px; background: var(--surface); color: var(--muted); }
 .stage.done { color: var(--m-ok); background: var(--m-ok-wash); border-color: transparent; }
 .stage.current { color: var(--accent-contrast); background: var(--accent); border-color: var(--accent); font-weight: 600; }
-.stage-days { font-weight: 500; }
+.stage.stopped { color: var(--ink); border-color: var(--control-border); font-weight: 600; flex-wrap: wrap; }
+.stage-days, .stage-stopped { font-weight: 500; }
 
 .stacked-bar .bar { display: flex; height: 12px; border-radius: 6px; overflow: hidden; background: var(--muted-wash); gap: 2px; }
 .stacked-bar .bar > span { background: var(--mc); min-width: 4px; }
@@ -1104,3 +1105,9 @@ button.stat-tile[aria-pressed="true"] { border-color: var(--accent); box-shadow:
 /* My profile (D134) */
 .my-profile .data-table-wrap { margin: 0 0 1.5rem; }
 .my-profile .facts dd, .my-profile .data-table { overflow-wrap: anywhere; }
+
+/* Project history (D138) */
+.project-history { margin-top: 1rem; scroll-margin-top: 5rem; }
+.project-history th[scope='row'] { min-width: 6rem; }
+.project-history .history-day { display: block; white-space: nowrap; }
+.project-history .history-reason { display: block; min-width: 9rem; overflow-wrap: anywhere; }

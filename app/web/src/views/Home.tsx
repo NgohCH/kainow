@@ -24,7 +24,7 @@ import { DataTable, type Column } from '../ui/DataTable.tsx';
 import { PageHeader } from '../ui/PageHeader.tsx';
 import { ProgressBar } from '../ui/ProgressBar.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
-import { attentionFlags, greetingFor, homeEmptyCopy, todayLabel } from '../ui/home.ts';
+import { attentionFlags, greetingFor, historyLink, homeEmptyCopy, homeProjects, todayLabel } from '../ui/home.ts';
 import { projectMeaning } from '../ui/meanings.ts';
 
 type Save = (next: Prefs) => Promise<void>;
@@ -149,7 +149,9 @@ export function Home({ userName, prefs, ready, failed, onChange }: { userName: s
   }
 
   const sections = visibleHomeSections(prefs.home.order, prefs.home.hidden);
-  const projects = d?.projects ?? [];
+  // Deferred and Closed projects are under History on the Projects page (D138).
+  const { current: projects, history } = homeProjects(d?.projects ?? []);
+  const inHistory = historyLink(history);
   const shownIds = projects.map((p) => p.id);
   const isOpen = (id: string) => openChoice(local, prefs.expanded, projects.length, id);
   // Open and closed always work on the page; they are saved only once the saved preferences have loaded.
@@ -202,8 +204,9 @@ export function Home({ userName, prefs, ready, failed, onChange }: { userName: s
             Collapse all
           </button>
           <a href="#/projects">All projects and new project</a>
+          {inHistory && <a href={inHistory.href}>{inHistory.text}</a>}
         </div>
-        <DataTable caption="Your projects" columns={columns} rows={projects} rowKey={(p) => p.id} loading={!d} empty={empty?.projects ?? ''} />
+        <DataTable caption="Your current projects" columns={columns} rows={projects} rowKey={(p) => p.id} loading={!d} empty={empty?.projects ?? ''} />
       </Box>
     ),
   };

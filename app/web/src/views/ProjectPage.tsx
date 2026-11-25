@@ -15,7 +15,6 @@ import {
   MEMBERSHIP_MEANING,
   membershipStateLabel,
   roleLabel,
-  stageDuration,
   transitionsFor,
 } from '../projects.ts';
 import { go } from '../App.tsx';
@@ -24,12 +23,13 @@ import { todayUtc8 } from '../changes.ts';
 import { taskHref } from '../taskPage.ts';
 import { TASK_STATUS_LABEL, TASK_STATUS_MEANING, type TaskStatus } from '../records.ts';
 import { addDays, dueWithin, projectAttention, taskStatusParts } from '../overview.ts';
-import { stageFlowFrom, type ProjectStage } from '../ui/stages.ts';
+import { stageFlowFrom, stageTiming, type ProjectStage } from '../ui/stages.ts';
 import { AttentionQueue } from '../ui/AttentionQueue.tsx';
 import { BinderTabs } from '../ui/BinderTabs.tsx';
 import { Box } from '../ui/Box.tsx';
 import { DataTable, type Column } from '../ui/DataTable.tsx';
 import { StackedBar } from '../ui/StackedBar.tsx';
+import { STOPPED_LABEL } from '../ui/graphics.ts';
 import { StageFlow } from '../ui/StageFlow.tsx';
 import { StatTile } from '../ui/StatTile.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
@@ -231,7 +231,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
           <div><dt>Project Manager</dt><dd>{pms.length > 0 ? pms.map((m) => m.displayName).join(', ') : 'Not appointed'}</dd></div>
           {project.stageTemplate && <div><dt>Stages</dt><dd>{project.stageTemplate.name}</dd></div>}
           {project.stage && (
-            <div><dt>Stage</dt><dd>{`${project.stage.stage}${project.stage.substage ? `: ${project.stage.substage}` : ''} (${stageDuration(project.stage.startedAt)})`}</dd></div>
+            <div><dt>Stage</dt><dd>{`${project.stage.stage}${project.stage.substage ? `: ${project.stage.substage}` : ''} (${stageTiming(project.stage, new Date())})`}</dd></div>
           )}
           {(roles.length > 0 || project.access || project.isAdmin) && (
             <div>
@@ -558,6 +558,7 @@ function Overview({ project, act, contentAllowed }: { project: Project; act: Act
               {s.stage}
               {s.substage ? `: ${s.substage}` : ''} — from {formatWhen(s.startedAt)}
               {s.endedAt ? ` to ${formatWhen(s.endedAt)}` : ' (current)'}
+              {s.stopped ? ` (${STOPPED_LABEL[s.stopped].toLowerCase()})` : ''}
               {s.reason ? ` — ${s.reason}` : ''}
             </li>
           ))}
@@ -623,8 +624,8 @@ function OverviewGlance({ project, contentAllowed, dashboard }: { project: Proje
 
   const today = todayUtc8();
   const flow = stageFlowFrom(project.stages, project.stagePeriods, new Date());
-  // A closed project has been through every stage.
-  const steps = project.status === 'closed' ? flow.map((s) => ({ name: s.name, state: 'done' as const })) : flow;
+  // A closed project shows where it stopped (D138); with no stopped stage recorded, every stage as done.
+  const steps = project.status === 'closed' && !flow.some((s) => s.state === 'stopped') ? flow.map((s) => ({ name: s.name, state: 'done' as const })) : flow;
   const cancelled = (tasks ?? []).filter((t) => t.status === 'cancelled').length;
   const due = dueWithin(tasks ?? [], today, 14);
   const plannedEnd = dashboard.d ? plannedEndLabel(dashboard.d.measures.plannedEnd) : null;

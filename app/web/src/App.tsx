@@ -39,6 +39,7 @@ import { StorageSettings } from './views/StorageSettings.tsx';
 import { ReportTypes } from './views/ReportTypes.tsx';
 import { Operations } from './views/Operations.tsx';
 import { OpsBanner, ProtectiveLine } from './views/OpsBanner.tsx';
+import { parseHistoryHash } from './ui/home.ts';
 import { AppShell } from './ui/AppShell.tsx';
 import { PROFILE_HREF } from './ui/menu.ts';
 import { parseNoteHash, parseRunHash } from './proposalLinks.ts';
@@ -366,7 +367,7 @@ export function App() {
   else if (run) page = <RunInProject key={run.runId} runId={run.runId} itemId={run.itemId} meId={user.id} prefs={prefs} prefsReady={prefsLoaded} onPrefs={savePrefs} />;
   else if (note) page = <NoteDetail sourceId={note.sourceId} versionNo={note.versionNo} place={note.place} />;
   else if (project) page = <ProjectPage key={project.projectId} projectId={project.projectId} meId={user.id} tab={project.tab as ProjectView} itemId={project.itemId} prefs={prefs} prefsReady={prefsLoaded} onPrefs={savePrefs} />;
-  else if (hash === '#/projects') page = <Projects isAdmin={isAdmin} />;
+  else if (hash === '#/projects' || parseHistoryHash(hash)) page = <Projects isAdmin={isAdmin} history={parseHistoryHash(hash)} />;
   else if (hash === '#/my-tasks') page = <MyTasks />;
   else if (hash === '#/reviews') page = <Reviews />;
   else page = <Home userName={user.displayName} prefs={prefs} ready={prefsLoaded} failed={prefsFailed} onChange={savePrefs} />;

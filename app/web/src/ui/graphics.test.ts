@@ -17,3 +17,10 @@ test('stacked bar legend omits zero counts and rounds percentages to whole numbe
   assert.equal(stackedBarText(parts), '12 in all: 5 Done (42%), 7 Open (58%).');
   assert.equal(stackedBarText([{ meaning: 'off', label: 'Open', count: 0 }]), 'None.');
 });
+
+test('stage flow text says a stopped stage stopped and why', () => {
+  assert.equal(
+    stageFlowText([{ name: 'Plan', state: 'done' }, { name: 'Build', state: 'stopped', stopped: 'deferred', days: 4 }, { name: 'Test', state: 'todo' }]),
+    'Stage 2 of 3: Build, stopped when deferred, after 4 days. Done: Plan.',
+  );
+});

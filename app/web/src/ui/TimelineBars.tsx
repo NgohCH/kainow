@@ -1,6 +1,8 @@
 import { Fragment, type CSSProperties } from 'react';
 import { dayLabel } from '../dashboard.ts';
 import { Box } from './Box.tsx';
+import { STOPPED_LABEL } from './graphics.ts';
+import { MEANINGS } from './meanings.ts';
 import { MARKER_KINDS, type BarsLayout } from './timelineBars.ts';
 
 const at = (pct: number) => ({ '--at': pct / 100 }) as CSSProperties;
@@ -40,6 +42,7 @@ export function TimelineBars({ layout }: { layout: BarsLayout }) {
                 <span className="tl-stage">{b.stage}</span>
                 {b.substage && <span className="meta">{b.substage}</span>}
                 {b.current && <span className="tl-current">● Current</span>}
+                {b.stopped && <span className="meta">{MEANINGS[b.stopped].symbol} {STOPPED_LABEL[b.stopped]}</span>}
                 {b.clippedStart && <span className="meta">continues from {dayLabel(b.clippedStart)}</span>}
               </span>
               <div className="tl-track">

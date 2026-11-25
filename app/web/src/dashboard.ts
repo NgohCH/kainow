@@ -115,7 +115,7 @@ export interface ProjectTimeline {
   today: string;
   months: { month: string; lines: TimelineLine[] }[];
   /** Every stage period overlapping the window, for the bars (D132). */
-  stagePeriods: { stage: string; substage: string | null; startedOn: string; endedOn: string | null }[];
+  stagePeriods: { stage: string; substage: string | null; startedOn: string; endedOn: string | null; stopped: 'deferred' | 'closed' | null }[];
   computedAt: string;
 }
 
