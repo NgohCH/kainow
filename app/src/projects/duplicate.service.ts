@@ -1,4 +1,4 @@
-import { BadRequestException, Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, ConflictException, Inject, Injectable } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
 import { CLOCK, type AuthUser, type Clock } from '../auth/tokens';
@@ -15,6 +15,7 @@ import {
   DEFAULT_EXPORT_ROLES, NOT_DELEGATED, type ProjectOutputSettingsRow, parseOutputSettingsBody, readOutputSettings, saveOutputSettings,
 } from '../outputs/output-settings.service';
 import { possibleCopySql } from '../quarantine/labels';
+import { quarantineMarkSql, shareSweeps } from '../quarantine/sweep-lock';
 import { type ProposedSubtask, insertHumanProposal } from '../records/human-proposal';
 import { readTaskDescription } from '../records/task-description';
 import { EMPTY, type Values, insertLine, mergeLineValues } from '../resources/lines.service';
@@ -39,6 +40,27 @@ const MAX_KEYS = 5_000;
 const DEFAULT_OUTPUTS: OutputChoices = { inputFormats: null, outputFormats: null, exportRoles: [...DEFAULT_EXPORT_ROLES] };
 const APPROVALS_KEPT =
   "Keep the original's number of approvals or leave it to the organisation; the new project's Owner or a Sponsor can change it later.";
+
+export const LOAD_AGAIN = 'Load the project again.';
+export const REVIEWED_SINCE = 'Something in the original was put under review or cleaned after you opened this page. Load the project again.';
+export const UNDER_REVIEW = 'Something in the original is under review for a suspected credential. Create the copy when the review has ended.';
+export const JUST_CREATED = 'You created this project a moment ago.';
+const PAGE_HOURS = 24;
+/** A second Create of the same copy within this time is the same click sent twice. */
+const SAME_CREATE_MINUTES = 10;
+
+/** Why a setting of the original starts at the organisation's value in the new project. */
+const notCarried = (what: string) => `The Administrator does not let projects set ${what} now, so the new project uses the organisation's.`;
+const NOT_CARRIED = {
+  requiredApprovals: notCarried('their own number of approvals'),
+  holidays: notCarried('their own holidays'),
+  calendar: notCarried('their own working days'),
+  timings: notCarried('their own reminder times'),
+  digest: notCarried('their own digest'),
+  formats: notCarried('their own formats'),
+  exportRoles: notCarried('who may export'),
+} as const;
+type CarriedSetting = keyof typeof NOT_CARRIED;
 
 const obj = (v: unknown): Obj => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Obj) : {});
 const trimmed = (v: unknown): string => (typeof v === 'string' ? v.normalize('NFC').trim() : '');
@@ -76,6 +98,15 @@ function readNewDue(v: unknown): string | null {
 /** `n` ids made now, in the order they are to be listed (a list of proposals made together is ordered by id). */
 const orderedIds = (n: number, at: Date): string[] => Array.from({ length: n }, () => uuidv7(at.getTime())).sort();
 
+interface Delegations {
+  calendar: boolean;
+  timings: boolean;
+  digest: boolean;
+  formats: boolean;
+  exportRoles: boolean;
+  approvals: boolean;
+}
+
 interface OfferedTask {
   id: string;
   parentId: string | null;
@@ -105,6 +136,9 @@ interface Offer {
   requiredApprovals: number | null;
   notifications: ProjectRow;
   outputs: OutputChoices;
+  /** Exceptions the original has that a project may not set now, so they are not carried. */
+  notCarried: CarriedSetting[];
+  mayChange: Delegations;
   /** Top-level tasks, each with everything offered below it (a parent always before its own subtasks). */
   tasks: Array<OfferedTask & { subtasks: OfferedTask[] }>;
   risks: Array<{ id: string; text: string }>;
@@ -137,10 +171,12 @@ export class DuplicateService {
    * the rows are held to the end of the transaction, so none is deleted or held while it is copied.
    */
   private async load(db: Db, projectId: string, lock = false): Promise<Offer> {
+    const may = await this.delegations(db);
     const share = (alias: string) => (lock ? `FOR SHARE OF ${alias}` : '');
     const p = (
       await db.query(
-        `SELECT p.id, p.name, p.purpose, to_char(p.planned_end, 'YYYY-MM-DD') AS "plannedEnd", p.stage_template_id AS "stageTemplateId", p.required_approvals AS "requiredApprovals",
+        `SELECT p.id, p.name, p.purpose, to_char(p.planned_end, 'YYYY-MM-DD') AS "plannedEnd",
+                (SELECT st.id FROM stage_templates st WHERE st.id = p.stage_template_id AND st.status = 'active') AS "stageTemplateId", p.required_approvals AS "requiredApprovals",
                 json_build_object('id', d.id, 'name', d.name, 'retired', d.status <> 'active') AS "owningDepartment"
            FROM projects p JOIN departments d ON d.id = p.owning_department_id WHERE p.id = $1`,
         [projectId],
@@ -157,6 +193,30 @@ export class DuplicateService {
       await db.query(`SELECT id, to_char(on_date, 'YYYY-MM-DD') AS date, name FROM holidays WHERE project_id = $1 AND removed_at IS NULL ORDER BY on_date, id`, [projectId])
     ).rows;
     const own = await readOutputSettings(db, projectId);
+    const notifications = await loadProjectRow(db, projectId);
+    const outputs: OutputChoices = own ? { inputFormats: own.inputFormats, outputFormats: own.outputFormats, exportRoles: own.exportRoles } : { ...DEFAULT_OUTPUTS };
+    let requiredApprovals = p.requiredApprovals as number | null;
+    // An exception is carried only where a project could set it now; elsewhere the new project starts as any other does.
+    const dropped = new Set<CarriedSetting>();
+    if (!may.approvals && requiredApprovals !== null) {
+      dropped.add('requiredApprovals');
+      requiredApprovals = null;
+    }
+    if (!may.calendar && holidays.length > 0) {
+      dropped.add('holidays');
+      holidays.length = 0;
+    }
+    for (const k of Object.keys(EMPTY_PROJECT) as (keyof ProjectRow)[]) {
+      if (may[GROUP_OF[k]] || sameValue(notifications[k], EMPTY_PROJECT[k])) continue;
+      dropped.add(GROUP_OF[k]);
+      (notifications as unknown as Obj)[k] = EMPTY_PROJECT[k];
+    }
+    for (const k of ['inputFormats', 'outputFormats', 'exportRoles'] as const) {
+      const group = k === 'exportRoles' ? 'exportRoles' : 'formats';
+      if (may[group] || sameValue(outputs[k], DEFAULT_OUTPUTS[k])) continue;
+      dropped.add(group);
+      (outputs as unknown as Obj)[k] = DEFAULT_OUTPUTS[k];
+    }
     const flat = (
       await db.query<OfferedTask>(
         `SELECT t.id, t.parent_id AS "parentId", t.title, t.description FROM tasks t
@@ -192,17 +252,19 @@ export class DuplicateService {
       },
       stages,
       holidays,
-      requiredApprovals: p.requiredApprovals,
-      notifications: await loadProjectRow(db, projectId),
-      outputs: own ? { inputFormats: own.inputFormats, outputFormats: own.outputFormats, exportRoles: own.exportRoles } : { ...DEFAULT_OUTPUTS },
+      requiredApprovals,
+      notifications,
+      outputs,
+      notCarried: [...dropped],
+      mayChange: may,
       tasks: flat.filter((t) => t.parentId === null).map((t) => ({ ...t, subtasks: below(t.id) })),
       risks,
       resources: lines,
     };
   }
 
-  /** Which groups the new Project Manager may set freely; the rest may only be kept as they were or left at the default. */
-  private async delegations(db: Db) {
+  /** What the Administrator lets projects set now. */
+  private async delegations(db: Db): Promise<Delegations> {
     const org = await loadOrgRow(db);
     const storage = await loadStorageSettings(db);
     return {
@@ -211,6 +273,7 @@ export class DuplicateService {
       digest: org.projectsMayChangeDigest,
       formats: storage.projectsMayChangeFormats,
       exportRoles: storage.projectsMaySetExportRoles,
+      approvals: (await db.query(`SELECT projects_may_override AS may FROM approval_policy WHERE id = 1`)).rows[0].may as boolean,
     };
   }
 
@@ -218,20 +281,61 @@ export class DuplicateService {
   async offer(user: AuthUser, projectId: string) {
     await this.access.authorize(user, 'project.duplicate', projectId);
     await this.projects.assertMayCreate(user);
+    const asOf = await this.asOf(projectId);
     const o = await this.load(this.pool, projectId);
+    const { approvals: _ownersChoice, ...mayChange } = o.mayChange;
     const task = (t: OfferedTask) => ({ id: t.id, title: t.title, titleKey: key.title(t.id), description: t.description, descriptionKey: key.description(t.id) });
     const { stageTemplateId: _template, ...original } = o.original;
     return {
+      asOf,
       original: { ...original, purposeKey: 'purpose' },
       stages: o.stages.map((s) => ({ id: s.id, key: key.stage(s.id), name: s.name, substages: s.substages.map((name, n) => ({ key: key.substage(s.id, n), name })) })),
       holidays: o.holidays.map((h) => ({ ...h, key: key.holiday(h.id) })),
-      settings: { requiredApprovals: o.requiredApprovals, notifications: o.notifications, outputs: o.outputs },
-      mayChange: await this.delegations(this.pool),
+      settings: {
+        requiredApprovals: o.requiredApprovals, notifications: o.notifications, outputs: o.outputs,
+        notCarried: o.notCarried.map((setting) => ({ setting, notCarried: true as const, reason: NOT_CARRIED[setting] })),
+      },
+      mayChange,
       tasks: o.tasks.map((t) => ({ ...task(t), subtasks: t.subtasks.map((s) => ({ ...task(s), parentId: s.parentId })) })),
       risks: o.risks.map((r) => ({ ...r, key: key.risk(r.id) })),
       resources: o.resources.map((l) => ({ ...l, key: l.oneOffKind === null ? null : key.resource(l.id) })),
       limits: DUPLICATE_LIMITS,
     };
+  }
+
+  /** When the page is loaded (the database's time) and how far the original's quarantine has come; read before any row. */
+  private async asOf(projectId: string): Promise<string> {
+    const { rows } = await this.pool.query<{ at: Date; mark: string }>(`SELECT clock_timestamp() AS at, ${quarantineMarkSql('$1::uuid')} AS mark`, [projectId]);
+    return `${rows[0].at.toISOString()}~${rows[0].mark}`;
+  }
+
+  /**
+   * Text cleaned or held since the page was loaded must not come back through the page. The sweep lock is held, so
+   * whatever was reported or cleaned is committed and counted in the mark, or waits until this transaction has ended.
+   */
+  private async refuseReviewedSince(c: PoolClient, projectId: string, asOf: unknown): Promise<void> {
+    const sent = typeof asOf === 'string' ? /^([^~]+)~(\d+:\d+:\d+)$/.exec(asOf) : null;
+    const time = sent ? Date.parse(sent[1]) : Number.NaN;
+    if (!sent || Number.isNaN(time)) return bad(LOAD_AGAIN);
+    const now = (
+      await c.query<{ at: Date; mark: string; open: boolean }>(
+        `SELECT clock_timestamp() AS at, ${quarantineMarkSql('$1::uuid')} AS mark,
+                EXISTS (SELECT 1 FROM quarantine_cases q WHERE q.project_id = $1::uuid AND q.state IN ('held', 'cleaned')) AS open`,
+        [projectId],
+      )
+    ).rows[0];
+    if (time > now.at.getTime() || time < now.at.getTime() - PAGE_HOURS * 3_600_000) bad(LOAD_AGAIN);
+    if (now.open) throw new ConflictException(UNDER_REVIEW);
+    if (now.mark !== sent[2]) throw new ConflictException(REVIEWED_SINCE);
+  }
+
+  /** Project names are not unique, so the same click sent twice would make two: the second is refused, with the first's id. */
+  private async refuseSecondCreate(c: PoolClient, user: AuthUser, projectId: string, name: string, at: Date): Promise<void> {
+    const { rows } = await c.query(
+      `SELECT id FROM projects WHERE copied_from_id = $1 AND created_by = $2 AND name = $3 AND created_at > $4 ORDER BY created_at DESC LIMIT 1`,
+      [projectId, user.id, name, new Date(at.getTime() - SAME_CREATE_MINUTES * 60_000)],
+    );
+    if (rows[0]) throw new ConflictException({ statusCode: 409, error: 'Conflict', message: JUST_CREATED, projectId: rows[0].id });
   }
 
   /** Creates the new Draft project with everything chosen, or nothing at all. */
@@ -244,8 +348,12 @@ export class DuplicateService {
     let id: string;
     try {
       await c.query('BEGIN');
+      // The sweep lock first, before any row lock, as everywhere.
+      await shareSweeps(c, projectId);
       await this.projects.beginCreation(c, user);
       await this.access.authorize(user, 'project.duplicate', projectId, c, true);
+      await this.refuseReviewedSince(c, projectId, b.asOf);
+      await this.refuseSecondCreate(c, user, projectId, trimmed(b.name), at);
       id = await this.write(c, user, projectId, b, at);
       await c.query('COMMIT');
     } catch (err) {
@@ -293,9 +401,8 @@ export class DuplicateService {
 
     const texts: CarriedText[] = [{ key: 'name', text: choices.name }, { key: 'purpose', text: choices.purpose }];
     const stages = this.readStages(b.stages, offer, texts);
-    const mayChange = await this.delegations(c);
-    const holidays = this.readHolidays(b.holidays, offer, mayChange.calendar, texts);
-    const settings = this.readSettings(b.settings, offer, mayChange);
+    const holidays = this.readHolidays(b.holidays, offer, offer.mayChange.calendar, texts);
+    const settings = this.readSettings(b.settings, offer);
     const tasks = this.readTasks(tasksIn, subtasksIn, offer, texts);
     const risks = risksIn.map((r) => {
       const text = readWording(r.text === undefined ? offer.risks.find((k) => k.id === r.id)?.text : r.text, 'risk');
@@ -391,18 +498,23 @@ export class DuplicateService {
     const rows = list(input, 'stages');
     if (rows.length === 0) bad('Keep at least one stage.');
     if (rows.length > TEMPLATE_LIMITS.stages) bad(`A project can have at most ${TEMPLATE_LIMITS.stages} stages in use.`);
-    const out = rows.map((r) => {
+    const out = rows.map((r, i) => {
       const name = readStageName(r.name, `Give each stage a name of 1 to ${TEMPLATE_LIMITS.nameChars} characters.`);
       const raw = r.substages === undefined || r.substages === null ? [] : r.substages;
       if (!Array.isArray(raw)) return bad(`Give the substages of ${name} as a list.`);
       if (raw.length > TEMPLATE_LIMITS.substagesPerStage) bad(`A stage can have at most ${TEMPLATE_LIMITS.substagesPerStage} substages.`);
       const offered = offer.stages.find((s) => s.id === r.id);
-      if (offered) texts.push({ key: key.stage(offered.id), text: name });
-      const substages = (raw as unknown[]).map((x) => {
+      texts.push(offered ? { key: key.stage(offered.id), text: name } : { key: `new:stage:${i}`, text: name, typed: `The new stage "${name}"` });
+      const substages = (raw as unknown[]).map((x, at) => {
         const given = typeof x === 'string' ? x : obj(x).name;
         const sub = readStageName(given, `Give each substage a name of 1 to ${TEMPLATE_LIMITS.nameChars} characters.`);
-        const carried = offered?.substages.findIndex((s, n) => (typeof x === 'string' ? s === sub : key.substage(offered.id, n) === obj(x).key)) ?? -1;
-        if (offered && carried >= 0) texts.push({ key: key.substage(offered.id, carried), text: sub });
+        // Carried: sent under its key, or as plain text exactly as it was. Anything else was typed here.
+        const from = offered?.substages.findIndex((s, n) => (typeof x === 'string' ? s === sub : key.substage(offered.id, n) === obj(x).key)) ?? -1;
+        texts.push(
+          offered && from >= 0
+            ? { key: key.substage(offered.id, from), text: sub }
+            : { key: `new:stage:${i}:substage:${at}`, text: sub, typed: `The substage "${sub}" of "${name}"` },
+        );
         return sub;
       });
       if (new Set(substages.map((x) => x.toLowerCase())).size !== substages.length) bad('Substage names must differ within a stage.');
@@ -412,32 +524,30 @@ export class DuplicateService {
     return out;
   }
 
-  /** Holidays kept as they were, and others only where the Administrator lets projects change their calendar. */
+  /** The project's own holidays, only where the Administrator lets projects change their calendar. */
   private readHolidays(input: unknown, offer: Offer, mayChange: boolean, texts: CarriedText[]): Array<{ date: string; name: string }> {
     const rows = list(input, 'holidays');
     if (rows.length > MAX_HOLIDAYS) bad(`At most ${MAX_HOLIDAYS} holidays can be copied at once.`);
     const dates = new Set<string>();
-    return rows.map((r) => {
+    return rows.map((r, i) => {
       const h = holidayInput(r);
-      refuseSecretsIn(h.name);
       if (dates.has(h.date)) bad(`Two holidays are on ${h.date}; keep one of them.`);
       dates.add(h.date);
       const offered = offer.holidays.find((x) => x.id === r.id);
-      if (!mayChange && (!offered || offered.date !== h.date || offered.name.trim() !== h.name)) bad(`${NOT_ALLOWED} Keep each holiday as it was or take it out.`);
-      if (offered) texts.push({ key: key.holiday(offered.id), text: h.name });
+      if (!mayChange) bad(NOT_ALLOWED);
+      texts.push(offered ? { key: key.holiday(offered.id), text: h.name } : { key: `new:holiday:${i}`, text: h.name, typed: `The new holiday "${h.name}"` });
       return h;
     });
   }
 
   /**
-   * The settings as posted; a part left out is copied as it was. Copying gives the new project nothing its Project
-   * Manager could not have: a value other than the original's and the default is taken only where the Administrator lets
-   * projects set it, and the number of approvals (an Owner's or Sponsor's choice) is kept or left to the organisation.
+   * The settings as posted; a part left out is copied as offered. Copying gives the new project nothing a project could
+   * not have now: any value but the default is taken only where the Administrator lets projects set it (the offer holds
+   * none of the others), and the number of approvals (an Owner's or Sponsor's choice) is kept or left to the organisation.
    */
   private readSettings(
     input: unknown,
     offer: Offer,
-    mayChange: Awaited<ReturnType<DuplicateService['delegations']>>,
   ): { requiredApprovals: number | null; notifications: ProjectRow; outputs: OutputChoices } {
     const s = obj(input);
     const requiredApprovals = s.requiredApprovals === undefined ? offer.requiredApprovals : s.requiredApprovals;
@@ -446,17 +556,16 @@ export class DuplicateService {
     const changes = s.notifications === undefined || s.notifications === null || Object.keys(obj(s.notifications)).length === 0 ? {} : parseProjectChanges(s.notifications);
     const notifications = applyProject(offer.notifications, changes);
     for (const k of Object.keys(EMPTY_PROJECT) as (keyof ProjectRow)[]) {
-      const kept = sameValue(notifications[k], offer.notifications[k]) || sameValue(notifications[k], EMPTY_PROJECT[k]);
-      if (!kept && !mayChange[GROUP_OF[k]]) bad(NOT_ALLOWED);
+      if (!sameValue(notifications[k], EMPTY_PROJECT[k]) && !offer.mayChange[GROUP_OF[k]]) bad(NOT_ALLOWED);
     }
 
     const o = obj(s.outputs);
     const given = Object.fromEntries((['inputFormats', 'outputFormats', 'exportRoles'] as const).filter((k) => o[k] !== undefined).map((k) => [k, o[k]]));
     const { patch } = parseOutputSettingsBody({ ...given, reason: COPIED_REASON });
     const outputs: OutputChoices = { ...offer.outputs, ...(patch as Partial<OutputChoices>) };
-    const kept = (k: keyof OutputChoices) => sameValue(outputs[k], offer.outputs[k]) || sameValue(outputs[k], DEFAULT_OUTPUTS[k]);
-    if (!(kept('inputFormats') && kept('outputFormats')) && !mayChange.formats) bad(NOT_DELEGATED.formats);
-    if (!kept('exportRoles') && !mayChange.exportRoles) bad(NOT_DELEGATED.exportRoles);
+    const isDefault = (k: keyof OutputChoices) => sameValue(outputs[k], DEFAULT_OUTPUTS[k]);
+    if (!(isDefault('inputFormats') && isDefault('outputFormats')) && !offer.mayChange.formats) bad(NOT_DELEGATED.formats);
+    if (!isDefault('exportRoles') && !offer.mayChange.exportRoles) bad(NOT_DELEGATED.exportRoles);
     return { requiredApprovals: requiredApprovals as number | null, notifications, outputs };
   }
 

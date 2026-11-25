@@ -164,6 +164,21 @@ describe('cleaning engine (spec 7.4)', { skip: SKIP_NO_DB }, () => {
   const passagesOf = async (ownerKind: string, owner: string) =>
     (await pool.query(`SELECT id, start_offset, end_offset, body, location FROM passages WHERE owner_kind = $1 AND owner_id = $2 ORDER BY ordinal`, [ownerKind, owner])).rows;
 
+  test('a holiday name in the settings history is cleaned and can be restored', async () => {
+    const project = await newProject();
+    const task = await seedTask(project, `Rotate ${SECRET}`);
+    const id = uuidv7();
+    await pool.query(
+      `INSERT INTO notification_settings_changes (id, scope, project_id, field, old_value, new_value, reason, actor_id, at) VALUES ($1, 'project', $2, 'holiday', $3, $4, 'Agreed', $5, now())`,
+      [id, project, `2026-12-01 Day ${SECRET}`, `2026-12-02 Day ${SECRET}`, user],
+    );
+    const { caseId } = await clean(project, 'task', task);
+    const row = async () => (await pool.query(`SELECT old_value, new_value FROM notification_settings_changes WHERE id = $1`, [id])).rows[0];
+    assert.deepEqual(await row(), { old_value: `2026-12-01 Day ${MARKER}`, new_value: `2026-12-02 Day ${MARKER}` });
+    await tx((c) => restoreOriginals(c, key, caseId));
+    assert.deepEqual(await row(), { old_value: `2026-12-01 Day ${SECRET}`, new_value: `2026-12-02 Day ${SECRET}` });
+  });
+
   test('cleaning a notes version removes the secret from text, passages, search view and quotes', async () => {
     const project = await newProject();
     const intro = 'Intro paragraph about the staging rollout and who looks after it during the week.';

@@ -114,6 +114,13 @@ export interface SecurityCase {
   /** "Still in storage" while a withheld file of the case is not yet removed, or a held output has linked documents (external outputs spec 4.7, 8.5). */
   stillInStorage: { label: string; files: number; links: number } | null;
   currentGrant?: boolean;
+  /**
+   * Projects made from the case's project, copies of copies included: Kainow does not search them, so whoever handles the
+   * case knows to. Named for an Administrator; for a reviewer only those that have a case (their list names them), else counted.
+   */
+  copiedTo: { projects: Array<{ id: string; name: string }>; others: number };
+  /** The project this one was made from, named by the same rule; null when it was not copied. */
+  copiedFrom: { id: string; name: string } | { hidden: true } | null;
 }
 
 async function inTransaction<T>(pool: Pool, work: (db: PoolClient) => Promise<T>): Promise<T> {
@@ -454,15 +461,28 @@ export class SecurityService {
   private async caseList(viewer: string | null): Promise<SecurityCase[]> {
     const { rows } = await this.pool.query(
       `SELECT c.id, c.project_id AS "projectId", p.name AS project, c.item_kind AS kind, c.item_id AS "itemId", u.display_name AS reporter,
-              c.state, c.waiting_for_key AS "waitingForKey", c.reported_at AS "reportedAt", c.closed_at AS "closedAt",
+              c.state, c.waiting_for_key AS "waitingForKey", c.reported_at AS "reportedAt", c.closed_at AS "closedAt", fp.id AS "fromId", fp.name AS "fromName",
               COALESCE((SELECT json_agg(json_build_object('kind', i.item_kind, 'id', i.item_id, 'role', i.role) ORDER BY i.role DESC, i.item_id) FROM quarantine_items i WHERE i.case_id = c.id), '[]'::json) AS items,
               (SELECT e.detail FROM quarantine_events e WHERE e.case_id = c.id AND e.action = 'reported' ORDER BY e.at, e.id LIMIT 1) AS reported,
               (SELECT e.detail FROM quarantine_events e WHERE e.case_id = c.id AND e.action = 'released_unchanged' ORDER BY e.at, e.id LIMIT 1) AS unchanged
-         FROM quarantine_cases c JOIN projects p ON p.id = c.project_id LEFT JOIN users u ON u.id = c.reporter_id
+         FROM quarantine_cases c JOIN projects p ON p.id = c.project_id LEFT JOIN projects fp ON fp.id = p.copied_from_id LEFT JOIN users u ON u.id = c.reporter_id
         ORDER BY c.reported_at, c.id`,
     );
+    // The case list names every project with a case; an Administrator knows every project.
+    const known = viewer === null ? null : new Set(rows.map((r) => r.projectId as string));
+    const copies = (
+      await this.pool.query<{ root: string; id: string; name: string }>(
+        `WITH RECURSIVE made AS (
+           SELECT c.id AS root, p.id FROM unnest($1::uuid[]) AS c(id) JOIN projects p ON p.copied_from_id = c.id
+           UNION SELECT m.root, p.id FROM made m JOIN projects p ON p.copied_from_id = m.id)
+         SELECT m.root, p.id, p.name FROM made m JOIN projects p ON p.id = m.id ORDER BY p.created_at, p.id`,
+        [[...new Set(rows.map((r) => r.projectId))]],
+      )
+    ).rows;
+    const named = (id: string) => known === null || known.has(id);
     const out: SecurityCase[] = [];
     for (const r of rows) {
+      const to = copies.filter((x) => x.root === r.projectId);
       const changed = Array.isArray(r.unchanged?.changed) ? (r.unchanged.changed as Array<{ table: string; rowKey: Record<string, unknown> }>) : [];
       out.push({
         caseId: r.id,
@@ -481,6 +501,8 @@ export class SecurityService {
         items: r.items,
         changedSinceCleaning: changed.map((c) => ({ table: c.table, rowKey: c.rowKey, label: CHANGED_SINCE_CLEANING })),
         stillInStorage: await stillInStorage(this.pool, r.id),
+        copiedTo: { projects: to.filter((x) => named(x.id)).map((x) => ({ id: x.id, name: x.name })), others: to.filter((x) => !named(x.id)).length },
+        copiedFrom: r.fromId === null ? null : named(r.fromId) ? { id: r.fromId, name: r.fromName } : { hidden: true },
         ...(viewer ? { currentGrant: (await this.currentGrant(this.pool, viewer, r.id)) !== null } : {}),
       });
     }

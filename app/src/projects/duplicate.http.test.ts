@@ -26,6 +26,7 @@ const NEVER_COPIED: string[] = [
   'report_drafts', 'review_flags', 'risks', 'source_events', 'source_version_meeting_dates', 'source_versions', 'sources', 'stored_file_moves',
   'stored_file_withholds', 'stored_files', 'summaries', 'summary_marks', 'summary_versions', 'task_events', 'tasks', 'transcript_spans',
 ];
+const OPEN = 'Something in the original is under review for a suspected credential. Create the copy when the review has ended.';
 const PASSWORD = 'password: hunter2hunter2';
 
 describe('duplicating a project (D140)', { skip: SKIP_NO_DB }, () => {
@@ -123,6 +124,10 @@ describe('duplicating a project (D140)', { skip: SKIP_NO_DB }, () => {
     line = await addLine({ item });
     oneOff = await addLine({ oneOff: 'Hired boat' });
     await t.pool.query(`INSERT INTO eligible_domains (id, domain, added_by, added_at) SELECT $1, 'example.org', $2, now() WHERE NOT EXISTS (SELECT 1 FROM eligible_domains WHERE domain = 'example.org' AND removed_at IS NULL)`, [uuidv7(), ids.admin]);
+    // The Administrator lets projects set everything, so the original's own settings may be carried; tests turn it off.
+    await t.pool.query(`UPDATE notification_settings SET projects_may_change_calendar = true, projects_may_change_timings = true, projects_may_change_digest = true`);
+    await t.pool.query(`UPDATE storage_settings SET projects_may_change_formats = true, projects_may_set_export_roles = true`);
+    await t.pool.query(`UPDATE approval_policy SET projects_may_override = true`);
     for (const p of ['admin', 'pm', 'dep', 'own', 'mem', 'late', 'new']) c[p] = await t.signIn(`${p}@example.org`);
   });
   afterEach(async () => {
@@ -142,10 +147,10 @@ describe('duplicating a project (D140)', { skip: SKIP_NO_DB }, () => {
       name: 'Harbour survey 2027', plannedEnd: '2027-12-31', purpose: 'Survey the second harbour',
       owningDepartmentId: o.original.owningDepartment.id,
       contributingDepartmentIds: o.original.contributingDepartments.map((d: any) => d.id),
-      stages: o.stages, holidays: o.holidays,
+      asOf: o.asOf, stages: o.stages, holidays: o.holidays,
       tasks: o.tasks.map((x: any) => ({ ...strip(x), subtasks: x.subtasks.map(strip) })),
       risks: o.risks.map((x: any) => ({ id: x.id, text: x.text })),
-      resources: o.resources.map((x: any) => ({ id: x.id })),
+      resources: o.resources.map((x: any) => ({ id: x.id, ...(x.oneOffKind ? { description: x.description } : {}) })),
       oldTerms: [], confirmedKeys: [],
       ...over,
     };
@@ -299,13 +304,45 @@ describe('duplicating a project (D140)', { skip: SKIP_NO_DB }, () => {
       `INSERT INTO access_grants (id, project_id, user_id, kind, purpose, scope, starts_on, expires_on, requested_by, requested_at) VALUES ($1, $2, $3, 'audit', 'p', 's', '2026-11-01', '2026-11-30', $4, now())`,
       [uuidv7(), project, ids.new, ids.own],
     );
-    const seeded = await seedTables(NEVER_COPIED);
+    // Not the quarantine tables: an open case refuses the duplication.
+    const seeded = await seedTables(NEVER_COPIED.filter((x) => !x.startsWith('quarantine_')));
     assert.ok(seeded.length >= 35, `only ${seeded.length} of the tables hold a row of the original: ${seeded.join(', ')}`);
+    // Text of kinds that are never copied, looked for afterwards in everything the new project holds.
+    const CANARY = 'canary-of-the-original';
+    const put = (sql: string, ...more: unknown[]) => t.pool.query(sql, [project, CANARY, ...more]);
+    await put(`UPDATE tasks SET owner_as_written = $2 WHERE project_id = $1`);
+    await put(`UPDATE tasks SET title = $2, description = $2 WHERE project_id = $1 AND status = 'cancelled'`);
+    await t.pool.query(`INSERT INTO task_events (id, task_id, kind, note, actor_id, at) VALUES ($1, $2, 'blocked', $3, $4, now())`, [uuidv7(), task, CANARY, ids.pm]);
+    await put(`UPDATE risks SET mitigation = $2 WHERE project_id = $1`);
+    await put(`UPDATE resource_lines SET notes = $2 WHERE project_id = $1`);
+    await put(`INSERT INTO project_stage_changes (id, project_id, kind, actor_id, at, reason, previous, next) VALUES ($3, $1, 'reordered', $4, now(), $2, $5, $5)`, uuidv7(), ids.pm, JSON.stringify([{ name: CANARY }]));
+    await put(`UPDATE project_stage_periods SET reason = $2 WHERE project_id = $1`);
+    await put(`UPDATE project_stages SET name = $2 WHERE project_id = $1 AND status = 'retired'`);
+    await put(`UPDATE memberships SET hold_reason = $2 WHERE project_id = $1`);
+    await put(`UPDATE holidays SET name = $2 WHERE project_id = $1 AND removed_at IS NOT NULL`);
+    await put(`UPDATE human_proposals SET text = $2 WHERE project_id = $1 AND kind = 'decision'`);
+    await put(`INSERT INTO questions (id, project_id, text, requester_id, origin_proposal_id, authorised_by, authorised_at) SELECT $3, $1, $2, $4, id, $4, now() FROM human_proposals WHERE project_id = $1 AND kind = 'decision' LIMIT 1`, uuidv7(), ids.pm);
+    await put(`INSERT INTO approval_policy_changes (id, project_id, field, new_value, reason, actor_id, at) VALUES ($3, $1, 'required', '2', $2, $4, now())`, uuidv7(), ids.pm);
+    await put(`INSERT INTO notification_settings_changes (id, scope, project_id, field, new_value, reason, actor_id, at) VALUES ($3, 'project', $1, 'holiday', $2, $2, $4, now())`, uuidv7(), ids.pm);
+    await put(`INSERT INTO project_output_settings_changes (id, project_id, actor_id, at, reason, previous, next) VALUES ($3, $1, $4, now(), $2, '{}', '{}')`, uuidv7(), ids.pm);
+    const canaries = async () => {
+      const out: Record<string, number> = {};
+      for (const name of await tables()) {
+        const n = Number((await t.pool.query(`SELECT count(*) AS n FROM "${name}" x WHERE strpos(x::text, $1) > 0`, [CANARY])).rows[0].n);
+        if (n > 0) out[name] = n;
+      }
+      return out;
+    };
+    const held = await canaries();
+    for (const name of ['tasks', 'task_events', 'risks', 'resource_lines', 'project_stage_changes', 'project_stage_periods', 'memberships', 'holidays', 'human_proposals', 'project_stages', 'questions', 'approval_policy_changes', 'notification_settings_changes', 'project_output_settings_changes']) {
+      assert.ok(held[name] > 0, `${name} holds the canary`);
+    }
     const b = await body();
     const originalBefore = (await t.pool.query(`SELECT * FROM projects WHERE id = $1`, [project])).rows[0];
     const before = await counts();
     const r = await c.pm.request('POST', `/projects/${project}/duplicate`, b);
     assert.equal(r.status, 201, JSON.stringify(r.body));
+    assert.deepEqual(await canaries(), held, 'no never-copied text reached any row of the new project');
     const after = await counts();
     const delta = Object.fromEntries(Object.keys(after).filter((k) => after[k] !== before[k]).map((k) => [k, after[k] - before[k]]));
     const audits = delta.audit_events;
@@ -441,8 +478,7 @@ describe('duplicating a project (D140)', { skip: SKIP_NO_DB }, () => {
         const r = await c.pm.request('POST', `/projects/${project}/secret-reports`, { kind, id: id(), marked: ['Kp9vault-Rotor42'], reason: 'Looks like a code' });
         assert.equal(r.status, 201, JSON.stringify(r.body));
         const after = await c.pm.request('POST', `/projects/${project}/duplicate`, b);
-        assert.equal(after.status, 400);
-        assert.match(after.body.message, /can no longer be copied \(1 task, 1 risk\)|can no longer be copied/);
+        assert.deepEqual([after.status, after.body.message], [409, OPEN]);
         const o = await getOffer();
         assert.ok(!(kind === 'task' ? o.tasks : o.risks).some((x: any) => x.id === id()), 'held');
         assert.ok(!(kind === 'task' ? o.risks : o.tasks).some((x: any) => x.id === (kind === 'task' ? risk : task)), 'nor the possible copy masked at once');
@@ -480,20 +516,168 @@ describe('duplicating a project (D140)', { skip: SKIP_NO_DB }, () => {
     await refused({ tasks: [{ id: task, subtasks: [] }] }, secret);
   });
 
-  test('settings: kept, left at the default, or changed only where the Administrator allows it', async () => {
-    const NOT = 'The Administrator has not allowed projects to change this setting.';
-    await t.pool.query(`UPDATE storage_settings SET projects_may_change_formats = false, projects_may_set_export_roles = false`);
+  test('settings: kept, left at the default, or set where projects may set them', async () => {
     await refused({ settings: { requiredApprovals: 1 } }, /^Keep the original's number of approvals/);
-    await refused({ settings: { notifications: { escalationDays: 9 } } }, NOT);
-    await refused({ settings: { outputs: { inputFormats: ['md'] } } }, /has not allowed projects to change their own formats/);
-    await refused({ settings: { outputs: { exportRoles: ['member'] } } }, /has not allowed projects to set their own export roles/);
-    await refused({ holidays: [{ date: '2027-03-01', name: 'New day' }] }, `${NOT} Keep each holiday as it was or take it out.`);
-    const p = await made({ holidays: [], settings: { requiredApprovals: null, notifications: { dayCounting: null, leadDays: null, digestEnabled: false }, outputs: { inputFormats: null, outputFormats: null, exportRoles: ['pm', 'deputy', 'owner', 'sponsor'], destinationId: uuidv7() } } });
-    assert.equal((await t.pool.query(`SELECT 1 FROM project_output_settings WHERE project_id = $1`, [p.id])).rowCount, 0);
-    assert.equal((await t.pool.query(`SELECT 1 FROM approval_policy_changes WHERE project_id = $1`, [p.id])).rowCount, 0);
-    await t.pool.query(`UPDATE notification_settings SET projects_may_change_timings = true, projects_may_change_calendar = true`);
+    const p = await made({ holidays: [], settings: { requiredApprovals: null, notifications: { dayCounting: null, leadDays: null, digestEnabled: false, digestFrequency: null, digestWeekday: null, digestTime: null }, outputs: { inputFormats: null, outputFormats: null, exportRoles: ['pm', 'deputy', 'owner', 'sponsor'], destinationId: uuidv7() } } });
+    for (const table of ['project_notification_settings', 'project_output_settings', 'approval_policy_changes']) {
+      assert.equal((await t.pool.query(`SELECT 1 FROM ${table} WHERE project_id = $1`, [p.id])).rowCount, 0, table);
+    }
     const q = await made({ name: 'Fourth', settings: { notifications: { escalationDays: 9 } }, holidays: [{ date: '2027-03-01', name: 'New day' }] });
     assert.equal((await t.pool.query(`SELECT escalation_days AS n FROM project_notification_settings WHERE project_id = $1`, [q.id])).rows[0].n, 9);
+  });
+
+  test('an exception is carried only where a project could set it now; the screen is told which are not', async () => {
+    assert.deepEqual((await getOffer()).settings.notCarried, []);
+    const b = await body();
+    await t.pool.query(`UPDATE notification_settings SET projects_may_change_calendar = false, projects_may_change_timings = false, projects_may_change_digest = false`);
+    await t.pool.query(`UPDATE storage_settings SET projects_may_change_formats = false, projects_may_set_export_roles = false`);
+    await t.pool.query(`UPDATE approval_policy SET projects_may_override = false`);
+    const o = await getOffer();
+    assert.deepEqual(o.settings.notCarried.map((x: any) => x.setting).sort(), ['calendar', 'digest', 'exportRoles', 'formats', 'holidays', 'requiredApprovals', 'timings']);
+    assert.ok(o.settings.notCarried.every((x: any) => x.notCarried === true && /organisation/.test(x.reason)));
+    assert.deepEqual([o.holidays, o.settings.requiredApprovals, o.settings.notifications.dayCounting, o.settings.notifications.digestEnabled], [[], null, null, false]);
+    assert.deepEqual(o.settings.outputs, { inputFormats: null, outputFormats: null, exportRoles: ['pm', 'deputy', 'owner', 'sponsor'] });
+    // A page opened before the switches went off: what it sends is checked again.
+    const post = (over: object) => c.pm.request('POST', `/projects/${project}/duplicate`, { ...b, ...over });
+    assert.match((await post({})).body.message, /can no longer be copied \(1 holiday\)/);
+    for (const [settings, message] of [
+      [{ requiredApprovals: 2 }, /number of approvals/],
+      [{ notifications: { dayCounting: 'calendar' } }, /has not allowed projects to change this setting/],
+      [{ notifications: { leadDays: [5, 2] } }, /has not allowed projects to change this setting/],
+      [{ notifications: { digestEnabled: true, digestFrequency: 'daily', digestTime: '09:00' } }, /has not allowed projects to change this setting/],
+      [{ outputs: { inputFormats: ['txt'] } }, /change their own formats/],
+      [{ outputs: { exportRoles: ['pm', 'owner'] } }, /set their own export roles/],
+    ] as const) {
+      const r = await post({ holidays: [], settings });
+      assert.equal(r.status, 400, JSON.stringify(settings));
+      assert.match(r.body.message, message);
+    }
+    assert.match((await post({ holidays: [{ date: '2027-01-04', name: 'Own' }] })).body.message, /has not allowed projects to change this setting/);
+    const r = await post({ holidays: [] });
+    assert.equal(r.status, 201, JSON.stringify(r.body));
+    for (const table of ['holidays', 'project_notification_settings', 'project_output_settings', 'approval_policy_changes']) {
+      assert.equal((await t.pool.query(`SELECT 1 FROM ${table} WHERE project_id = $1`, [r.body.project.id])).rowCount, 0, table);
+    }
+    assert.equal((await t.pool.query(`SELECT required_approvals AS n FROM projects WHERE id = $1`, [r.body.project.id])).rows[0].n, null);
+  });
+
+  describe('a page opened before something was put under review', () => {
+    const CODE = 'Kp9vault-Rotor42';
+    const CHANGED = 'Something in the original was put under review or cleaned after you opened this page. Load the project again.';
+    const PLACES: Record<string, () => Promise<unknown>> = {
+      'a task title': () => t.pool.query(`UPDATE tasks SET title = title || ' ' || $2 WHERE id = $1`, [task, CODE]),
+      'a risk': () => t.pool.query(`UPDATE risks SET description = description || ' ' || $2 WHERE id = $1`, [risk, CODE]),
+      'a stage': () => t.pool.query(`UPDATE project_stages SET name = name || ' ' || $2 WHERE project_id = $1 AND position = 2`, [project, CODE]),
+      'the purpose': () => t.pool.query(`UPDATE projects SET purpose = purpose || ' ' || $2 WHERE id = $1`, [project, CODE]),
+      'a holiday': () => t.pool.query(`UPDATE holidays SET name = name || ' ' || $2 WHERE project_id = $1`, [project, CODE]),
+      'a one-off line': () => t.pool.query(`UPDATE resource_lines SET description = description || ' ' || $2 WHERE id = $1`, [oneOff, CODE]),
+    };
+    for (const [place, put] of Object.entries(PLACES)) {
+      test(`${place} cleaned meanwhile, its case already released`, async () => {
+        await put();
+        const reported: [string, string] = place === 'a risk' ? ['risk', risk] : ['task', task];
+        // The other places are found when a task holding the same code is reported.
+        if (place !== 'a risk' && place !== 'a task title') await t.pool.query(`UPDATE tasks SET title = 'Holds ' || $2 WHERE id = $1`, [task, CODE]);
+        const b = await body({ purpose: (await getOffer()).original.purpose, purposeConfirmed: true });
+        if (place !== 'a risk' && place !== 'a task title') b.tasks[0].title = 'Holds nothing';
+        assert.ok(JSON.stringify(b).includes(CODE), 'the page holds it');
+        const reply = await c.pm.request('POST', `/projects/${project}/secret-reports`, { kind: reported[0], id: reported[1], marked: [CODE], reason: 'Looks like a code' });
+        assert.equal(reply.status, 201, JSON.stringify(reply.body));
+        const open = await c.pm.request('POST', `/projects/${project}/duplicate`, b);
+        assert.deepEqual([open.status, open.body.message], [409, OPEN]);
+        assert.equal((await c.pm.request('POST', `/quarantine/cases/${reply.body.caseId}/release`, { reason: 'Reviewed' })).status, 200);
+        const before = await counts();
+        const stale = await c.pm.request('POST', `/projects/${project}/duplicate`, b);
+        assert.deepEqual([stale.status, stale.body.message], [409, CHANGED]);
+        assert.deepEqual(await counts(), before);
+        const fresh = await body({ purpose: (await getOffer()).original.purpose, purposeConfirmed: true });
+        assert.ok(!JSON.stringify(fresh).includes(CODE));
+        assert.equal((await c.pm.request('POST', `/projects/${project}/duplicate`, fresh)).status, 201, 'the page loaded again works');
+      });
+    }
+
+    test('asOf is required, not in the future and at most a day old', async () => {
+      const b = await body();
+      assert.equal(typeof b.asOf, 'string');
+      const [time, mark] = [b.asOf.slice(0, b.asOf.indexOf('~')), b.asOf.slice(b.asOf.indexOf('~'))];
+      const shift = (ms: number) => new Date(Date.parse(time) + ms).toISOString() + mark;
+      for (const asOf of [undefined, null, '', 5, 'nonsense', time, shift(3_600_000), shift(-25 * 3_600_000)]) {
+        const r = await c.pm.request('POST', `/projects/${project}/duplicate`, { ...b, asOf });
+        assert.deepEqual([r.status, r.body.message], [400, 'Load the project again.'], String(asOf));
+      }
+      assert.equal((await c.pm.request('POST', `/projects/${project}/duplicate`, { ...b, asOf: shift(-23 * 3_600_000) })).status, 201);
+    });
+
+    test('a report committed while Create waits for it, or under way when the page was loaded', async () => {
+      const b = await body();
+      const db = await t.pool.connect();
+      try {
+        await db.query('BEGIN');
+        await db.query(`SELECT pg_advisory_xact_lock(hashtextextended('kainow.quarantine:' || $1::text, 0))`, [project]);
+        // A closed case whose times are long before the page was loaded: no clock is compared.
+        await db.query(
+          `INSERT INTO quarantine_cases (id, project_id, item_kind, item_id, reporter_id, reason, marked_length, state, reported_at, cleaned_at, closed_at, closed_by, close_reason)
+           VALUES ($1, $2, 'task', $3, $4, 'x', 5, 'released', '2026-01-01', '2026-01-01', '2026-01-01', $4, 'x')`,
+          [uuidv7(), project, task, ids.pm],
+        );
+        const loadedDuring = await body();
+        let answered = false;
+        const waiting = c.pm.request('POST', `/projects/${project}/duplicate`, b).then((r) => {
+          answered = true;
+          return r;
+        });
+        await new Promise((r) => setTimeout(r, 700));
+        assert.equal(answered, false, 'Create waits for the report');
+        await db.query('COMMIT');
+        const first = await waiting;
+        assert.deepEqual([first.status, first.body.message], [409, CHANGED]);
+        const second = await c.pm.request('POST', `/projects/${project}/duplicate`, loadedDuring);
+        assert.deepEqual([second.status, second.body.message], [409, CHANGED], 'the page was loaded before the report was committed');
+      } finally {
+        await db.query('ROLLBACK').catch(() => undefined);
+        db.release();
+      }
+    });
+  });
+
+  test('a second identical Create is refused', async () => {
+    const b = await body();
+    const [x, y] = await Promise.all([1, 2].map(() => c.pm.request('POST', `/projects/${project}/duplicate`, b)));
+    assert.deepEqual([x.status, y.status].sort(), [201, 409]);
+    const late = [x, y].find((r) => r.status === 409)!;
+    assert.equal(late.body.message, 'You created this project a moment ago.');
+    assert.equal(late.body.projectId, [x, y].find((r) => r.status === 201)!.body.project.id);
+    await made({ name: 'Another name' });
+  });
+
+  test('the reference to a retired stage template is not kept', async () => {
+    await t.pool.query(`UPDATE stage_templates SET status = 'retired', retired_by = $2, retired_at = now() WHERE id = (SELECT stage_template_id FROM projects WHERE id = $1)`, [project, ids.admin]).catch(() =>
+      t.pool.query(`UPDATE stage_templates SET status = 'retired' WHERE id = (SELECT stage_template_id FROM projects WHERE id = $1)`, [project]),
+    );
+    assert.equal((await made()).stageTemplate, null);
+  });
+
+  test('an old term in anything typed new is refused until changed, whatever is confirmed', async () => {
+    const o = await getOffer();
+    const day = { date: '2027-05-01', name: 'Left 2026 day' };
+    const cases: Array<[object, string]> = [
+      [{ stages: [...o.stages, { name: 'Left 2026 here', substages: [] }] }, 'The new stage "Left 2026 here" holds an old term. Change it.'],
+      [{ stages: [...o.stages, { name: 'Brand new', substages: ['Left 2026 here'] }] }, 'The substage "Left 2026 here" of "Brand new" holds an old term. Change it.'],
+      [{ stages: [{ ...o.stages[0], substages: ['Left 2026 here'] }] }, `The substage "Left 2026 here" of "${o.stages[0].name}" holds an old term. Change it.`],
+      [{ stages: [{ ...o.stages[0], substages: [...o.stages[0].substages, { name: 'Left 2026 here' }] }] }, `The substage "Left 2026 here" of "${o.stages[0].name}" holds an old term. Change it.`],
+      [{ stages: [{ ...o.stages[0], substages: [{ key: 'stage:made-up', name: 'Left 2026 here' }] }] }, `The substage "Left 2026 here" of "${o.stages[0].name}" holds an old term. Change it.`],
+      [{ holidays: [day] }, 'The new holiday "Left 2026 day" holds an old term. Change it.'],
+    ];
+    for (const [over, message] of cases) {
+      const r = await refused({ oldTerms: ['left 2026'], ...over }, message);
+      assert.equal(r.terms.length, 1);
+      await refused({ oldTerms: ['left 2026'], ...over, confirmedKeys: [r.terms[0].key, 'stage:made-up'] }, message);
+    }
+    // An unchanged substage sent as plain text is still the carried one, so it can be confirmed.
+    const first = o.stages[0].substages[0];
+    const plainText = { oldTerms: [first.name], stages: [{ ...o.stages[0], substages: [first.name] }] };
+    assert.equal((await refused(plainText, /^1 text still holds/)).terms[0].key, first.key);
+    await made({ ...plainText, confirmedKeys: [first.key] });
   });
 
   test('stages may be renamed, added, removed and put in another order', async () => {
@@ -642,7 +826,6 @@ describe('duplicating a project (D140)', { skip: SKIP_NO_DB }, () => {
     });
 
     test('with two required approvals each waits for the second approver', async () => {
-      await t.pool.query(`UPDATE approval_policy SET projects_may_override = true`);
       await t.pool.query(`UPDATE projects SET required_approvals = 2 WHERE id = $1`, [copy]);
       const second = proposals.find((p) => p.text === 'Second');
       const third = proposals.find((p) => p.text === 'Third');

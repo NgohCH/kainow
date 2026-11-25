@@ -1,5 +1,5 @@
 import { itemDiscussionEvidence, itemSourceFlags } from '../discussion/masking';
-import { BadRequestException, ConflictException, ForbiddenException, HttpException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, HttpException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { readReason, refuseSecretsIn } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
@@ -405,15 +405,19 @@ export class RecordsService {
       const item = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
       const { proposalId: given, ...terms } = item;
       const proposalId = typeof given === 'string' ? given : '';
+      const here = UUID.test(proposalId) && (await this.pool.query(`SELECT 1 FROM human_proposals WHERE id = $1 AND project_id = $2`, [proposalId, projectId])).rowCount;
+      if (!here) {
+        results.push({ proposalId, ok: false, error: 'That proposal was not found.' });
+        continue;
+      }
       try {
-        if (!UUID.test(proposalId)) throw new NotFoundException();
-        if (!(await this.pool.query(`SELECT 1 FROM human_proposals WHERE id = $1 AND project_id = $2`, [proposalId, projectId])).rowCount) throw new NotFoundException();
         const done = await this.authoriseProposal(user, proposalId, terms);
         results.push('waiting' in done ? { proposalId, ok: true, waiting: true, request: done.request } : { proposalId, ok: true, record: done.record });
       } catch (err) {
-        if (!(err instanceof HttpException)) console.error('Could not authorise one of several proposals', err);
-        const error = err instanceof NotFoundException ? 'That proposal was not found.' : err instanceof HttpException ? err.message : 'This one could not be authorised. Try it again on its own.';
-        results.push({ proposalId, ok: false, error });
+        // A refusal keeps its own words; one without any (a bare 404) or a failure says what to do. Never a value in the log.
+        const said = err instanceof HttpException && err.message !== 'Not Found' ? err.message : null;
+        if (!(err instanceof HttpException)) new Logger('Records').error(`One of several proposals could not be authorised (${(err as { code?: string }).code ?? (err as Error).name})`);
+        results.push({ proposalId, ok: false, error: said ?? 'This one could not be authorised. Load the page again and try it on its own.' });
       }
     }
     return { results };

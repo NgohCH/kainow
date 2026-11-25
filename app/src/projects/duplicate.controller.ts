@@ -23,12 +23,13 @@ export class DuplicateController {
   }
 
   /**
-   * { name, plannedEnd | noPlannedEnd, purpose, purposeConfirmed?, owningDepartmentId, contributingDepartmentIds,
+   * { asOf (as GET gave it), name, plannedEnd | noPlannedEnd, purpose, purposeConfirmed?, owningDepartmentId, contributingDepartmentIds,
    *   stages: [{ id?, name, substages: [{ key?, name }] }], holidays: [{ id?, date, name }],
    *   settings?: { requiredApprovals?, notifications?, outputs? },
    *   tasks: [{ id, title, description?, due?, subtasks: [{ id, title, description?, due? }] }], risks: [{ id, text }],
    *   resources: [{ id, quantity?, unit?, description? }], oldTerms, confirmedKeys } → the new project's details.
-   * A refusal (400) carries `problems`, and `terms` ([{ key, term }]) for texts that still hold an old term.
+   * 409 when the original is under review or changed under review since `asOf`, or the same Create was just made.
+   * Another refusal (400) carries `problems`, and `terms` ([{ key, term }]) for texts that still hold an old term.
    */
   @Post()
   @AnySignedInUser()

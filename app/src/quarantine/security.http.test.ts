@@ -83,6 +83,37 @@ describe('security reviewers, grants, reveal and release unchanged', { skip: SKI
     rmSync(dir, { recursive: true, force: true });
   });
 
+  test('a case says the project was copied, to where, and in a copy from where', async () => {
+    const copy = await seedProject(t.pool, { name: 'Bravo Copy', members: [{ userId: ids.pm, role: 'pm' }] });
+    const second = await seedProject(t.pool, { name: 'Charlie Copy', members: [{ userId: ids.pm, role: 'pm' }] });
+    await t.pool.query(`UPDATE projects SET copied_from_id = $2 WHERE id = $1`, [copy, project]);
+    await t.pool.query(`UPDATE projects SET copied_from_id = $2 WHERE id = $1`, [second, copy]);
+    const caseId = await reported('source', await note('Vault', PLANT));
+    await ok(designate(admin1, ids.rev));
+    const of = async (c: Client, path: string, id = caseId) => (await ok(c.request('GET', path))).cases.find((x: any) => x.caseId === id);
+    const admin = await of(admin1, '/security/admin-cases');
+    assert.deepEqual(admin.copiedTo, { projects: [{ id: copy, name: 'Bravo Copy' }, { id: second, name: 'Charlie Copy' }], others: 0 }, 'a copy of the copy too');
+    assert.equal(admin.copiedFrom, null);
+    const reviewer = await of(rev, '/security/cases');
+    assert.deepEqual([reviewer.copiedTo, reviewer.copiedFrom], [{ projects: [], others: 2 }, null], 'a reviewer knows only projects with a case');
+    const addCase = async (projectId: string) => {
+      const id = uuidv7();
+      await t.pool.query(`INSERT INTO quarantine_cases (id, project_id, item_kind, item_id, reason, marked_length, reported_at) VALUES ($1, $2, 'task', $3, 'x', 5, now())`, [id, projectId, uuidv7()]);
+      return id;
+    };
+    const inSecond = await addCase(second);
+    assert.deepEqual((await of(rev, '/security/cases', inSecond)).copiedFrom, { hidden: true });
+    assert.deepEqual((await of(admin1, '/security/admin-cases', inSecond)).copiedFrom, { id: copy, name: 'Bravo Copy' });
+    const inCopy = await addCase(copy);
+    assert.deepEqual((await of(rev, '/security/cases', inCopy)).copiedFrom, { id: project, name: 'Alpha Project' });
+    assert.deepEqual((await of(rev, '/security/cases', inCopy)).copiedTo, { projects: [{ id: second, name: 'Charlie Copy' }], others: 0 });
+    for (const c of [ada, pm, ben]) {
+      await refused(c.request('GET', '/security/cases'), 403);
+      await refused(c.request('GET', '/security/admin-cases'), 403);
+    }
+    assert.ok(!json(await ok(pm.request('GET', `/quarantine/cases/${caseId}`))).includes('Bravo Copy'), 'not in the review inside the project');
+  });
+
   const note = async (title: string, text: string) => (await ok(pm.request('POST', `/projects/${project}/notes`, { title, text }), 201)).source.id as string;
   const reported = async (kind: string, id: string, marked = [SECRET]) => {
     const body = await ok(ada.request('POST', `/projects/${project}/secret-reports`, { kind, id, marked, reason: 'Looks like the plant room vault code' }), 201);

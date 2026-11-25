@@ -196,9 +196,13 @@ describe('notification settings, holidays and preview', { skip: SKIP_NO_DB }, ()
     assert.equal(dupe.status, 409);
     assert.equal((await admin.request('POST', '/notification-settings/holidays', { date: '2026-02-30', name: 'x', reason: 'Calendar' })).status, 400);
     assert.equal((await admin.request('DELETE', `/notification-settings/holidays/${id}`, {})).status, 400);
+    const secret = await admin.request('POST', '/notification-settings/holidays', { date: '2026-11-20', name: 'password: hunter2hunter2', reason: 'Calendar' });
+    assert.equal(secret.status, 400);
+    assert.match(secret.body.message, /looks like it contains/);
     const del = await admin.request('DELETE', `/notification-settings/holidays/${id}`, { reason: 'Moved' });
     assert.equal(del.status, 200);
     assert.ok(del.body.holidays[0].removedAt);
+    assert.ok(!JSON.stringify((await t.pool.query(`SELECT detail FROM audit_events WHERE action = 'notification_holiday.removed'`)).rows).includes('Moved'), 'no typed text in the audit');
     const row = (await t.pool.query(`SELECT removed_by, removed_at FROM holidays WHERE id = $1`, [id])).rows[0];
     assert.equal(row.removed_by, ids.admin);
     assert.ok(row.removed_at);

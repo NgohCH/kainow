@@ -40,7 +40,9 @@ function holidayDate(date: unknown): string {
 export function holidayInput(b: Record<string, unknown>): { date: string; name: string } {
   const date = holidayDate(b.date);
   if (typeof b.name !== 'string' || b.name.trim() === '') throw new BadRequestException('Give the holiday a name.');
-  return { date, name: b.name.trim().slice(0, 200) };
+  const name = b.name.trim().slice(0, 200);
+  refuseSecretsIn(name);
+  return { date, name };
 }
 
 @Injectable()
@@ -151,7 +153,7 @@ export class NotificationSettingsService {
     await this.log(c, projectId, 'holiday', `${r.rows[0].date} ${r.rows[0].name}`, null, reason, user.id, at);
     await writeAudit(c, {
       at, action: 'notification_holiday.removed', actorUserId: user.id,
-      subjectType: projectId ? 'project' : 'organisation', subjectId: projectId ?? undefined, detail: { holidayId: id, date: r.rows[0].date, reason },
+      subjectType: projectId ? 'project' : 'organisation', subjectId: projectId ?? undefined, detail: { holidayId: id, date: r.rows[0].date },
     });
   }
 

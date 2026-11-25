@@ -112,6 +112,24 @@ function Disclosures({ c }: { c: SecurityCase }) {
   );
 }
 
+/** Where the case's project was copied to or from (D140): Kainow does not search those projects by itself. */
+type Copies = { copiedTo?: { projects: Array<{ id: string; name: string }>; others: number }; copiedFrom?: { id: string; name: string } | { hidden: true } | null };
+
+function CopiesLine({ c }: { c: SecurityCase & Copies }) {
+  const to = c.copiedTo ?? { projects: [], others: 0 };
+  const from = c.copiedFrom ?? null;
+  if (to.projects.length === 0 && to.others === 0 && from === null) return null;
+  const unnamed = to.others === 0 ? [] : [`${to.others} ${to.projects.length > 0 ? 'other ' : ''}${to.others === 1 ? 'project' : 'projects'}`];
+  const copied = [...to.projects.map((p) => p.name), ...unnamed];
+  return (
+    <p>
+      {copied.length > 0 && `This project was copied to ${copied.join(', ')}. `}
+      {from !== null && `This project was copied from ${'name' in from ? from.name : 'another project'}. `}
+      Check these projects too.
+    </p>
+  );
+}
+
 function CaseLine({ c }: { c: SecurityCase }) {
   return (
     <>
@@ -122,6 +140,7 @@ function CaseLine({ c }: { c: SecurityCase }) {
         {c.closedAt ? `, closed ${formatWhen(c.closedAt)}` : ''}
       </span>
       {c.waitingForKey && <span className="warn">{c.label ?? WAITING_FOR_KEY_LABEL}</span>}
+      <CopiesLine c={c} />
       {c.changedSinceCleaning.length > 0 && (
         <ul className="plain">
           {c.changedSinceCleaning.map((x, i) => (
