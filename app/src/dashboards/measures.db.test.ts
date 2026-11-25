@@ -207,6 +207,19 @@ describe('loadProjectMeasures', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(await dueSoon(), [3, 1], 'plain days: 19 to 26 Nov');
   });
 
+  test('a project whose holidays leave no working day does not break the others', async () => {
+    const other = await workingProject();
+    for (const projectId of [project, other]) await task({ projectId, dueOn: '2026-11-26' });
+    await pool.query(
+      `INSERT INTO holidays (id, project_id, on_date, name, added_by, added_at)
+       SELECT gen_random_uuid(), $1, d::date, 'Dummy holiday', $2, now() FROM generate_series('2026-11-01'::date, '2027-12-31'::date, '1 day') d`,
+      [project, pm],
+    );
+    const all = await loadProjectMeasures(pool, [project, other], TODAY);
+    assert.equal(all.get(project)?.dueSoon, 1, 'plain days for the degenerate project');
+    assert.equal(all.get(other)?.dueSoon, 1);
+  });
+
   test('on-time completion uses the deferral day and the UTC+8 completion day', async () => {
     await task({ status: 'completed', dueOn: '2026-11-05', completedAt: '2026-11-05T15:59:00Z' });
     await task({ status: 'completed', dueOn: '2026-11-05', completedAt: '2026-11-05T16:00:00Z' });

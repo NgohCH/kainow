@@ -12,7 +12,7 @@ import { type MembershipRow, requiredRolesCheck } from '../projects/membership';
 import { type TaskStatus, taskIndicators } from '../records/tasks';
 import { dueSoonEnd } from './due-soon';
 
-export const MEASURES_VERSION = '1';
+export const MEASURES_VERSION = '2';
 
 export const COVERAGE_NOTE = 'Counts all authorised records in the project except deleted ones and any under credential review.';
 
@@ -297,6 +297,7 @@ export async function loadProjectMeasures(
     const all = tasksBy.get(p.id) ?? [];
     const leaves = all.filter((t) => t.leaf);
     const unfinished = all.filter((t) => t.status !== 'completed' && t.status !== 'cancelled');
+    const soonEnd = dueSoonEnd(today, (calendars.get(p.id) as Effective).cal);
     const indicators = all.map((t) =>
       taskIndicators({ status: t.status, dueOn: t.dueOn, parentDueOn: null, assigneeActive: true, invitationStatus: null, today, deadlineReviewRequired: t.deadlineReviewRequired }),
     );
@@ -310,7 +311,7 @@ export async function loadProjectMeasures(
       onTime: onTimeCompletion(leaves, referenceDay({ status: p.status, today, deferredOn: p.deferredOn, closedOn: p.closedOn })),
       overdue: indicators.filter((i) => i.overdue).length,
       blocked: all.filter((t) => t.status === 'blocked').length,
-      dueSoon: unfinished.filter((t) => t.dueOn >= today && t.dueOn <= dueSoonEnd(today, (calendars.get(p.id) as Effective).cal)).length,
+      dueSoon: unfinished.filter((t) => t.dueOn >= today && t.dueOn <= soonEnd).length,
       stage: p.stage === null ? null : { stage: p.stage, substage: p.substage, days: Math.max(0, daysBetween(p.stageStartedOn as string, today)) },
       plannedEnd: plannedEnd(p.plannedEnd, today),
       questions: { open: questionsBy.get(p.id)?.open ?? 0, answered: questionsBy.get(p.id)?.answered ?? 0 },

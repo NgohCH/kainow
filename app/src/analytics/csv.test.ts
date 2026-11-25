@@ -23,7 +23,7 @@ describe('analytics CSV', () => {
 
   test('header lines start with # and carry version, computedAt and coverage', () => {
     const text = toCsv(
-      { Panel: 'Project progress', 'Measure definitions version': '1', 'Computed at': '2026-11-09 10:00 (UTC+8)', Coverage: 'Counts all.' },
+      { Panel: 'Project progress', 'Measure definitions version': '2', 'Computed at': '2026-11-09 10:00 (UTC+8)', Coverage: 'Counts all.' },
       ['Name', 'Overdue'],
       [
         ['Alpha', 2],
@@ -32,7 +32,7 @@ describe('analytics CSV', () => {
     );
     const lines = text.split('\r\n');
     assert.equal(lines[0], '# Panel: Project progress');
-    assert.equal(lines[1], '# Measure definitions version: 1');
+    assert.equal(lines[1], '# Measure definitions version: 2');
     assert.equal(lines[2], '# Computed at: 2026-11-09 10:00 (UTC+8)');
     assert.equal(lines[3], '# Coverage: Counts all.');
     assert.equal(lines[4], 'Name,Overdue');

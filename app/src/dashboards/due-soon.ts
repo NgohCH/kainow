@@ -8,4 +8,11 @@ export const DUE_SOON_DAYS = 7;
  * not finished and due from `today` up to and including this day. The one rule behind Needs you, My tasks, the project
  * figures, leadership and analytics. (The seven-day reminder email is a separate rule.)
  */
-export const dueSoonEnd = (today: string, calendar: Calendar): string => addWorkingDays(calendar, today, DUE_SOON_DAYS);
+export function dueSoonEnd(today: string, calendar: Calendar): string {
+  try {
+    return addWorkingDays(calendar, today, DUE_SOON_DAYS);
+  } catch {
+    // A calendar whose holidays leave no working day for a year ahead: count plain days, so one project cannot break the rest.
+    return addWorkingDays({ ...calendar, dayCounting: 'calendar' }, today, DUE_SOON_DAYS);
+  }
+}
