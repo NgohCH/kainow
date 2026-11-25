@@ -40,8 +40,8 @@ async function loadStages(db: Pool | PoolClient, projectId: string): Promise<Pro
 /** One recorded change to a project's own stages, as everyone who can see the stages reads it. */
 export interface StageChange {
   id: string;
-  kind: 'added' | 'reordered' | 'retired' | 'restored';
-  /** The stage added, retired or brought back; null for a new order. */
+  kind: 'added' | 'reordered' | 'retired' | 'restored' | 'renamed';
+  /** The stage added, retired, brought back or renamed, by the name this change left it with; null for a new order. */
   stage: string | null;
   actor: string;
   at: Date;
@@ -52,18 +52,35 @@ export interface StageChange {
 
 /** The changes to the project's stages, newest first. */
 async function loadStageChanges(db: Pool | PoolClient, projectId: string): Promise<StageChange[]> {
-  return (
-    await db.query(
-      `SELECT c.id, c.kind, s.name AS stage, u.display_name AS actor, c.at, c.reason, c.previous, c.next
-         FROM project_stage_changes c JOIN users u ON u.id = c.actor_id LEFT JOIN project_stages s ON s.id = c.stage_id
-        WHERE c.project_id = $1 ORDER BY c.at DESC, c.id DESC`,
-      [projectId],
-    )
-  ).rows;
+  type Row = Omit<StageChange, 'stage' | 'previous' | 'next'> & { stageId: string | null; nameNow: string | null; previous: RecordedStage[]; next: RecordedStage[] };
+  const { rows } = await db.query<Row>(
+    `SELECT c.id, c.kind, c.stage_id AS "stageId", s.name AS "nameNow", u.display_name AS actor, c.at, c.reason, c.previous, c.next
+       FROM project_stage_changes c JOIN users u ON u.id = c.actor_id LEFT JOIN project_stages s ON s.id = c.stage_id
+      WHERE c.project_id = $1 ORDER BY c.at DESC, c.id DESC`,
+    [projectId],
+  );
+  return rows.map(({ stageId, nameNow, previous, next, ...c }) => ({
+    ...c,
+    stage: stageId === null ? null : (nameAfter(stageId, previous, next) ?? nameNow),
+    previous: previous.map(withoutId),
+    next: next.map(withoutId),
+  }));
+}
+
+/** A stage in a recorded list; lists from before stages could be renamed hold no ids. */
+type RecordedStage = Omit<ProjectStage, 'id'> & { id?: string };
+const withoutId = ({ name, substages, status }: RecordedStage): Omit<ProjectStage, 'id'> => ({ name, substages, status });
+
+/**
+ * The name a recorded change left its stage with, so a later rename does not alter the entry: by the stage's id, or in
+ * a list without ids by the first place where the two lists differ (an addition, or a status). Undefined if neither tells.
+ */
+function nameAfter(stageId: string, previous: RecordedStage[], next: RecordedStage[]): string | undefined {
+  return (next.find((s) => s.id === stageId) ?? next.find((s, i) => s.name !== previous[i]?.name || s.status !== previous[i]?.status))?.name;
 }
 
 /** A list of stages as the history keeps it. */
-const recorded = (stages: ProjectStage[]): string => JSON.stringify(stages.map(({ name, substages, status }) => ({ name, substages, status })));
+const recorded = (stages: ProjectStage[]): string => JSON.stringify(stages.map(({ id, name, substages, status }) => ({ id, name, substages, status })));
 
 const SAME_STAGE_NAME = 'This project already has a stage with that name.';
 
@@ -667,6 +684,29 @@ export class ProjectsService {
   }
 
   /**
+   * `{ name, reason }`: a new name for a stage, retired or not, in its current and past periods too (D137). A period
+   * holds only the name, so where another stage has the same one (possible only after a credential was removed from
+   * both) the periods cannot be told apart and stay as they are. The lock of changeStages holds the project row, as
+   * changing the stage and reopening do, so no period can be started under the old name meanwhile.
+   */
+  async renameStage(user: AuthUser, id: string, stageId: string, input: Record<string, unknown>) {
+    const name = readStageName(input.name, `Give the stage a name of 1 to ${TEMPLATE_LIMITS.nameChars} characters.`);
+    const reason = readReason(input.reason, 'a reason', { max: TEMPLATE_LIMITS.reasonChars });
+    return this.changeStages(user, id, reason, async (c, stages) => {
+      const stage = stages.find((s) => s.id === stageId);
+      if (!stage) throw new NotFoundException('That stage is not in this project.');
+      if (stage.name === name) throw new BadRequestException('Give the stage a different name.');
+      const others = stages.filter((s) => s.id !== stageId);
+      if (others.some((s) => s.name.toLowerCase() === name.toLowerCase())) throw new BadRequestException(SAME_STAGE_NAME);
+      await c.query(`UPDATE project_stages SET name = $2 WHERE id = $1`, [stageId, name]);
+      if (!others.some((s) => s.name === stage.name)) {
+        await c.query(`UPDATE project_stage_periods SET stage = $3 WHERE project_id = $1 AND stage = $2`, [id, stage.name, name]);
+      }
+      return { kind: 'renamed', stageId, action: 'project.stage_renamed', detail: { stageId } };
+    });
+  }
+
+  /**
    * Delegated to the Project Manager, Owner and Sponsors while the project is open. Each change is recorded in the
    * project's stage history with its reason and the list before and after; the audit event holds ids and counts only.
    */
@@ -676,11 +716,12 @@ export class ProjectsService {
     reason: string,
     fn: (c: PoolClient, stages: ProjectStage[], at: Date) => Promise<{ kind: StageChange['kind']; stageId: string | null; action: string; detail: Record<string, unknown> }>,
   ) {
-    const at = this.now();
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
       await this.access.authorize(user, 'project.stages', id, client, true);
+      // Read once the lock is held, so the history is in the order the changes took effect.
+      const at = this.now();
       const previous = await loadStages(client, id);
       const { kind, stageId, action, detail } = await fn(client, previous, at);
       await client.query(

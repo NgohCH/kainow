@@ -140,4 +140,12 @@ export class ProjectsController {
   restoreStage(@Param('id') id: string, @Param('stageId') stageId: string, @Body() b: unknown, @Req() req: HttpRequest) {
     return this.projects.setStageStatus(who(req), id, stageId, 'active', body(b));
   }
+
+  /** { name, reason } — past periods follow; the template keeps its name. */
+  @Post(':id/stages/:stageId/rename')
+  @AnySignedInUser()
+  @HttpCode(200)
+  renameStage(@Param('id') id: string, @Param('stageId') stageId: string, @Body() b: unknown, @Req() req: HttpRequest) {
+    return this.projects.renameStage(who(req), id, stageId, body(b));
+  }
 }
