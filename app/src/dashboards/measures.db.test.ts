@@ -178,13 +178,33 @@ describe('loadProjectMeasures', { skip: SKIP_NO_DB }, () => {
     const m = (await loadProjectMeasures(pool, [project], TODAY, new Date('2026-11-19T02:00:00Z'))).get(project);
     assert.ok(m);
     assert.deepEqual(m.questions, { open: 2, answered: 1 });
-    assert.equal(m.dueSoon, 2);
+    assert.equal(m.dueSoon, 3, 'seven working days from Thursday 19 Nov reach Monday 30 Nov');
     assert.deepEqual(m.stage, { stage: 'Initiation', substage: null, days: 18 });
     assert.deepEqual(m.plannedEnd, { state: 'ahead', days: 10 });
     assert.equal(m.pendingInvitations, 1);
     assert.equal(m.nextTaskDue, '2026-11-19');
     assert.equal(m.nextRiskReview, null);
     assert.equal(m.projectId, project);
+  });
+
+  test('due soon counts seven days by the project calendar, per project', async () => {
+    const other = await workingProject();
+    for (const projectId of [project, other]) {
+      await task({ projectId, dueOn: '2026-11-19' });
+      await task({ projectId, dueOn: '2026-11-30' }); // 11 calendar days, the 7th working day
+      await task({ projectId, dueOn: '2026-12-01' }); // the 8th
+      await task({ projectId, dueOn: '2026-11-30', status: 'completed' });
+      await task({ projectId, dueOn: '2026-11-18' }); // overdue, not due soon
+    }
+    const dueSoon = async () => {
+      const all = await loadProjectMeasures(pool, [project, other], TODAY);
+      return [all.get(project)?.dueSoon, all.get(other)?.dueSoon];
+    };
+    assert.deepEqual(await dueSoon(), [2, 2]);
+    await pool.query(`INSERT INTO holidays (id, project_id, on_date, name, added_by, added_at) VALUES ($1, $2, '2026-11-25', 'Dummy holiday', $3, now())`, [uuidv7(), project, pm]);
+    assert.deepEqual(await dueSoon(), [3, 2], 'a project holiday moves only that project end to 1 Dec');
+    await pool.query(`INSERT INTO project_notification_settings (project_id, day_counting) VALUES ($1, 'calendar')`, [other]);
+    assert.deepEqual(await dueSoon(), [3, 1], 'plain days: 19 to 26 Nov');
   });
 
   test('on-time completion uses the deferral day and the UTC+8 completion day', async () => {

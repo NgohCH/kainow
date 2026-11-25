@@ -89,7 +89,7 @@ export function ProjectFigures({ projectId, canReadWork, state }: { projectId: s
             <dd>{count(m.overdue, 'task')}</dd>
             <dt>Blocked</dt>
             <dd>{count(m.blocked, 'task')}</dd>
-            <dt>Due in the next 7 days</dt>
+            <dt>Due soon</dt>
             <dd>{count(m.dueSoon, 'task')}</dd>
             <dt>Pending invitations</dt>
             <dd>

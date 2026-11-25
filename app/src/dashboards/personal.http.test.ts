@@ -175,8 +175,9 @@ describe('personal dashboard endpoint', { skip: SKIP_NO_DB }, () => {
   test('tasks grouped overdue / due in 7 days / later / awaiting review', async () => {
     const overdue = await task({ title: 'Overdue', dueOn: '2026-11-05', status: 'in_progress' });
     await task({ title: 'Due today', dueOn: '2026-11-09' });
-    await task({ title: 'Due in seven', dueOn: '2026-11-16' });
-    await task({ title: 'Due in eight', dueOn: '2026-11-17' });
+    // Monday 9 November: seven working days on is Wednesday 18 November (nine calendar days).
+    await task({ title: 'Due in seven', dueOn: '2026-11-18' });
+    await task({ title: 'Due in eight', dueOn: '2026-11-19' });
     await task({ title: 'Marked', dueOn: '2026-11-03', review: true });
     await task({ title: 'Done', dueOn: '2026-11-04', status: 'completed', completedAt: '2026-11-04T02:00:00Z' });
     await task({ title: 'Done long ago', dueOn: '2026-09-01', status: 'completed', completedAt: '2026-09-01T02:00:00Z' });
@@ -347,6 +348,12 @@ describe('personal dashboard endpoint', { skip: SKIP_NO_DB }, () => {
     await task({ title: 'Due Monday next', dueOn: '2026-11-16' });
     await task({ title: 'Due Tuesday next', dueOn: '2026-11-17' });
     assert.deepEqual(kinds(await me('mem'), 'due_soon').map((n) => n.label), ['Due Monday next', 'Due Tuesday next'], 'working days');
+    const myDueSoon = async () => ((await me('mem')).myTasks.dueSoon as Array<{ title: string }>).map((r) => r.title);
+    assert.deepEqual(await myDueSoon(), ['Due Monday next', 'Due Tuesday next'], 'My tasks agrees with Needs you');
+    await t.pool.query(`INSERT INTO holidays (id, project_id, on_date, name, added_by, added_at) VALUES ($1, $2, '2026-11-12', 'Dummy holiday', $3, now())`, [uuidv7(), projectId, ids.pm]);
+    await task({ title: 'Due Thursday next', dueOn: '2026-11-19' });
+    assert.deepEqual(kinds(await me('mem'), 'due_soon').map((n) => n.label), ['Due Monday next', 'Due Tuesday next', 'Due Thursday next'], 'a holiday moves the end on a day');
+    assert.deepEqual(await myDueSoon(), ['Due Monday next', 'Due Tuesday next', 'Due Thursday next']);
     await t.pool.query(`INSERT INTO project_notification_settings (project_id, day_counting) VALUES ($1, 'calendar')`, [projectId]);
     assert.deepEqual(kinds(await me('mem'), 'due_soon').map((n) => n.label), ['Due Monday next'], 'calendar days');
   });

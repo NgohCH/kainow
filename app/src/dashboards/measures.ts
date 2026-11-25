@@ -6,9 +6,11 @@
 import type { Pool, PoolClient } from 'pg';
 import { liveRecordSql } from '../history/deleted-sql';
 import { escalationFlagsFor } from '../notifications/escalation-flags';
+import { type Effective, loadEffectiveMany } from '../notifications/settings';
 import type { ProjectStatus } from '../projects/matrix';
 import { type MembershipRow, requiredRolesCheck } from '../projects/membership';
 import { type TaskStatus, taskIndicators } from '../records/tasks';
+import { dueSoonEnd } from './due-soon';
 
 export const MEASURES_VERSION = '1';
 
@@ -41,7 +43,7 @@ export const MEASURE_DEFINITIONS: readonly { key: string; label: string; definit
       'The existing `taskIndicators` rule: not Completed or Cancelled, `due_on` before today, no deadline review pending. All tasks (not only leaves) are listed; counts are of tasks.',
   },
   { key: 'blocked', label: 'Blocked', definition: 'Tasks with status Blocked.' },
-  { key: 'dueSoon', label: 'Due soon', definition: 'Not finished, due today to today + 7 days.' },
+  { key: 'dueSoon', label: 'Due soon', definition: "Not finished, due from today to seven days ahead by the project's calendar: seven working days (or seven plain days if the project counts those), skipping weekends and holidays. The same rule as Needs you and My tasks. The seven-day reminder email is a separate rule." },
   {
     key: 'stage',
     label: 'Stage and stage duration',
@@ -191,13 +193,6 @@ export function plannedEnd(planned: string | null, today: string): PlannedEnd {
 /** The UTC+8 calendar day of a timestamptz column, as 'YYYY-MM-DD'. */
 const dayUtc8 = (column: string): string => `to_char(${column} AT TIME ZONE 'Asia/Kuala_Lumpur', 'YYYY-MM-DD')`;
 
-/** Today + n days. */
-function addDays(day: string, n: number): string {
-  return new Date(Date.parse(`${day}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
-}
-
-const DUE_SOON_DAYS = 7;
-
 /**
  * The measures of each project, keyed by id. A fixed number of queries whatever the number of projects. Pending
  * invitations compare their expiry instant with `now` (the caller's clock; the real time by default).
@@ -296,7 +291,7 @@ export async function loadProjectMeasures(
   const questionsBy = new Map(questions.map((q) => [q.projectId, q]));
   const risksBy = new Map(risks.map((r) => [r.projectId, r]));
   const invitationsBy = new Map(invitations.map((i) => [i.projectId, i.n]));
-  const soonEnd = addDays(today, DUE_SOON_DAYS);
+  const calendars = await loadEffectiveMany(db, ids);
 
   for (const p of projects) {
     const all = tasksBy.get(p.id) ?? [];
@@ -315,7 +310,7 @@ export async function loadProjectMeasures(
       onTime: onTimeCompletion(leaves, referenceDay({ status: p.status, today, deferredOn: p.deferredOn, closedOn: p.closedOn })),
       overdue: indicators.filter((i) => i.overdue).length,
       blocked: all.filter((t) => t.status === 'blocked').length,
-      dueSoon: unfinished.filter((t) => t.dueOn >= today && t.dueOn <= soonEnd).length,
+      dueSoon: unfinished.filter((t) => t.dueOn >= today && t.dueOn <= dueSoonEnd(today, (calendars.get(p.id) as Effective).cal)).length,
       stage: p.stage === null ? null : { stage: p.stage, substage: p.substage, days: Math.max(0, daysBetween(p.stageStartedOn as string, today)) },
       plannedEnd: plannedEnd(p.plannedEnd, today),
       questions: { open: questionsBy.get(p.id)?.open ?? 0, answered: questionsBy.get(p.id)?.answered ?? 0 },

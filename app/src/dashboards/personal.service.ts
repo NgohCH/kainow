@@ -11,8 +11,8 @@ import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/
 import { archiveState } from '../projects/archive';
 import type { GrantRow } from '../projects/grants';
 import { type ProjectStatus, decide } from '../projects/matrix';
-import { addWorkingDays } from '../notifications/calendar';
 import { type Effective, loadEffectiveMany } from '../notifications/settings';
+import { dueSoonEnd } from './due-soon';
 import { neededByPassedSql } from '../resources/line-sql';
 import { membershipState, todayUtc8 } from '../projects/membership';
 import { loadAccessSettings } from '../organisation/access-settings';
@@ -96,7 +96,6 @@ const KIND_LABEL: Record<ChangeKind, string> = {
   finance_adjustment: 'Adjust a spending entry',
 };
 
-const DUE_SOON_DAYS = 7;
 const COMPLETED_DAYS = 30;
 
 const addDays = (day: string, n: number): string => new Date(Date.parse(`${day}T00:00:00Z`) + n * 86_400_000).toISOString().slice(0, 10);
@@ -199,7 +198,6 @@ export class PersonalDashboardService {
     if (readableIds.length === 0) return { ...empty, projects };
 
     // My tasks (§4.2): projects whose content the viewer may read today.
-    const soonEnd = addDays(today, DUE_SOON_DAYS);
     const taskRows = (
       await this.pool.query(
         `SELECT t.id, ${shown('t', 'task', 'title')} AS title, t.project_id AS "projectId", to_char(t.due_on, 'YYYY-MM-DD') AS "dueOn", t.status,
@@ -214,7 +212,7 @@ export class PersonalDashboardService {
     ).rows as Array<{ id: string; title: string; projectId: string; dueOn: string; status: TaskStatus; deadlineReviewRequired: boolean; completedOn: string | null }>;
     // The last day of "due soon" in each project: seven days on by the project's calendar (working or calendar days).
     const calendars = await loadEffectiveMany(this.pool, readableIds);
-    const soonEnds = new Map(readableIds.map((id) => [id, addWorkingDays((calendars.get(id) as Effective).cal, today, DUE_SOON_DAYS)]));
+    const soonEnds = new Map(readableIds.map((id) => [id, dueSoonEnd(today, (calendars.get(id) as Effective).cal)]));
     const taskNeeds: NeedsYouItem[] = [];
     const taskItem = (kind: 'overdue' | 'due_soon' | 'blocked', r: { id: string; title: string; projectId: string; dueOn: string }): NeedsYouItem => ({
       kind,
@@ -235,7 +233,7 @@ export class PersonalDashboardService {
       else if (!ind.deadlineReviewRequired && r.dueOn >= today && r.dueOn <= (soonEnds.get(r.projectId) as string)) taskNeeds.push(taskItem('due_soon', r));
       if (ind.deadlineReviewRequired) myTasks.awaitingReview.push(row);
       else if (ind.overdue) myTasks.overdue.push({ ...row, overdueDays: daysBetween(r.dueOn, today) });
-      else if (r.dueOn <= soonEnd) myTasks.dueSoon.push(row);
+      else if (r.dueOn <= (soonEnds.get(r.projectId) as string)) myTasks.dueSoon.push(row);
       else myTasks.later.push(row);
     }
     if (myTasks.completed) {

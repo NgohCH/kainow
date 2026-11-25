@@ -176,7 +176,7 @@ export function Home({ userName, prefs, ready, failed, onChange }: { userName: s
         {d && (
           <>
             <TaskGroup title="Overdue" tasks={d.myTasks.overdue} />
-            <TaskGroup title="Due in the next 7 days" tasks={d.myTasks.dueSoon} />
+            <TaskGroup title="Due soon" tasks={d.myTasks.dueSoon} />
             <TaskGroup title="Later" tasks={d.myTasks.later} />
             <TaskGroup title="Awaiting deadline review" tasks={d.myTasks.awaitingReview} />
             {showCompleted && <TaskGroup title="Completed" tasks={d.myTasks.completed} />}
