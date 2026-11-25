@@ -51,10 +51,11 @@ export async function lockSweeps(db: Db, projectId: string): Promise<void> {
 /**
  * SQL for how far the quarantine of `project` has come: the sweep marker and the number of events of its cases. Every
  * part only grows and changes with the transaction that moves it, so "differs" is "something was reported, cleaned,
- * restored or decided since", whatever any clock says.
+ * restored or decided since", whatever any clock says. It is sent to a page and back, so it is hashed: the numbers of
+ * cases and events are for the people who review them.
  */
 export function quarantineMarkSql(project: string): string {
-  return `(${sweepMarkSql(project)} || ':' || (SELECT count(*) FROM quarantine_events e JOIN quarantine_cases c ON c.id = e.case_id WHERE c.project_id = ${project})::text)`;
+  return `md5(${project}::text || ':' || ${sweepMarkSql(project)} || ':' || (SELECT count(*) FROM quarantine_events e JOIN quarantine_cases c ON c.id = e.case_id WHERE c.project_id = ${project})::text)`;
 }
 
 /**

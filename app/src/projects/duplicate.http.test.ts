@@ -585,7 +585,9 @@ describe('duplicating a project (D140)', { skip: SKIP_NO_DB }, () => {
         assert.equal(reply.status, 201, JSON.stringify(reply.body));
         const open = await c.pm.request('POST', `/projects/${project}/duplicate`, b);
         assert.deepEqual([open.status, open.body.message], [409, OPEN]);
+        assert.equal((await getOffer()).blocked, OPEN, 'the page says so before anything is reviewed');
         assert.equal((await c.pm.request('POST', `/quarantine/cases/${reply.body.caseId}/release`, { reason: 'Reviewed' })).status, 200);
+        assert.equal((await getOffer()).blocked, null);
         const before = await counts();
         const stale = await c.pm.request('POST', `/projects/${project}/duplicate`, b);
         assert.deepEqual([stale.status, stale.body.message], [409, CHANGED]);
@@ -598,7 +600,7 @@ describe('duplicating a project (D140)', { skip: SKIP_NO_DB }, () => {
 
     test('asOf is required, not in the future and at most a day old', async () => {
       const b = await body();
-      assert.equal(typeof b.asOf, 'string');
+      assert.match(b.asOf, /^[^~]+~[0-9a-f]{32}$/, 'the mark shows no counts');
       const [time, mark] = [b.asOf.slice(0, b.asOf.indexOf('~')), b.asOf.slice(b.asOf.indexOf('~'))];
       const shift = (ms: number) => new Date(Date.parse(time) + ms).toISOString() + mark;
       for (const asOf of [undefined, null, '', 5, 'nonsense', time, shift(3_600_000), shift(-25 * 3_600_000)]) {
@@ -645,9 +647,14 @@ describe('duplicating a project (D140)', { skip: SKIP_NO_DB }, () => {
     const [x, y] = await Promise.all([1, 2].map(() => c.pm.request('POST', `/projects/${project}/duplicate`, b)));
     assert.deepEqual([x.status, y.status].sort(), [201, 409]);
     const late = [x, y].find((r) => r.status === 409)!;
-    assert.equal(late.body.message, 'You created this project a moment ago.');
+    assert.equal(late.body.message, 'You created this project a moment ago. To make another copy with the same name, wait a minute and press Create project again, or give it a different name.');
     assert.equal(late.body.projectId, [x, y].find((r) => r.status === 201)!.body.project.id);
     await made({ name: 'Another name' });
+    // A minute later it is meant: names need not be unique.
+    t.clock.advanceSeconds(58);
+    assert.equal((await c.pm.request('POST', `/projects/${project}/duplicate`, b)).status, 409);
+    t.clock.advanceSeconds(2);
+    assert.equal((await c.pm.request('POST', `/projects/${project}/duplicate`, b)).status, 201);
   });
 
   test('the reference to a retired stage template is not kept', async () => {

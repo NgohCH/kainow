@@ -44,10 +44,13 @@ const APPROVALS_KEPT =
 export const LOAD_AGAIN = 'Load the project again.';
 export const REVIEWED_SINCE = 'Something in the original was put under review or cleaned after you opened this page. Load the project again.';
 export const UNDER_REVIEW = 'Something in the original is under review for a suspected credential. Create the copy when the review has ended.';
-export const JUST_CREATED = 'You created this project a moment ago.';
+export const JUST_CREATED =
+  'You created this project a moment ago. To make another copy with the same name, wait a minute and press Create project again, or give it a different name.';
 const PAGE_HOURS = 24;
 /** A second Create of the same copy within this time is the same click sent twice. */
-const SAME_CREATE_MINUTES = 10;
+const SAME_CREATE_SECONDS = 60;
+/** Whether a suspected credential in project $1 is still under review. */
+const OPEN_CASE_SQL = `EXISTS (SELECT 1 FROM quarantine_cases q WHERE q.project_id = $1::uuid AND q.state IN ('held', 'cleaned'))`;
 
 /** Why a setting of the original starts at the organisation's value in the new project. */
 const notCarried = (what: string) => `The Administrator does not let projects set ${what} now, so the new project uses the organisation's.`;
@@ -281,13 +284,15 @@ export class DuplicateService {
   async offer(user: AuthUser, projectId: string) {
     await this.access.authorize(user, 'project.duplicate', projectId);
     await this.projects.assertMayCreate(user);
-    const asOf = await this.asOf(projectId);
+    const { asOf, open } = await this.asOf(projectId);
     const o = await this.load(this.pool, projectId);
     const { approvals: _ownersChoice, ...mayChange } = o.mayChange;
     const task = (t: OfferedTask) => ({ id: t.id, title: t.title, titleKey: key.title(t.id), description: t.description, descriptionKey: key.description(t.id) });
     const { stageTemplateId: _template, ...original } = o.original;
     return {
       asOf,
+      // Create would be refused now; said before anything is reviewed.
+      blocked: open ? UNDER_REVIEW : null,
       original: { ...original, purposeKey: 'purpose' },
       stages: o.stages.map((s) => ({ id: s.id, key: key.stage(s.id), name: s.name, substages: s.substages.map((name, n) => ({ key: key.substage(s.id, n), name })) })),
       holidays: o.holidays.map((h) => ({ ...h, key: key.holiday(h.id) })),
@@ -303,10 +308,13 @@ export class DuplicateService {
     };
   }
 
-  /** When the page is loaded (the database's time) and how far the original's quarantine has come; read before any row. */
-  private async asOf(projectId: string): Promise<string> {
-    const { rows } = await this.pool.query<{ at: Date; mark: string }>(`SELECT clock_timestamp() AS at, ${quarantineMarkSql('$1::uuid')} AS mark`, [projectId]);
-    return `${rows[0].at.toISOString()}~${rows[0].mark}`;
+  /** When the page is loaded (the database's time), how far the original's quarantine has come and whether a case is open; read before any row. */
+  private async asOf(projectId: string): Promise<{ asOf: string; open: boolean }> {
+    const { rows } = await this.pool.query<{ at: Date; mark: string; open: boolean }>(
+      `SELECT clock_timestamp() AS at, ${quarantineMarkSql('$1::uuid')} AS mark, ${OPEN_CASE_SQL} AS open`,
+      [projectId],
+    );
+    return { asOf: `${rows[0].at.toISOString()}~${rows[0].mark}`, open: rows[0].open };
   }
 
   /**
@@ -314,13 +322,12 @@ export class DuplicateService {
    * whatever was reported or cleaned is committed and counted in the mark, or waits until this transaction has ended.
    */
   private async refuseReviewedSince(c: PoolClient, projectId: string, asOf: unknown): Promise<void> {
-    const sent = typeof asOf === 'string' ? /^([^~]+)~(\d+:\d+:\d+)$/.exec(asOf) : null;
+    const sent = typeof asOf === 'string' ? /^([^~]+)~([0-9a-f]{32})$/.exec(asOf) : null;
     const time = sent ? Date.parse(sent[1]) : Number.NaN;
     if (!sent || Number.isNaN(time)) return bad(LOAD_AGAIN);
     const now = (
       await c.query<{ at: Date; mark: string; open: boolean }>(
-        `SELECT clock_timestamp() AS at, ${quarantineMarkSql('$1::uuid')} AS mark,
-                EXISTS (SELECT 1 FROM quarantine_cases q WHERE q.project_id = $1::uuid AND q.state IN ('held', 'cleaned')) AS open`,
+        `SELECT clock_timestamp() AS at, ${quarantineMarkSql('$1::uuid')} AS mark, ${OPEN_CASE_SQL} AS open`,
         [projectId],
       )
     ).rows[0];
@@ -333,7 +340,7 @@ export class DuplicateService {
   private async refuseSecondCreate(c: PoolClient, user: AuthUser, projectId: string, name: string, at: Date): Promise<void> {
     const { rows } = await c.query(
       `SELECT id FROM projects WHERE copied_from_id = $1 AND created_by = $2 AND name = $3 AND created_at > $4 ORDER BY created_at DESC LIMIT 1`,
-      [projectId, user.id, name, new Date(at.getTime() - SAME_CREATE_MINUTES * 60_000)],
+      [projectId, user.id, name, new Date(at.getTime() - SAME_CREATE_SECONDS * 1_000)],
     );
     if (rows[0]) throw new ConflictException({ statusCode: 409, error: 'Conflict', message: JUST_CREATED, projectId: rows[0].id });
   }
