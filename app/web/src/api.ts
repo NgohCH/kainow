@@ -404,6 +404,8 @@ export interface Transition {
 }
 
 export interface Project {
+  /** Where it was copied from (D140): named only to someone who may open the original. */
+  copiedFrom?: { id: string; name: string } | { hidden: true } | null;
   id: string;
   name: string;
   purpose: string;

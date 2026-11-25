@@ -1,5 +1,6 @@
 import { type FormEvent, useState } from 'react';
 import type { DueReading } from '../api.ts';
+import { INVITE, type ProposedSubtask } from '../authoriseMany.ts';
 import { NonWorkingDayNote } from './ProjectCalendar.tsx';
 import { SEVERITY_LABEL, type Severity, defaultDueOn, likelyAssignee, splitNames } from '../records.ts';
 
@@ -10,10 +11,9 @@ export interface Person {
 }
 
 type Kind = 'action' | 'decision' | 'question' | 'risk';
-export const INVITE = '__invite__';
 
 /** A person picker with "Invite by email" for tasks. Returns the body fields for that person. */
-function Assignee({
+export function Assignee({
   label,
   people,
   value,
@@ -63,6 +63,7 @@ export function DescriptionField({ value, onChange, hint }: { value: string; onC
   );
 }
 
+export { INVITE };
 export const who = (value: string, email: string) => (value === INVITE ? { inviteEmail: email } : { assigneeId: value });
 
 /**
@@ -78,6 +79,7 @@ export function AuthoriseForm({
   people,
   meId,
   description: proposed = null,
+  copiedSubtasks = [],
   onSubmit,
   onCancel,
 }: {
@@ -89,6 +91,8 @@ export function AuthoriseForm({
   meId: string;
   /** The description a person gave with their proposal; the AI gives none. */
   description?: string | null;
+  /** Subtasks carried over with a copied action (D140); each still needs its assignee and due date. */
+  copiedSubtasks?: ProposedSubtask[];
   onSubmit: (body: Record<string, unknown>) => Promise<boolean>;
   onCancel: () => void;
 }) {
@@ -97,9 +101,10 @@ export function AuthoriseForm({
   const [leadEmail, setLeadEmail] = useState('');
   const [dueOn, setDueOn] = useState((due && defaultDueOn(due)) ?? '');
   const [split, setSplit] = useState(names.length > 1);
-  const [subs, setSubs] = useState(
-    names.slice(1).map((n) => ({ name: n, title: `${text} (${n})`, assignee: likelyAssignee(n, people) ?? '', email: '', dueOn: (due && defaultDueOn(due)) ?? '' })),
-  );
+  const [subs, setSubs] = useState([
+    ...names.slice(1).map((n) => ({ name: n, copied: false, on: true, title: `${text} (${n})`, description: null as string | null, assignee: likelyAssignee(n, people) ?? '', email: '', dueOn: (due && defaultDueOn(due)) ?? '' })),
+    ...copiedSubtasks.map((s) => ({ name: '', copied: true, on: true, title: s.title, description: s.description, assignee: '', email: '', dueOn: s.due ?? '' })),
+  ]);
   const [requester, setRequester] = useState(meId);
   const [severity, setSeverity] = useState<Severity | ''>('');
   const [responsible, setResponsible] = useState('');
@@ -116,7 +121,7 @@ export function AuthoriseForm({
         dueOn,
         // Left out when it is as proposed; sent blank, it removes the proposer's.
         ...(description.trim() !== (proposed ?? '') ? { description } : {}),
-        subtasks: split ? subs.map((s) => ({ title: s.title, ...who(s.assignee, s.email), dueOn: s.dueOn })) : [],
+        subtasks: subs.filter((s) => (s.copied ? s.on : split)).map((s) => ({ title: s.title, ...(s.description === null ? {} : { description: s.description }), ...who(s.assignee, s.email), dueOn: s.dueOn })),
       };
     } else if (kind === 'question') body = { requesterId: requester };
     else if (kind === 'risk') body = { severity, responsibleId: responsible || null };
@@ -148,14 +153,24 @@ export function AuthoriseForm({
               <input type="checkbox" checked={split} onChange={(e) => setSplit(e.target.checked)} /> Split into subtasks for the other people named
             </label>
           )}
-          {split &&
-            subs.map((s, i) => (
+          {subs.map((s, i) =>
+            !s.copied && !split ? null : s.copied && !s.on ? (
+              <label key={i} className="check">
+                <input type="checkbox" checked={false} onChange={() => setSubs(subs.map((x, j) => (j === i ? { ...x, on: true } : x)))} /> Create the subtask “{s.title}”
+              </label>
+            ) : (
               <fieldset key={i} className="subtask-row">
-                <legend>Subtask for {s.name}</legend>
+                <legend>{s.copied ? 'Copied subtask' : `Subtask for ${s.name}`}</legend>
+                {s.copied && (
+                  <label className="check">
+                    <input type="checkbox" checked onChange={() => setSubs(subs.map((x, j) => (j === i ? { ...x, on: false } : x)))} /> Create this subtask
+                  </label>
+                )}
                 <label>
                   Wording
                   <input required value={s.title} onChange={(e) => setSubs(subs.map((x, j) => (j === i ? { ...x, title: e.target.value } : x)))} />
                 </label>
+                {s.copied && <DescriptionField value={s.description ?? ''} onChange={(d) => setSubs(subs.map((x, j) => (j === i ? { ...x, description: d } : x)))} />}
                 <Assignee
                   label="Assignee"
                   people={people}
@@ -170,7 +185,8 @@ export function AuthoriseForm({
                 </label>
                 <NonWorkingDayNote date={s.dueOn} />
               </fieldset>
-            ))}
+            ),
+          )}
         </>
       )}
       {kind === 'question' && (

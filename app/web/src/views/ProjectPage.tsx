@@ -47,6 +47,7 @@ import { Discussion, Notes } from './Discussion.tsx';
 import { TaskPage } from './TaskPage.tsx';
 import { Work } from './Work.tsx';
 import { ProjectOutputs } from './ProjectOutputs.tsx';
+import { CopiedFromLabel } from './CopiedFromLabel.tsx';
 import { Resources } from './Resources.tsx';
 import { ResourcesReport } from './ResourcesReport.tsx';
 import { DeliveryHistory } from './Deliveries.tsx';
@@ -208,6 +209,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
           </div>
           {contentAllowed && (
             <div className="page-action decision no-print">
+              {roles.includes('pm') && <a className="button secondary" href={`${base}/duplicate`}>Duplicate project</a>}
               <button type="button" ref={askButton} aria-expanded={asking} onClick={() => setAsking((v) => !v)}>Ask about this project</button>
               {(canAddNotes || canSubmitNotes) && (
                 <button
@@ -229,6 +231,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
             <div><dt>Participating departments</dt><dd>{project.contributingDepartments.map((d) => d.name).join(', ')}</dd></div>
           )}
           <div><dt>Project Manager</dt><dd>{pms.length > 0 ? pms.map((m) => m.displayName).join(', ') : 'Not appointed'}</dd></div>
+          {project.copiedFrom && <div><dt>Origin</dt><dd><CopiedFromLabel from={project.copiedFrom} /></dd></div>}
           {project.stageTemplate && <div><dt>Stages</dt><dd>{project.stageTemplate.name}</dd></div>}
           {project.stage && (
             <div><dt>Stage</dt><dd>{`${project.stage.stage}${project.stage.substage ? `: ${project.stage.substage}` : ''} (${stageTiming(project.stage, new Date())})`}</dd></div>

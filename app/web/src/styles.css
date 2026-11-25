@@ -1143,3 +1143,35 @@ button.stat-tile[aria-pressed="true"] { border-color: var(--accent); box-shadow:
 .project-history th[scope='row'] { min-width: 6rem; }
 .project-history .history-day { display: block; white-space: nowrap; }
 .project-history .history-reason { display: block; min-width: 9rem; overflow-wrap: anywhere; }
+
+/* Duplicating a project (D140) */
+.dup-problems { margin: 0.4rem 0; padding-left: 1.2rem; display: grid; gap: 0.3rem; }
+.dup-problems a, .carried-text, .dup-choose > span { overflow-wrap: anywhere; min-width: 0; }
+.carried.asked { border-left: 4px solid var(--m-attention); background: var(--m-attention-wash); padding: 0.6rem 0.75rem; border-radius: 4px; }
+.carried.asked.confirmed { border-left-color: var(--m-ok); background: var(--m-ok-wash); }
+.carried-note { display: flex; flex-wrap: wrap; gap: 0.4rem 1.2rem; justify-content: space-between; align-items: flex-start; margin-top: 0.5rem; }
+.carried-note > div { flex: 1 1 14rem; min-width: 0; }
+.carried-text { margin: 0.3rem 0 0; font-size: 0.875rem; }
+.carried-note label.check { font-weight: 600; }
+.dup-tools { display: flex; flex-wrap: wrap; align-items: center; gap: 0.4rem 0.6rem; margin: 0.5rem 0; }
+.dup-inline { display: flex; gap: 0.5rem; align-items: center; }
+.dup-inline input { flex: 1 1 8rem; min-width: 0; }
+.duplicate-page .substage-editor { display: grid; gap: 0.5rem; }
+.dup-tree { gap: 0.6rem; }
+.dup-task { border-top: 1px solid var(--rule); padding: 0.5rem 0.25rem; min-width: 0; }
+.dup-task.depth-1 { margin-left: 1.25rem; }
+.dup-task.depth-2 { margin-left: 2.5rem; }
+.dup-task-fields { display: grid; gap: 0.6rem; margin-top: 0.4rem; }
+.dup-due { max-width: 14rem; }
+.dup-kind { font-weight: 600; }
+.dup-row { border-top: 1px solid var(--rule); padding: 0.5rem 0.25rem; display: grid; gap: 0.5rem; min-width: 0; }
+.dup-holiday { display: grid; grid-template-columns: 11rem minmax(0, 1fr) auto; gap: 0.6rem; align-items: end; }
+.dup-setting-name { margin: 0; font-weight: 500; }
+.duplicate-page .decision a { padding: 0.5rem; }
+.many-item { border-top: 1px solid var(--rule); padding: 0.6rem 0.25rem; display: grid; gap: 0.5rem; min-width: 0; overflow-wrap: anywhere; }
+.button.secondary { background: var(--surface); color: var(--accent-deep); }
+@media (max-width: 560px) {
+  .dup-holiday { grid-template-columns: minmax(0, 1fr); }
+  .dup-task.depth-1 { margin-left: 0.6rem; }
+  .dup-task.depth-2 { margin-left: 1.2rem; }
+}

@@ -43,6 +43,9 @@ import { parseHistoryHash } from './ui/home.ts';
 import { AppShell } from './ui/AppShell.tsx';
 import { PROFILE_HREF } from './ui/menu.ts';
 import { parseNoteHash, parseRunHash } from './proposalLinks.ts';
+import { parseDuplicateHash } from './duplicate.ts';
+import { leaveGuard } from './ui/leaveGuard.ts';
+import { DuplicateProject } from './views/DuplicateProject.tsx';
 import { parseProjectHash } from './ui/projectTabs.ts';
 import { SettingsHub } from './views/SettingsHub.tsx';
 import { Definitions } from './views/Definitions.tsx';
@@ -272,6 +275,7 @@ export function App() {
   }, [user]);
 
   const signOut = useCallback(async () => {
+    if (!leaveGuard.mayLeave()) return;
     await api.post('/auth/logout').catch(() => undefined);
     setUser(null);
     go('#/');
@@ -279,6 +283,7 @@ export function App() {
 
   // Ends every session of this person, on every device (V1.0 sign-in rules §7).
   const signOutEverywhere = useCallback(async () => {
+    if (!leaveGuard.mayLeave()) return;
     await api.post('/auth/logout-all').catch(() => undefined);
     setUser(null);
     go('#/');
@@ -322,6 +327,7 @@ export function App() {
   const note = parseNoteHash(hash);
   const run = parseRunHash(hash);
   const project = parseProjectHash(hash);
+  const duplicating = parseDuplicateHash(hash);
   const deletedItem = /^#\/projects\/([0-9a-f-]{36})\/deleted\/([a-z]+)\/([0-9a-f-]{36})$/i.exec(hash);
   const quarantineCase = /^#\/quarantine\/cases\/([0-9a-f-]{36})(?:\/copies)?$/i.exec(hash);
   const securityPage = /^#\/security\/(cases|grants)$/.test(hash);
@@ -366,6 +372,7 @@ export function App() {
   else if (deletedItem) page = <DeletedItemPage key={deletedItem[3]} projectId={deletedItem[1]} kind={deletedItem[2]} itemId={deletedItem[3]} />;
   else if (run) page = <RunInProject key={run.runId} runId={run.runId} itemId={run.itemId} meId={user.id} prefs={prefs} prefsReady={prefsLoaded} onPrefs={savePrefs} />;
   else if (note) page = <NoteDetail sourceId={note.sourceId} versionNo={note.versionNo} place={note.place} />;
+  else if (duplicating) page = <DuplicateProject key={duplicating} projectId={duplicating} meId={user.id} />;
   else if (project) page = <ProjectPage key={project.projectId} projectId={project.projectId} meId={user.id} tab={project.tab as ProjectView} itemId={project.itemId} prefs={prefs} prefsReady={prefsLoaded} onPrefs={savePrefs} />;
   else if (hash === '#/projects' || parseHistoryHash(hash)) page = <Projects isAdmin={isAdmin} history={parseHistoryHash(hash)} />;
   else if (hash === '#/my-tasks') page = <MyTasks />;
