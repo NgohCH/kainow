@@ -5,6 +5,7 @@
  */
 import type { FinanceSummary } from './finance.ts';
 import { plural } from './format.ts';
+import { STOPPED_LABEL, type Stopped } from './ui/graphics.ts';
 import { HOME_SECTIONS, type HomeSection } from './prefs.ts';
 import type { LineStatus } from './resources.ts';
 
@@ -15,6 +16,16 @@ export type Completion =
 export type OnTime =
   | { state: 'measured'; due: number; done: number; late: number; percent: number; awaitingReview: number }
   | { state: 'nothing_due'; awaitingReview: number };
+
+/** The latest stage and its whole days, which end where a deferral or closure stopped it (D138). */
+export interface MeasuredStage { stage: string; substage: string | null; days: number; stopped: Stopped | null }
+
+/** "Build, Testing, 4 days" or "Build, stopped when deferred, after 4 days". */
+export function stageLabel(s: MeasuredStage | null): string {
+  if (s === null) return 'None';
+  const days = plural(s.days, 'day');
+  return `${s.stage}${s.substage ? `, ${s.substage}` : ''}, ${s.stopped ? `${STOPPED_LABEL[s.stopped].toLowerCase()}, after ${days}` : days}`;
+}
 
 export type PlannedEnd = { state: 'none' } | { state: 'ahead'; days: number } | { state: 'ended'; daysAgo: number };
 
@@ -27,7 +38,7 @@ export interface ProjectMeasures {
   overdue: number;
   blocked: number;
   dueSoon: number;
-  stage: { stage: string; substage: string | null; days: number } | null;
+  stage: MeasuredStage | null;
   plannedEnd: PlannedEnd;
   questions: { open: number; answered: number };
   risks: { bySeverity: Record<Severity, number>; significant: number; overdueReviews: number };

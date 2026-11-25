@@ -1,7 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ApiError, api } from '../api.ts';
-import { awaitingLabel, cancelledLabel, completionLabel, dayLabel, onTimeLabel, plannedEndLabel, updatedLabel } from '../dashboard.ts';
-import { plural } from '../format.ts';
+import { awaitingLabel, cancelledLabel, completionLabel, dayLabel, onTimeLabel, plannedEndLabel, stageLabel, updatedLabel } from '../dashboard.ts';
 import { DEFAULT_STATUSES, LEADERSHIP_FIELDS, type LeadershipCard, type LeadershipSummary, leadershipQuery, visibleFields } from '../leadership.ts';
 import { defaultPrefs, openChoice, type Prefs } from '../prefs.ts';
 import { STATUS_LABEL } from '../projects.ts';
@@ -50,7 +49,7 @@ function FieldRow({ k, c }: { k: string; c: LeadershipCard }) {
       );
     case 'stage':
       return c.stage === undefined ? null : (
-        <><dt>Stage</dt><dd>{c.stage ? `${c.stage.stage}${c.stage.substage ? `, ${c.stage.substage}` : ''}, ${plural(c.stage.days, 'day')}` : 'None'}</dd></>
+        <><dt>Stage</dt><dd>{stageLabel(c.stage)}</dd></>
       );
     case 'taskCompletion': {
       if (!c.taskCompletion) return null;

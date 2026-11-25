@@ -18,6 +18,12 @@ test('the choices are none and the active departments; a retired one only while 
   assert.deepEqual(departmentOptions(active, { id: 'y', name: 'Old', retired: false }).at(-1), { id: 'y', label: 'Old (retired)' });
 });
 
+test('before the list has loaded only what is held shows, marked when retired', () => {
+  assert.deepEqual(departmentOptions(null, null), [{ id: '', label: 'None' }]);
+  assert.deepEqual(departmentOptions(null, { id: 'a', name: 'Finance', retired: false }), [{ id: 'a', label: 'Finance' }]);
+  assert.deepEqual(departmentOptions(null, { id: 'z', name: 'Archive', retired: true }), [{ id: 'z', label: 'Archive (retired)' }]);
+});
+
 test('an unchanged department is never sent, retired or not; a change sends its id or null', () => {
   const retired = { id: 'z', name: 'Archive', retired: true };
   assert.equal(departmentToSave(retired, 'z'), undefined);

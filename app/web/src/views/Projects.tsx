@@ -115,13 +115,24 @@ export function Projects({ isAdmin, history }: { isAdmin: boolean; history: { ar
   const toHistory = history !== null;
   const withArchived = history?.archived ?? false;
   const loaded = projects !== null;
+  const historyDue = useRef(false);
   useEffect(() => {
-    if (!toHistory || !loaded) return;
+    historyDue.current = toHistory && loaded;
+    if (!historyDue.current) return;
     setState(null);
     if (withArchived) setArchived(true);
+  }, [toHistory, withArchived, loaded]);
+  // Only once every state is drawn: a tile pressed earlier may have hidden History.
+  useEffect(() => {
+    if (!historyDue.current || state !== null || (withArchived && !archived)) return;
+    historyDue.current = false;
     historyBox.current?.scrollIntoView();
     historyBox.current?.focus({ preventScroll: true });
-  }, [toHistory, withArchived, loaded]);
+  });
+  // What arrives later moves the page; whoever is still at History stays there.
+  useEffect(() => {
+    if (toHistory && historyBox.current && document.activeElement === historyBox.current) historyBox.current.scrollIntoView();
+  }, [toHistory, measures]);
 
   const managers = useMemo(() => {
     const m = new Map<string, string>();

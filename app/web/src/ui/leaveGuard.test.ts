@@ -26,6 +26,17 @@ const click = (href: string, over: Record<string, unknown> = {}) => ({
 });
 const unload = () => ({ prevented: false, preventDefault() { this.prevented = true; } });
 
+test('closing one form asks about that form only; another one stays guarded', () => {
+  const { env, guard } = setup([false, true, false]);
+  const closed = guard.arm('Several');
+  guard.arm('Another');
+  assert.equal(guard.mayDiscard('Several'), false);
+  assert.equal(guard.mayDiscard('Several'), true);
+  closed();
+  assert.equal(env.asked, 2);
+  assert.equal(guard.mayLeave(), false, 'the other is still asked about');
+});
+
 test('with nothing unsaved, nobody is asked', () => {
   const { env, guard } = setup([]);
   env.hash = '#/b';

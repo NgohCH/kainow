@@ -184,10 +184,17 @@ function RenameStage({ stage, stages, busy, change, close }: { stage: ProjectSta
     <form className="stack" onSubmit={submit} noValidate aria-label={`Rename ${stage.name}`}>
       <label>
         New name
-        <input autoFocus maxLength={TEMPLATE_LIMITS.nameChars} value={name} onChange={(e) => setName(e.target.value)} />
+        <input
+          autoFocus
+          maxLength={TEMPLATE_LIMITS.nameChars}
+          value={name}
+          aria-invalid={problems.length > 0 || undefined}
+          aria-describedby={problems.length > 0 ? `rename-problems-${stage.id}` : undefined}
+          onChange={(e) => setName(e.target.value)}
+        />
       </label>
       <p className="meta">The new name shows everywhere in this project. The change history keeps the old one, and the template is not changed.</p>
-      {problems.length > 0 && <p role="alert" className="error">{problems.join(' ')}</p>}
+      {problems.length > 0 && <p id={`rename-problems-${stage.id}`} role="alert" className="error">{problems.join(' ')}</p>}
       <div className="decision">
         <button className="primary" disabled={busy}>Save name</button>
         <button type="button" onClick={cancel}>Cancel</button>

@@ -166,6 +166,12 @@ test('percentages stay within 0 to 100, whatever the dates', () => {
   assert.equal(l.markers[0].atPct, 100);
 });
 
+test('a period stopped after the window runs to its edge, so it also says on which day', () => {
+  const p = { stage: 'Planning', substage: null, startedOn: '2026-09-01', stopped: 'deferred' as const };
+  const l = barsLayout({ ...WINDOW, periods: [{ ...p, endedOn: '2027-06-01' }, { ...p, endedOn: WINDOW.to }], lines: [], hiddenKinds: [] });
+  assert.deepEqual(l.bars.map((b) => [b.endPct, b.stoppedLater]), [[100, '2027-06-01'], [100, null]]);
+});
+
 test('a stopped period ends on its day, is not current, and says why', () => {
   const l = barsLayout({
     ...WINDOW,

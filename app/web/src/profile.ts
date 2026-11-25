@@ -14,8 +14,12 @@ const retiredName = (name: string): string => `${name} (retired)`;
 
 export const departmentName = (d: PersonDepartment | null): string => (d === null ? 'None' : d.retired ? retiredName(d.name) : d.name);
 
-/** None, the active departments, and the one held when it is no longer among them. The id of None is ''. */
-export function departmentOptions(active: readonly Department[], held: PersonDepartment | null): { id: string; label: string }[] {
+/**
+ * None, the active departments, and the one held when it is no longer among them. The id of None is ''. Until the active
+ * ones are loaded (null) only the one held shows, as it is known.
+ */
+export function departmentOptions(active: readonly Department[] | null, held: PersonDepartment | null): { id: string; label: string }[] {
+  if (active === null) return [{ id: held?.id ?? '', label: departmentName(held) }];
   const options = [{ id: '', label: 'None' }, ...active.map((d) => ({ id: d.id, label: d.name }))];
   return held === null || options.some((o) => o.id === held.id) ? options : [...options, { id: held.id, label: retiredName(held.name) }];
 }

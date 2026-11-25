@@ -33,6 +33,8 @@ export function createLeaveGuard(env: LeaveEnv) {
       return () => void armed.delete(key);
     },
     mayLeave,
+    /** Asks before one form's own input is thrown away; whatever else is unsaved stays guarded. */
+    mayDiscard: (message: string): boolean => env.confirm(message),
     /** Nothing is unsaved any more (it was just saved and the page is about to move on). */
     release: () => armed.clear(),
     /** A link is stopped before it moves, so the history stays as it was. */

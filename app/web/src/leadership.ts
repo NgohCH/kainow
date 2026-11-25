@@ -5,7 +5,7 @@
  */
 import { LEADERSHIP_FIELDS, type Prefs } from './prefs.ts';
 import type { Currency } from './finance.ts';
-import type { Completion, OnTime, PlannedEnd, Severity } from './dashboard.ts';
+import type { Completion, MeasuredStage, OnTime, PlannedEnd, Severity } from './dashboard.ts';
 
 export { LEADERSHIP_FIELDS };
 
@@ -52,7 +52,7 @@ export interface LeadershipCard {
   contributingDepartments?: string[];
   projectManager?: string | null;
   status?: string;
-  stage?: { stage: string; substage: string | null; days: number } | null;
+  stage?: MeasuredStage | null;
   taskCompletion?: Completion;
   onTime?: OnTime;
   plannedEnd?: PlannedEnd;

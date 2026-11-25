@@ -6,14 +6,16 @@ import {
   LEADERSHIP_FIXED_FIELDS,
   TAB_STYLES,
   TAB_STYLE_LABELS,
-  defaultPrefs,
+  resetPrefs,
   moveItem,
   moveSection,
   schemeChoices,
   schemeFor,
   setHidden,
+  tabStyleOf,
   type HomeSection,
   type Prefs,
+  type PrefsPart,
   type Theme,
 } from '../prefs.ts';
 import { TabPreview } from '../ui/TabPreview.tsx';
@@ -69,7 +71,7 @@ export function AppearanceChoice({ prefs, orgColour, save, name }: { prefs: Pref
         <legend>Tab style</legend>
         {TAB_STYLES.map((s) => (
           <label key={s} className="choice">
-            <input type="radio" name={`${name}-tabs`} checked={prefs.tabStyle === s} onChange={() => save({ ...prefs, tabStyle: s })} />
+            <input type="radio" name={`${name}-tabs`} checked={tabStyleOf(prefs) === s} onChange={() => save({ ...prefs, tabStyle: s })} />
             <span className="tab-style-name">{TAB_STYLE_LABELS[s]}</span>
             <TabPreview style={s} />
           </label>
@@ -147,7 +149,7 @@ export function Customise({
   ready?: boolean;
   /** True when loading the saved preferences failed: only then is the reload alert shown. */
   failed?: boolean;
-  show?: ('appearance' | 'home' | 'leadership')[];
+  show?: PrefsPart[];
   /** The organisation colour, when set: offers the Organisation scheme. */
   orgColour?: string | null;
   /** The heading, so whoever opened the panel can move focus to it. */
@@ -200,7 +202,7 @@ export function Customise({
           />
         )}
         <div className="actions">
-          <button type="button" onClick={() => save(defaultPrefs())}>
+          <button type="button" onClick={() => save(resetPrefs(prefs, show))}>
             Reset to defaults
           </button>
           <span role={error ? 'alert' : 'status'} className={error ? 'error' : 'meta'}>

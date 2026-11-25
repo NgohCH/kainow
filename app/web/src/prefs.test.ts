@@ -13,9 +13,12 @@ import {
   moveItem,
   moveSection,
   schemeChoices,
+  resetPrefs,
   schemeFor,
   setHidden,
+  tabStyleOf,
   type FixedAccentKey,
+  type Prefs,
 } from './prefs.ts';
 import { contrastRatio, type SchemeTokens } from './ui/colour.ts';
 import { MEANINGS, type Meaning } from './ui/meanings.ts';
@@ -34,6 +37,29 @@ function rule(selector: string): Record<string, string> {
   }
   return out;
 }
+
+test('resetting puts back only what the panel shows', () => {
+  const mine: Prefs = {
+    ...DEFAULT_PREFS,
+    theme: 'dark', accent: 'plum', accentChosen: true, tabStyle: 'tinted',
+    home: { ...DEFAULT_PREFS.home, order: [...DEFAULT_PREFS.home.order].reverse(), hidden: [DEFAULT_PREFS.home.order[1]], showCompleted: true },
+    leadership: { fields: { order: ['name'], hidden: ['stage'] } },
+    expanded: { home: true },
+  };
+  const customise = resetPrefs(mine, ['home', 'leadership']);
+  assert.deepEqual(customise.home, { ...DEFAULT_PREFS.home, showCompleted: true });
+  assert.deepEqual(customise.leadership, DEFAULT_PREFS.leadership);
+  assert.deepEqual([customise.theme, customise.accent, customise.accentChosen, customise.tabStyle, customise.expanded], ['dark', 'plum', true, 'tinted', { home: true }]);
+  assert.deepEqual(resetPrefs(mine, ['leadership']).home, mine.home);
+  const looks = resetPrefs(mine, ['appearance']);
+  assert.deepEqual([looks.theme, looks.accent, looks.accentChosen, looks.tabStyle, looks.home], ['light', 'red', false, 'boxes', mine.home]);
+});
+
+test('preferences without a tab style show boxes', () => {
+  const { tabStyle: _none, ...older } = DEFAULT_PREFS;
+  assert.equal(tabStyleOf(older as Prefs), 'boxes');
+  assert.equal(tabStyleOf({ ...DEFAULT_PREFS, tabStyle: 'grey' }), 'grey');
+});
 
 test('contrastRatio matches the WCAG reference values', () => {
   assert.equal(contrastRatio('#000000', '#ffffff'), 21);

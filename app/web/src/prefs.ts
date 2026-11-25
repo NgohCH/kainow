@@ -74,6 +74,22 @@ export const DEFAULT_PREFS: Prefs = {
 /** A fresh copy of the defaults, so a caller can edit it without touching the constant. */
 export const defaultPrefs = (): Prefs => structuredClone(DEFAULT_PREFS);
 
+export type PrefsPart = 'appearance' | 'home' | 'leadership';
+
+/** The defaults for the parts a panel shows; everything else, and what is chosen elsewhere, stays as it is. */
+export function resetPrefs(prefs: Prefs, parts: readonly PrefsPart[]): Prefs {
+  const d = defaultPrefs();
+  return {
+    ...prefs,
+    ...(parts.includes('appearance') ? { theme: d.theme, accent: d.accent, accentChosen: d.accentChosen, tabStyle: d.tabStyle } : {}),
+    ...(parts.includes('home') ? { home: { ...prefs.home, order: d.home.order, hidden: d.home.hidden } } : {}),
+    ...(parts.includes('leadership') ? { leadership: d.leadership } : {}),
+  };
+}
+
+/** The tab style shown; a document without one shows the default. */
+export const tabStyleOf = (prefs: Partial<Pick<Prefs, 'tabStyle'>>): TabStyle => prefs.tabStyle ?? DEFAULT_PREFS.tabStyle;
+
 /** A personal or leadership list of projects: expanded when the person chose so, else when 5 or fewer are shown. */
 export function expansionDefault(shownCount: number, saved: boolean | undefined): boolean {
   return saved ?? shownCount <= 5;
@@ -257,7 +273,7 @@ export function applyAppearance(prefs: Pick<Prefs, 'theme' | 'accent' | 'accentC
   const { key, tokens } = schemeFor(prefs, orgColour);
   root.setAttribute('data-theme', prefs.theme);
   root.setAttribute('data-accent', key);
-  root.setAttribute('data-tabs', prefs.tabStyle);
+  root.setAttribute('data-tabs', tabStyleOf(prefs));
   for (const [field, prop] of Object.entries(SCHEME_VARS)) {
     if (key === 'organisation') root.style.setProperty(prop, tokens[field as keyof SchemeTokens]);
     else root.style.removeProperty(prop);

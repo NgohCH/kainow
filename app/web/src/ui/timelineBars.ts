@@ -17,6 +17,8 @@ export interface TimelineBar {
   endPct: number;
   current: boolean;
   stopped: Stopped | null;
+  /** The day it stopped when that is after the window (the bar runs to the window's edge); otherwise null. */
+  stoppedLater: string | null;
   /** The period's real start when it began before the window (the bar starts at the window's edge); otherwise null. */
   clippedStart: string | null;
   days: number;
@@ -176,6 +178,7 @@ export function barsLayout(input: {
         endPct: at(end),
         current,
         stopped,
+        stoppedLater: stopped && p.endedOn !== null && p.endedOn > to ? p.endedOn : null,
         clippedStart: p.startedOn < from ? p.startedOn : null,
         days,
         text,

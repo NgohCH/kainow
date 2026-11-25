@@ -39,8 +39,7 @@ export function DepartmentForm({ held, label, save, onDone }: {
     }
   }
 
-  // Until the list loads only the current choice shows, under its own name.
-  const options = active ? departmentOptions(active, held) : [{ id: held?.id ?? '', label: held?.name ?? 'None' }];
+  const options = departmentOptions(active, held);
   return (
     <form className="stack" onSubmit={(e) => void submit(e)}>
       <label>

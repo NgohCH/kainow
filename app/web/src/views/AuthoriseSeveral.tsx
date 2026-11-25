@@ -1,9 +1,10 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { type MutableRefObject, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import { type ItemTerms, type ManyProposal, type ManyResult, type SubtaskTerms, MAX_AT_ONCE, buildItems, isTyped, itemProblem, resultLine, startItem } from '../authoriseMany.ts';
 import type { CopiedFrom } from '../duplicate.ts';
 import { recordHref } from '../proposalLinks.ts';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
+import { leaveGuard } from '../ui/leaveGuard.ts';
 import { useLeaveGuard } from '../ui/useLeaveGuard.ts';
 import { Assignee, type Person } from './AuthoriseForm.tsx';
 import { CopiedFromLabel } from './CopiedFromLabel.tsx';
@@ -78,7 +79,15 @@ const Item = memo(function Item({ proposal: p, draft, people, error, showNeeds, 
  * Authorises several waiting actions at once (D140), each with its own assignee and due date and each on its own: one
  * that is refused undoes none of the others, stays ticked with what was typed, and says why.
  */
-export function AuthoriseSeveral({ projectId, proposals, people, onDone, onClose }: { projectId: string; proposals: SeveralProposal[]; people: Person[]; onDone: () => void; onClose: () => void }) {
+export function AuthoriseSeveral({ projectId, proposals, people, onDone, onClose, mayClose }: {
+  projectId: string;
+  proposals: SeveralProposal[];
+  people: Person[];
+  onDone: () => void;
+  onClose: () => void;
+  /** Filled with the question to ask before closing: true when nothing typed here would be lost, or the person agrees. */
+  mayClose: MutableRefObject<() => boolean>;
+}) {
   const [drafts, setDrafts] = useState<Record<string, Draft>>({});
   const [results, setResults] = useState<Array<{ result: ManyResult; text: string }>>([]);
   const [error, setError] = useState<string | null>(null);
@@ -95,7 +104,11 @@ export function AuthoriseSeveral({ projectId, proposals, people, onDone, onClose
 
   const chosen = proposals.filter((p) => draftOf(p.id).on);
   const waiting = chosen.filter((p) => itemProblem(draftOf(p.id).terms) !== null);
-  useLeaveGuard(proposals.some((p) => drafts[p.id] !== undefined && isTyped(drafts[p.id], (starts.get(p.id) as Draft).terms)));
+  const typed = proposals.some((p) => drafts[p.id] !== undefined && isTyped(drafts[p.id], (starts.get(p.id) as Draft).terms));
+  useLeaveGuard(typed);
+  useEffect(() => {
+    mayClose.current = () => !typed || leaveGuard.mayDiscard('What you typed here has not been saved and will be lost. Close it?');
+  }, [mayClose, typed]);
   useEffect(() => {
     if (results.length > 0) resultBox.current?.focus();
   }, [results]);

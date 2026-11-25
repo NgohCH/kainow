@@ -42,7 +42,7 @@ export function TimelineBars({ layout }: { layout: BarsLayout }) {
                 <span className="tl-stage">{b.stage}</span>
                 {b.substage && <span className="meta">{b.substage}</span>}
                 {b.current && <span className="tl-current">● Current</span>}
-                {b.stopped && <span className="meta">{MEANINGS[b.stopped].symbol} {STOPPED_LABEL[b.stopped]}</span>}
+                {b.stopped && <span className="meta">{MEANINGS[b.stopped].symbol} {STOPPED_LABEL[b.stopped]}{b.stoppedLater && `, on ${dayLabel(b.stoppedLater)}`}</span>}
                 {b.clippedStart && <span className="meta">continues from {dayLabel(b.clippedStart)}</span>}
               </span>
               <div className="tl-track">
