@@ -89,6 +89,7 @@ export function People({ meId }: { meId: string }) {
 
   const person = people?.find((p) => p.id === personId);
   const active = people?.filter((p) => p.status === 'active' && p.role === 'enterprise_administrator').length ?? 0;
+  const keptAdmin = (p: Person) => p.role === 'enterprise_administrator' && active < 2;
   const disabled = people?.filter((p) => p.status === 'disabled').length ?? 0;
   const recorded = custodian?.name && custodian.contact ? { name: custodian.name, contact: custodian.contact } : null;
 
@@ -106,9 +107,12 @@ export function People({ meId }: { meId: string }) {
         p.status === 'disabled' ? (
           <button onClick={() => void enable(p)} aria-label={`Enable ${p.displayName}`}>Enable</button>
         ) : (
-          <button className="reject" onClick={() => void disable(p)} disabled={p.role === 'enterprise_administrator' && active < 2} aria-label={`Disable ${p.displayName}`}>
-            Disable
-          </button>
+          <>
+            <button className="reject" onClick={() => void disable(p)} disabled={keptAdmin(p)} aria-label={`Disable ${p.displayName}`} aria-describedby={keptAdmin(p) ? `kept-${p.id}` : undefined}>
+              Disable
+            </button>
+            {keptAdmin(p) && <span id={`kept-${p.id}`} className="hint">Administrators can be disabled only while two or more are active. Add another first.</span>}
+          </>
         ),
     },
   ];

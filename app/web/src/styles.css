@@ -1116,6 +1116,7 @@ button.stat-tile[aria-pressed="true"] { border-color: var(--accent); box-shadow:
 
 /* Resource catalogue */
 .catalogue-part .inline-form { margin: 0 0 0.8rem; }
+.item-form .grid-2 { align-items: start; }
 .item-form.box { margin: 0 0 1rem; }
 
 /* Update and read-only notices under the top bar */

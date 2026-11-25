@@ -1,7 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import { plural } from '../format.ts';
-import { EMPTY_ITEM as EMPTY, type ItemDraft, itemProblem } from '../resourceScreens.ts';
+import { type ItemDraft, NEW_CATEGORY, itemProblem, newItem } from '../resourceScreens.ts';
 import { useReturnFocus } from './useReturnFocus.ts';
 import { DataTable, type Column } from '../ui/DataTable.tsx';
 import { StatTile } from '../ui/StatTile.tsx';
@@ -32,7 +32,8 @@ function ItemForm({ initial, categories, editing, onSubmit, onCancel, focusFirst
   initial: ItemDraft;
   categories: Category[];
   editing: boolean;
-  onSubmit: (d: ItemDraft) => Promise<string | null>;
+  /** Saves the item, its new category first; returns the refusal, or null. `onCategory` selects the added category, which stays when the item is refused. */
+  onSubmit: (d: ItemDraft, onCategory: (id: string) => void) => Promise<string | null>;
   onCancel: () => void;
   /** Moves focus to the first field when the form opens away from its button (Edit opens it above the table). */
   focusFirst?: boolean;
@@ -47,10 +48,10 @@ function ItemForm({ initial, categories, editing, onSubmit, onCancel, focusFirst
   const set = (patch: Partial<ItemDraft>) => setD((x) => ({ ...x, ...patch }));
   async function submit(e: FormEvent) {
     e.preventDefault();
-    const problem = itemProblem(d);
+    const problem = itemProblem(d, categories);
     if (problem) return setError(problem);
     setBusy(true);
-    const refused = await onSubmit(d);
+    const refused = await onSubmit(d, (id) => set({ categoryId: id, newCategory: '' }));
     setBusy(false);
     setError(refused);
   }
@@ -77,8 +78,16 @@ function ItemForm({ initial, categories, editing, onSubmit, onCancel, focusFirst
           <select required value={d.categoryId} onChange={(e) => set({ categoryId: e.target.value })}>
             <option value="">Choose a category</option>
             {categories.filter((c) => c.status === 'active' || c.id === d.categoryId).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            <option value={NEW_CATEGORY}>New category</option>
           </select>
         </label>
+        {d.categoryId === NEW_CATEGORY && (
+          <label>
+            New category name
+            <input required maxLength={80} value={d.newCategory} onChange={(e) => set({ newCategory: e.target.value })} />
+            <span className="hint">The category is added with the item.</span>
+          </label>
+        )}
       </div>
       <label>
         Description (optional)
@@ -177,8 +186,26 @@ export function ResourceCatalogue({ embedded = false, bare = false, onChanged }:
     }
   }
 
+  /** Saves an item; a new category is added first and, when the item is then refused, stays and is selected. */
+  async function saveItem(d: ItemDraft, onCategory: (id: string) => void, send: (body: object) => Promise<unknown>, done: string): Promise<string | null> {
+    let categoryId = d.categoryId;
+    const name = d.newCategory.trim();
+    const isNew = categoryId === NEW_CATEGORY;
+    if (isNew) {
+      const refused = await run(async () => {
+        const added = await api.post<Category>('/resources/catalogue/categories', { name });
+        categoryId = added.id;
+        setCategories((c) => [...c, added]);
+        onCategory(added.id);
+      }, `Category ${name} added.`);
+      if (refused) return refused;
+    }
+    const refused = await run(() => send({ kind: d.kind, reference: d.reference.trim(), name: d.name.trim(), categoryId, description: d.description.trim() }), isNew ? `Category ${name} added. ${done}` : done);
+    return refused && isNew ? `The category ${name} was added and is selected. The item was not saved: ${refused}` : refused;
+  }
+
   const shown = (items ?? []).filter((i) => (kind === '' || i.kind === kind) && (category === '' || i.categoryId === category) && (status === '' || i.status === status));
-  const draftOf = (i: Item): ItemDraft => ({ kind: i.kind, reference: i.reference, name: i.name, categoryId: i.categoryId ?? '', description: i.description });
+  const draftOf = (i: Item): ItemDraft => ({ kind: i.kind, reference: i.reference, name: i.name, categoryId: i.categoryId ?? '', newCategory: '', description: i.description });
 
   const editingItem = editing ? (items ?? []).find((i) => i.id === editing) : undefined;
   // On its own page each part is a box; inside a settings box (bare) the parts are plain sections.
@@ -319,24 +346,24 @@ export function ResourceCatalogue({ embedded = false, bare = false, onChanged }:
           </label>
           <button className="primary">Add category</button>
         </form>
-        <DataTable caption="Categories" columns={categoryColumns} rows={categories} rowKey={(c) => c.id} empty="No categories yet. Add one before adding items." loading={items === null && !error} />
+        <DataTable caption="Categories" columns={categoryColumns} rows={categories} rowKey={(c) => c.id} empty="No categories yet. Add one here, or with your first item." loading={items === null && !error} />
       </section>
 
       <section className={partClass} aria-labelledby="catalogue-items">
         <div className="settings-box-head">
           <Sub id="catalogue-items" className={subClass}>Items</Sub>
-          <button type="button" className="primary" data-opener="add-item" aria-expanded={adding} onClick={() => setAdding((a) => !a)} disabled={categories.every((c) => c.status !== 'active')}>
+          <button type="button" className="primary" data-opener="add-item" aria-expanded={adding} onClick={() => setAdding((a) => !a)}>
             + Add item
           </button>
         </div>
-        {adding && (
+        {adding && items && (
           <ItemForm
-            initial={EMPTY}
+            initial={newItem(categories)}
             categories={categories}
             editing={false}
             onCancel={() => setAdding(false)}
-            onSubmit={async (d) => {
-              const refused = await run(() => api.post('/resources/catalogue/items', { ...d, reference: d.reference.trim(), name: d.name.trim(), description: d.description.trim() }), 'Item added.');
+            onSubmit={async (d, onCategory) => {
+              const refused = await saveItem(d, onCategory, (body) => api.post('/resources/catalogue/items', body), 'Item added.');
               if (!refused) setAdding(false);
               return refused;
             }}
@@ -350,8 +377,8 @@ export function ResourceCatalogue({ embedded = false, bare = false, onChanged }:
             editing
             focusFirst
             onCancel={() => setEditing(null)}
-            onSubmit={async (d) => {
-              const refused = await run(() => api.put(`/resources/catalogue/items/${editingItem.id}`, { ...d, reference: d.reference.trim(), name: d.name.trim(), description: d.description.trim() }), 'Item saved.');
+            onSubmit={async (d, onCategory) => {
+              const refused = await saveItem(d, onCategory, (body) => api.put(`/resources/catalogue/items/${editingItem.id}`, body), 'Item saved.');
               if (!refused) setEditing(null);
               return refused;
             }}

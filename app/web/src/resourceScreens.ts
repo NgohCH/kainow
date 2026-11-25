@@ -169,16 +169,29 @@ export interface ItemDraft {
   kind: string;
   reference: string;
   name: string;
+  /** A category's id, NEW_CATEGORY for the one named in `newCategory`, or '' when none is chosen. */
   categoryId: string;
+  newCategory: string;
   description: string;
 }
-export const EMPTY_ITEM: ItemDraft = { kind: 'equipment', reference: '', name: '', categoryId: '', description: '' };
+export const NEW_CATEGORY = 'new';
+type NamedCategory = { name: string; status: string };
 
-/** The first problem with an item as typed, in the server's limits, or null. */
-export function itemProblem(d: ItemDraft): string | null {
+/** An empty item; with no category in use, it starts on a new one. */
+export function newItem(categories: readonly NamedCategory[]): ItemDraft {
+  return { kind: 'equipment', reference: '', name: '', categoryId: categories.some((c) => c.status === 'active') ? '' : NEW_CATEGORY, newCategory: '', description: '' };
+}
+
+/** The first problem with an item as typed, in the server's limits, or null. A retired category's name may be used again. */
+export function itemProblem(d: ItemDraft, categories: readonly NamedCategory[] = []): string | null {
   if (d.reference.trim().length < 1 || d.reference.trim().length > 30) return 'The reference must be 1 to 30 characters.';
   if (d.name.trim().length < 1 || d.name.trim().length > 120) return 'The name must be 1 to 120 characters.';
   if (d.categoryId === '') return 'Choose an active category.';
+  if (d.categoryId === NEW_CATEGORY) {
+    const name = d.newCategory.trim();
+    if (name.length < 1 || name.length > 80) return 'The category name must be 1 to 80 characters.';
+    if (categories.some((c) => c.status === 'active' && c.name.toLowerCase() === name.toLowerCase())) return 'A current category already uses this name. Choose it from the list instead.';
+  }
   if (d.description.trim().length > 1000) return 'The description must be up to 1,000 characters.';
   return null;
 }

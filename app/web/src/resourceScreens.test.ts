@@ -7,7 +7,9 @@ import {
   dashboardFinanceLines,
   financeSettingsBody,
   hasChanges,
+  NEW_CATEGORY,
   itemProblem,
+  newItem,
   nextAction,
   orgSettingsProblem,
   resourceCountsLine,
@@ -114,8 +116,22 @@ test('sharePercent', () => {
   assert.equal(sharePercent('300', '200'), 100);
 });
 
+test('a new category name stands in for a chosen category, in the server\'s limits', () => {
+  const ok = { ...newItem([]), reference: 'P-04', name: 'Projector' };
+  const cats = [{ name: 'Rooms', status: 'active' }, { name: 'Vehicles', status: 'retired' }];
+  assert.equal(itemProblem({ ...ok, newCategory: 'Tools' }, cats), null);
+  assert.match(itemProblem({ ...ok, newCategory: '  ' }, cats) ?? '', /category name must be 1 to 80/);
+  assert.match(itemProblem({ ...ok, newCategory: 'x'.repeat(81) }, cats) ?? '', /category name must be 1 to 80/);
+  assert.match(itemProblem({ ...ok, newCategory: ' rooms ' }, cats) ?? '', /already uses this name/);
+  assert.equal(itemProblem({ ...ok, newCategory: 'Vehicles' }, cats), null);
+});
+test('a new item starts on New category only when no category is in use', () => {
+  assert.equal(newItem([]).categoryId, NEW_CATEGORY);
+  assert.equal(newItem([{ name: 'Old', status: 'retired' }]).categoryId, NEW_CATEGORY);
+  assert.equal(newItem([{ name: 'Rooms', status: 'active' }]).categoryId, '');
+});
 test('itemProblem follows the catalogue limits', () => {
-  const ok = { kind: 'equipment', reference: 'P-04', name: 'Projector', categoryId: 'c1', description: '' };
+  const ok = { kind: 'equipment', reference: 'P-04', name: 'Projector', categoryId: 'c1', newCategory: '', description: '' };
   assert.equal(itemProblem(ok), null);
   assert.match(itemProblem({ ...ok, reference: ' ' }) ?? '', /reference/);
   assert.match(itemProblem({ ...ok, reference: 'x'.repeat(31) }) ?? '', /reference/);
