@@ -53,10 +53,11 @@ function Assignee({
 }
 
 /** An action's optional longer text. */
-export function DescriptionField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+export function DescriptionField({ value, onChange, hint }: { value: string; onChange: (v: string) => void; hint?: string }) {
   return (
     <label>
       Description (optional, up to 4,000 characters)
+      {hint && <span className="hint">{hint}</span>}
       <textarea rows={4} maxLength={4000} value={value} onChange={(e) => onChange(e.target.value)} />
     </label>
   );
@@ -141,7 +142,7 @@ export function AuthoriseForm({
             <input type="date" required value={dueOn} onChange={(e) => setDueOn(e.target.value)} />
           </label>
           <NonWorkingDayNote date={dueOn} />
-          <DescriptionField value={description} onChange={setDescription} />
+          <DescriptionField value={description} onChange={setDescription} hint={proposed ? "It is optional. Clear it to remove the proposer's description." : 'It is optional.'} />
           {names.length > 1 && (
             <label className="check">
               <input type="checkbox" checked={split} onChange={(e) => setSplit(e.target.checked)} /> Split into subtasks for the other people named

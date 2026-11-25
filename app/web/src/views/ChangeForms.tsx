@@ -2,6 +2,7 @@ import { type FormEvent, type ReactNode, useState } from 'react';
 import { isPastDay } from '../changes.ts';
 import { DescriptionField, INVITE, type Person, who } from './AuthoriseForm.tsx';
 import { NonWorkingDayNote } from './ProjectCalendar.tsx';
+import { amendDescription } from '../taskPage.ts';
 import { useTaskDescription } from './useTaskDescription.ts';
 
 export interface WorkTask {
@@ -97,10 +98,10 @@ const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object'
 /** Propose a change to a task's wording, assignee or due date. */
 export function AmendForm({ task, people, initial, onSubmit, onCancel }: { task: WorkTask; people: Person[]; initial?: Record<string, unknown>; onSubmit: Submit; onCancel: () => void }) {
   const [title, setTitle] = useState(str(initial?.title) || task.title);
-  const current = useTaskDescription(task.id, task.description);
-  // What has been typed; null until then, when the field shows the description in force (or the one proposed before).
-  const [typed, setTyped] = useState<string | null>(initial && 'description' in initial ? str(initial.description) : null);
-  const description = typed ?? current ?? '';
+  const { description: current, failed } = useTaskDescription(task.id, task.description);
+  const [typed, setTyped] = useState<string | null>(null);
+  const proposed = initial && 'description' in initial ? str(initial.description) : undefined;
+  const description = amendDescription({ current, proposed, typed });
   const [assignee, setAssignee] = useState(str(initial?.inviteEmail) ? INVITE : str(initial?.assigneeId));
   const [email, setEmail] = useState(str(initial?.inviteEmail));
   const [dueOn, setDueOn] = useState(str(initial?.dueOn) || task.dueOn);
@@ -113,7 +114,7 @@ export function AmendForm({ task, people, initial, onSubmit, onCancel }: { task:
       onSubmit={() =>
         onSubmit({
           ...(title.trim() !== task.title ? { title } : {}),
-          ...(current !== undefined && description.trim() !== (current ?? '') ? { description } : {}),
+          ...(description.send !== undefined ? { description: description.send } : {}),
           ...(assignee ? who(assignee, email) : {}),
           ...(dueOn !== task.dueOn ? { dueOn } : {}),
           reason,
@@ -121,7 +122,8 @@ export function AmendForm({ task, people, initial, onSubmit, onCancel }: { task:
       }
     >
       <label>Wording <input required value={title} onChange={(e) => setTitle(e.target.value)} /></label>
-      {current === undefined ? <p className="meta">The description could not be read yet, so it stays as it is.</p> : <DescriptionField value={description} onChange={setTyped} />}
+      {description.known && <DescriptionField value={description.value} onChange={setTyped} hint="Clear it to remove the task's description." />}
+      {!description.known && <p className="meta" role="status">{failed ? 'The description could not be read, so it stays as it is.' : 'Reading the description'}</p>}
       <PersonField label="Assignee" people={people} value={assignee} email={email} onChange={setAssignee} onEmail={setEmail} keepLabel={`Keep ${task.assignee.displayName}`} />
       <label>Due date <input type="date" required value={dueOn} onChange={(e) => setDueOn(e.target.value)} /></label>
       {dueOn !== task.dueOn && <PastWarning day={dueOn} />}

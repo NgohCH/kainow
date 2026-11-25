@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { blockedLine, historyChanges, proposalHref, statusMeaning, taskHref } from './taskPage.ts';
+import { amendDescription, blockedLine, descriptionNow, historyChanges, proposalHref, statusMeaning, taskHref } from './taskPage.ts';
 import { parseProjectHash, tabForHash } from './ui/projectTabs.ts';
 
 const P = '0f8fad5b-d9cb-469f-a165-70867728950e';
@@ -60,4 +60,29 @@ test('a change in the history shows the previous and new values', () => {
   assert.deepEqual(historyChanges({ description: { from: 'X', to: null } }, {}), [{ label: 'Description', from: 'X', to: 'No description' }]);
   assert.deepEqual(historyChanges(null, {}), []);
   assert.deepEqual(historyChanges({ explanation: 'text', completedOn: '2026-11-01' }, {}), []);
+});
+
+test('the description in a change: a proposed one is shown and sent even when the one in force is unknown', () => {
+  const a = (current: string | null | undefined, proposed: string | null | undefined, typed: string | null = null) => amendDescription({ current, proposed, typed });
+  // Revising before the read is done, or after it failed.
+  assert.deepEqual(a(undefined, 'New'), { known: true, value: 'New', send: 'New' });
+  assert.deepEqual(a(undefined, null), { known: true, value: '', send: '' }, 'a removal');
+  assert.deepEqual(a(undefined, 'New', 'Newer'), { known: true, value: 'Newer', send: 'Newer' });
+  assert.deepEqual(a(undefined, 'New', ''), { known: true, value: '', send: '' });
+  // Nothing proposed and the one in force unknown: no field, and nothing sent.
+  assert.deepEqual(a(undefined, undefined), { known: false, value: '', send: undefined });
+  // Known: sent only when it differs.
+  assert.deepEqual(a('Old', undefined), { known: true, value: 'Old', send: undefined });
+  assert.deepEqual(a('Old', undefined, ' Old '), { known: true, value: ' Old ', send: undefined });
+  assert.deepEqual(a('Old', undefined, ''), { known: true, value: '', send: '' });
+  assert.deepEqual(a(null, undefined), { known: true, value: '', send: undefined });
+  assert.deepEqual(a('Old', null), { known: true, value: '', send: '' });
+  assert.deepEqual(a('Old', 'New'), { known: true, value: 'New', send: 'New' });
+});
+
+test('the description in force is said in words, also while it is read or when it cannot be', () => {
+  assert.equal(descriptionNow('Old', false), 'Old');
+  assert.equal(descriptionNow(null, false), 'No description');
+  assert.equal(descriptionNow(undefined, false), 'Reading the description');
+  assert.equal(descriptionNow(undefined, true), 'Could not be read');
 });
