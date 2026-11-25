@@ -179,14 +179,14 @@ const UNHOLD: Record<ItemKind, string[]> = Object.fromEntries(
 const CURRENT_TEXT: Record<ItemKind, string> = {
   message: `SELECT v.body AS text FROM message_versions v WHERE v.message_id = $1 ORDER BY v.version_no DESC LIMIT 1`,
   source: `SELECT concat_ws(E'\\n', s.title, (SELECT v.text_content FROM source_versions v WHERE v.source_id = s.id ORDER BY v.version_no DESC LIMIT 1)) AS text FROM sources s WHERE s.id = $1`,
-  task: `SELECT concat_ws(E'\\n', title, owner_as_written) AS text FROM tasks WHERE id = $1`,
+  task: `SELECT concat_ws(E'\\n', title, description, owner_as_written) AS text FROM tasks WHERE id = $1`,
   decision: `SELECT concat_ws(E'\\n', statement, rationale) AS text FROM decisions WHERE id = $1`,
   question: `SELECT concat_ws(E'\\n', q.text, (SELECT string_agg(a.answer, E'\\n' ORDER BY a.id) FROM question_answers a WHERE a.question_id = q.id)) AS text FROM questions q WHERE q.id = $1`,
   risk: `SELECT concat_ws(E'\\n', description, mitigation) AS text FROM risks WHERE id = $1`,
   proposal: `SELECT concat_ws(E'\\n', i.text, i.owner, i.due, i.due_event, i.quote, array_to_string(i.alternatives, E'\\n'),
                      (SELECT string_agg(concat_ws(E'\\n', e.text, e.owner, e.due, e.due_event, e.reason), E'\\n' ORDER BY e.edited_at, e.id) FROM extraction_item_edits e WHERE e.item_id = i.id)) AS text
                FROM extraction_items i WHERE i.id = $1`,
-  human_proposal: `SELECT concat_ws(E'\\n', text, owner, due) AS text FROM human_proposals WHERE id = $1`,
+  human_proposal: `SELECT concat_ws(E'\\n', text, description, owner, due) AS text FROM human_proposals WHERE id = $1`,
   answer: `SELECT concat_ws(E'\\n', question, answer_markdown) AS text FROM ai_answers WHERE request_id = $1`,
   report_draft: `SELECT concat_ws(E'\\n', d.title, d.brief, (SELECT v.body FROM report_draft_versions v WHERE v.draft_id = d.id ORDER BY v.version_no DESC LIMIT 1)) AS text FROM report_drafts d WHERE d.id = $1`,
   summary: `SELECT concat_ws(E'\\n', sm.leave_out, (SELECT v.body FROM summary_versions v WHERE v.summary_id = sm.id ORDER BY v.version_no DESC LIMIT 1)) AS text FROM summaries sm WHERE sm.id = $1`,

@@ -1,4 +1,4 @@
-import { ConflictException } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
 import type { AuthUser } from '../auth/tokens';
 import type { ExtractionService } from '../extraction/extraction.service';
@@ -6,6 +6,7 @@ import { AUTHORISED_MESSAGE } from '../extraction/extraction.service';
 import { type ProjectContext } from '../projects/access.service';
 import { decide } from '../projects/matrix';
 import type { Created, RecordsService } from '../records/records.service';
+import { DESCRIPTION_FOR_ACTIONS, readTaskDescription } from '../records/task-description';
 import type { ChangeKind } from './rules';
 
 export type TargetKind = 'extraction_item' | 'human_proposal' | 'task' | 'decision' | 'risk' | 'output_version' | 'project_budget' | 'expenditure';
@@ -87,7 +88,7 @@ export class AlreadyAuthorised extends ConflictException {
 
 /** 2a's authorise body: what the authoriser chose. */
 const AUTHORISE_TERMS = [
-  'assigneeId', 'inviteEmail', 'dueOn', 'subtasks', 'responsibleId', 'severity', 'reviewOn', 'requesterId', 'rationale', 'sourceVersionId', 'occurrence',
+  'assigneeId', 'inviteEmail', 'dueOn', 'subtasks', 'responsibleId', 'severity', 'reviewOn', 'requesterId', 'rationale', 'sourceVersionId', 'occurrence', 'description',
 ] as const;
 
 /** Runs `work` and undoes whatever it wrote, keeping its refusal. */
@@ -130,6 +131,10 @@ export function authoriseProposalHandler(deps: { records: RecordsService; extrac
       if (target.targetKind === 'human_proposal' && target.reviewStatus === 'rejected') throw new ConflictException('This proposal was rejected.');
       const out: Record<string, unknown> = {};
       for (const k of AUTHORISE_TERMS) if (terms[k] !== undefined) out[k] = terms[k];
+      if (out.description !== undefined) {
+        out.description = readTaskDescription(out.description);
+        if (out.description !== null && target.kind !== 'action') throw new BadRequestException(DESCRIPTION_FOR_ACTIONS);
+      }
       // The same checks as creating the record, with nothing kept: the refusal and its wording are exactly 2a's.
       await dryRun(c, () => make(c, ctx, target, out, user, at));
       return out;
