@@ -231,6 +231,7 @@ export function NoteDetail({ sourceId, versionNo, place }: { sourceId: string; v
               {version.storage !== 'stored' && <span className="hint">The notes work as usual in Kainow while the files wait to be stored.</span>}
             </p>
           )}
+          {place && text !== null && !marked && <p className="warn" role="status">The passage in this link is not in this version. The whole text is shown.</p>}
           <div className="source" tabIndex={0}>
             {marked ? (
               <>

@@ -57,7 +57,10 @@ test('note addresses, old and new', () => {
   assert.deepEqual(parseNoteHash(`#/notes/${S}`), { sourceId: S, versionNo: null, place: null });
   assert.deepEqual(parseNoteHash(`#/notes/${S}/v/2`), { sourceId: S, versionNo: 2, place: null });
   assert.deepEqual(parseNoteHash(`#/notes/${S}/v/2?at=5-12`), { sourceId: S, versionNo: 2, place: { start: 5, end: 12 } });
-  assert.equal(parseNoteHash(`#/notes/${S}/v/2?at=x`), null);
+  for (const bad of ['?at=x', '?at=5', '?at=-1-4', '?at=', '?at=9999999999-99999999999', '?']) {
+    assert.deepEqual(parseNoteHash(`#/notes/${S}/v/2${bad}`), { sourceId: S, versionNo: 2, place: null }, bad);
+  }
+  assert.equal(parseNoteHash(`#/notes/${S}/x`), null);
   assert.equal(parseNoteHash('#/notes'), null);
   assert.equal(currentMenuHref(`#/notes/${S}/v/2?at=5-12`), '#/projects');
 });

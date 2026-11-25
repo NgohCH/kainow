@@ -59,11 +59,12 @@ export function parseRunHash(hash: string): { runId: string; itemId: string | un
   return m ? { runId: m[1], itemId: m[2] } : null;
 }
 
-/** `#/notes/<id>`, `#/notes/<id>/v/<n>`, and `?at=<start>-<end>` after a version for a place in it. */
+/** `#/notes/<id>`, `#/notes/<id>/v/<n>`, and `?at=<start>-<end>` after a version for a place in it; a malformed place is left out. */
 export function parseNoteHash(hash: string): { sourceId: string; versionNo: number | null; place: Place | null } | null {
-  const m = /^#\/notes\/([0-9a-f-]{36})(?:\/v\/(\d+)(?:\?at=(\d{1,9})-(\d{1,9}))?)?$/i.exec(hash);
+  const m = /^#\/notes\/([0-9a-f-]{36})(?:\/v\/(\d+)(?:\?(.*))?)?$/i.exec(hash);
   if (!m) return null;
-  return { sourceId: m[1], versionNo: m[2] ? Number(m[2]) : null, place: m[3] ? { start: Number(m[3]), end: Number(m[4]) } : null };
+  const at = /^at=(\d{1,9})-(\d{1,9})$/.exec(m[3] ?? '');
+  return { sourceId: m[1], versionNo: m[2] ? Number(m[2]) : null, place: at ? { start: Number(at[1]), end: Number(at[2]) } : null };
 }
 
 /** The text around a place, or null when the place does not fit it. */

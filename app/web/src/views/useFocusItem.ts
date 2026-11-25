@@ -1,9 +1,9 @@
 import { useEffect } from 'react';
 
-/** Opening an item's link: once the list has loaded, scroll the item into view, focus it and outline it for 3 seconds. */
-export function useFocusItem(focusId: string | undefined, ready: boolean): void {
+/** Opening an item's link: once the list has loaded, scroll the item into view, focus it and outline it for 3 seconds. `may`, asked at that moment, can refuse. */
+export function useFocusItem(focusId: string | undefined, ready: boolean, may?: () => boolean): void {
   useEffect(() => {
-    if (!focusId || !ready) return;
+    if (!focusId || !ready || (may && !may())) return;
     const el = document.getElementById(`item-${focusId}`);
     if (!el) return;
     el.scrollIntoView({ block: 'center' });
