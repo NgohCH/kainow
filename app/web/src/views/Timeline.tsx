@@ -12,6 +12,7 @@ import {
 } from '../dashboard.ts';
 import { setHidden, type Prefs, type TimelineKind } from '../prefs.ts';
 import { Box } from '../ui/Box.tsx';
+import { taskHref } from '../taskPage.ts';
 import { DataTable, type Column } from '../ui/DataTable.tsx';
 import { TimelineBars } from '../ui/TimelineBars.tsx';
 import { barsLayout } from '../ui/timelineBars.ts';
@@ -27,7 +28,7 @@ function LineWhat({ line, projectId }: { line: TimelineLine; projectId: string }
   const detail = line.detail as (Partial<TaskDetail> & Partial<RiskDetail> & { durationDays?: number }) | undefined;
   const items =
     line.kind === 'tasks_due'
-      ? (detail?.tasks ?? []).map((t) => ({ id: t.id, text: `${t.title} (${t.status.replace(/_/g, ' ')})`, href: `#/projects/${projectId}/work/${t.id}` }))
+      ? (detail?.tasks ?? []).map((t) => ({ id: t.id, text: `${t.title} (${t.status.replace(/_/g, ' ')})`, href: taskHref(projectId, t.id) }))
       : line.kind === 'risk_review'
         ? (detail?.risks ?? []).map((r) => ({ id: r.id, text: `${r.severity}: ${r.description}`, href: null as string | null }))
         : [];

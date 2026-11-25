@@ -95,6 +95,14 @@ describe('personal dashboard endpoint', { skip: SKIP_NO_DB }, () => {
     return id;
   }
 
+  test('an approval of a change to a task opens the task page', async () => {
+    const id = await task({ title: 'Order pipes', dueOn: '2026-11-30' });
+    await t.pool.query(`UPDATE approval_policy SET required = 3`);
+    const r = await people.pm.request('POST', `/projects/${projectId}/changes`, { kind: 'amend_task', targetKind: 'task', targetId: id, terms: { title: 'Order the pipes', reason: 'Wording' }, reason: 'Wording' });
+    assert.ok([201, 202].includes(r.status), JSON.stringify(r.body));
+    assert.equal(kinds(await me('owner'), 'approval')[0]?.link, `#/projects/${projectId}/tasks/${id}`);
+  });
+
   test('approval appears for an eligible Owner, not after they approve, not for a Member', async () => {
     const text = 'Ann will export the records by 20 November 2026.';
     const versionId = (await people.pm.request('POST', `/projects/${projectId}/notes`, { title: 'N', text })).body.version.id;
@@ -175,8 +183,9 @@ describe('personal dashboard endpoint', { skip: SKIP_NO_DB }, () => {
   test('tasks grouped overdue / due in 7 days / later / awaiting review', async () => {
     const overdue = await task({ title: 'Overdue', dueOn: '2026-11-05', status: 'in_progress' });
     await task({ title: 'Due today', dueOn: '2026-11-09' });
-    await task({ title: 'Due in seven', dueOn: '2026-11-16' });
-    await task({ title: 'Due in eight', dueOn: '2026-11-17' });
+    // Monday 9 November: seven working days on is Wednesday 18 November (nine calendar days).
+    await task({ title: 'Due in seven', dueOn: '2026-11-18' });
+    await task({ title: 'Due in eight', dueOn: '2026-11-19' });
     await task({ title: 'Marked', dueOn: '2026-11-03', review: true });
     await task({ title: 'Done', dueOn: '2026-11-04', status: 'completed', completedAt: '2026-11-04T02:00:00Z' });
     await task({ title: 'Done long ago', dueOn: '2026-09-01', status: 'completed', completedAt: '2026-09-01T02:00:00Z' });
@@ -324,14 +333,14 @@ describe('personal dashboard endpoint', { skip: SKIP_NO_DB }, () => {
 
     const mem = await me('mem');
     assert.deepEqual(kinds(mem, 'overdue'), [
-      { kind: 'overdue', projectId, projectName: 'Harbour works', label: 'Overdue', since: midnight('2026-11-05'), link: `#/projects/${projectId}/work/${overdue}` },
+      { kind: 'overdue', projectId, projectName: 'Harbour works', label: 'Overdue', since: midnight('2026-11-05'), link: `#/projects/${projectId}/tasks/${overdue}` },
     ]);
     assert.deepEqual(kinds(mem, 'blocked'), [
-      { kind: 'blocked', projectId, projectName: 'Harbour works', label: 'Blocked', since: midnight('2026-11-30'), link: `#/projects/${projectId}/work/${blocked}` },
+      { kind: 'blocked', projectId, projectName: 'Harbour works', label: 'Blocked', since: midnight('2026-11-30'), link: `#/projects/${projectId}/tasks/${blocked}` },
     ]);
     const soon = kinds(mem, 'due_soon');
     assert.deepEqual(soon.map((n) => n.label), ['Due today', 'Due in seven working days']);
-    assert.deepEqual(soon[0], { kind: 'due_soon', projectId, projectName: 'Harbour works', label: 'Due today', since: midnight('2026-11-09'), link: `#/projects/${projectId}/work/${today}` });
+    assert.deepEqual(soon[0], { kind: 'due_soon', projectId, projectName: 'Harbour works', label: 'Due today', since: midnight('2026-11-09'), link: `#/projects/${projectId}/tasks/${today}` });
 
     // The PM sees every Blocked task of the project; the Owner and a Sponsor only their own.
     const pm = await me('pm');
@@ -347,6 +356,12 @@ describe('personal dashboard endpoint', { skip: SKIP_NO_DB }, () => {
     await task({ title: 'Due Monday next', dueOn: '2026-11-16' });
     await task({ title: 'Due Tuesday next', dueOn: '2026-11-17' });
     assert.deepEqual(kinds(await me('mem'), 'due_soon').map((n) => n.label), ['Due Monday next', 'Due Tuesday next'], 'working days');
+    const myDueSoon = async () => ((await me('mem')).myTasks.dueSoon as Array<{ title: string }>).map((r) => r.title);
+    assert.deepEqual(await myDueSoon(), ['Due Monday next', 'Due Tuesday next'], 'My tasks agrees with Needs you');
+    await t.pool.query(`INSERT INTO holidays (id, project_id, on_date, name, added_by, added_at) VALUES ($1, $2, '2026-11-12', 'Dummy holiday', $3, now())`, [uuidv7(), projectId, ids.pm]);
+    await task({ title: 'Due Thursday next', dueOn: '2026-11-19' });
+    assert.deepEqual(kinds(await me('mem'), 'due_soon').map((n) => n.label), ['Due Monday next', 'Due Tuesday next', 'Due Thursday next'], 'a holiday moves the end on a day');
+    assert.deepEqual(await myDueSoon(), ['Due Monday next', 'Due Tuesday next', 'Due Thursday next']);
     await t.pool.query(`INSERT INTO project_notification_settings (project_id, day_counting) VALUES ($1, 'calendar')`, [projectId]);
     assert.deepEqual(kinds(await me('mem'), 'due_soon').map((n) => n.label), ['Due Monday next'], 'calendar days');
   });

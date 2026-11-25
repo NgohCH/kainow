@@ -47,6 +47,14 @@ describe('preferences endpoints', { skip: SKIP_NO_DB }, () => {
     assert.equal(put.body.theme, 'light');
   });
 
+  test('tab style round-trips and an unknown value falls back to boxes', async () => {
+    assert.equal((await ann.request('GET', '/me/preferences')).body.tabStyle, 'boxes');
+    const put = await ann.request('PUT', '/me/preferences', { tabStyle: 'tinted' });
+    assert.equal(put.body.tabStyle, 'tinted');
+    assert.equal((await ann.request('GET', '/me/preferences')).body.tabStyle, 'tinted');
+    assert.equal((await ann.request('PUT', '/me/preferences', { tabStyle: 'wobbly' })).body.tabStyle, 'boxes');
+  });
+
   test('accent and accentChosen round-trip', async () => {
     const put = await ann.request('PUT', '/me/preferences', { accent: 'blue', accentChosen: true });
     assert.equal(put.body.accent, 'blue');

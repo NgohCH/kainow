@@ -12,6 +12,19 @@ import { queueUserSharing } from '../outputs/sharing-queue';
 
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
+/** A person's department as shown (D134): information only, nothing that decides access reads it. */
+export interface PersonDepartment {
+  id: string;
+  name: string;
+  /** Retired since it was chosen; it stays until changed. */
+  retired: boolean;
+}
+
+const CHOOSE_DEPARTMENT = 'Choose an active department from the list, or none.';
+
+/** SQL: the department `d` (left-joined) as PersonDepartment, or null. */
+const DEPARTMENT_SQL = `CASE WHEN d.id IS NULL THEN NULL ELSE json_build_object('id', d.id, 'name', d.name, 'retired', d.status = 'retired') END AS department`;
+
 @Injectable()
 export class UsersService {
   constructor(
@@ -68,19 +81,81 @@ export class UsersService {
     return rows[0].ok;
   }
 
+  async list(): Promise<Array<{ id: string; email: string; displayName: string; role: string; status: string; lockedUntil: Date | null; createdAt: Date; department: PersonDepartment | null }>> {
+    const { rows } = await this.pool.query(
+      `SELECT u.id, u.email, u.display_name AS "displayName", u.role, u.status, u.locked_until AS "lockedUntil", u.created_at AS "createdAt",
+              ${DEPARTMENT_SQL}
+         FROM users u LEFT JOIN departments d ON d.id = u.department_id ORDER BY u.created_at, u.id`,
+    );
+    return rows;
+  }
+
+  async department(userId: string): Promise<PersonDepartment | null> {
+    const { rows } = await this.pool.query(`SELECT ${DEPARTMENT_SQL} FROM users u LEFT JOIN departments d ON d.id = u.department_id WHERE u.id = $1`, [userId]);
+    return rows[0]?.department ?? null;
+  }
+
+  /**
+   * Sets a person's department to an active one from the central list, or to none (null). Saving the one already held
+   * changes and audits nothing; a retired one is refused even when already held.
+   */
+  async setDepartment(id: string, departmentId: unknown, actorUserId: string | null): Promise<PersonDepartment | null> {
+    if (!UUID_PATTERN.test(id)) {
+      throw new NotFoundException();
+    }
+    if (departmentId !== null && (typeof departmentId !== 'string' || !UUID_PATTERN.test(departmentId))) {
+      throw new BadRequestException(CHOOSE_DEPARTMENT);
+    }
+    const now = this.clock();
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const target = await client.query<{ departmentId: string | null }>(
+        `SELECT department_id AS "departmentId" FROM users WHERE id = $1 FOR NO KEY UPDATE`,
+        [id],
+      );
+      if (!target.rows[0]) {
+        throw new NotFoundException();
+      }
+      let department: PersonDepartment | null = null;
+      if (departmentId !== null) {
+        // Locked, so it cannot be retired between this check and the save.
+        const found = await client.query<{ id: string; name: string }>(
+          `SELECT id, name FROM departments WHERE id = $1 AND status = 'active' FOR SHARE`,
+          [departmentId],
+        );
+        if (!found.rows[0]) {
+          throw new BadRequestException(CHOOSE_DEPARTMENT);
+        }
+        department = { ...found.rows[0], retired: false };
+      }
+      const before = target.rows[0].departmentId;
+      if (before !== departmentId) {
+        await client.query(`UPDATE users SET department_id = $2, updated_at = $3 WHERE id = $1`, [id, departmentId, now]);
+        await writeAudit(client, {
+          at: now,
+          action: 'person.department_changed',
+          actorUserId,
+          subjectType: 'user',
+          subjectId: id,
+          detail: { fromDepartmentId: before, toDepartmentId: departmentId },
+        });
+      }
+      await client.query('COMMIT');
+      return department;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   /**
    * Disables a user: they can no longer sign in, and their sessions and unused codes stop working.
    * Users are never deleted. The last active administrator cannot be disabled, because nobody
    * would be left to recover access (decision log, 7 November 2026, item 3 on recovery).
    */
-  async list(): Promise<Array<{ id: string; email: string; displayName: string; role: string; status: string; lockedUntil: Date | null; createdAt: Date }>> {
-    const { rows } = await this.pool.query(
-      `SELECT id, email, display_name AS "displayName", role, status, locked_until AS "lockedUntil", created_at AS "createdAt"
-         FROM users ORDER BY created_at, id`,
-    );
-    return rows;
-  }
-
   async disable(id: string, actorUserId: string | null): Promise<void> {
     if (!UUID_PATTERN.test(id)) {
       throw new NotFoundException();

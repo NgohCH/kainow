@@ -164,6 +164,21 @@ describe('cleaning engine (spec 7.4)', { skip: SKIP_NO_DB }, () => {
   const passagesOf = async (ownerKind: string, owner: string) =>
     (await pool.query(`SELECT id, start_offset, end_offset, body, location FROM passages WHERE owner_kind = $1 AND owner_id = $2 ORDER BY ordinal`, [ownerKind, owner])).rows;
 
+  test('a holiday name in the settings history is cleaned and can be restored', async () => {
+    const project = await newProject();
+    const task = await seedTask(project, `Rotate ${SECRET}`);
+    const id = uuidv7();
+    await pool.query(
+      `INSERT INTO notification_settings_changes (id, scope, project_id, field, old_value, new_value, reason, actor_id, at) VALUES ($1, 'project', $2, 'holiday', $3, $4, 'Agreed', $5, now())`,
+      [id, project, `2026-12-01 Day ${SECRET}`, `2026-12-02 Day ${SECRET}`, user],
+    );
+    const { caseId } = await clean(project, 'task', task);
+    const row = async () => (await pool.query(`SELECT old_value, new_value FROM notification_settings_changes WHERE id = $1`, [id])).rows[0];
+    assert.deepEqual(await row(), { old_value: `2026-12-01 Day ${MARKER}`, new_value: `2026-12-02 Day ${MARKER}` });
+    await tx((c) => restoreOriginals(c, key, caseId));
+    assert.deepEqual(await row(), { old_value: `2026-12-01 Day ${SECRET}`, new_value: `2026-12-02 Day ${SECRET}` });
+  });
+
   test('cleaning a notes version removes the secret from text, passages, search view and quotes', async () => {
     const project = await newProject();
     const intro = 'Intro paragraph about the staging rollout and who looks after it during the week.';
@@ -644,6 +659,46 @@ describe('cleaning engine (spec 7.4)', { skip: SKIP_NO_DB }, () => {
       for (const [sql, id] of [[`UPDATE project_stages SET name = $2 WHERE id = $1`, stage], [`UPDATE project_stage_periods SET stage = $2 WHERE id = $1`, period]]) {
         await assert.rejects(pool.query(sql, [id, bad]), (e: { code?: string }) => e.code === '23514');
       }
+    }
+  });
+
+  test('stages whose names differ only in the removed text are cleaned and restored', async () => {
+    const project = await newProject();
+    const task = await seedTask(project, 'Rotate the key');
+    const marks = ['Q7!z', 'W8?y'];
+    const names = marks.map((m) => `Rollout ${m}`);
+    const ids = [uuidv7(), uuidv7()];
+    for (const [i, id] of ids.entries()) {
+      await pool.query(`INSERT INTO project_stages (id, project_id, position, name, added_by, added_at) VALUES ($1, $2, $3, $4, $5, now())`, [id, project, 9 + i, names[i], user]);
+    }
+    const read = async () => (await pool.query(`SELECT name FROM project_stages WHERE id = ANY($1::uuid[]) ORDER BY position`, [ids])).rows.map((r) => r.name);
+    const { caseId } = await clean(project, 'task', task, marks);
+    assert.deepEqual(await read(), [`Rollout ${MARKER}`, `Rollout ${MARKER}`]);
+    const r = await tx((c) => restoreOriginals(c, key, caseId));
+    assert.deepEqual(r.changed, []);
+    assert.deepEqual(await read(), names);
+    await assert.rejects(pool.query(`UPDATE project_stages SET name = $2 WHERE id = $1`, [ids[1], names[0]]), (e: { code?: string }) => e.code === '23505');
+  });
+
+  test('a full-length description of a task and of a proposed action is cleaned and restored', async () => {
+    const project = await newProject();
+    const mark = 'Q7!z';
+    const description = `${'d'.repeat(4000 - mark.length - 1)} ${mark}`;
+    assert.equal(description.length, 4000);
+    const task = await seedTask(project, 'Rotate the key');
+    await pool.query(`UPDATE tasks SET description = $2 WHERE id = $1`, [task, description]);
+    const proposal = uuidv7();
+    await pool.query(
+      `INSERT INTO human_proposals (id, project_id, kind, text, proposed_by, proposed_at, description) VALUES ($1, $2, 'action', 'Rotate the key', $3, now(), $4)`,
+      [proposal, project, user, description],
+    );
+    for (const [table, kind, id] of [['tasks', 'task', task], ['human_proposals', 'human_proposal', proposal]] as const) {
+      const read = async () => (await pool.query(`SELECT description FROM ${table} WHERE id = $1`, [id])).rows[0].description as string;
+      const { caseId } = await clean(project, kind, id, [mark]);
+      assert.equal(await read(), description.replace(mark, MARKER), table);
+      const r = await tx((c) => restoreOriginals(c, key, caseId));
+      assert.deepEqual(r.changed, []);
+      assert.equal(await read(), description, table);
     }
   });
 

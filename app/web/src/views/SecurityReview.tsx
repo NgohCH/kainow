@@ -15,6 +15,7 @@ import {
   type SecurityCase,
   WAITING_FOR_KEY_LABEL,
   decideGrant,
+  copiesText,
   designateReviewer,
   extendGrant,
   kindNoun,
@@ -89,12 +90,13 @@ function ReasonButton({
 
 const caseName = (c: SecurityCase) => `A ${kindNoun(c.kind)} in ${c.project}`;
 
-/** The Known disclosures block of a case: AI requests, emails sent and the audience size. */
-function Disclosures({ c }: { c: SecurityCase }) {
+/** The Known disclosures block of a case: AI requests, emails sent and the audience size. Its heading is one level below the heading it stands under. */
+function Disclosures({ c, headingLevel }: { c: SecurityCase; headingLevel: 3 | 4 }) {
   const d = c.disclosures;
+  const H = `h${headingLevel}` as 'h3' | 'h4';
   return (
     <div>
-      <h4>{DISCLOSURES_HEADING}</h4>
+      <H>{DISCLOSURES_HEADING}</H>
       <ul className="plain">
         <li>
           {d.aiRequests.length === 0
@@ -113,6 +115,7 @@ function Disclosures({ c }: { c: SecurityCase }) {
 }
 
 function CaseLine({ c }: { c: SecurityCase }) {
+  const copies = copiesText(c.copiedTo, c.copiedFrom);
   return (
     <>
       <strong>{caseName(c)}</strong>
@@ -122,6 +125,7 @@ function CaseLine({ c }: { c: SecurityCase }) {
         {c.closedAt ? `, closed ${formatWhen(c.closedAt)}` : ''}
       </span>
       {c.waitingForKey && <span className="warn">{c.label ?? WAITING_FOR_KEY_LABEL}</span>}
+      {copies !== null && <p>{copies}</p>}
       {c.changedSinceCleaning.length > 0 && (
         <ul className="plain">
           {c.changedSinceCleaning.map((x, i) => (
@@ -223,8 +227,9 @@ function RevealOriginal({ c, item }: { c: SecurityCase; item: { kind: ItemKind; 
           </label>
           {error && <p role="alert" className="error">{error}</p>}
           <div className="decision">
-            <button className="primary" disabled={!ticked || busy} aria-disabled={!ticked || busy}>Show the original</button>
+            <button className="primary" disabled={!ticked || busy} aria-disabled={!ticked || busy} aria-describedby={ticked ? undefined : `${uid}-why`}>Show the original</button>
             <button type="button" onClick={hide}>Cancel</button>
+            {!ticked && <span id={`${uid}-why`} className="hint">Tick the box above first.</span>}
           </div>
         </form>
       )}
@@ -456,7 +461,7 @@ export function SecurityReviewPage() {
               <Box key={c.caseId} title={caseName(c)} headingLevel={3} meaning={CASE_MEANING[c.state] ?? 'draft'}>
                 <div className="stack">
                   <CaseLine c={c} />
-                  <Disclosures c={c} />
+                  <Disclosures c={c} headingLevel={4} />
                   {c.currentGrant ? (
                     <div className="decision">
                       {(c.items && c.items.length > 0 ? c.items : [{ kind: c.kind, id: c.itemId, role: 'reported' }]).map((it) => (
@@ -582,9 +587,10 @@ export function SecurityReviewersSection({ meId }: { meId: string }) {
             <option key={u.id} value={u.id}>{u.displayName} ({u.email})</option>
           ))}
         </select>
-        <button type="button" ref={addButton} aria-expanded={adding} disabled={pick === ''} aria-disabled={pick === ''} onClick={() => setAdding((a) => !a)}>
+        <button type="button" ref={addButton} aria-expanded={adding} disabled={pick === ''} aria-disabled={pick === ''} aria-describedby={pick === '' ? `${uid}-why` : undefined} onClick={() => setAdding((a) => !a)}>
           Designate
         </button>
+        {pick === '' && <span id={`${uid}-why`} className="hint">Choose a person first.</span>}
       </div>
       {adding && pick !== '' && (
         <ReasonDialog
@@ -621,7 +627,7 @@ export function QuarantineCasesSection() {
           {cases.map((c) => (
             <li key={c.caseId} className="stack">
               <CaseLine c={c} />
-              <Disclosures c={c} />
+              <Disclosures c={c} headingLevel={3} />
             </li>
           ))}
         </ul>

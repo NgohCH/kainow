@@ -243,6 +243,33 @@ Design: [`docs/superpowers/specs/2026-11-24-v1-interface-redesign-11a-design.md`
 
 **Checks.** The accessibility pass (`tests/a11y/`) covers the new pages and states at 1200 px and 375 px and fails any state that scrolls sideways at 375 px; the browser smoke run (`tests/browsers/`) follows the side menu, binder tabs and person menu.
 
+## Walkthrough changes (V1.0 sub-project 11a.1)
+
+Design: [`docs/superpowers/specs/2026-11-25-v1-walkthrough-changes-11a1-design.md`](../docs/superpowers/specs/2026-11-25-v1-walkthrough-changes-11a1-design.md); decisions D133 to D141; catalogue entries C114 and C115.
+
+**Migrations:**
+
+| Migration | Columns and rules |
+| --- | --- |
+| `0040_walkthrough.sql` | `tasks.description` and `human_proposals.description` (text, up to 4,000 characters, the relaxed form of 0039); `users.department_id` (a department, information only); `renamed` as a kind in `project_stage_changes`; `project_stages_name` ignores a name holding the credential marker, so two names that clean to the same text cannot stop the cleaning |
+| `0041_duplicate_project.sql` | `projects.copied_from_id` and `human_proposals.copied_from_project_id` (where they were copied from); `human_proposals.proposed_subtasks` (`[{ title, description, due }]`, actions only, used only to fill in the authorise form) |
+
+**New pages and addresses** (every older address still works):
+
+| Address | Page |
+| --- | --- |
+| `#/projects/:id/tasks/:taskId` | The task page. `#/projects/:id/work/:taskId` still opens the Work tab at the row |
+| `#/me` | My profile: details, department, projects and roles, past roles, Appearance (theme, colour scheme, tab style) |
+| `#/projects/history`, `#/projects/history/archived` | Projects, opened at History (Deferred and Closed); the second also shows archived projects |
+| `#/projects/:id/duplicate` | Duplicate project (a current Project Manager) |
+| `#/runs/:id/:itemId`, `#/notes/:id/v/:n?at=<start>-<end>`, `#/projects/:id/proposals/:proposalId` | A proposal on its review, a passage in a note version, a person's proposal |
+
+**New and changed endpoints:** `GET /records/tasks/:id` adds `task.description`, `task.dueSoon`, `parent`, `subtasks`, `authorised`, `blocked` and `proposal`; the records list adds each record's `proposal`, only when the reader may open it. `description` is accepted when proposing and authorising an action, for its subtasks, and in an `amend_task` change. `GET /me/profile`, `PUT /me/department` and `PUT /users/:id/department` (Enterprise Administrator), each `{ departmentId }` or null. `PUT /me/preferences` accepts `tabStyle` (`boxes`, `grey`, `tinted`). `POST /projects/:id/stages/:stageId/rename` (`{ name, reason }`). The project list adds `deferred` (`on`, `reason`) and `closed` (`on`, `outcome`); stage periods, the project's stage and the timeline add `stopped` (`deferred`, `closed` or null) with the day. `GET /projects/:projectId/proposal-runs` adds the parts of the source's address; run items add `recordOpens` and their place. `GET` and `POST /projects/:id/duplicate` (the offer, with `asOf`; and Create: 400 with `problems` and `terms`, 409 when the original is under review or changed under review since `asOf`, or the same Create was just made); `POST /projects/:id/proposals/authorise-many` (each item on its own: `results` says which were accepted, wait for another approval, or failed and why). Security and admin cases add `copiedTo` and `copiedFrom`, by name only to those who may know it.
+
+**Due soon** has one rule, `src/dashboards/due-soon.ts` (D139): seven working days ahead by the project's calendar; `MEASURES_VERSION` is 2. The reminder emails do not use it.
+
+**Checks.** The accessibility pass walks these pages on real projects (`tests/a11y/walkthrough.mjs`) and fails on any violation, console error, unexpected 4xx or 5xx reply, or sideways scroll; the browser smoke run follows a task link, My profile and each tab style.
+
 ## Milestones
 
 | # | Milestone | Status |

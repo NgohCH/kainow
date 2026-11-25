@@ -1,6 +1,9 @@
 /** Email delivery helpers for the Email delivery page. */
 export interface DeliveryLike { status: string; createdAt: string }
 
+/** What to say after a page of emails is read: a fresh list starts again at the newest 50, so an earlier "more loaded" no longer holds. */
+export const moreLoaded = (further: boolean, count: number): string | null => (further ? `${count} more ${count === 1 ? 'email' : 'emails'} loaded.` : null);
+
 export const needsAction = (status: string): boolean => status === 'failed' || status === 'uncertain';
 
 /** Failed and uncertain emails first, then the rest; each group keeps its order (newest first). */

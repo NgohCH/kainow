@@ -1,4 +1,4 @@
-import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import { type EvidenceSource, evidenceView } from '../discussion.ts';
 import { formatWhen } from '../format.ts';
@@ -24,6 +24,7 @@ import {
   type TaskStatus,
   historyLine,
 } from '../records.ts';
+import { type ProposalRef, proposalHref, taskHref } from '../taskPage.ts';
 import { flagSentence, mayDeleteRecord } from '../history.ts';
 import type { ProjectRole, ProjectStatus } from '../projects.ts';
 import { DeleteAction } from './DeleteRestore.tsx';
@@ -35,6 +36,8 @@ import { ChangeRequestPanel, useRequests } from './ChangeRequest.tsx';
 import { ExportControls } from './ProjectOutputs.tsx';
 import { useOutputPolicy } from './ProjectOutputSettings.tsx';
 import { useFocusItem } from './useFocusItem.ts';
+import { type Act, type Propose, useRecordChanges } from './useRecordChanges.ts';
+import { useReturnFocus } from './useReturnFocus.ts';
 import { DataTable, type Column } from '../ui/DataTable.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
 import { AddSubtaskForm, AmendForm, CancelForm, FollowUpForm, SupersedeForm, WithdrawForm, type WorkContext } from './ChangeForms.tsx';
@@ -45,7 +48,7 @@ interface ReviewFlag {
   raisedAt: string;
 }
 
-interface TaskView {
+export interface TaskView {
   id: string;
   /** `Credential removed — under review` while the record is cleaned and under review. */
   quarantineLabel?: string | null;
@@ -68,6 +71,7 @@ interface TaskView {
   follows: { id: string | null; title: string } | null;
   followedBy: { id: string | null; title: string } | null;
   reviewFlags: ReviewFlag[];
+  proposal?: ProposalRef | null;
 }
 interface QuestionView {
   id: string;
@@ -79,6 +83,7 @@ interface QuestionView {
   answers: Array<{ answer: string; author: string; at: string }>;
   mayAct: QuestionAction[];
   reviewFlags: ReviewFlag[];
+  proposal?: ProposalRef | null;
 }
 interface RiskView {
   id: string;
@@ -94,6 +99,7 @@ interface RiskView {
   handedOverTo: { projectId: string; name: string } | null;
   handedOverFrom: { projectId: string; name: string } | null;
   reviewFlags: ReviewFlag[];
+  proposal?: ProposalRef | null;
 }
 interface DecisionView {
   id: string;
@@ -108,8 +114,9 @@ interface DecisionView {
   replacedBy: { id: string | null; statement: string } | null;
   changeWaiting: boolean;
   mayAct: Array<'supersede' | 'withdraw'>;
+  proposal?: ProposalRef | null;
 }
-interface Records {
+export interface Records {
   tasks: TaskView[];
   decisions: DecisionView[];
   questions: QuestionView[];
@@ -126,54 +133,25 @@ export function Work({
   roles: ProjectRole[]; status: ProjectStatus; delegated: boolean;
 }) {
   const [records, setRecords] = useState<Records | null>(null);
-  const [error, setError] = useState<string | null>(null);
-  const [notice, setNotice] = useState<string | null>(null);
   const mayDelete = mayDeleteRecord(roles, status, delegated);
   const { requests, reload: reloadRequests } = useRequests(projectId);
   // Whether "Export CSV" and "Save as output" are shown: the server says (D106); hidden otherwise.
   const { policy } = useOutputPolicy(projectId);
+  const [loadError, setLoadError] = useState<string | null>(null);
   const load = useCallback(() => {
-    api.get<Records>(`/projects/${projectId}/records`).then(setRecords, (e: Error) => setError(e.message));
+    api.get<Records>(`/projects/${projectId}/records`).then(
+      (r) => {
+        setRecords(r);
+        setLoadError(null);
+      },
+      (e: Error) => setLoadError(e.message),
+    );
     reloadRequests();
   }, [projectId, reloadRequests]);
   useEffect(load, [load]);
   useFocusItem(focusId, records !== null);
-
-  /** Sends one change and reloads; shows the server's reason when it is refused. */
-  const act = useCallback(
-    async (path: string, body: object, done: string) => {
-      setError(null);
-      setNotice(null);
-      try {
-        await api.post(path, body);
-        setNotice(done);
-        load();
-        return true;
-      } catch (e) {
-        setError(errText(e, 'That did not work. Try again.'));
-        return false;
-      }
-    },
-    [load],
-  );
-
-  /** Proposes a change for authorisation; the request then appears under Waiting for authorisation. */
-  const propose = useCallback(
-    async (kind: string, targetKind: string, targetId: string, terms: Record<string, unknown>) => {
-      setError(null);
-      setNotice(null);
-      try {
-        await api.post(`/projects/${projectId}/changes`, { kind, targetKind, targetId, terms, reason: String(terms.reason ?? '') });
-        setNotice('Proposed. It now waits for authorisation.');
-        load();
-        return true;
-      } catch (e) {
-        setError(errText(e, 'That did not work. Try again.'));
-        return false;
-      }
-    },
-    [projectId, load],
-  );
+  const { error: changeError, setError, notice, setNotice, act, propose, changed } = useRecordChanges(projectId, load);
+  const error = changeError ?? loadError;
 
   if (!records) return error ? <p role="alert" className="error">{error}</p> : <p className="loading">Loading</p>;
   const hasChildren = new Set(records.tasks.map((t) => t.parentId).filter(Boolean));
@@ -181,11 +159,6 @@ export function Work({
   // Waiting requests: those the viewer may approve first, then the ones they can revise, then the rest.
   const rank = (r: RequestView) => (r.mayApprove ? 0 : r.mayRevise ? 1 : 2);
   const waiting = requests.filter((r) => r.status === 'pending').sort((a, b) => rank(a) - rank(b));
-  const changed = (message: string) => {
-    setError(null);
-    setNotice(message);
-    load();
-  };
   const exported = (m: string) => {
     setError(null);
     setNotice(m);
@@ -199,7 +172,7 @@ export function Work({
       sortValue: (t) => t.title.toLowerCase(),
       cell: (t) => (
         <span className={`work-title depth-${t.depth}`}>
-          {t.title}
+          <a href={taskHref(projectId, t.id)}>{t.title}</a>
           {t.parentId && <span className="meta work-parent">Subtask of {titles.get(t.parentId) ?? 'another task'}</span>}
         </span>
       ),
@@ -327,14 +300,13 @@ export function Work({
 
 const SEVERITY_ORDER: Severity[] = ['low', 'medium', 'high', 'critical'];
 
-type Propose = (kind: string, targetKind: string, targetId: string, terms: Record<string, unknown>) => Promise<boolean>;
-
 /** A task's state and what else is true of it, each as a label with its symbol and word. */
-function TaskLabels({ t }: { t: TaskView }) {
+export function TaskLabels({ t }: { t: TaskView & { dueSoon?: boolean } }) {
   return (
     <span className="label-stack">
       <StatusLabel meaning={TASK_STATUS_MEANING[t.status]} word={TASK_STATUS_LABEL[t.status]} />
       {t.overdue && <StatusLabel meaning="overdue" word="Overdue" />}
+      {t.dueSoon && <StatusLabel meaning="dueSoon" word="Due soon" />}
       {t.awaitingMembership && <StatusLabel meaning="review" word={`Awaiting Membership${t.invitation ? ` (invitation ${t.invitation})` : ''}`} />}
       {t.dueAfterParent && <StatusLabel meaning="review" word="Due after its parent task" />}
       {t.changeWaiting && <StatusLabel meaning="review" word="Change waiting" />}
@@ -392,7 +364,7 @@ function Flags({ flags, canClear }: { flags: ReviewFlag[]; canClear: boolean }) 
 }
 
 /** The passage a record came from: the quote, the discussion message it came from, a review flag, or a note that the source is restricted. */
-function Evidence({ source, projectId }: { source: EvidenceSource; projectId: string }) {
+export function Evidence({ source, projectId }: { source: EvidenceSource; projectId: string }) {
   const ev = evidenceView(source, projectId);
   if (ev.kind === 'restricted') return <p className="quote restricted-evidence">{ev.text}</p>;
   return (
@@ -405,21 +377,58 @@ function Evidence({ source, projectId }: { source: EvidenceSource; projectId: st
   );
 }
 
-type Act = (path: string, body: object, done: string) => Promise<boolean>;
+/** The proposal a record came from, when the reader may open it (the server gives it only then). */
+export function ProposalLink({ proposal, projectId, title }: { proposal: ProposalRef | null | undefined; projectId: string; title: string }) {
+  if (!proposal) return null;
+  return (
+    <p className="meta">
+      <a href={proposalHref(projectId, proposal)}>Open its proposal<span className="visually-hidden">: {title}</span></a>
+    </p>
+  );
+}
+
 type TaskForm = TaskAction | 'amend' | 'subtask' | 'cancel' | 'followup';
 
-/** A task's source, flags, actions and their forms, and its history: the last cell of its row. */
-function TaskDetails({
-  projectId, t, hasChildren, work, act, propose, canPropose, canClear, mayDelete, onChanged,
-}: {
+interface TaskActionsProps {
   projectId: string; t: TaskView; hasChildren: boolean; work: WorkContext; act: Act; propose: Propose; canPropose: boolean; canClear: boolean;
   mayDelete: boolean; onChanged: (message: string) => void;
-}) {
+}
+
+/** A task's source, then its actions with its history: the last cell of its row. */
+function TaskDetails(props: TaskActionsProps) {
+  const { projectId, t } = props;
+  return (
+    <div className="work-details">
+      {(t.follows || t.followedBy) && (
+        <p className="meta">
+          {t.follows ? `Follows ${t.follows.title}` : ''}
+          {t.follows && t.followedBy ? ' · ' : ''}
+          {t.followedBy ? `Followed by ${t.followedBy.title}` : ''}
+        </p>
+      )}
+      {t.source && <Evidence source={t.source} projectId={projectId} />}
+      <ProposalLink proposal={t.proposal} projectId={projectId} title={t.title} />
+      <TaskActions {...props} withHistory />
+    </div>
+  );
+}
+
+/** A task's report button, review flags, actions and their forms: in its row of the Work tab (with its history) and on its page. */
+export function TaskActions({
+  projectId, t, hasChildren, work, act, propose, canPropose, canClear, mayDelete, onChanged, withHistory = false,
+}: TaskActionsProps & { withHistory?: boolean }) {
   const [open, setOpen] = useState<TaskForm | null>(null);
   const [note, setNote] = useState('');
   const [override, setOverride] = useState('');
   const [history, setHistory] = useState<TaskHistoryEntry[] | null>(null);
   const [historyError, setHistoryError] = useState<string | null>(null);
+  // Opening a form replaces the buttons, so focus goes to its first field; closing it, sent or cancelled, gives focus back to the button that opened it.
+  const opener = (form: TaskForm) => `${t.id}:${form}`;
+  useReturnFocus(open === null ? null : opener(open));
+  const formBox = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    if (open !== null) formBox.current?.querySelector<HTMLElement>('input, select, textarea')?.focus();
+  }, [open]);
   async function toggleHistory() {
     if (history) return setHistory(null);
     setHistoryError(null);
@@ -457,31 +466,25 @@ function TaskDetails({
   const mayFollowUp = canPropose && t.status === 'cancelled';
   const cancel = () => setOpen(null);
   return (
-    <div className="work-details">
-      {(t.follows || t.followedBy) && (
-        <p className="meta">
-          {t.follows ? `Follows ${t.follows.title}` : ''}
-          {t.follows && t.followedBy ? ' · ' : ''}
-          {t.followedBy ? `Followed by ${t.followedBy.title}` : ''}
-        </p>
-      )}
-      {t.source && <Evidence source={t.source} projectId={projectId} />}
+    <>
       <QuarantineBar projectId={projectId} kind="task" id={t.id} label={`task “${t.title}”`} quarantineLabel={t.quarantineLabel} onReported={() => onChanged('Reported. The task is held while the text is removed.')} />
       <Flags flags={t.reviewFlags} canClear={canClear} />
       {open === null && (
         <div className="decision">
           {t.mayAct.map((a) => (
-            <button key={a} onClick={() => void run(a)}>
+            <button key={a} data-opener={opener(a)} onClick={() => void run(a)}>
               {TASK_ACTION_LABEL[a]}
             </button>
           ))}
-          {mayProposeChange && <button className="link-button" onClick={() => setOpen('amend')}>Propose a change</button>}
-          {mayAddSubtask && <button className="link-button" onClick={() => setOpen('subtask')}>Add subtask</button>}
-          {mayProposeChange && <button className="link-button" onClick={() => setOpen('cancel')}>Propose cancellation</button>}
-          {mayFollowUp && <button className="link-button" onClick={() => setOpen('followup')}>Propose follow-up task</button>}
-          <button className="link-button" aria-expanded={history !== null} onClick={() => void toggleHistory()}>
-            {history ? 'Hide history' : 'History'}
-          </button>
+          {mayProposeChange && <button className="link-button" data-opener={opener('amend')} onClick={() => setOpen('amend')}>Propose a change</button>}
+          {mayAddSubtask && <button className="link-button" data-opener={opener('subtask')} onClick={() => setOpen('subtask')}>Add subtask</button>}
+          {mayProposeChange && <button className="link-button" data-opener={opener('cancel')} onClick={() => setOpen('cancel')}>Propose cancellation</button>}
+          {mayFollowUp && <button className="link-button" data-opener={opener('followup')} onClick={() => setOpen('followup')}>Propose follow-up task</button>}
+          {withHistory && (
+            <button className="link-button" aria-expanded={history !== null} onClick={() => void toggleHistory()}>
+              {history ? 'Hide history' : 'History'}
+            </button>
+          )}
           {mayDelete && <DeleteAction kind="task" id={t.id} label={`task “${t.title}”`} onDone={onChanged} />}
         </div>
       )}
@@ -493,38 +496,40 @@ function TaskDetails({
           ))}
         </ol>
       )}
-      {isAction(open) && (
-        <form className="inline-form stack change-form" onSubmit={submit} aria-label={`${TASK_ACTION_LABEL[open]} task`}>
-          <label>
-            {TASK_ACTION_PROMPT[open]} <input required value={note} onChange={(e) => setNote(e.target.value)} />
-          </label>
-          {open === 'complete' && hasChildren && (
+      <div ref={formBox}>
+        {isAction(open) && (
+          <form className="inline-form stack change-form" onSubmit={submit} aria-label={`${TASK_ACTION_LABEL[open]} task`}>
             <label>
-              Override reason (only if subtasks are unfinished; Project Manager or Deputy)
-              <input value={override} onChange={(e) => setOverride(e.target.value)} />
+              {TASK_ACTION_PROMPT[open]} <input required value={note} onChange={(e) => setNote(e.target.value)} />
             </label>
-          )}
-          <div className="decision">
-            <button className="primary">{TASK_ACTION_LABEL[open]}</button>
-            <button type="button" onClick={cancel}>Cancel</button>
-          </div>
-        </form>
-      )}
-      {open === 'amend' && <AmendForm task={t} people={work.people} onSubmit={send('amend_task')} onCancel={cancel} />}
-      {open === 'subtask' && <AddSubtaskForm task={t} people={work.people} onSubmit={send('amend_task')} onCancel={cancel} />}
-      {open === 'cancel' && <CancelForm task={t} tasks={work.tasks} onSubmit={send('cancel_task')} onCancel={cancel} />}
-      {open === 'followup' && (
-        <FollowUpForm
-          task={t}
-          onCancel={cancel}
-          onSubmit={async (body) => {
-            const ok = await act(`/records/tasks/${t.id}/follow-up`, body, 'Follow-up proposed. An Owner or Sponsor can authorise it from the Proposals tab.');
-            if (ok) setOpen(null);
-            return ok;
-          }}
-        />
-      )}
-    </div>
+            {open === 'complete' && hasChildren && (
+              <label>
+                Override reason (only if subtasks are unfinished; Project Manager or Deputy)
+                <input value={override} onChange={(e) => setOverride(e.target.value)} />
+              </label>
+            )}
+            <div className="decision">
+              <button className="primary">{TASK_ACTION_LABEL[open]}</button>
+              <button type="button" onClick={cancel}>Cancel</button>
+            </div>
+          </form>
+        )}
+        {open === 'amend' && <AmendForm task={t} people={work.people} onSubmit={send('amend_task')} onCancel={cancel} />}
+        {open === 'subtask' && <AddSubtaskForm task={t} people={work.people} onSubmit={send('amend_task')} onCancel={cancel} />}
+        {open === 'cancel' && <CancelForm task={t} tasks={work.tasks} onSubmit={send('cancel_task')} onCancel={cancel} />}
+        {open === 'followup' && (
+          <FollowUpForm
+            task={t}
+            onCancel={cancel}
+            onSubmit={async (body) => {
+              const ok = await act(`/records/tasks/${t.id}/follow-up`, body, 'Follow-up proposed. An Owner or Sponsor can authorise it from the Proposals tab.');
+              if (ok) setOpen(null);
+              return ok;
+            }}
+          />
+        )}
+      </div>
+    </>
   );
 }
 
@@ -540,6 +545,7 @@ function DecisionDetails({ projectId, d, work, propose, mayDelete, onChanged }: 
   return (
     <div className="work-details">
       {notes.length > 0 && <p className="meta">{notes.join(' · ')}</p>}
+      <ProposalLink proposal={d.proposal} projectId={projectId} title={d.statement} />
       <QuarantineBar projectId={projectId} kind="decision" id={d.id} label={`decision “${d.statement}”`} quarantineLabel={d.quarantineLabel} onReported={() => onChanged('Reported. The decision is held while the text is removed.')} />
       {open === null && ((d.mayAct.length > 0 && !d.changeWaiting) || mayDelete) && (
         <div className="decision">
@@ -568,6 +574,7 @@ function QuestionDetails({ projectId, q, act, canClear, mayDelete, onChanged }: 
   const [value, setValue] = useState('');
   return (
     <div className="work-details">
+      <ProposalLink proposal={q.proposal} projectId={projectId} title={q.text} />
       <QuarantineBar projectId={projectId} kind="question" id={q.id} label={`question “${q.text}”`} quarantineLabel={q.quarantineLabel} onReported={() => onChanged('Reported. The question is held while the text is removed.')} />
       <Flags flags={q.reviewFlags} canClear={canClear} />
       {q.answers.length > 0 ? (
@@ -634,6 +641,7 @@ function RiskDetails({ projectId, r, people, act, canClear, mayDelete, onChanged
   return (
     <div className="work-details">
       {notes.length > 0 && <p className="meta">{notes.join(' · ')}</p>}
+      <ProposalLink proposal={r.proposal} projectId={projectId} title={r.description} />
       <Flags flags={r.reviewFlags} canClear={canClear} />
       <QuarantineBar projectId={projectId} kind="risk" id={r.id} label={`risk “${r.description}”`} quarantineLabel={r.quarantineLabel} onReported={() => onChanged('Reported. The risk is held while the text is removed.')} />
       {open === null ? (

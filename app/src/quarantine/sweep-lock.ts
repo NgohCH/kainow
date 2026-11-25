@@ -49,6 +49,24 @@ export async function lockSweeps(db: Db, projectId: string): Promise<void> {
 }
 
 /**
+ * SQL for how far the quarantine of `project` has come: the sweep marker and the number of events of its cases. Every
+ * part only grows and changes with the transaction that moves it, so "differs" is "something was reported, cleaned,
+ * restored or decided since", whatever any clock says. It is sent to a page and back, so it is hashed: the numbers of
+ * cases and events are for the people who review them.
+ */
+export function quarantineMarkSql(project: string): string {
+  return `md5(${project}::text || ':' || ${sweepMarkSql(project)} || ':' || (SELECT count(*) FROM quarantine_events e JOIN quarantine_cases c ON c.id = e.case_id WHERE c.project_id = ${project})::text)`;
+}
+
+/**
+ * The project's sweep lock, shared, to the end of the transaction: no report, cleaning or restoring in the project can
+ * commit meanwhile. Taken first, before any row lock, as by a runner's save.
+ */
+export async function shareSweeps(db: Db, projectId: string): Promise<void> {
+  await db.query(`SELECT pg_advisory_xact_lock_shared(${LOCK_KEY})`, [projectId]);
+}
+
+/**
  * The first statement of a runner's save transaction: the project's sweep lock, shared, then whether the marker moved
  * since `mark` was read. True means a sweep or a report happened in between: the run must save nothing.
  */

@@ -1,5 +1,6 @@
 // Plain-language lines for in-app notifications and notice emails (spec §6). Pure: no database, no clock.
 // A notice names the record and its date and links to it; notes, rationale, mitigation and evidence never appear.
+import { taskLink } from '../records/task-link';
 import type { RouteKind } from './recipients';
 
 const DAYS = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -67,8 +68,9 @@ export function resumptionSummary(projectName: string, f: ResumptionFacts): stri
   return `${projectName}: work to check after resuming. ${parts.length > 0 ? parts.join(' ') : 'Nothing is outstanding.'}`;
 }
 
-/** The in-app link: the record in the project's work view, or the work view itself for a project-level notice. */
+/** The in-app link: a task's own page, another record in the project's work view, or the work view itself for a project-level notice. */
 export function linkFor(projectId: string, recordKind: string, recordId: string): string {
+  if (recordKind === 'task') return taskLink(projectId, recordId);
   return recordKind === 'project' ? `#/projects/${projectId}/work` : `#/projects/${projectId}/work/${recordId}`;
 }
 

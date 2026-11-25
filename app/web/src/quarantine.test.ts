@@ -5,6 +5,7 @@ import {
   CREDENTIAL_MARKER,
   MARKER_EQUIVALENT,
   type PossibleCopy,
+  copiesText,
   copyLine,
   decisionBody,
   markerSegments,
@@ -13,6 +14,17 @@ import {
   revealLines,
   runFailureText,
 } from './quarantine.ts';
+
+test('a case of a copied project says which to check, and whom to ask about one that may not be named', () => {
+  const a = { id: 'a', name: 'Alpha' };
+  const ASK = ' Check these projects too. Ask an Enterprise Administrator which projects they are.';
+  assert.equal(copiesText({ projects: [], others: 0 }, null), null);
+  assert.equal(copiesText(undefined, undefined), null);
+  assert.equal(copiesText({ projects: [a], others: 0 }, null), 'This project was copied to Alpha. Check these projects too.');
+  assert.equal(copiesText({ projects: [a], others: 2 }, a), `This project was copied to Alpha, 2 other projects. This project was copied from Alpha.${ASK}`);
+  assert.equal(copiesText({ projects: [], others: 1 }, null), `This project was copied to 1 project.${ASK}`);
+  assert.equal(copiesText({ projects: [], others: 0 }, { hidden: true }), `This project was copied from another project.${ASK}`);
+});
 
 test('marker segments split the cleaned text', () => {
   assert.deepEqual(markerSegments('The key is [credential removed] and the other [credential removed].'), [

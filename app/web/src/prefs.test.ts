@@ -5,17 +5,23 @@ import {
   ACCENT_KEYS,
   ACCENTS,
   DEFAULT_PREFS,
+  TAB_STYLES,
+  TAB_STYLE_LABELS,
   THEME_TOKENS,
   applyAppearance,
   expansionDefault,
   moveItem,
   moveSection,
   schemeChoices,
+  resetPrefs,
   schemeFor,
   setHidden,
+  tabStyleOf,
   type FixedAccentKey,
+  type Prefs,
 } from './prefs.ts';
-import { contrastRatio } from './ui/colour.ts';
+import { contrastRatio, type SchemeTokens } from './ui/colour.ts';
+import { MEANINGS, type Meaning } from './ui/meanings.ts';
 
 const css = readFileSync(new URL('./styles.css', import.meta.url), 'utf8');
 
@@ -31,6 +37,29 @@ function rule(selector: string): Record<string, string> {
   }
   return out;
 }
+
+test('resetting puts back only what the panel shows', () => {
+  const mine: Prefs = {
+    ...DEFAULT_PREFS,
+    theme: 'dark', accent: 'plum', accentChosen: true, tabStyle: 'tinted',
+    home: { ...DEFAULT_PREFS.home, order: [...DEFAULT_PREFS.home.order].reverse(), hidden: [DEFAULT_PREFS.home.order[1]], showCompleted: true },
+    leadership: { fields: { order: ['name'], hidden: ['stage'] } },
+    expanded: { home: true },
+  };
+  const customise = resetPrefs(mine, ['home', 'leadership']);
+  assert.deepEqual(customise.home, { ...DEFAULT_PREFS.home, showCompleted: true });
+  assert.deepEqual(customise.leadership, DEFAULT_PREFS.leadership);
+  assert.deepEqual([customise.theme, customise.accent, customise.accentChosen, customise.tabStyle, customise.expanded], ['dark', 'plum', true, 'tinted', { home: true }]);
+  assert.deepEqual(resetPrefs(mine, ['leadership']).home, mine.home);
+  const looks = resetPrefs(mine, ['appearance']);
+  assert.deepEqual([looks.theme, looks.accent, looks.accentChosen, looks.tabStyle, looks.home], ['light', 'red', false, 'boxes', mine.home]);
+});
+
+test('preferences without a tab style show boxes', () => {
+  const { tabStyle: _none, ...older } = DEFAULT_PREFS;
+  assert.equal(tabStyleOf(older as Prefs), 'boxes');
+  assert.equal(tabStyleOf({ ...DEFAULT_PREFS, tabStyle: 'grey' }), 'grey');
+});
 
 test('contrastRatio matches the WCAG reference values', () => {
   assert.equal(contrastRatio('#000000', '#ffffff'), 21);
@@ -73,6 +102,7 @@ test('DEFAULT_PREFS has the server shape and values', () => {
   assert.equal(DEFAULT_PREFS.theme, 'light');
   assert.equal(DEFAULT_PREFS.accent, 'red');
   assert.equal(DEFAULT_PREFS.accentChosen, false);
+  assert.equal(DEFAULT_PREFS.tabStyle, 'boxes');
   assert.deepEqual(DEFAULT_PREFS.home, { order: ['needsYou', 'myTasks', 'myProjects'], hidden: [], showCompleted: false, includeArchived: false });
   assert.equal(DEFAULT_PREFS.leadership.fields.order[0], 'name');
   assert.equal(DEFAULT_PREFS.leadership.fields.order.length, 17);
@@ -154,10 +184,12 @@ test('applyAppearance sets the theme and scheme, and only sets variables for the
     style: { setProperty: (k: string, v: string) => props.set(k, v), removeProperty: (k: string) => props.delete(k) },
   } as unknown as HTMLElement;
   applyAppearance({ ...DEFAULT_PREFS }, '#1f55a8', root);
+  assert.equal(attrs.get('data-tabs'), 'boxes');
   assert.equal(attrs.get('data-accent'), 'organisation');
   assert.equal(props.get('--menu-ink'), '#ffffff');
   assert.equal(props.get('--accent'), '#1f55a8');
-  applyAppearance({ ...DEFAULT_PREFS, theme: 'dark', accent: 'plum', accentChosen: true }, '#1f55a8', root);
+  applyAppearance({ ...DEFAULT_PREFS, theme: 'dark', accent: 'plum', accentChosen: true, tabStyle: 'tinted' }, '#1f55a8', root);
+  assert.equal(attrs.get('data-tabs'), 'tinted');
   assert.equal(attrs.get('data-theme'), 'dark');
   assert.equal(attrs.get('data-accent'), 'plum');
   assert.equal(props.size, 0, 'the organisation values were removed');
@@ -278,4 +310,89 @@ test('the scheme shown as chosen is the one applied while the person has not cho
   const unchosen = { ...DEFAULT_PREFS, accent: 'teal' as const, accentChosen: false };
   assert.equal(schemeFor(unchosen, null).key, 'red');
   assert.equal(schemeFor(unchosen, '#1f55a8').key, 'organisation');
+});
+
+// ---- Tab styles (D135) ----
+
+const tabRule = (style: string, rest: string) => rule(`:is([data-tabs="${style}"] .binder-tabs, .tabs-${style}) ${rest}`);
+
+/** Every scheme in both themes, with the organisation scheme of some colours. */
+function schemes(): { where: string; theme: 'light' | 'dark'; colour: (cssValue: string) => string }[] {
+  const out = [];
+  for (const theme of ['light', 'dark'] as const) {
+    const t = THEME_TOKENS[theme];
+    const all: [string, SchemeTokens][] = FIXED.map((k) => [k, ACCENTS[k][theme]]);
+    for (const c of ['#1f55a8', '#b0182e', '#0c6a6e', '#2a1a6a']) all.push([`organisation ${c}`, schemeFor({ ...DEFAULT_PREFS, theme }, c).tokens]);
+    for (const [name, a] of all) {
+      const vars: Record<string, string> = {
+        '--paper': t.paper, '--surface': t.surface, '--ink': t.ink, '--muted': t.muted, '--muted-wash': t.mutedWash, '--control-border': t.controlBorder,
+        '--accent': a.accent, '--accent-contrast': a.accentContrast, '--accent-deep': a.accentDeep, '--accent-wash': a.accentWash,
+      };
+      out.push({
+        where: `${name} ${theme}`,
+        theme,
+        colour: (value: string) => {
+          const v = /var\((--[\w-]+)\)/.exec(value)?.[1];
+          assert.ok(v && vars[v], `a known colour token in "${value}"`);
+          return vars[v];
+        },
+      });
+    }
+  }
+  return out;
+}
+
+test('tab styles: three, boxes first, each with a plain name', () => {
+  assert.deepEqual([...TAB_STYLES], ['boxes', 'grey', 'tinted']);
+  assert.deepEqual(TAB_STYLES.map((s) => TAB_STYLE_LABELS[s]), ['Boxes', 'Grey dividers', 'Tinted dividers']);
+});
+
+test('tab styles: text 4.5:1 and edges 3:1 in every scheme, Light and Dark', () => {
+  for (const style of TAB_STYLES) {
+    const closed = tabRule(style, '.tab');
+    const open = { ...closed, ...tabRule(style, '.tab.open') };
+    for (const { where, colour } of schemes()) {
+      const at = `${style}, ${where}`;
+      const page = colour('var(--paper)');
+      for (const [state, d] of [['closed', closed], ['open', open]] as const) {
+        assert.ok(contrastRatio(colour(d.color), colour(d.background)) >= 4.5, `${at}: ${state} text`);
+        assert.ok(contrastRatio(colour(d['border-color']), page) >= 3, `${at}: ${state} edge against the page`);
+      }
+      assert.ok(contrastRatio(colour(closed['border-color']), colour(closed.background)) >= 3, `${at}: closed edge against its tab`);
+      if (open['border-top-color']) assert.ok(contrastRatio(colour(open['border-top-color']), page) >= 3, `${at}: open top edge`);
+      if (style !== 'boxes') assert.ok(contrastRatio(colour(tabRule(style, '.tab-slot::after')['border-bottom']), page) >= 3, `${at}: the line below`);
+    }
+  }
+});
+
+test('tab styles: the count badge reads, and stands out from an open and a closed tab, in every scheme', () => {
+  assert.equal(rule('.tab-badge').border, '1px solid currentColor', 'the badge has its own edge');
+  for (const style of TAB_STYLES) {
+    const closed = tabRule(style, '.tab');
+    const open = { ...closed, ...tabRule(style, '.tab.open') };
+    for (const { where, theme, colour } of schemes()) {
+      for (const m of Object.keys(MEANINGS) as Meaning[]) {
+        const strong = MEANINGS[m].strong[theme];
+        const wash = MEANINGS[m].wash[theme];
+        assert.ok(contrastRatio(strong, wash) >= 4.5, `${m} ${theme}: badge number`);
+        for (const d of [closed, open]) {
+          const tab = colour(d.background);
+          assert.ok(Math.max(contrastRatio(strong, tab), contrastRatio(wash, tab)) >= 3, `${style}, ${where}, ${m}: badge against its tab`);
+        }
+      }
+    }
+  }
+});
+
+test('tab styles: the open tab differs by weight and by size or edge, not colour alone', () => {
+  for (const style of TAB_STYLES) {
+    assert.equal(tabRule(style, '.tab.open')['font-weight'], '700', `${style}: weight`);
+    assert.notEqual(rule('.tab')['font-weight'], '700', `${style}: a closed tab is not bold`);
+    assert.equal(tabRule(style, '.tab')['border-width'], style === 'boxes' ? '2px' : '2px 2px 0', `${style}: strong edge`);
+  }
+  assert.notEqual(tabRule('boxes', '.tab.open').padding, tabRule('boxes', '.tab').padding, 'boxes: larger');
+  assert.notEqual(tabRule('grey', '.tab.open').padding, tabRule('grey', '.tab').padding, 'grey: taller');
+  assert.equal(tabRule('tinted', '.tab.open')['border-top-width'], '6px', 'tinted: a thick top edge');
+  assert.equal(tabRule('boxes', '.tab')['border-radius'], '8px');
+  assert.match(css, /@media \(forced-colors: active\) \{[^@]*\.tab\.open/, 'forced colours mark the open tab');
 });

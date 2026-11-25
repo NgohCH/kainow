@@ -52,7 +52,7 @@ describe('report drafts (pure)', () => {
       period,
     );
     const overdue = facts['Overdue and blocked'];
-    assert.match(overdue, /\| \[Replace the pump seal\]\(#\/projects\/[^)]+\/work\/0190a000-0000-7000-8000-0000000000a1\) \| Ada Lim \| 2026-11-14 \| In progress \|/);
+    assert.match(overdue, /\| \[Replace the pump seal\]\(#\/projects\/[^)]+\/tasks\/0190a000-0000-7000-8000-0000000000a1\) \| Ada Lim \| 2026-11-14 \| In progress \|/);
     assert.match(overdue, /Paint the fence/, 'blocked tasks are listed');
     assert.doesNotMatch(overdue, /Order filters|Old finished job/);
     const due = facts['Due in the next 14 days'];

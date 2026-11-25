@@ -4,8 +4,22 @@ Kainow supports the **current and previous major releases of Edge, Chrome, Firef
 
 How each is checked:
 
-- **Automated**: the smoke run in `tests/browsers/` (README there): the same 16-step journey (sign in with a code, Projects from the side menu, a project, the Work tab, a task's progress saved, a discussion comment, a note, the AI review screen for a finished run (inserted into the test database by `tests/browsers/review-run.mjs`, since the test installation has no AI) with a decision authorised there, a person's proposal authorised, the personal and project dashboards, Analytics and Operations as Administrator, sign out from the person menu), each step checking what is on screen and that no console error was logged. Desktop is 1280×800, phone 390×844, tablet 820×1180 (Chrome and WebKit only). Results: `tests/browsers/results/<date>.md`.
-- **By hand**: Safari on a Mac, iPhone and iPad, by the Product Owner with `docs/operations/safari-check.md` (the same 16 steps; its setup makes the AI run with `review-run.mjs`).
+- **Automated**: the smoke run in `tests/browsers/` (README there): the same journey of 16 steps (19 since sub-project 11a.1: also a task's own page, My profile and each tab style) (sign in with a code, Projects from the side menu, a project, the Work tab, a task's progress saved, a discussion comment, a note, the AI review screen for a finished run (inserted into the test database by `tests/browsers/review-run.mjs`, since the test installation has no AI) with a decision authorised there, a person's proposal authorised, the personal and project dashboards, Analytics and Operations as Administrator, sign out from the person menu), each step checking what is on screen and that no console error was logged. Desktop is 1280×800, phone 390×844, tablet 820×1180 (Chrome and WebKit only). Results: `tests/browsers/results/<date>.md`.
+- **By hand**: Safari on a Mac, iPhone and iPad, by the Product Owner with `docs/operations/safari-check.md` (the same journey in its own steps: its 6a is the smoke run's step 7 and its 12a the run's 14 and 15, so the numbers differ; its setup makes the AI run with `review-run.mjs`).
+
+## Sub-project 11a.1, the walkthrough changes (checked 25 November 2026)
+
+The journey of 19 steps, which also fails on any 4xx or 5xx reply and on any sideways scroll, against a test installation of this branch with the load-test seed, on the development PC (Windows 11). Result: `tests/browsers/results/2026-11-25.md`.
+
+| Browser | Major | Device class | Exact version | How checked | Date | Result | Limitation |
+|---|---|---|---|---|---|---|---|
+| Chrome | 157 (current) | desktop, phone, tablet | 157.0.8103.80 | automated | 2026-11-25 | passed (19/19 each) | phone and tablet are sized windows on Windows (no touch, desktop user agent) |
+| Edge | 158 (current) | desktop, phone | 158.0.4370.33 | automated | 2026-11-25 | passed (19/19 each) | tablets are checked in Chrome and WebKit only |
+| Firefox | 159 (current) | desktop, phone | 159.0 (Playwright 1.65.1 build) | automated | 2026-11-25 | passed (19/19 each) | Playwright's build of Firefox, not the Mozilla release |
+| Firefox | 157 (older than supported) | desktop, phone | 157.0 (Playwright 1.64.1 build) | automated | 2026-11-25 | passed (19/19 each) | Not a supported version; evidence only. |
+| WebKit engine, not Safari | 27.2 | desktop, phone, tablet | 27.2 (Playwright 1.65.1 build) | automated | 2026-11-25 | passed (19/19 each) | Not a Safari result. |
+| Chrome 156, Edge 157, Firefox 158 (previous) | previous | all | — | not checked | — | not checked | Cannot be obtained on this PC, as before. |
+| Safari (macOS, iOS, iPadOS) | current and previous | all | — | not checked | — | not checked yet | The Product Owner's check by hand (`safari-check.md`) is still to do; its steps were updated on 25 November 2026. |
 
 ## Sub-project 11a, the interface redesign (checked 24 November 2026)
 

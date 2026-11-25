@@ -169,18 +169,72 @@ export interface ItemDraft {
   kind: string;
   reference: string;
   name: string;
+  /** A category's id, NEW_CATEGORY for the one named in `newCategory`, or '' when none is chosen. */
   categoryId: string;
+  newCategory: string;
   description: string;
 }
-export const EMPTY_ITEM: ItemDraft = { kind: 'equipment', reference: '', name: '', categoryId: '', description: '' };
+export const NEW_CATEGORY = 'new';
+type NamedCategory = { name: string; status: string };
 
-/** The first problem with an item as typed, in the server's limits, or null. */
-export function itemProblem(d: ItemDraft): string | null {
+/** An empty item; with no category in use, it starts on a new one. */
+export function newItem(categories: readonly NamedCategory[]): ItemDraft {
+  return { kind: 'equipment', reference: '', name: '', categoryId: categories.some((c) => c.status === 'active') ? '' : NEW_CATEGORY, newCategory: '', description: '' };
+}
+
+/** The first problem with an item as typed, in the server's limits, or null. A retired category's name may be used again. */
+export function itemProblem(d: ItemDraft, categories: readonly NamedCategory[] = []): string | null {
   if (d.reference.trim().length < 1 || d.reference.trim().length > 30) return 'The reference must be 1 to 30 characters.';
   if (d.name.trim().length < 1 || d.name.trim().length > 120) return 'The name must be 1 to 120 characters.';
   if (d.categoryId === '') return 'Choose an active category.';
+  if (d.categoryId === NEW_CATEGORY) {
+    const name = d.newCategory.trim();
+    if (name.length < 1 || name.length > 80) return 'The category name must be 1 to 80 characters.';
+    if (categories.some((c) => c.status === 'active' && c.name.toLowerCase() === name.toLowerCase())) return 'A current category already uses this name. Choose it from the list instead.';
+  }
   if (d.description.trim().length > 1000) return 'The description must be up to 1,000 characters.';
   return null;
+}
+
+export interface CatalogueCategory {
+  id: string;
+  name: string;
+  status: 'active' | 'retired';
+}
+
+/**
+ * Saves an item, its new category first. Returns the refusal, or null, and the name of the category that was added: when
+ * the item is then refused, the category stays, selected.
+ */
+export async function saveItem(
+  d: ItemDraft,
+  send: {
+    /** `POST /resources/catalogue/categories`: the server answers `{ category }`. */
+    addCategory: (name: string) => Promise<{ category: CatalogueCategory }>;
+    sendItem: (body: Omit<ItemDraft, 'newCategory'>) => Promise<unknown>;
+    onCategory: (c: CatalogueCategory) => void;
+    errText: (e: unknown) => string;
+  },
+): Promise<{ refused: string | null; added: string | null }> {
+  let categoryId = d.categoryId;
+  let added: string | null = null;
+  if (categoryId === NEW_CATEGORY) {
+    try {
+      const { category } = await send.addCategory(d.newCategory.trim());
+      categoryId = category.id;
+      added = category.name;
+      send.onCategory(category);
+    } catch (e) {
+      return { refused: send.errText(e), added: null };
+    }
+  }
+  try {
+    await send.sendItem({ kind: d.kind, reference: d.reference.trim(), name: d.name.trim(), categoryId, description: d.description.trim() });
+    return { refused: null, added };
+  } catch (e) {
+    const why = send.errText(e);
+    return { refused: added === null ? why : `The category ${added} was added and is selected. The item was not saved: ${why}`, added };
+  }
 }
 
 // ---- Organisation finance settings (spec 8.1) -------------------------------------------------------------------------------

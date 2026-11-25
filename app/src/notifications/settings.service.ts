@@ -8,8 +8,8 @@ import { PG_POOL } from '../db/database.module';
 import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { type PlannedTrigger, planProject } from './planner';
 import {
-  EMPTY_PROJECT, GROUP_OF, MSG, NOT_ALLOWED, type OrgRow, type ProjectRow, applyProject, historyText, loadHolidayDates,
-  loadOrgRow, loadProjectRow, loadRiskSnaps, loadTaskSnaps, parseOrgChanges, parseProjectChanges, resolveEffective, sameValue, snake,
+  GROUP_OF, MSG, NOT_ALLOWED, type OrgRow, type ProjectRow, applyProject, insertHoliday, loadHolidayDates,
+  loadOrgRow, loadProjectRow, loadRiskSnaps, loadTaskSnaps, logSettingChange, parseOrgChanges, parseProjectChanges, resolveEffective, sameValue, saveProjectRow, snake,
 } from './settings';
 
 type Db = Pool | PoolClient;
@@ -37,10 +37,12 @@ function holidayDate(date: unknown): string {
   return date as string;
 }
 
-function holidayInput(b: Record<string, unknown>): { date: string; name: string } {
+export function holidayInput(b: Record<string, unknown>): { date: string; name: string } {
   const date = holidayDate(b.date);
   if (typeof b.name !== 'string' || b.name.trim() === '') throw new BadRequestException('Give the holiday a name.');
-  return { date, name: b.name.trim().slice(0, 200) };
+  const name = b.name.trim().slice(0, 200);
+  refuseSecretsIn(name);
+  return { date, name };
 }
 
 @Injectable()
@@ -118,11 +120,7 @@ export class NotificationSettingsService {
   }
 
   private async log(c: Db, projectId: string | null, field: string, from: unknown, to: unknown, reason: string, actorId: string, at: Date) {
-    await c.query(
-      `INSERT INTO notification_settings_changes (id, scope, project_id, field, old_value, new_value, reason, actor_id, at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-      [uuidv7(at.getTime()), projectId ? 'project' : 'organisation', projectId, snake(field), historyText(from), historyText(to), reason, actorId, at],
-    );
+    await logSettingChange(c, projectId, field, from, to, reason, actorId, at);
   }
 
   // ---- Holidays ----
@@ -135,18 +133,12 @@ export class NotificationSettingsService {
       [projectId, date],
     );
     if (dupe.rowCount) throw new ConflictException('That date is already a holiday.');
-    const id = uuidv7(at.getTime());
     try {
-      await c.query(`INSERT INTO holidays (id, project_id, on_date, name, added_by, added_at) VALUES ($1, $2, $3::date, $4, $5, $6)`, [id, projectId, date, name, user.id, at]);
+      await insertHoliday(c, projectId, date, name, reason, user.id, at);
     } catch (err) {
       if ((err as { code?: string }).code === '23505') throw new ConflictException('That date is already a holiday.');
       throw err;
     }
-    await this.log(c, projectId, 'holiday', null, `${date} ${name}`, reason, user.id, at);
-    await writeAudit(c, {
-      at, action: 'notification_holiday.added', actorUserId: user.id,
-      subjectType: projectId ? 'project' : 'organisation', subjectId: projectId ?? undefined, detail: { holidayId: id, date },
-    });
   }
 
   private async removeHoliday(c: Db, projectId: string | null, id: string, b: Record<string, unknown>, user: AuthUser, at: Date) {
@@ -161,7 +153,7 @@ export class NotificationSettingsService {
     await this.log(c, projectId, 'holiday', `${r.rows[0].date} ${r.rows[0].name}`, null, reason, user.id, at);
     await writeAudit(c, {
       at, action: 'notification_holiday.removed', actorUserId: user.id,
-      subjectType: projectId ? 'project' : 'organisation', subjectId: projectId ?? undefined, detail: { holidayId: id, date: r.rows[0].date, reason },
+      subjectType: projectId ? 'project' : 'organisation', subjectId: projectId ?? undefined, detail: { holidayId: id, date: r.rows[0].date },
     });
   }
 
@@ -251,20 +243,7 @@ export class NotificationSettingsService {
       );
       const old = await loadProjectRow(c, projectId, true);
       const next = applyProject(old, changes);
-      const fields = (Object.keys(EMPTY_PROJECT) as (keyof ProjectRow)[]).filter((k) => !sameValue(old[k], next[k]));
-      if (fields.length === 0) return;
-      for (const k of fields) await this.log(c, projectId, k, old[k], next[k], reason, user.id, at);
-      await c.query(
-        `UPDATE project_notification_settings SET day_counting = $2, weekdays = $3::smallint[], lead_days = $4::smallint[], escalation_days = $5,
-                digest_enabled = $6, digest_frequency = $7, digest_weekday = $8, digest_time = $9::time, updated_by = $10, updated_at = $11
-          WHERE project_id = $1`,
-        [projectId, next.dayCounting, next.weekdays, next.leadDays, next.escalationDays,
-          next.digestEnabled, next.digestFrequency, next.digestWeekday, next.digestTime, user.id, at],
-      );
-      await writeAudit(c, {
-        at, action: 'notification_settings.project_changed', actorUserId: user.id, subjectType: 'project', subjectId: projectId,
-        detail: { fields: fields.map(snake) },
-      });
+      await saveProjectRow(c, projectId, old, next, reason, user.id, at);
     });
   }
 

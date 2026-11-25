@@ -1,8 +1,13 @@
-import { type FormEvent, useCallback, useEffect, useState } from 'react';
+import { type FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { QuarantineNote, ReportSecret } from './ReportSecret.tsx';
 import { ApiError, api, type DueReading } from '../api.ts';
 import { formatWhen } from '../format.ts';
-import { AuthoriseForm, type Person } from './AuthoriseForm.tsx';
+import { recordHref } from '../proposalLinks.ts';
+import { AuthoriseForm, DescriptionField, type Person } from './AuthoriseForm.tsx';
+import { type ProposedSubtask, manyCandidates } from '../authoriseMany.ts';
+import type { CopiedFrom } from '../duplicate.ts';
+import { AuthoriseSeveral } from './AuthoriseSeveral.tsx';
+import { CopiedFromLabel } from './CopiedFromLabel.tsx';
 import { useFocusItem } from './useFocusItem.ts';
 import { ChangeRequestPanel, pendingAuthorisation, useRequests } from './ChangeRequest.tsx';
 import { waitingLine, type RequestView } from '../changes.ts';
@@ -14,6 +19,7 @@ interface Proposal {
   id: string;
   kind: Kind;
   text: string;
+  description: string | null;
   owner: string | null;
   due: string | null;
   proposedBy: string;
@@ -22,7 +28,12 @@ interface Proposal {
   rejectReason: string | null;
   label: string;
   record: { kind: string; id: string } | null;
+  /** The record is in view today: it can be linked to. */
+  recordOpens?: boolean;
   dueReading: DueReading;
+  /** Carried over by duplicating a project (D140): where from, and the subtasks to create with it. */
+  copiedFrom?: CopiedFrom;
+  proposedSubtasks?: ProposedSubtask[] | null;
 }
 
 const KIND_LABEL: Record<Kind, string> = { action: 'Action', decision: 'Decision', question: 'Question', risk: 'Risk' };
@@ -47,7 +58,9 @@ export function HumanProposals({
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ kind: 'action' as Kind, text: '', owner: '', due: '' });
+  const [several, setSeveral] = useState(false);
+  const severalButton = useRef<HTMLButtonElement>(null);
+  const [form, setForm] = useState({ kind: 'action' as Kind, text: '', description: '', owner: '', due: '' });
   const [authorising, setAuthorising] = useState<string | null>(null);
   const [rejecting, setRejecting] = useState<string | null>(null);
   const [reason, setReason] = useState('');
@@ -59,6 +72,16 @@ export function HumanProposals({
   }, [projectId, reloadRequests]);
   useEffect(load, [load]);
   useFocusItem(focusId, proposals.length > 0);
+
+  const candidates = useMemo(() => manyCandidates(proposals, new Set(requests.filter((r) => r.kind === 'authorise_proposal' && r.status === 'pending').map((r) => r.target.id))), [proposals, requests]);
+
+  /** Typed terms are not thrown away unasked; what is unsaved elsewhere on the page stays guarded. */
+  const mayCloseSeveral = useRef(() => true);
+  function closeSeveral() {
+    if (!mayCloseSeveral.current()) return;
+    setSeveral(false);
+    severalButton.current?.focus();
+  }
 
   async function run(work: () => Promise<unknown>, done: string | ((result: unknown) => string)) {
     setError(null);
@@ -76,9 +99,9 @@ export function HumanProposals({
 
   async function propose(e: FormEvent) {
     e.preventDefault();
-    if (await run(() => api.post(`/projects/${projectId}/proposals`, form), 'Proposed. The Owner or a Sponsor reviews it.')) {
+    if (await run(() => api.post(`/projects/${projectId}/proposals`, { ...form, description: form.kind === 'action' ? form.description : undefined }), 'Proposed. The Owner or a Sponsor reviews it.')) {
       setOpen(false);
-      setForm({ kind: 'action', text: '', owner: '', due: '' });
+      setForm({ kind: 'action', text: '', description: '', owner: '', due: '' });
     }
   }
 
@@ -86,6 +109,11 @@ export function HumanProposals({
     <section aria-labelledby="human-proposals-heading">
       <div className="row">
         <h2 id="human-proposals-heading">Proposals from people</h2>
+        {canReview && (candidates.length > 1 || several) && (
+          <button ref={severalButton} className="quiet" onClick={() => (several ? closeSeveral() : setSeveral(true))} aria-expanded={several}>
+            {several ? 'Close authorise several' : 'Authorise several'}
+          </button>
+        )}
         {canPropose && (
           <button className="quiet" onClick={() => setOpen((o) => !o)} aria-expanded={open}>
             {open ? 'Close' : 'Propose something'}
@@ -94,6 +122,16 @@ export function HumanProposals({
       </div>
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
+      {several && canReview && (
+        <AuthoriseSeveral
+          projectId={projectId}
+          proposals={candidates}
+          people={people}
+          onDone={load}
+          onClose={closeSeveral}
+          mayClose={mayCloseSeveral}
+        />
+      )}
       {open && (
         <form className="panel stack" onSubmit={propose} aria-label="Propose something">
           <label>
@@ -110,6 +148,7 @@ export function HumanProposals({
             What you propose
             <textarea required rows={3} maxLength={2000} value={form.text} onChange={(e) => setForm({ ...form, text: e.target.value })} />
           </label>
+          {form.kind === 'action' && <DescriptionField value={form.description} onChange={(description) => setForm({ ...form, description })} />}
           {form.kind === 'action' && (
             <div className="grid-2">
               <label>
@@ -135,14 +174,30 @@ export function HumanProposals({
               <div>
                 <span className="badge">{KIND_LABEL[p.kind]}</span> <strong>{p.text}</strong>
               </div>
+              {p.description && <p className="task-description">{p.description}</p>}
+              {p.proposedSubtasks && p.proposedSubtasks.length > 0 && (
+                <details>
+                  <summary>{p.proposedSubtasks.length} {p.proposedSubtasks.length === 1 ? 'subtask' : 'subtasks'}</summary>
+                  <ul>
+                    {p.proposedSubtasks.map((s, i) => (
+                      <li key={i}>{s.title}{s.due ? ` (by ${s.due})` : ''}{s.description && <p className="task-description">{s.description}</p>}</li>
+                    ))}
+                  </ul>
+                </details>
+              )}
               <QuarantineNote text={p.quarantineLabel} />
               <span className="meta">
                 {p.label}, by {p.proposedBy}, {formatWhen(p.proposedAt)}
+                {p.copiedFrom && <> · <CopiedFromLabel from={p.copiedFrom} /></>}
                 {p.owner ? ` · who: ${p.owner}` : ''}
                 {p.due ? ` · by when: ${p.due}` : ''}
                 {p.reviewStatus === 'rejected' ? ` · rejected: ${p.rejectReason}` : ''}
-                {p.record ? ' · authorised (see the Work tab)' : ''}
+                {p.record && !p.recordOpens ? ' · authorised (see the Work tab)' : ''}
+                {p.record && p.recordOpens && (
+                  <> · <a href={recordHref(projectId, p.record)}>authorised: open the {p.record.kind}<span className="visually-hidden"> “{p.text}”</span></a></>
+                )}
               </span>
+              {' '}
               <ReportSecret projectId={projectId} kind="human_proposal" id={p.id} label="this proposal" onReported={() => void load()} />
               {canReview && p.reviewStatus === 'pending' && authorising !== p.id && rejecting !== p.id && !pendingAuthorisation(requests, p.id) && (
                 <div className="decision">
@@ -158,6 +213,8 @@ export function HumanProposals({
                   kind={p.kind}
                   text={p.text}
                   owner={p.owner}
+                  description={p.description}
+                  copiedSubtasks={p.proposedSubtasks ?? undefined}
                   due={p.dueReading}
                   people={people}
                   meId={meId}

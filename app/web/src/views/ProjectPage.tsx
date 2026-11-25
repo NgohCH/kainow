@@ -15,20 +15,23 @@ import {
   MEMBERSHIP_MEANING,
   membershipStateLabel,
   roleLabel,
-  stageDuration,
   transitionsFor,
+  PROPOSALS_START,
+  proposalsStopped,
 } from '../projects.ts';
 import { go } from '../App.tsx';
 import { type NeedsYouItem, type PersonalDashboard, type ProjectDashboard, dayLabel, plannedEndLabel } from '../dashboard.ts';
 import { todayUtc8 } from '../changes.ts';
+import { taskHref } from '../taskPage.ts';
 import { TASK_STATUS_LABEL, TASK_STATUS_MEANING, type TaskStatus } from '../records.ts';
 import { addDays, dueWithin, projectAttention, taskStatusParts } from '../overview.ts';
-import { stageFlowFrom, type ProjectStage } from '../ui/stages.ts';
+import { stageFlowFrom, stageTiming, type ProjectStage } from '../ui/stages.ts';
 import { AttentionQueue } from '../ui/AttentionQueue.tsx';
 import { BinderTabs } from '../ui/BinderTabs.tsx';
 import { Box } from '../ui/Box.tsx';
 import { DataTable, type Column } from '../ui/DataTable.tsx';
 import { StackedBar } from '../ui/StackedBar.tsx';
+import { STOPPED_LABEL } from '../ui/graphics.ts';
 import { StageFlow } from '../ui/StageFlow.tsx';
 import { StatTile } from '../ui/StatTile.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
@@ -43,8 +46,10 @@ import { AskPanel } from './AskPanel.tsx';
 import { AssistReview } from './AssistReview.tsx';
 import { Drafts } from './Drafts.tsx';
 import { Discussion, Notes } from './Discussion.tsx';
+import { TaskPage } from './TaskPage.tsx';
 import { Work } from './Work.tsx';
 import { ProjectOutputs } from './ProjectOutputs.tsx';
+import { CopiedFromLabel } from './CopiedFromLabel.tsx';
 import { Resources } from './Resources.tsx';
 import { ResourcesReport } from './ResourcesReport.tsx';
 import { DeliveryHistory } from './Deliveries.tsx';
@@ -63,8 +68,8 @@ import { DeletionsList } from './HistoryList.tsx';
 import { CopiesAwaitingList, HeldForReviewList } from './HeldReview.tsx';
 import { type Act, ArchivePanel, DepartmentMove, GrantsSection, HandoverForm, HoldActions } from './ProjectAccessPanels.tsx';
 
-/** What the address shows: a tab's key (`resources/report` sits under Resources), or `run`, one run's review under Proposals. */
-export type ProjectView = 'overview' | 'resources' | 'resources/report' | 'people' | 'discussion' | 'notes' | 'proposals' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | 'timeline' | 'outputs' | 'run';
+/** What the address shows: a tab's key (`resources/report` sits under Resources), `run`, one run's review under Proposals, or `task`, one task's page under Work. */
+export type ProjectView = 'overview' | 'resources' | 'resources/report' | 'people' | 'discussion' | 'notes' | 'proposals' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | 'timeline' | 'outputs' | 'run' | 'task';
 
 /** What the binder tabs' badges and lifecycle tabs need. */
 interface TabCounts { waiting: number; overdue: number; mayPrepare: boolean; deadlineTasks: number }
@@ -206,6 +211,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
           </div>
           {contentAllowed && (
             <div className="page-action decision no-print">
+              {roles.includes('pm') && <a className="button secondary" href={`${base}/duplicate`}>Duplicate project</a>}
               <button type="button" ref={askButton} aria-expanded={asking} onClick={() => setAsking((v) => !v)}>Ask about this project</button>
               {(canAddNotes || canSubmitNotes) && (
                 <button
@@ -227,9 +233,10 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
             <div><dt>Participating departments</dt><dd>{project.contributingDepartments.map((d) => d.name).join(', ')}</dd></div>
           )}
           <div><dt>Project Manager</dt><dd>{pms.length > 0 ? pms.map((m) => m.displayName).join(', ') : 'Not appointed'}</dd></div>
+          {project.copiedFrom && <div><dt>Origin</dt><dd><CopiedFromLabel from={project.copiedFrom} /></dd></div>}
           {project.stageTemplate && <div><dt>Stages</dt><dd>{project.stageTemplate.name}</dd></div>}
           {project.stage && (
-            <div><dt>Stage</dt><dd>{`${project.stage.stage}${project.stage.substage ? `: ${project.stage.substage}` : ''} (${stageDuration(project.stage.startedAt)})`}</dd></div>
+            <div><dt>Stage</dt><dd>{`${project.stage.stage}${project.stage.substage ? `: ${project.stage.substage}` : ''} (${stageTiming(project.stage, new Date())})`}</dd></div>
           )}
           {(roles.length > 0 || project.access || project.isAdmin) && (
             <div>
@@ -269,6 +276,9 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
       )}
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
+      {view === 'overview' && project.copiedFrom && project.status === 'draft' && roles.length > 0 && (
+        <p className="warn">What was copied waits on <a href={`${base}/proposals`}>Proposals</a>. {PROPOSALS_START}</p>
+      )}
       {view === 'overview' && <Overview project={project} act={act} contentAllowed={contentAllowed} />}
       {view === 'timeline' && contentAllowed && <Timeline projectId={project.id} prefs={prefs} ready={prefsReady} onChange={onPrefs} />}
       {view === 'drafts' && contentAllowed && <Drafts projectId={project.id} draftId={itemId} />}
@@ -304,6 +314,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
         />
       )}
       {view === 'notes' && contentAllowed && <Notes projectId={project.id} canAdd={canAddNotes} canSubmit={canSubmitNotes} addRequest={addNotes} onAddHandled={() => setAddNotes(0)} />}
+      {view === 'proposals' && contentAllowed && proposalsStopped(project.status) && <p className="warn">{proposalsStopped(project.status)}</p>}
       {view === 'proposals' && contentAllowed && (
         <ProjectProposals
           projectId={project.id}
@@ -314,7 +325,20 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
           focusId={itemId}
         />
       )}
-      {view === 'run' && runId && <Review key={runId} runId={runId} meId={meId} />}
+      {view === 'run' && runId && <Review key={runId} runId={runId} focusId={itemId} meId={meId} />}
+      {view === 'task' && itemId && (
+        <TaskPage
+          key={itemId}
+          projectId={project.id}
+          taskId={itemId}
+          people={people}
+          canPropose={roles.length > 0}
+          canClear={roles.some((r) => r === 'pm' || r === 'deputy_pm')}
+          roles={roles}
+          status={project.status}
+          delegated={Boolean(project.recordDeletionDelegation)}
+        />
+      )}
       {view === 'work' && contentAllowed && (
         <Work
           projectId={project.id}
@@ -336,7 +360,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
  * `#/runs/<id>` (email links point at it): the run's review inside its project, under the Proposals tab. The run says
  * which project it belongs to; a run the person may not see shows the server's reason.
  */
-export function RunInProject({ runId, meId, prefs, prefsReady, onPrefs }: { runId: string; meId: string; prefs: Prefs; prefsReady: boolean; onPrefs: (next: Prefs) => Promise<void> }) {
+export function RunInProject({ runId, itemId, meId, prefs, prefsReady, onPrefs }: { runId: string; itemId?: string; meId: string; prefs: Prefs; prefsReady: boolean; onPrefs: (next: Prefs) => Promise<void> }) {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -357,7 +381,7 @@ export function RunInProject({ runId, meId, prefs, prefsReady, onPrefs }: { runI
       </main>
     );
   }
-  return <ProjectPage key={projectId} projectId={projectId} tab="run" runId={runId} meId={meId} prefs={prefs} prefsReady={prefsReady} onPrefs={onPrefs} />;
+  return <ProjectPage key={projectId} projectId={projectId} tab="run" runId={runId} itemId={itemId} meId={meId} prefs={prefs} prefsReady={prefsReady} onPrefs={onPrefs} />;
 }
 
 function Overview({ project, act, contentAllowed }: { project: Project; act: Act; contentAllowed: boolean }) {
@@ -543,6 +567,7 @@ function Overview({ project, act, contentAllowed }: { project: Project; act: Act
               {s.stage}
               {s.substage ? `: ${s.substage}` : ''} — from {formatWhen(s.startedAt)}
               {s.endedAt ? ` to ${formatWhen(s.endedAt)}` : ' (current)'}
+              {s.stopped ? ` (${STOPPED_LABEL[s.stopped].toLowerCase()})` : ''}
               {s.reason ? ` — ${s.reason}` : ''}
             </li>
           ))}
@@ -608,13 +633,13 @@ function OverviewGlance({ project, contentAllowed, dashboard }: { project: Proje
 
   const today = todayUtc8();
   const flow = stageFlowFrom(project.stages, project.stagePeriods, new Date());
-  // A closed project has been through every stage.
-  const steps = project.status === 'closed' ? flow.map((s) => ({ name: s.name, state: 'done' as const })) : flow;
+  // A closed project shows where it stopped (D138); with no stopped stage recorded, every stage as done.
+  const steps = project.status === 'closed' && !flow.some((s) => s.state === 'stopped') ? flow.map((s) => ({ name: s.name, state: 'done' as const })) : flow;
   const cancelled = (tasks ?? []).filter((t) => t.status === 'cancelled').length;
   const due = dueWithin(tasks ?? [], today, 14);
   const plannedEnd = dashboard.d ? plannedEndLabel(dashboard.d.measures.plannedEnd) : null;
   const dueColumns: Column<OverviewTask>[] = [
-    { key: 'task', header: 'Task', sortValue: (t) => t.title.toLowerCase(), cell: (t) => <a href={`#/projects/${project.id}/work/${t.id}`}>{t.title}</a> },
+    { key: 'task', header: 'Task', sortValue: (t) => t.title.toLowerCase(), cell: (t) => <a href={taskHref(project.id, t.id)}>{t.title}</a> },
     { key: 'due', header: 'Due', sortValue: (t) => t.dueOn, cell: (t) => (t.dueOn === today ? `Today, ${dayLabel(t.dueOn)}` : dayLabel(t.dueOn)) },
     { key: 'assignee', header: 'Assignee', sortValue: (t) => t.assignee.displayName.toLowerCase(), cell: (t) => t.assignee.displayName },
     { key: 'status', header: 'Status', sortValue: (t) => TASK_STATUS_LABEL[t.status], cell: (t) => <StatusLabel meaning={TASK_STATUS_MEANING[t.status]} word={TASK_STATUS_LABEL[t.status]} /> },

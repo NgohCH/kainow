@@ -14,6 +14,7 @@ import {
   includesUncertain,
   limitsBody,
   limitsDraft,
+  limitsFirst,
   meterText,
   modelBody,
   modelDraft,
@@ -263,4 +264,12 @@ test('a limit that could not be read is not shown as "No limit saved"', () => {
   assert.deepEqual(nearLimitState({ projectId: 'a', name: 'A', used: 5, limit: null, unread: true }), { meaning: 'attention', word: 'Limit not read' });
   assert.equal(nearLimitState({ projectId: 'a', name: 'A', used: 8, limit: 10 }).word, 'Near its limit');
   assert.equal(nearLimitState({ projectId: 'a', name: 'A', used: 1, limit: 0 }).word, 'Limit reached');
+});
+
+test('until the limits are saved, only the spending box can save them', () => {
+  for (const part of ['places', 'policy'] as const) {
+    assert.equal(limitsFirst(part, false), true, part);
+    assert.equal(limitsFirst(part, true), false, part);
+  }
+  assert.equal(limitsFirst('spending', false), false);
 });

@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { reviewOwnsKey, type KeyTarget } from './reviewKeys.ts';
+import { cardForKey, mayAct, mayTakeFocus, openingSelection, reviewOwnsKey, stepCard, type KeyTarget } from './reviewKeys.ts';
+
+test('a and r do what their buttons do: nothing for an authorised proposal, a waiting one, one being saved, or without the right', () => {
+  const free = { allowed: true, hasRecord: false, waiting: false, saving: false, ready: true };
+  assert.equal(mayAct(free), true);
+  for (const over of [{ allowed: false }, { hasRecord: true }, { waiting: true }, { saving: true }, { ready: false }]) assert.equal(mayAct({ ...free, ...over }), false, JSON.stringify(over));
+});
 
 /** A stand-in element: its tag and the selectors it sits inside. */
 const el = (tagName: string, inside: string[] = []): KeyTarget => ({
@@ -41,4 +47,45 @@ test('a key with nothing focused counts only while no Ask panel is open', () => 
 test('no target or no review root: not a shortcut', () => {
   assert.equal(reviewOwnsKey(null, root, body, false), false);
   assert.equal(reviewOwnsKey(card, null, body, false), false);
+});
+
+test('keys from inside a form are not, whatever has focus in it', () => {
+  assert.equal(reviewOwnsKey(el('BUTTON', ['form']), { contains: () => true }, body, false), false);
+});
+
+test('a key acts on the selected card, and never while focus is in another one', () => {
+  assert.equal(cardForKey('a', 'a'), 'a');
+  assert.equal(cardForKey(null, 'a'), 'a');
+  assert.equal(cardForKey('b', 'a'), null);
+  assert.equal(cardForKey(null, null), null);
+});
+
+test('j and k move one card from the focused one, or from the selected one, and stop at the ends', () => {
+  const ids = ['a', 'b', 'c'];
+  assert.equal(stepCard('j', ids, null, 'a'), 'b');
+  assert.equal(stepCard('k', ids, null, 'b'), 'a');
+  assert.equal(stepCard('j', ids, 'b', 'a'), 'c');
+  assert.equal(stepCard('j', ids, null, 'c'), null);
+  assert.equal(stepCard('k', ids, null, 'a'), null);
+  assert.equal(stepCard('j', ids, null, null), 'a');
+  assert.equal(stepCard('k', ids, null, null), null);
+});
+
+test('opening a run selects the named proposal, the first when none is named, and nothing when the named one is not there', () => {
+  assert.deepEqual(openingSelection(['a', 'b'], 'b', null), { selected: 'b', missing: false });
+  assert.deepEqual(openingSelection(['a', 'b'], 'b', 'a'), { selected: 'b', missing: false });
+  assert.deepEqual(openingSelection(['a', 'b'], undefined, null), { selected: 'a', missing: false });
+  assert.deepEqual(openingSelection(['a', 'b'], undefined, 'b'), { selected: 'b', missing: false });
+  assert.deepEqual(openingSelection(['a', 'b'], 'x', 'a'), { selected: null, missing: true });
+  assert.deepEqual(openingSelection([], undefined, null), { selected: null, missing: false });
+});
+
+test('the named proposal takes focus unless the reader has moved, or is in a form, the Ask panel or a dialog', () => {
+  assert.equal(mayTakeFocus(body, false), true);
+  assert.equal(mayTakeFocus(null, false), true);
+  assert.equal(mayTakeFocus(card, false), true);
+  assert.equal(mayTakeFocus(body, true), false);
+  assert.equal(mayTakeFocus(el('INPUT'), false), false);
+  assert.equal(mayTakeFocus(el('BUTTON', ['form']), false), false);
+  assert.equal(mayTakeFocus(el('BUTTON', ['.ask-panel']), false), false);
 });

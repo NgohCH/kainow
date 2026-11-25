@@ -159,7 +159,7 @@ describe('stage templates schema (0037)', { skip: SKIP_NO_DB }, () => {
     }
     assert.equal(await insert('reordered', null), 'ok');
     assert.equal(await insert('reordered', stageId), '23514');
-    assert.equal(await insert('renamed', stageId), '23514');
+    assert.equal(await insert('moved', stageId), '23514');
     assert.equal(await insert('added', stageId, '  '), '23514');
     assert.equal(await sqlState(pool, `UPDATE project_stage_changes SET reason = 'z'`), '23001');
     assert.equal(await sqlState(pool, `DELETE FROM project_stage_changes`), '23001');

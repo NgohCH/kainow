@@ -32,6 +32,18 @@ export const INVITATION_MEANING: Record<'invited' | 'accepted' | 'declined' | 'r
   invited: 'planned', accepted: 'ok', declined: 'off', revoked: 'off', expired: 'attention',
 };
 
+/** Why a Draft's proposals wait; a project just copied is a Draft full of them (D140). */
+export const PROPOSALS_START =
+  'Nothing can be authorised while the project is a Draft. Start the project to authorise proposals: fill its required roles on the People tab, then move it to Planned or Active on the Overview.';
+
+/** In a state where nobody can authorise proposals, why and what to do; null where the Owner and Sponsors can. */
+export function proposalsStopped(status: ProjectStatus): string | null {
+  if (status === 'draft') return PROPOSALS_START;
+  if (status === 'deferred') return 'Nothing can be authorised while the project is Deferred. Resume the project to authorise proposals.';
+  if (status === 'closed') return 'Nothing can be authorised while the project is Closed. Reopen the project to authorise proposals.';
+  return null;
+}
+
 export const STATUS_LABEL: Record<ProjectStatus, string> = { draft: 'Draft', planned: 'Planned', active: 'Active', deferred: 'Deferred', closed: 'Closed' };
 export const OUTCOME_LABEL: Record<ClosureOutcome, string> = { delivered: 'Delivered', partially_delivered: 'Partially Delivered', abandoned: 'Abandoned' };
 

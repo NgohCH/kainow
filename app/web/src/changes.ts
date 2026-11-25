@@ -1,4 +1,5 @@
 import { money } from './finance.ts';
+import { NO_DESCRIPTION } from './taskPage.ts';
 /**
  * Change requests (sub-project 2b): types and the plain-words helpers the request panel uses. The server decides
  * who may approve, revise or withdraw (`mayApprove`, `mayRevise`, `mayWithdraw`, `why`); nothing here re-derives that.
@@ -74,6 +75,8 @@ export interface TermsRow {
 /** What the viewer already knows of the target, to put beside the proposal. Every part is optional. */
 export interface CurrentView {
   title?: string;
+  /** Null: the task has no description. Left out: not known. */
+  description?: string | null;
   assigneeId?: string;
   dueOn?: string;
   statement?: string;
@@ -98,16 +101,22 @@ export function termsRows(kind: ChangeKind, terms: Record<string, unknown>, curr
     if (to !== '') rows.push({ label, from, to });
   };
   const person = (t: Record<string, unknown>) => (str(t.inviteEmail) ? `${str(t.inviteEmail)} (invited)` : str(t.assigneeId) ? nameOf(str(t.assigneeId)) : '');
+  // A description given blank removes the one there is.
+  const description = (from: string) => {
+    if (terms.description !== undefined) add('Description', from, str(terms.description) || NO_DESCRIPTION);
+  };
   switch (kind) {
     case 'amend_task': {
       const sub = obj(terms.addSubtask);
       if (terms.addSubtask !== undefined) {
         add('New subtask', '', str(sub.title));
+        add('Description', '', str(sub.description));
         add('Assignee', '', person(sub));
         add('Due date', '', str(sub.dueOn));
         break;
       }
       add('Wording', current.title ?? '', str(terms.title));
+      description(current.description === undefined ? '' : current.description || NO_DESCRIPTION);
       add('Assignee', current.assigneeId ? nameOf(current.assigneeId) : '', person(terms));
       add('Due date', current.dueOn ?? '', str(terms.dueOn));
       break;
@@ -154,6 +163,7 @@ export function termsRows(kind: ChangeKind, terms: Record<string, unknown>, curr
       add('Reason', '', str(terms.reason));
       break;
     case 'authorise_proposal':
+      description('');
       add('Assignee', '', person(terms));
       add('Due date', '', str(terms.dueOn));
       add('Severity', '', str(terms.severity));

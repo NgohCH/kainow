@@ -1,4 +1,5 @@
 import { BadRequestException } from '@nestjs/common';
+import { taskLink } from '../records/task-link';
 
 export const SEARCH_KINDS = ['project', 'person', 'note', 'ai_proposal', 'human_proposal', 'task', 'decision', 'question', 'risk', 'message', 'output'] as const;
 export type SearchKind = (typeof SEARCH_KINDS)[number];
@@ -77,6 +78,8 @@ export function hrefFor(r: {
       return `#/projects/${r.projectId}/outputs/${r.itemId}`;
     case 'message':
       return `#/projects/${r.projectId}/threads/${r.threadId}?m=${r.messageNo}`;
+    case 'task':
+      return taskLink(r.projectId, r.itemId);
     default:
       return `#/projects/${r.projectId}/work/${r.itemId}`;
   }

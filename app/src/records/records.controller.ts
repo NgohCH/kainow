@@ -31,7 +31,7 @@ export class RecordsController {
 
   /**
    * Authorise one proposal into its record. 201 when created; 200 with the existing record when the proposal
-   * was already authorised (a repeated click); 202 with the request when more approvers are needed. Body by kind: task { assigneeId | inviteEmail, dueOn, subtasks? },
+   * was already authorised (a repeated click); 202 with the request when more approvers are needed. Body by kind: task { assigneeId | inviteEmail, dueOn, subtasks?, description? },
    * question { requesterId? }, risk { severity, responsibleId?, reviewOn? }, decision { rationale? }.
    */
   @Post('extractions/:runId/items/:itemId/authorise')
@@ -46,7 +46,7 @@ export class RecordsController {
     return answer(await this.records.authoriseItem(who(req), runId, itemId, body(b)), res);
   }
 
-  /** A person's own proposal: { kind: 'action' | 'decision' | 'question' | 'risk', text, owner?, due? } */
+  /** A person's own proposal: { kind: 'action' | 'decision' | 'question' | 'risk', text, owner?, due?, description? } (description: actions only) */
   @Post('projects/:id/proposals')
   @AnySignedInUser()
   @HttpCode(201)
@@ -58,6 +58,17 @@ export class RecordsController {
   @AnySignedInUser()
   proposals(@Param('id') id: string, @Req() req: HttpRequest) {
     return this.records.proposals(who(req), id);
+  }
+
+  /**
+   * { items: [{ proposalId, assigneeId, dueOn, subtasks?, ... }] }, each as for POST /proposals/:id/authorise, at most 100.
+   * { results: [{ proposalId, ok, error?, record?, waiting? }] }: each is authorised on its own.
+   */
+  @Post('projects/:id/proposals/authorise-many')
+  @AnySignedInUser()
+  @HttpCode(200)
+  authoriseMany(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest) {
+    return this.records.authoriseMany(who(req), id, body(b));
   }
 
   /** Same body as authorising an extraction proposal; 201 when created, 200 when already authorised, 202 when waiting. */
@@ -81,7 +92,7 @@ export class RecordsController {
     return this.records.getTask(who(req), id);
   }
 
-  /** { text, owner?, due? } — proposes a follow-up task for a cancelled one (a people's proposal). */
+  /** { text, owner?, due?, description? } — proposes a follow-up task for a cancelled one (a people's proposal). */
   @Post('records/tasks/:id/follow-up')
   @AnySignedInUser()
   @HttpCode(201)

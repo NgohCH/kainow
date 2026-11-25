@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { ApiError, api, setCsrfToken, type User } from './api.ts';
-import type { Branding } from './branding.ts';
+import { type Branding, memberOf } from './branding.ts';
 import { Invitation } from './views/Invitation.tsx';
 import { Letterhead, LogoImage } from './views/Letterhead.tsx';
 import { DeletedItemPage } from './views/DeletedItems.tsx';
@@ -25,6 +25,7 @@ import { MyTasks } from './views/MyTasks.tsx';
 import { Reviews } from './views/Reviews.tsx';
 import { isSearchHash, Search } from './views/Search.tsx';
 import { AiAdmin } from './views/AiAdmin.tsx';
+import { MyProfile } from './views/MyProfile.tsx';
 import { MyAiUsage } from './views/AiUsage.tsx';
 import { SummaryPage } from './views/SummaryView.tsx';
 import { Thread } from './views/Thread.tsx';
@@ -38,7 +39,14 @@ import { StorageSettings } from './views/StorageSettings.tsx';
 import { ReportTypes } from './views/ReportTypes.tsx';
 import { Operations } from './views/Operations.tsx';
 import { OpsBanner, ProtectiveLine } from './views/OpsBanner.tsx';
+import { parseHistoryHash } from './ui/home.ts';
 import { AppShell } from './ui/AppShell.tsx';
+import { PROFILE_HREF } from './ui/menu.ts';
+import { parseNoteHash, parseRunHash } from './proposalLinks.ts';
+import { parseDuplicateHash } from './duplicate.ts';
+import { leaveGuard } from './ui/leaveGuard.ts';
+import { DuplicateProject } from './views/DuplicateProject.tsx';
+import { parseProjectHash } from './ui/projectTabs.ts';
 import { SettingsHub } from './views/SettingsHub.tsx';
 import { Definitions } from './views/Definitions.tsx';
 import { StageTemplates } from './views/StageTemplates.tsx';
@@ -179,10 +187,11 @@ export function App() {
   const hash = useHash();
   const [user, setUser] = useState<User | null | undefined>(undefined);
   const [branding, setBranding] = useState<Branding | null>(null);
+  const [brandingRead, setBrandingRead] = useState(false);
 
   // The organisation's name and logos (Kainow's own until setup is finished). Public, so the sign-in page has them.
   const loadBranding = useCallback(() => {
-    api.get<Branding>('/organisation/branding').then(setBranding, () => setBranding(null));
+    api.get<Branding>('/organisation/branding').then(setBranding, () => setBranding(null)).finally(() => setBrandingRead(true));
   }, []);
   useEffect(loadBranding, [loadBranding]);
 
@@ -209,6 +218,9 @@ export function App() {
     );
   }, []);
 
+  // Until the organisation is set up the server refuses everything below; it is read once setup is finished.
+  const member = memberOf(user, brandingRead, branding);
+
   // Personal display preferences: loaded once signed in, saved at once on each change, and applied to <html>.
   const [prefs, setPrefs] = useState<Prefs>(DEFAULT_PREFS);
   const [prefsLoaded, setPrefsLoaded] = useState(false);
@@ -217,7 +229,7 @@ export function App() {
   useEffect(() => {
     setPrefsLoaded(false);
     setPrefsFailed(false);
-    if (!user) {
+    if (!member) {
       saver.loaded(DEFAULT_PREFS);
       return;
     }
@@ -233,40 +245,41 @@ export function App() {
     return () => {
       stale = true;
     };
-  }, [user, saver]);
+  }, [member, saver]);
   useEffect(() => applyAppearance(prefs, branding?.colour ?? null), [prefs, branding]);
   const savePrefs = saver.save;
 
   // A designated security reviewer gets the Security review page; for anyone else the link stays hidden.
   const [reviewer, setReviewer] = useState(false);
   useEffect(() => {
-    if (!user) return setReviewer(false);
+    if (!member) return setReviewer(false);
     api.get<{ reviewer: boolean }>('/security/me').then((r) => setReviewer(r.reviewer), () => setReviewer(false));
-  }, [user]);
+  }, [member]);
 
   // "Leadership" shows only for someone holding an Active leadership grant.
   const [hasGrant, setHasGrant] = useState(false);
   useEffect(() => {
-    if (!user) return setHasGrant(false);
+    if (!member) return setHasGrant(false);
     let stale = false;
     api.get<{ hasGrant: boolean }>('/leadership/me').then((r) => !stale && setHasGrant(r.hasGrant), () => !stale && setHasGrant(false));
     return () => {
       stale = true;
     };
-  }, [user, hash === '#/leadership']);
+  }, [member, hash === '#/leadership']);
 
   // "Resource catalogue" shows for the Administrator and for people the Administrator named as catalogue maintainers.
   const [maintainer, setMaintainer] = useState(false);
   useEffect(() => {
-    if (!user) return setMaintainer(false);
+    if (!member) return setMaintainer(false);
     let stale = false;
     api.get<{ maintainer: boolean }>('/resources/catalogue/me').then((r) => !stale && setMaintainer(r.maintainer), () => !stale && setMaintainer(false));
     return () => {
       stale = true;
     };
-  }, [user]);
+  }, [member]);
 
   const signOut = useCallback(async () => {
+    if (!leaveGuard.mayLeave()) return;
     await api.post('/auth/logout').catch(() => undefined);
     setUser(null);
     go('#/');
@@ -274,12 +287,13 @@ export function App() {
 
   // Ends every session of this person, on every device (V1.0 sign-in rules §7).
   const signOutEverywhere = useCallback(async () => {
+    if (!leaveGuard.mayLeave()) return;
     await api.post('/auth/logout-all').catch(() => undefined);
     setUser(null);
     go('#/');
   }, []);
 
-  if (user === undefined) return <p className="loading">Loading</p>;
+  if (user === undefined || (user !== null && !brandingRead)) return <p className="loading">Loading</p>;
   // An invitation link works before sign-in: it shows the invitation and then asks the person to sign in.
   const invitation = /^#\/invitations\/([A-Za-z0-9_-]{20,})$/.exec(hash);
   const setupLink = /^#\/setup\/([A-Za-z0-9_-]{20,})$/.exec(hash);
@@ -302,7 +316,7 @@ export function App() {
             <button className="quiet" onClick={signOut}>Sign out</button>
           </span>
         </header>
-        <OpsBanner hash={hash} isAdmin />
+        <OpsBanner hash={hash} isAdmin settingUp />
         <div id="main">
           <Onboarding
             onFinished={() => {
@@ -314,9 +328,10 @@ export function App() {
       </>
     );
   }
-  const note = /^#\/notes\/([0-9a-f-]{36})(?:\/v\/(\d+))?$/i.exec(hash);
-  const run = /^#\/runs\/([0-9a-f-]{36})$/i.exec(hash);
-  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|discussion|notes|proposals|work|drafts|review|settings|ai|feedback|closing|deadline-review|deleted|timeline|outputs|resources\/report|resources)(?:\/([0-9a-f-]{36}))?)?$/i.exec(hash);
+  const note = parseNoteHash(hash);
+  const run = parseRunHash(hash);
+  const project = parseProjectHash(hash);
+  const duplicating = parseDuplicateHash(hash);
   const deletedItem = /^#\/projects\/([0-9a-f-]{36})\/deleted\/([a-z]+)\/([0-9a-f-]{36})$/i.exec(hash);
   const quarantineCase = /^#\/quarantine\/cases\/([0-9a-f-]{36})(?:\/copies)?$/i.exec(hash);
   const securityPage = /^#\/security\/(cases|grants)$/.test(hash);
@@ -354,14 +369,16 @@ export function App() {
   else if (securityPage) page = <SecurityReviewPage />;
   else if (hash === '#/notifications') page = <Notifications />;
   else if (hash === '#/my-ai-usage') page = <MyAiUsage />;
+  else if (hash === PROFILE_HREF) page = <MyProfile prefs={prefs} ready={prefsLoaded} failed={prefsFailed} onPrefs={savePrefs} orgColour={branding?.colour ?? null} />;
   else if (searching) page = <Search hash={hash} />;
   else if (summary) page = <SummaryPage key={summary[1]} summaryId={summary[1]} />;
   else if (thread) page = <Thread key={thread.threadId} projectId={thread.projectId} threadId={thread.threadId} meId={user.id} messageNo={thread.messageNo} answerId={answerIdFromHash(hash)} />;
   else if (deletedItem) page = <DeletedItemPage key={deletedItem[3]} projectId={deletedItem[1]} kind={deletedItem[2]} itemId={deletedItem[3]} />;
-  else if (run) page = <RunInProject key={run[1]} runId={run[1]} meId={user.id} prefs={prefs} prefsReady={prefsLoaded} onPrefs={savePrefs} />;
-  else if (note) page = <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} />;
-  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as ProjectView | undefined) ?? 'overview'} itemId={project[3]} prefs={prefs} prefsReady={prefsLoaded} onPrefs={savePrefs} />;
-  else if (hash === '#/projects') page = <Projects isAdmin={isAdmin} />;
+  else if (run) page = <RunInProject key={run.runId} runId={run.runId} itemId={run.itemId} meId={user.id} prefs={prefs} prefsReady={prefsLoaded} onPrefs={savePrefs} />;
+  else if (note) page = <NoteDetail sourceId={note.sourceId} versionNo={note.versionNo} place={note.place} />;
+  else if (duplicating) page = <DuplicateProject key={duplicating} projectId={duplicating} meId={user.id} />;
+  else if (project) page = <ProjectPage key={project.projectId} projectId={project.projectId} meId={user.id} tab={project.tab as ProjectView} itemId={project.itemId} prefs={prefs} prefsReady={prefsLoaded} onPrefs={savePrefs} />;
+  else if (hash === '#/projects' || parseHistoryHash(hash)) page = <Projects isAdmin={isAdmin} history={parseHistoryHash(hash)} />;
   else if (hash === '#/my-tasks') page = <MyTasks />;
   else if (hash === '#/reviews') page = <Reviews />;
   else page = <Home userName={user.displayName} prefs={prefs} ready={prefsLoaded} failed={prefsFailed} onChange={savePrefs} />;

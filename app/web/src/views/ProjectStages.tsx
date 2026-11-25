@@ -3,7 +3,7 @@ import { ApiError, api, type Project } from '../api.ts';
 import { formatWhen } from '../format.ts';
 import { DataTable, type Column } from '../ui/DataTable.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
-import { TEMPLATE_LIMITS, type ProjectStage, type StageChange, stageChangeText, validateTemplateDraft } from '../ui/stages.ts';
+import { TEMPLATE_LIMITS, type ProjectStage, type StageChange, renameProblems, stageChangeText, validateTemplateDraft } from '../ui/stages.ts';
 
 const HISTORY_COLUMNS: Column<StageChange>[] = [
   { key: 'at', header: 'When (UTC+8)', cell: (c) => formatWhen(c.at) },
@@ -33,18 +33,19 @@ export function StagesSummary({ project }: { project: Project }) {
 }
 
 /**
- * The project's own stages (D131), in order: move one up or down, retire one or bring it back, add one. Each change
+ * The project's own stages (D131), in order: move one up or down, rename one, retire one or bring it back, add one. Each change
  * is saved at once with the reason written above the list and is recorded. Everyone who can read the project sees the
  * list and its history; the Project Manager, Owner and Sponsors change it.
  */
 export function StagesEditor({ project, reload }: { project: Project; reload: () => void }) {
   const editable = stagesEditable(project);
   const { stages } = project;
-  const currentName = project.stage?.stage ?? null;
+  const currentName = project.stage && !project.stage.stopped ? project.stage.stage : null;
   const [reason, setReason] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [renaming, setRenaming] = useState<string | null>(null);
   const focusAfter = useRef<string | null>(null);
 
   // After a change the list is drawn again; put focus back on the button that was used (or the one beside it).
@@ -119,6 +120,7 @@ export function StagesEditor({ project, reload }: { project: Project; reload: ()
                 <div className="row">
                   <button type="button" data-stage-action={`${s.id}:up`} disabled={busy || i === 0} onClick={() => move(i, -1)} aria-label={`Move ${s.name} up`}>Move up</button>
                   <button type="button" data-stage-action={`${s.id}:down`} disabled={busy || i === stages.length - 1} onClick={() => move(i, 1)} aria-label={`Move ${s.name} down`}>Move down</button>
+                  <button type="button" data-stage-action={`${s.id}:rename`} disabled={busy} aria-expanded={renaming === s.id} onClick={() => setRenaming(renaming === s.id ? null : s.id)} aria-label={`Rename ${s.name}`}>Rename</button>
                   {s.status === 'active' ? (
                     <button
                       type="button"
@@ -137,6 +139,15 @@ export function StagesEditor({ project, reload }: { project: Project; reload: ()
                   )}
                 </div>
               )}
+              {editable && renaming === s.id && (
+                <RenameStage
+                  stage={s}
+                  stages={stages}
+                  busy={busy}
+                  change={change}
+                  close={() => setRenaming(null)}
+                />
+              )}
               {isCurrent && editable && <p className="meta">This is the current stage. Move to another stage before retiring it.</p>}
             </li>
           );
@@ -148,7 +159,51 @@ export function StagesEditor({ project, reload }: { project: Project; reload: ()
   );
 }
 
-function AddStage({ stages, busy, change }: { stages: ProjectStage[]; busy: boolean; change: (path: string, body: Record<string, unknown>, done: string, focus: string | null) => Promise<boolean> }) {
+type Change = (path: string, body: Record<string, unknown>, done: string, focus: string | null) => Promise<boolean>;
+
+/** A stage's new name (D137). It shows everywhere in the project, past stages included; the history keeps the old one. */
+function RenameStage({ stage, stages, busy, change, close }: { stage: ProjectStage; stages: ProjectStage[]; busy: boolean; change: Change; close: () => void }) {
+  const [name, setName] = useState(stage.name);
+  const [problems, setProblems] = useState<string[]>([]);
+
+  async function submit(e: FormEvent) {
+    e.preventDefault();
+    const found = renameProblems(stages, stage.id, name);
+    setProblems(found);
+    if (found.length > 0) return;
+    const next = name.trim();
+    if (await change(`stages/${stage.id}/rename`, { name: next }, `${stage.name} renamed to ${next}.`, `${stage.id}:rename`)) close();
+  }
+
+  function cancel() {
+    close();
+    document.querySelector<HTMLElement>(`[data-stage-action="${stage.id}:rename"]`)?.focus();
+  }
+
+  return (
+    <form className="stack" onSubmit={submit} noValidate aria-label={`Rename ${stage.name}`}>
+      <label>
+        New name
+        <input
+          autoFocus
+          maxLength={TEMPLATE_LIMITS.nameChars}
+          value={name}
+          aria-invalid={problems.length > 0 || undefined}
+          aria-describedby={problems.length > 0 ? `rename-problems-${stage.id}` : undefined}
+          onChange={(e) => setName(e.target.value)}
+        />
+      </label>
+      <p className="meta">The new name shows everywhere in this project. The change history keeps the old one, and the template is not changed.</p>
+      {problems.length > 0 && <p id={`rename-problems-${stage.id}`} role="alert" className="error">{problems.join(' ')}</p>}
+      <div className="decision">
+        <button className="primary" disabled={busy}>Save name</button>
+        <button type="button" onClick={cancel}>Cancel</button>
+      </div>
+    </form>
+  );
+}
+
+function AddStage({ stages, busy, change }: { stages: ProjectStage[]; busy: boolean; change: Change }) {
   const [name, setName] = useState('');
   const [substages, setSubstages] = useState('');
   const [position, setPosition] = useState(stages.length + 1);

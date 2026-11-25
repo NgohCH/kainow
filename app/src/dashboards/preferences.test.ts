@@ -83,6 +83,12 @@ describe('normalisePrefs', () => {
     assert.equal(Object.keys(normalisePrefs({ expanded }).expanded).length, 1000);
   });
 
+  test('tab style: boxes by default, three known values, anything else becomes boxes', () => {
+    assert.equal(normalisePrefs({}).tabStyle, 'boxes');
+    for (const v of ['boxes', 'grey', 'tinted']) assert.equal(normalisePrefs({ tabStyle: v }).tabStyle, v);
+    for (const v of ['Grey', FREE, 3, null, { a: 1 }]) assert.equal(normalisePrefs({ tabStyle: v }).tabStyle, 'boxes');
+  });
+
   test('normalising is idempotent', () => {
     const once = normalisePrefs({ theme: 'dark', expanded: { [ID]: false }, timeline: { hiddenKinds: ['stage'] } });
     assert.deepEqual(normalisePrefs(once), once);

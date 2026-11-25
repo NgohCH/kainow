@@ -6,10 +6,11 @@ import { uuidv7 } from '../common/uuid7';
 import { isCalendarDate } from '../extraction/due';
 import type { ProjectContext } from '../projects/access.service';
 import { RecordsService } from '../records/records.service';
+import { readTaskDescription } from '../records/task-description';
 import { type ChangeHandler, type Row, dryRun } from './handlers';
 import { checkReplacementDate } from './rules';
 
-export const NOTHING_CHANGED = 'Change at least one of the wording, the assignee or the due date.';
+export const NOTHING_CHANGED = 'Change at least one of the wording, the description, the assignee or the due date.';
 export const TASK_FINISHED = 'A completed or cancelled task cannot be changed; propose a follow-up task instead.';
 export const NOT_A_PROPOSER = 'Only the assignee, the Project Manager, a Deputy, an Owner or a Sponsor can propose changes to this task.';
 export const CHOOSE_FOR_SUBTASKS = 'Choose cancel or keep for each unfinished subtask.';
@@ -32,7 +33,7 @@ function mayProposeChange(ctx: ProjectContext, target: Row, user: AuthUser): str
   return NOT_A_PROPOSER;
 }
 
-/** Amending a task (wording, assignee, due date, or adding a subtask) and cancelling it, through authorisation (spec §4). */
+/** Amending a task (wording, description, assignee, due date, or adding a subtask) and cancelling it, through authorisation (spec §4). */
 export function taskHandlers(deps: { records: RecordsService }): ChangeHandler[] {
   const { records } = deps;
 
@@ -66,13 +67,14 @@ export function taskHandlers(deps: { records: RecordsService }): ChangeHandler[]
       const add = objectOf(terms.addSubtask);
       if (terms.addSubtask !== undefined && !add) throw new BadRequestException('Describe the subtask to add.');
       if (add) {
-        if (['title', 'assigneeId', 'inviteEmail', 'dueOn'].some((k) => !isBlank(terms[k]))) {
+        if (['title', 'description', 'assigneeId', 'inviteEmail', 'dueOn'].some((k) => !isBlank(terms[k]))) {
           throw new BadRequestException('Propose either a change to this task or a new subtask, not both.');
         }
         if (target.depth >= 2) throw new ConflictException(TOO_DEEP);
         const who = assigneePart(add);
         if (Object.keys(who).length === 0) throw new BadRequestException('Name the assignee of the subtask.');
-        const sub = { title: titleOf(add.title), ...who, dueOn: dueOf(add.dueOn) };
+        const description = readTaskDescription(add.description);
+        const sub = { title: titleOf(add.title), ...(description === null ? {} : { description }), ...who, dueOn: dueOf(add.dueOn) };
         await resolve(c, ctx, sub, user, at);
         return { addSubtask: sub, reason };
       }
@@ -80,6 +82,11 @@ export function taskHandlers(deps: { records: RecordsService }): ChangeHandler[]
       if (!isBlank(terms.title)) {
         const title = titleOf(terms.title);
         if (title !== target.title) out.title = title;
+      }
+      // Unlike the other parts, a description given blank is a change: it removes the one there is.
+      if (terms.description !== undefined) {
+        const description = readTaskDescription(terms.description);
+        if (description !== (target.description ?? null)) out.description = description;
       }
       const who = assigneePart(terms);
       if (Object.keys(who).length > 0) {
@@ -108,7 +115,7 @@ export function taskHandlers(deps: { records: RecordsService }): ChangeHandler[]
         const who = await records.assignee(c, ctx, by, add, at);
         const id = await records.insertTask(
           c, ctx,
-          { parentId: target.id, depth: target.depth + 1, title: add.title as string, assigneeId: who.userId, ownerAsWritten: null, dueOn: add.dueOn as string, invitationId: who.invitationId, origin: null },
+          { parentId: target.id, depth: target.depth + 1, title: add.title as string, description: (add.description ?? null) as string | null, assigneeId: who.userId, ownerAsWritten: null, dueOn: add.dueOn as string, invitationId: who.invitationId, origin: null },
           by, at, 'Added by amendment',
         );
         await writeAudit(c, { at, action: 'task.subtask_added', actorUserId: by.id, subjectType: 'project', subjectId: ctx.project.id, detail: { taskId: id, parentId: target.id, requestId: request.id } });
@@ -127,12 +134,15 @@ export function taskHandlers(deps: { records: RecordsService }): ChangeHandler[]
       }
       const title = typeof terms.title === 'string' ? terms.title : (target.title as string);
       if (title !== target.title) detail.title = { from: target.title, to: title };
+      const before = (target.description ?? null) as string | null;
+      const description = terms.description === undefined ? before : (terms.description as string | null);
+      if (description !== before) detail.description = { from: before, to: description };
       const dueOn = typeof terms.dueOn === 'string' ? terms.dueOn : (target.dueOn as string);
       if (dueOn !== target.dueOn) detail.dueOn = { from: target.dueOn, to: dueOn };
       // An authorised new due date is what a task waiting for a deadline review needs.
       const reviewed = !!target.deadline_review_required && dueOn !== target.dueOn;
-      await c.query(`UPDATE tasks SET title = $2, assignee_id = $3, invitation_id = $4, due_on = $5, deadline_review_required = deadline_review_required AND NOT $6 WHERE id = $1`, [
-        target.id, title, assigneeId, invitationId, dueOn, reviewed,
+      await c.query(`UPDATE tasks SET title = $2, assignee_id = $3, invitation_id = $4, due_on = $5, deadline_review_required = deadline_review_required AND NOT $6, description = $7 WHERE id = $1`, [
+        target.id, title, assigneeId, invitationId, dueOn, reviewed, description,
       ]);
       await c.query(
         `INSERT INTO task_events (id, task_id, kind, from_status, to_status, note, actor_id, at, detail) VALUES ($1, $2, 'amended', $3, $3, $4, $5, $6, $7)`,

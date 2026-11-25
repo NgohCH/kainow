@@ -1,17 +1,17 @@
-import { type FormEvent, useEffect, useMemo, useState } from 'react';
+import { type FormEvent, useEffect, useMemo, useRef, useState } from 'react';
 import { ApiError, api, type AdminProjectRow, type Department, type Project, type ProjectSummary } from '../api.ts';
 import { go } from '../App.tsx';
-import type { PersonalDashboard, PersonalProject } from '../dashboard.ts';
+import { dayLabel, type PersonalDashboard, type PersonalProject } from '../dashboard.ts';
 import { bannerText } from '../golive.ts';
 import { useGoLiveSummary } from './goLiveSummary.ts';
-import { STATUS_LABEL, type ProjectStatus, accessLabel, roleLabel } from '../projects.ts';
+import { OUTCOME_LABEL, STATUS_LABEL, type ProjectStatus, accessLabel, roleLabel } from '../projects.ts';
 import { Box } from '../ui/Box.tsx';
 import { DataTable, type Column } from '../ui/DataTable.tsx';
 import { PageHeader } from '../ui/PageHeader.tsx';
 import { ProgressBar } from '../ui/ProgressBar.tsx';
 import { StatTile } from '../ui/StatTile.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
-import { attentionFlags } from '../ui/home.ts';
+import { attentionFlags, groupProjects } from '../ui/home.ts';
 import { projectMeaning } from '../ui/meanings.ts';
 import type { StageTemplate } from '../ui/stages.ts';
 import { StageList } from './StageTemplates.tsx';
@@ -22,7 +22,29 @@ type Row = ProjectSummary & { measures?: PersonalProject['header']; manager: str
 
 const stageText = (p: Row) => (p.stage ? `${p.stage.stage}${p.stage.substage ? `, ${p.stage.substage}` : ''}` : 'No stage yet');
 
-function rowColumns(showManager: boolean): Column<Row>[] {
+/** The state with, in History, the day it was deferred or closed. */
+const stateSince = (p: Row) => p.deferred?.on ?? p.closed?.on ?? null;
+const stateColumn = (header: string): Column<Row> => ({
+  key: 'state', header, sortValue: (p) => stateSince(p) ?? '',
+  cell: (p) => {
+    const on = stateSince(p);
+    return (
+      <div>
+        <StatusLabel meaning={projectMeaning(p.status)} /> <span className="history-day">{on ? dayLabel(on) : 'Not recorded'}</span>
+      </div>
+    );
+  },
+});
+const HISTORY_COLUMNS: Record<'deferred' | 'closed', Column<Row>[]> = {
+  deferred: [stateColumn('Deferred on'), { key: 'reason', header: 'Reason', wide: true, cell: (p) => <span className="history-reason">{p.deferred?.reason || 'Not recorded'}</span> }],
+  closed: [
+    stateColumn('Closed on'),
+    { key: 'outcome', header: 'Outcome', sortValue: (p) => (p.closed?.outcome ? OUTCOME_LABEL[p.closed.outcome] : ''), cell: (p) => (p.closed?.outcome ? OUTCOME_LABEL[p.closed.outcome] : 'Not recorded') },
+  ],
+};
+
+/** The columns of the current projects, or of one History table: there the state's own columns take the State column's place. */
+function rowColumns(showManager: boolean, history?: 'deferred' | 'closed'): Column<Row>[] {
   const cols: Column<Row>[] = [
     {
       key: 'project', header: 'Project', sortValue: (p) => p.name.toLowerCase(),
@@ -50,6 +72,7 @@ function rowColumns(showManager: boolean): Column<Row>[] {
       },
     },
   ];
+  if (history) cols.splice(1, 1, ...HISTORY_COLUMNS[history]);
   if (showManager) cols.push({ key: 'manager', header: 'Project Manager', sortValue: (p) => (p.manager ?? '').toLowerCase(), cell: (p) => p.manager ?? 'None yet' });
   return cols;
 }
@@ -61,8 +84,8 @@ function flagsFor(p: Row): string[] {
   return flags;
 }
 
-/** The project list (spec 7.4): a count by state as filters, the projects table, a new-project form, and for administrators every project's role holders. */
-export function Projects({ isAdmin }: { isAdmin: boolean }) {
+/** The project list (spec 7.4, D138): a count by state as filters, the current projects, then History (Deferred and Closed), a new-project form, and for administrators every project's role holders. */
+export function Projects({ isAdmin, history }: { isAdmin: boolean; history: { archived: boolean } | null }) {
   const [projects, setProjects] = useState<ProjectSummary[] | null>(null);
   const [all, setAll] = useState<AdminProjectRow[] | null>(null);
   const [measures, setMeasures] = useState<Map<string, PersonalProject['header']>>(new Map());
@@ -70,6 +93,7 @@ export function Projects({ isAdmin }: { isAdmin: boolean }) {
   const [creating, setCreating] = useState(false);
   const [state, setState] = useState<ProjectStatus | null>(null);
   const [archived, setArchived] = useState(false);
+  const historyBox = useRef<HTMLDivElement>(null);
   const goLive = useGoLiveSummary(isAdmin);
 
   useEffect(() => {
@@ -87,6 +111,29 @@ export function Projects({ isAdmin }: { isAdmin: boolean }) {
     );
   }, []);
 
+  // A link to History shows every state, with archived projects when it counted some, and goes there once loaded.
+  const toHistory = history !== null;
+  const withArchived = history?.archived ?? false;
+  const loaded = projects !== null;
+  const historyDue = useRef(false);
+  useEffect(() => {
+    historyDue.current = toHistory && loaded;
+    if (!historyDue.current) return;
+    setState(null);
+    if (withArchived) setArchived(true);
+  }, [toHistory, withArchived, loaded]);
+  // Only once every state is drawn: a tile pressed earlier may have hidden History.
+  useEffect(() => {
+    if (!historyDue.current || state !== null || (withArchived && !archived)) return;
+    historyDue.current = false;
+    historyBox.current?.scrollIntoView();
+    historyBox.current?.focus({ preventScroll: true });
+  });
+  // What arrives later moves the page; whoever is still at History stays there.
+  useEffect(() => {
+    if (toHistory && historyBox.current && document.activeElement === historyBox.current) historyBox.current.scrollIntoView();
+  }, [toHistory, measures]);
+
   const managers = useMemo(() => {
     const m = new Map<string, string>();
     for (const p of all ?? []) {
@@ -99,9 +146,12 @@ export function Projects({ isAdmin }: { isAdmin: boolean }) {
   const rows: Row[] = useMemo(() => (projects ?? []).map((p) => ({ ...p, measures: measures.get(p.id), manager: managers.get(p.id) ?? null })), [projects, measures, managers]);
   const live = rows.filter((p) => !p.archived);
   const counts = (s: ProjectStatus) => live.filter((p) => p.status === s).length;
-  const shown = rows.filter((p) => (archived || !p.archived) && (!state || p.status === state));
+  const shown = groupProjects(rows, state, archived);
   const archivedCount = rows.length - live.length;
-  const columns = useMemo(() => rowColumns(isAdmin && all !== null), [isAdmin, all]);
+  const columns = useMemo(() => {
+    const showManager = isAdmin && all !== null;
+    return { current: rowColumns(showManager), deferred: rowColumns(showManager, 'deferred'), closed: rowColumns(showManager, 'closed') };
+  }, [isAdmin, all]);
 
   return (
     <main className="page">
@@ -134,14 +184,30 @@ export function Projects({ isAdmin }: { isAdmin: boolean }) {
           </label>
         )}
       </div>
-      <DataTable
-        caption={state ? `Your ${STATUS_LABEL[state].toLowerCase()} projects` : 'Your projects'}
-        columns={columns}
-        rows={shown}
-        rowKey={(p) => p.id}
-        loading={projects === null && !error}
-        empty={rows.length === 0 ? 'You are not in any project yet. Create one, or accept an invitation from its Project Manager, Owner or a Sponsor.' : 'No projects match this filter.'}
-      />
+      {shown.current && (
+        <DataTable
+          caption={state ? `Your ${STATUS_LABEL[state].toLowerCase()} projects` : 'Current projects'}
+          columns={columns.current}
+          rows={shown.current}
+          rowKey={(p) => p.id}
+          loading={projects === null && !error}
+          empty={
+            rows.length === 0
+              ? 'You are not in any project yet. Create one, or accept an invitation from its Project Manager, Owner or a Sponsor.'
+              : state
+                ? 'No projects match this filter.'
+                : 'None of your projects is current.'
+          }
+        />
+      )}
+      {(shown.deferred || shown.closed) && (
+        <div ref={historyBox} className="project-history" role="group" aria-label="History" tabIndex={-1}>
+          <Box title="History">
+            {shown.deferred && <DataTable caption="Deferred" columns={columns.deferred} rows={shown.deferred} rowKey={(p) => p.id} loading={projects === null && !error} empty="No deferred projects." />}
+            {shown.closed && <DataTable caption="Closed" columns={columns.closed} rows={shown.closed} rowKey={(p) => p.id} loading={projects === null && !error} empty="No closed projects." />}
+          </Box>
+        </div>
+      )}
       {isAdmin && all && <AllProjects all={all} />}
     </main>
   );

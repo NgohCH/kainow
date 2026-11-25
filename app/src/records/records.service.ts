@@ -1,5 +1,5 @@
 import { itemDiscussionEvidence, itemSourceFlags } from '../discussion/masking';
-import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, HttpException, Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { readReason, refuseSecretsIn } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
@@ -18,14 +18,20 @@ import { ExtractionService } from '../extraction/extraction.service';
 import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { audienceVisibleSql } from '../discussion/audience';
 import { AudienceService } from '../discussion/audience.service';
+import { copiedFromViews } from '../projects/copied-from';
 import { InvitationsService } from '../projects/invitations.service';
 import { GRANT_READ_ONLY } from '../projects/matrix';
 import { checkNewAppointment } from '../projects/memberships.service';
 import { membershipState, todayUtc8 } from '../projects/membership';
+import { dueSoonEnd } from '../dashboards/due-soon';
+import { loadEffective } from '../notifications/settings';
 import { DELETED_LINK, liveRecordRefSql, liveRecordSql, notHeldSql, refuseHeld } from '../history/deleted-sql';
 import { QUOTE_CHANGED_TEXT, quoteChangedItems } from '../quarantine/clean';
 import { POSSIBLE_COPY_TEXT, UNDER_REVIEW_TEXT, possibleCopyLabelSql, possibleCopySql } from '../quarantine/labels';
 import { type QuestionAction, type RiskAction, SEVERITIES, type Severity, questionTransition, riskTransition } from './lifecycles';
+import { insertHumanProposal } from './human-proposal';
+import { type ProposalLink, proposalLinks } from './proposal-links';
+import { DESCRIPTION_FOR_ACTIONS, readTaskDescription } from './task-description';
 import { TASK_ACTIONS, type TaskAction, type TaskStatus, ancestorsToReopen, parentMayComplete, taskIndicators, taskTransition } from './tasks';
 
 export const MISSING_ACCOUNTABILITY = 'The project is missing a required role, so proposals cannot be approved until it is repaired.';
@@ -45,6 +51,15 @@ export interface Created {
 
 /** What authorising a proposal answers: the record (made now, or already), or the request still waiting for approvers. */
 export type Authorised = (Created & { created: boolean }) | { request: RequestView; created: false; waiting: true };
+
+/** Most proposals authorised in one go. */
+export const MAX_AUTHORISE_MANY = 100;
+
+/** How one of several authorisations ended: made (now or before), waiting for more approvers, or refused with the single route's words. */
+export type ManyResult =
+  | { proposalId: string; ok: true; record: Created['record'] }
+  | { proposalId: string; ok: true; waiting: true; request: RequestView }
+  | { proposalId: string; ok: false; error: string };
 
 /** What a human proposal or an approved extraction item contributes to a record. */
 export interface Content {
@@ -113,6 +128,18 @@ export class RecordsService {
       [id],
     );
     return rows[0] ? { kind: rows[0].kind, id: rows[0].id } : null;
+  }
+
+  /** `existingRecord` of many people's proposals at once, by proposal. */
+  private async recordsOfProposals(proposalIds: string[]): Promise<Map<string, Created['record']>> {
+    const { rows } = await this.pool.query(
+      `SELECT 'task' AS kind, id, origin_proposal_id AS proposal FROM tasks WHERE origin_proposal_id = ANY($1::uuid[]) AND depth = 0
+       UNION ALL SELECT 'decision', id, origin_proposal_id FROM decisions WHERE origin_proposal_id = ANY($1::uuid[])
+       UNION ALL SELECT 'question', id, origin_proposal_id FROM questions WHERE origin_proposal_id = ANY($1::uuid[])
+       UNION ALL SELECT 'risk', id, origin_proposal_id FROM risks WHERE origin_proposal_id = ANY($1::uuid[])`,
+      [proposalIds],
+    );
+    return new Map(rows.map((r) => [r.proposal as string, { kind: r.kind, id: r.id }]));
   }
 
   /** Authorise one extraction proposal: approve it and create its record, once (V1.0 proposals §7), through an authorise_proposal request. */
@@ -188,7 +215,7 @@ export class RecordsService {
   async insertTask(
     c: PoolClient,
     ctx: ProjectContext,
-    t: { parentId: string | null; depth: number; title: string; assigneeId: string; ownerAsWritten: string | null; dueOn: string; invitationId: string | null; origin: Origin | null; followsTaskId?: string | null },
+    t: { parentId: string | null; depth: number; title: string; description?: string | null; assigneeId: string; ownerAsWritten: string | null; dueOn: string; invitationId: string | null; origin: Origin | null; followsTaskId?: string | null },
     user: AuthUser,
     at: Date,
     note: string | null,
@@ -196,9 +223,9 @@ export class RecordsService {
     const id = uuidv7(at.getTime());
     const o = t.origin ? originColumns(t.origin) : { item: null, proposal: null };
     await c.query(
-      `INSERT INTO tasks (id, project_id, parent_id, depth, title, assignee_id, owner_as_written, due_on, invitation_id, origin_item_id, origin_proposal_id, authorised_by, authorised_at, follows_task_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)`,
-      [id, ctx.project.id, t.parentId, t.depth, t.title, t.assigneeId, t.ownerAsWritten, t.dueOn, t.invitationId, o.item, o.proposal, user.id, at, t.followsTaskId ?? null],
+      `INSERT INTO tasks (id, project_id, parent_id, depth, title, assignee_id, owner_as_written, due_on, invitation_id, origin_item_id, origin_proposal_id, authorised_by, authorised_at, follows_task_id, description)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)`,
+      [id, ctx.project.id, t.parentId, t.depth, t.title, t.assigneeId, t.ownerAsWritten, t.dueOn, t.invitationId, o.item, o.proposal, user.id, at, t.followsTaskId ?? null, t.description ?? null],
     );
     await c.query(`INSERT INTO task_events (id, task_id, kind, to_status, note, actor_id, at) VALUES ($1, $2, 'authorised', 'not_started', $3, $4, $5)`, [
       uuidv7(at.getTime()), id, note, user.id, at,
@@ -225,12 +252,15 @@ export class RecordsService {
         const who = await this.assignee(c, ctx, user, body, at);
         const dueOn = this.dueOf(body.dueOn);
         deliver = who.deliver;
-        const follows = 'proposalId' in origin
-          ? ((await c.query(`SELECT follows_task_id FROM human_proposals WHERE id = $1`, [origin.proposalId])).rows[0]?.follows_task_id as string | null) ?? null
-          : null;
+        const proposed = 'proposalId' in origin
+          ? (await c.query(`SELECT follows_task_id AS follows, description FROM human_proposals WHERE id = $1`, [origin.proposalId])).rows[0]
+          : undefined;
+        const follows = (proposed?.follows as string | null | undefined) ?? null;
+        // The authoriser's description stands, blank included; when they give none, the proposer's is used.
+        const description = body.description === undefined ? ((proposed?.description as string | null | undefined) ?? null) : readTaskDescription(body.description);
         const taskId = await this.insertTask(
           c, ctx,
-          { parentId: null, depth: 0, title: content.text, assigneeId: who.userId, ownerAsWritten: content.owner, dueOn, invitationId: who.invitationId, origin, followsTaskId: follows },
+          { parentId: null, depth: 0, title: content.text, description, assigneeId: who.userId, ownerAsWritten: content.owner, dueOn, invitationId: who.invitationId, origin, followsTaskId: follows },
           user, at, null,
         );
         const subtaskIds: string[] = [];
@@ -247,7 +277,7 @@ export class RecordsService {
           subtaskIds.push(
             await this.insertTask(
               c, ctx,
-              { parentId: taskId, depth: 1, title, assigneeId: sub.userId, ownerAsWritten: null, dueOn: this.dueOf(s.dueOn), invitationId: sub.invitationId, origin: null },
+              { parentId: taskId, depth: 1, title, description: readTaskDescription(s.description), assigneeId: sub.userId, ownerAsWritten: null, dueOn: this.dueOf(s.dueOn), invitationId: sub.invitationId, origin: null },
               user, at, 'Split at authorisation',
             ),
           );
@@ -299,16 +329,13 @@ export class RecordsService {
     if (!['action', 'decision', 'question', 'risk'].includes(kind as string)) throw new BadRequestException('Choose action, decision, question or risk.');
     const text = typeof input.text === 'string' ? input.text.trim() : '';
     if (text === '' || text.length > 2000) throw new BadRequestException('Write the proposal (up to 2000 characters).');
+    const description = readTaskDescription(input.description);
+    if (description !== null && kind !== 'action') throw new BadRequestException(DESCRIPTION_FOR_ACTIONS);
     const opt = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? v.trim().slice(0, 200) : null);
     const at = this.now();
     return this.tx(async (c) => {
       await this.access.authorize(user, 'proposal.submit', projectId, c, true);
-      const id = uuidv7(at.getTime());
-      await c.query(
-        `INSERT INTO human_proposals (id, project_id, kind, text, owner, due, proposed_by, proposed_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8)`,
-        [id, projectId, kind, text, opt(input.owner), opt(input.due), user.id, at],
-      );
-      await writeAudit(c, { at, action: 'proposal.submitted', actorUserId: user.id, subjectType: 'project', subjectId: projectId, detail: { proposalId: id, kind } });
+      const id = await insertHumanProposal(c, { projectId, kind: kind as string, text, description, owner: opt(input.owner), due: opt(input.due) }, user.id, at);
       return { proposal: { id, kind, text } };
     });
   }
@@ -317,18 +344,16 @@ export class RecordsService {
   async followUp(user: AuthUser, taskId: string, input: Record<string, unknown>) {
     const text = typeof input.text === 'string' ? input.text.trim() : '';
     if (text === '' || text.length > 2000) throw new BadRequestException('Write the proposal (up to 2000 characters).');
+    const description = readTaskDescription(input.description);
     const opt = (v: unknown) => (typeof v === 'string' && v.trim() !== '' ? v.trim().slice(0, 200) : null);
     const at = this.now();
     return this.tx(async (c) => {
       const { ctx, task } = await this.taskContext(c, user, taskId, true);
       await this.access.authorize(user, 'proposal.submit', ctx.project.id, c, true);
       if (task.status !== 'cancelled') throw new ConflictException('A follow-up task can be proposed only for a cancelled task.');
-      const id = uuidv7(at.getTime());
-      await c.query(
-        `INSERT INTO human_proposals (id, project_id, kind, text, owner, due, proposed_by, proposed_at, follows_task_id) VALUES ($1, $2, 'action', $3, $4, $5, $6, $7, $8)`,
-        [id, ctx.project.id, text, opt(input.owner), opt(input.due), user.id, at, task.id],
+      const id = await insertHumanProposal(
+        c, { projectId: ctx.project.id, kind: 'action', text, description, owner: opt(input.owner), due: opt(input.due), followsTaskId: task.id }, user.id, at,
       );
-      await writeAudit(c, { at, action: 'proposal.submitted', actorUserId: user.id, subjectType: 'project', subjectId: ctx.project.id, detail: { proposalId: id, kind: 'action', followsTaskId: task.id } });
       return { proposal: { id, kind: 'action', text, followsTaskId: task.id } };
     });
   }
@@ -336,18 +361,28 @@ export class RecordsService {
   async proposals(user: AuthUser, projectId: string) {
     await this.access.authorize(user, 'project.view', projectId);
     const { rows } = await this.pool.query(
-      `SELECT h.id, h.kind, h.text, h.owner, h.due, u.display_name AS "proposedBy", h.proposed_at AS "proposedAt",
+      `SELECT h.id, h.kind, h.text, h.description, h.owner, h.due, u.display_name AS "proposedBy", h.proposed_at AS "proposedAt",
               h.review_status AS "reviewStatus", h.reject_reason AS "rejectReason", h.follows_task_id AS "followsTaskId",
+              h.proposed_subtasks AS "proposedSubtasks", h.copied_from_project_id AS "copiedFromId",
               ${possibleCopyLabelSql('human_proposal', 'h.id')}
          FROM human_proposals h JOIN users u ON u.id = h.proposed_by WHERE h.project_id = $1 AND ${notHeldSql('h')} ORDER BY h.proposed_at, h.id`,
       [projectId],
     );
+    const copiedFrom = await copiedFromViews(this.pool, this.access, user, rows.map((r) => r.copiedFromId as string | null));
+    const records = await this.recordsOfProposals(rows.map((r) => r.id as string));
     const out = [];
-    for (const r of rows) {
+    for (const { copiedFromId, ...r } of rows) {
       // The written due, read against the day it was proposed (UTC+8), so the Authorise form can pre-fill the date.
       const dueReading = readDue({ due: r.due, dueEvent: null, meetingDate: todayUtc8(new Date(r.proposedAt)) });
-      out.push({ ...r, dueReading, label: HUMAN_LABEL, record: await this.existingRecord(this.pool, { proposalId: r.id }) });
+      out.push({ ...r, copiedFrom: copiedFrom(copiedFromId), dueReading, label: HUMAN_LABEL, record: records.get(r.id) ?? null, recordOpens: false });
     }
+    // Whether each record is in view today (neither Deleted nor held), so that its link leads somewhere.
+    const live = await this.pool.query<{ id: string }>(
+      `SELECT x.id FROM unnest($1::text[], $2::uuid[]) AS x(kind, id) WHERE ${liveRecordRefSql('x.kind', 'x.id')}`,
+      [out.map((p) => p.record?.kind ?? null), out.map((p) => p.record?.id ?? null)],
+    );
+    const opens = new Set(live.rows.map((r) => r.id));
+    for (const p of out) p.recordOpens = p.record !== null && opens.has(p.record.id);
     return { proposals: out };
   }
 
@@ -367,6 +402,38 @@ export class RecordsService {
     await this.access.authorize(user, 'project.view', p.project_id);
     refuseHeld(p);
     return this.authoriseThrough(user, p.project_id, 'human_proposal', proposalId, body);
+  }
+
+  /**
+   * Authorises several of one project's people's proposals, each exactly as `authoriseProposal` does it and on its own:
+   * one that is refused is named and undoes none of the others (D140).
+   */
+  async authoriseMany(user: AuthUser, projectId: string, input: Record<string, unknown>): Promise<{ results: ManyResult[] }> {
+    await this.access.authorize(user, 'proposal.review', projectId);
+    const items = input.items;
+    if (!Array.isArray(items) || items.length === 0) throw new BadRequestException('Choose the proposals to authorise.');
+    if (items.length > MAX_AUTHORISE_MANY) throw new BadRequestException(`At most ${MAX_AUTHORISE_MANY} proposals can be authorised at once; you chose ${items.length}.`);
+    const results: ManyResult[] = [];
+    for (const raw of items as unknown[]) {
+      const item = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+      const { proposalId: given, ...terms } = item;
+      const proposalId = typeof given === 'string' ? given : '';
+      const here = UUID.test(proposalId) && (await this.pool.query(`SELECT 1 FROM human_proposals WHERE id = $1 AND project_id = $2`, [proposalId, projectId])).rowCount;
+      if (!here) {
+        results.push({ proposalId, ok: false, error: 'That proposal was not found.' });
+        continue;
+      }
+      try {
+        const done = await this.authoriseProposal(user, proposalId, terms);
+        results.push('waiting' in done ? { proposalId, ok: true, waiting: true, request: done.request } : { proposalId, ok: true, record: done.record });
+      } catch (err) {
+        // A refusal keeps its own words; one without any (a bare 404) or a failure says what to do. Never a value in the log.
+        const said = err instanceof HttpException && err.message !== 'Not Found' ? err.message : null;
+        if (!(err instanceof HttpException)) new Logger('Records').error(`One of several proposals could not be authorised (${(err as { code?: string }).code ?? (err as Error).name})`);
+        results.push({ proposalId, ok: false, error: said ?? 'This one could not be authorised. Load the page again and try it on its own.' });
+      }
+    }
+    return { results };
   }
 
   async rejectProposal(user: AuthUser, proposalId: string, input: Record<string, unknown>) {
@@ -567,11 +634,18 @@ export class RecordsService {
     });
   }
 
-  /** One task with its history and source quote. */
+  /** One task with everything its page shows (D133); the parent and subtasks are those in the viewer's own task views. */
   async getTask(user: AuthUser, taskId: string) {
     const { ctx, task } = await this.taskContext(this.pool, user, taskId, false);
-    const list = await this.listFor(ctx, user);
-    const view = list.tasks.find((t) => t.id === task.id);
+    const tasks = await this.taskViews(ctx, user, await this.openFlags(ctx), await proposalLinks(this.pool, ctx, user.id));
+    const view = tasks.find((t) => t.id === task.id);
+    if (!view) throw new NotFoundException();
+    const more = (
+      await this.pool.query(
+        `SELECT t.description, u.display_name AS "authorisedBy", t.authorised_at AS "authorisedAt" FROM tasks t JOIN users u ON u.id = t.authorised_by WHERE t.id = $1`,
+        [task.id],
+      )
+    ).rows[0];
     const history = (
       await this.pool.query(
         `SELECT e.kind, e.from_status AS "from", e.to_status AS "to", e.note, e.override_reason AS "overrideReason", e.detail, u.display_name AS actor, e.at
@@ -579,7 +653,22 @@ export class RecordsService {
         [taskId],
       )
     ).rows;
-    return { task: view, history };
+    const parent = tasks.find((t) => t.id === view.parentId);
+    // A parent this viewer's lists do not show (held or Deleted) is not shown through its subtask either.
+    const ownOnly = parent ? {} : { parentId: null, dueAfterParent: false, parentCancelled: false };
+    // "Due soon" by the one rule (D135); a task that is overdue or waits for a deadline review shows that instead.
+    const open = view.status !== 'completed' && view.status !== 'cancelled' && !view.deadlineReviewRequired && view.dueOn >= ctx.today;
+    const dueSoon = open && view.dueOn <= dueSoonEnd(ctx.today, (await loadEffective(this.pool, ctx.project.id)).cal);
+    const block = view.status === 'blocked' ? history.filter((h) => h.kind === 'blocked').at(-1) : undefined;
+    return {
+      task: { ...view, ...ownOnly, description: more.description as string | null, dueSoon },
+      history,
+      parent: parent ? { id: parent.id, title: parent.title } : null,
+      subtasks: tasks.filter((t) => t.parentId === view.id).map((t) => ({ id: t.id, title: t.title, status: t.status, dueOn: t.dueOn })),
+      authorised: { by: more.authorisedBy as string, at: more.authorisedAt as Date },
+      blocked: block ? { reason: block.note as string | null, by: block.actor as string, at: block.at as Date } : null,
+      proposal: view.proposal,
+    };
   }
 
   /** Every record of a project, for participants and grant holders (V1.0: read follows project access). */
@@ -588,7 +677,23 @@ export class RecordsService {
     return this.listFor(ctx, user);
   }
 
-  async listFor(ctx: ProjectContext, user: AuthUser) {
+  /** The project's open review flags, by record. */
+  private async openFlags(ctx: ProjectContext) {
+    const open = (
+      await this.pool.query(
+        `SELECT f.id, f.record_kind AS kind, f.record_id AS "recordId", f.raised_at AS "raisedAt",
+                CASE WHEN ${liveRecordSql('d')} THEN json_build_object('id', d.id, 'statement', d.statement, 'status', d.status)
+                     ELSE json_build_object('id', NULL, 'statement', '${DELETED_LINK}', 'status', d.status) END AS decision
+           FROM review_flags f JOIN decisions d ON d.id = f.decision_id
+          WHERE f.project_id = $1 AND f.cleared_at IS NULL AND ${liveRecordRefSql('f.record_kind', 'f.record_id')} ORDER BY f.raised_at, f.id`,
+        [ctx.project.id],
+      )
+    ).rows;
+    return (kind: string, id: string) => open.filter((f) => f.kind === kind && f.recordId === id).map((f) => ({ id: f.id, decision: f.decision, raisedAt: f.raisedAt }));
+  }
+
+  /** Every live task of the project as this viewer sees it, by due date. */
+  private async taskViews(ctx: ProjectContext, user: AuthUser, flagsOf: Awaited<ReturnType<RecordsService['openFlags']>>, links: Map<string, ProposalLink>) {
     const tasks = (
       await this.pool.query(
         `SELECT t.id, t.parent_id AS "parentId", t.depth, t.title, t.assignee_id AS "assigneeId", u.display_name AS "assigneeName",
@@ -620,7 +725,7 @@ export class RecordsService {
     ).rows;
     const itemIds = tasks.filter((t) => t.itemId).map((t) => t.itemId as string);
     const [flags, evidence, quoteChanged] = await Promise.all([itemSourceFlags(this.pool, itemIds), itemDiscussionEvidence(this.pool, itemIds), quoteChangedItems(this.pool, itemIds)]);
-    const view = tasks.map((t) => ({
+    return tasks.map((t) => ({
       id: t.id,
       parentId: t.parentId,
       depth: t.depth,
@@ -658,7 +763,15 @@ export class RecordsService {
             note: 'x',
           }).allowed,
       ),
+      proposal: links.get(t.id) ?? null,
+      reviewFlags: flagsOf('task', t.id),
     }));
+  }
+
+  async listFor(ctx: ProjectContext, user: AuthUser) {
+    const flagsOf = await this.openFlags(ctx);
+    const links = await proposalLinks(this.pool, ctx, user.id);
+    const view = await this.taskViews(ctx, user, flagsOf, links);
     // Top-level tasks by due date, each followed by its subtasks (and theirs).
     const byParent = new Map<string | null, typeof view>();
     for (const v of view) byParent.set(v.parentId, [...(byParent.get(v.parentId) ?? []), v]);
@@ -719,22 +832,11 @@ export class RecordsService {
       );
       return { ...k, mayAct };
     });
-    const open = (
-      await this.pool.query(
-        `SELECT f.id, f.record_kind AS kind, f.record_id AS "recordId", f.raised_at AS "raisedAt",
-                CASE WHEN ${liveRecordSql('d')} THEN json_build_object('id', d.id, 'statement', d.statement, 'status', d.status)
-                     ELSE json_build_object('id', NULL, 'statement', '${DELETED_LINK}', 'status', d.status) END AS decision
-           FROM review_flags f JOIN decisions d ON d.id = f.decision_id
-          WHERE f.project_id = $1 AND f.cleared_at IS NULL AND ${liveRecordRefSql('f.record_kind', 'f.record_id')} ORDER BY f.raised_at, f.id`,
-        [ctx.project.id],
-      )
-    ).rows;
-    const flagsOf = (kind: string, id: string) => open.filter((f) => f.kind === kind && f.recordId === id).map((f) => ({ id: f.id, decision: f.decision, raisedAt: f.raisedAt }));
     return {
-      tasks: ordered.map((x) => ({ ...x, reviewFlags: flagsOf('task', x.id) })),
-      decisions,
-      questions: questions.map((x) => ({ ...x, reviewFlags: flagsOf('question', x.id) })),
-      risks: risks.map((x) => ({ ...x, reviewFlags: flagsOf('risk', x.id) })),
+      tasks: ordered,
+      decisions: decisions.map((x) => ({ ...x, proposal: links.get(x.id) ?? null })),
+      questions: questions.map((x) => ({ ...x, proposal: links.get(x.id) ?? null, reviewFlags: flagsOf('question', x.id) })),
+      risks: risks.map((x) => ({ ...x, proposal: links.get(x.id) ?? null, reviewFlags: flagsOf('risk', x.id) })),
     };
   }
 }

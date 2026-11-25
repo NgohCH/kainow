@@ -30,7 +30,7 @@ test('the Administrator fallback names only the project', () => {
 });
 
 test('links point at the record, or the work list for a resumption', () => {
-  assert.equal(linkFor('p1', 'task', 't1'), '#/projects/p1/work/t1');
+  assert.equal(linkFor('p1', 'task', 't1'), '#/projects/p1/tasks/t1');
   assert.equal(linkFor('p1', 'risk', 'r1'), '#/projects/p1/work/r1');
   assert.equal(linkFor('p1', 'project', 'p1'), '#/projects/p1/work');
 });

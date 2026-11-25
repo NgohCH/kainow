@@ -42,7 +42,11 @@ describe('human proposals', { skip: SKIP_NO_DB }, () => {
     const again = await owner.request('POST', `/proposals/${r.body.proposal.id}/authorise`, { assigneeId: ids.mem, dueOn: '2026-11-30' });
     assert.equal(again.status, 200, 'a repeated click returns the record');
     const after = (await owner.request('GET', `/projects/${projectId}/proposals`)).body.proposals[0];
-    assert.deepEqual([after.reviewStatus, after.record.kind], ['approved', 'task']);
+    assert.deepEqual([after.reviewStatus, after.record.kind, after.recordOpens], ['approved', 'task', true]);
+    assert.equal(listed[0].recordOpens, false, 'no record yet');
+    await t.pool.query(`UPDATE tasks SET deleted_at = now(), deleted_by = $2, delete_reason = 'Duplicate' WHERE id = $1`, [after.record.id, ids.pm]);
+    assert.equal((await owner.request('GET', `/projects/${projectId}/proposals`)).body.proposals[0].recordOpens, false, 'a Deleted record');
+    await t.pool.query(`UPDATE tasks SET deleted_at = NULL, deleted_by = NULL, delete_reason = NULL WHERE id = $1`, [after.record.id]);
     assert.equal((await member.request('POST', `/proposals/${r.body.proposal.id}/authorise`, {})).status, 403, 'a member does not authorise');
   });
 

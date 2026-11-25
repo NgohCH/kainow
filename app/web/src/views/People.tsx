@@ -1,12 +1,14 @@
 import { useCallback, useEffect, useState, type FormEvent } from 'react';
 import { ApiError, api } from '../api.ts';
 import { formatWhen } from '../format.ts';
+import { departmentName, type PersonDepartment } from '../profile.ts';
 import type { RecoveryCustodian } from '../custodian.ts';
 import { DataTable, type Column } from '../ui/DataTable.tsx';
 import { SettingsPage } from '../ui/SettingsPage.tsx';
 import { StatTile } from '../ui/StatTile.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
 import type { Meaning } from '../ui/meanings.ts';
+import { DepartmentForm } from './DepartmentForm.tsx';
 
 interface Person {
   id: string;
@@ -15,6 +17,7 @@ interface Person {
   role: 'enterprise_administrator' | 'member';
   status: 'invited' | 'active' | 'disabled';
   createdAt: string;
+  department: PersonDepartment | null;
 }
 
 const ACCOUNT_STATE = { invited: 'Invited', active: 'Active', disabled: 'Disabled' } as const;
@@ -26,6 +29,7 @@ export function People({ meId }: { meId: string }) {
   const [email, setEmail] = useState('');
   const [name, setName] = useState('');
   const [busy, setBusy] = useState(false);
+  const [personId, setPersonId] = useState('');
   const [custodian, setCustodian] = useState<RecoveryCustodian | null>(null);
   useEffect(() => {
     api.get<RecoveryCustodian>('/organisation/recovery-custodian').then(setCustodian, () => setCustodian(null));
@@ -83,7 +87,9 @@ export function People({ meId }: { meId: string }) {
     }
   }
 
+  const person = people?.find((p) => p.id === personId);
   const active = people?.filter((p) => p.status === 'active' && p.role === 'enterprise_administrator').length ?? 0;
+  const keptAdmin = (p: Person) => p.role === 'enterprise_administrator' && active < 2;
   const disabled = people?.filter((p) => p.status === 'disabled').length ?? 0;
   const recorded = custodian?.name && custodian.contact ? { name: custodian.name, contact: custodian.contact } : null;
 
@@ -91,6 +97,7 @@ export function People({ meId }: { meId: string }) {
     { key: 'name', header: 'Name', sortValue: (p) => p.displayName.toLowerCase(), cell: (p) => <strong>{p.displayName}{p.id === meId ? ' (you)' : ''}</strong> },
     { key: 'email', header: 'Email', sortValue: (p) => p.email.toLowerCase(), cell: (p) => p.email },
     { key: 'role', header: 'Role', sortValue: (p) => p.role, cell: (p) => (p.role === 'enterprise_administrator' ? 'Administrator' : 'Member') },
+    { key: 'department', header: 'Department', sortValue: (p) => p.department?.name.toLowerCase() ?? '', cell: (p) => departmentName(p.department) },
     { key: 'added', header: 'Added', sortValue: (p) => p.createdAt, cell: (p) => formatWhen(p.createdAt) },
     { key: 'status', header: 'Account', sortValue: (p) => p.status, cell: (p) => <StatusLabel meaning={ACCOUNT_MEANING[p.status]} word={ACCOUNT_STATE[p.status]} /> },
     {
@@ -100,9 +107,12 @@ export function People({ meId }: { meId: string }) {
         p.status === 'disabled' ? (
           <button onClick={() => void enable(p)} aria-label={`Enable ${p.displayName}`}>Enable</button>
         ) : (
-          <button className="reject" onClick={() => void disable(p)} disabled={p.role === 'enterprise_administrator' && active < 2} aria-label={`Disable ${p.displayName}`}>
-            Disable
-          </button>
+          <>
+            <button className="reject" onClick={() => void disable(p)} disabled={keptAdmin(p)} aria-label={`Disable ${p.displayName}`} aria-describedby={keptAdmin(p) ? `kept-${p.id}` : undefined}>
+              Disable
+            </button>
+            {keptAdmin(p) && <span id={`kept-${p.id}`} className="hint">Administrators can be disabled only while two or more are active. Add another first.</span>}
+          </>
         ),
     },
   ];
@@ -142,6 +152,39 @@ export function People({ meId }: { meId: string }) {
                 <label>Work email<input type="email" value={email} onChange={(e) => setEmail(e.target.value)} required /></label>
                 <button className="primary" disabled={busy}>Add administrator</button>
               </form>
+            ),
+          },
+          {
+            key: 'department',
+            title: 'Department of a person',
+            current: <p className="meta">People choose their own on My profile. You can change anyone's here. It is for information only and gives no access.</p>,
+            form: (close) => (
+              <div className="stack">
+                <label>
+                  Person
+                  <select value={person ? personId : ''} onChange={(e) => setPersonId(e.target.value)}>
+                    <option value="">Choose a person</option>
+                    {[...(people ?? [])].sort((a, b) => a.displayName.localeCompare(b.displayName)).map((p) => (
+                      <option key={p.id} value={p.id}>{p.displayName} ({p.email}{p.status === 'disabled' ? ', disabled' : ''})</option>
+                    ))}
+                  </select>
+                </label>
+                {person && (
+                  <DepartmentForm
+                    key={person.id}
+                    held={person.department}
+                    label={`Department of ${person.displayName}`}
+                    save={async (departmentId) => {
+                      await api.put(`/users/${person.id}/department`, { departmentId });
+                      await load();
+                    }}
+                    onDone={() => {
+                      setPersonId('');
+                      close();
+                    }}
+                  />
+                )}
+              </div>
             ),
           },
         ]}

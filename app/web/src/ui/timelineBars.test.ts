@@ -165,3 +165,26 @@ test('percentages stay within 0 to 100, whatever the dates', () => {
   for (const x of [...l.months.map((m) => m.atPct), ...l.markers.map((m) => m.atPct)]) assert.ok(x >= 0 && x <= 100);
   assert.equal(l.markers[0].atPct, 100);
 });
+
+test('a period stopped after the window runs to its edge, so it also says on which day', () => {
+  const p = { stage: 'Planning', substage: null, startedOn: '2026-09-01', stopped: 'deferred' as const };
+  const l = barsLayout({ ...WINDOW, periods: [{ ...p, endedOn: '2027-06-01' }, { ...p, endedOn: WINDOW.to }], lines: [], hiddenKinds: [] });
+  assert.deepEqual(l.bars.map((b) => [b.endPct, b.stoppedLater]), [[100, '2027-06-01'], [100, null]]);
+});
+
+test('a stopped period ends on its day, is not current, and says why', () => {
+  const l = barsLayout({
+    ...WINDOW,
+    periods: [
+      { stage: 'Planning', substage: null, startedOn: '2026-09-01', endedOn: '2026-09-11', stopped: 'deferred' },
+      { stage: 'Planning', substage: null, startedOn: '2026-10-01', endedOn: '2026-10-02', stopped: 'closed' },
+    ],
+    lines: [],
+    hiddenKinds: [],
+  });
+  assert.deepEqual(l.bars.map((b) => [b.current, b.stopped, b.days]), [[false, 'deferred', 10], [false, 'closed', 1]]);
+  near(l.bars[0].endPct, pct(WINDOW.from, '2026-09-11', WINDOW.to));
+  assert.equal(l.bars[0].text, 'Planning: 1 Sep 2026 to 11 Sep 2026, 10 days, stopped when deferred.');
+  assert.equal(l.bars[1].text, 'Planning: 1 Oct 2026 to 2 Oct 2026, 1 day, stopped when closed.');
+  assert.match(l.summary, /stopped when closed\.$/);
+});

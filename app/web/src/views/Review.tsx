@@ -10,14 +10,16 @@ import { plural } from '../format.ts';
 import { KINDS, correctionLine, kindWord, needsReason, originalLine, setAsideWarning } from '../ui/corrections.ts';
 import { REVIEW_STATUS_LABEL } from '../records.ts';
 import { canMarkByOffset, evidenceView, occurrenceChoiceText } from '../discussion.ts';
-import { reviewOwnsKey } from '../reviewKeys.ts';
+import { cardForKey, mayAct, mayTakeFocus, openingSelection, reviewOwnsKey, stepCard } from '../reviewKeys.ts';
 import { buildSegments, contextAround, markedSpan } from '../segments.ts';
+import { placeLink, recordHref } from '../proposalLinks.ts';
+import { useFocusItem } from './useFocusItem.ts';
 import { type EditFields, blocksApproval, dueLine, editFormFrom, formatDay } from '../due.ts';
 
 interface RunView {
   projectId: string;
   run: Run;
-  source: { sourceId: string; title: string; versionNo: number; sourceKind?: string };
+  source: { sourceId: string; title: string; versionNo: number; sourceKind: string; threadId: string | null; opens?: boolean };
   items: Item[];
   /** What this viewer may do here; note says why approving is not open to them, when it is not. */
   permissions: { approve: boolean; reject: boolean; edit: boolean; note: string | null };
@@ -25,9 +27,12 @@ interface RunView {
 
 const STATUS_LABEL = REVIEW_STATUS_LABEL;
 
-export function Review({ runId, meId }: { runId: string; meId: string }) {
+/** `focusId`: the proposal its address names, selected, scrolled to and focused once everything has loaded. */
+export function Review({ runId, focusId, meId }: { runId: string; focusId?: string; meId: string }) {
   const [view, setView] = useState<RunView | null>(null);
   const [text, setText] = useState<string | null>(null);
+  // The source text was read, or could not be.
+  const [textTried, setTextTried] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [selected, setSelected] = useState<string | null>(null);
   // For a quote that repeats: the place the reviewer has picked (an index into the item's occurrences).
@@ -89,12 +94,12 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
     api.get<RunView>(`/extractions/${runId}`).then(
       async (v) => {
         setView(v);
-        setSelected((cur) => cur ?? v.items[0]?.id ?? null);
+        // The page of a Deleted or held source does not answer: the proposals are shown without its text.
+        if (v.source.opens === false) return;
         const t = await api.get<{ version: { text: string } }>(`/notes/${v.source.sourceId}/versions/${v.source.versionNo}`);
         setText(t.version.text);
       },
-      (e: Error) => setError(e.message),
-    );
+    ).catch((e: Error) => setError(e.message)).finally(() => setTextTried(true));
   }, [runId]);
 
   const saveMeeting = useCallback(async () => {
@@ -118,9 +123,33 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
     [text, items, pick, offsetsFit],
   );
   const byId = useMemo(() => new Map(items.map((i) => [i.id, i])), [items]);
-  const current = selected ? byId.get(selected) : undefined;
+
+  // The address is followed once, when the run is there or the address changes; whatever the reader does after that stands.
+  const moved = useRef(false);
+  const loaded = view !== null;
+  const missing = loaded && openingSelection(items.map((i) => i.id), focusId, null).missing;
+  useEffect(() => {
+    if (!loaded) return;
+    moved.current = false;
+    setSelected((cur) => openingSelection(items.map((i) => i.id), focusId, cur).selected);
+    // Only opening the address moves the reader; later refreshes of the run do not.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusId, loaded]);
+  /** Brings a proposal's passage into the notes pane without moving the page, which stays at the proposal. */
+  const showPassage = useCallback((id: string) => {
+    const mark = marks.current.get(id);
+    const box = sourceBox.current;
+    if (mark && box) box.scrollTop += mark.getBoundingClientRect().top - box.getBoundingClientRect().top - box.clientHeight / 2;
+  }, []);
+  // Focus waits for the text, which changes the cards' heights (and may fail to load).
+  const ready = loaded && textTried;
+  useEffect(() => {
+    if (focusId && ready && !moved.current) showPassage(focusId);
+  }, [focusId, ready, showPassage]);
+  useFocusItem(focusId, ready, () => mayTakeFocus(document.activeElement, moved.current));
 
   const select = useCallback((id: string, scrollSource: boolean) => {
+    moved.current = true;
     setSelected(id);
     const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
     const behavior = reduce ? 'auto' : 'smooth';
@@ -192,22 +221,41 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
     }
   }, [view, editing, saving, runId, reloadRequests]);
 
-  // j and k move between proposals, a approves and r rejects the one in focus.
+  /** j and k: the card moved to has the focus as well as the selection. */
+  const moveTo = useCallback(
+    (id: string) => {
+      moved.current = true;
+      setSelected(id);
+      const card = cards.current.get(id);
+      card?.focus({ preventScroll: true });
+      card?.scrollIntoView({ block: 'nearest', behavior: 'auto' });
+      showPassage(id);
+    },
+    [showPassage],
+  );
+
+  // j and k move between proposals, a approves and r rejects the selected one, which follows the focus.
   useEffect(() => {
     function onKey(e: KeyboardEvent) {
       // Inside the project shell the Ask panel can sit over the review: its keys, and any outside the review, are not shortcuts.
       if (e.metaKey || e.ctrlKey || e.altKey) return;
       if (!reviewOwnsKey(e.target as HTMLElement | null, root.current, document.body, document.querySelector('.ask-panel') !== null)) return;
-      const idx = items.findIndex((i) => i.id === selected);
-      if (e.key === 'j' && idx < items.length - 1) select(items[idx + 1].id, true);
-      else if (e.key === 'k' && idx > 0) select(items[idx - 1].id, true);
-      else if (current && e.key === 'a' && view?.permissions.approve && canApprove(current, pick) && !current.record) setAuthorising(current.id);
-      // While an authorisation waits for more approvers, its panel's Reject is the way to reject.
-      else if (current && e.key === 'r' && view?.permissions.reject && !pendingAuthorisation(requests, current.id)) void decide(current, 'rejected');
+      const focused = [...cards.current].find(([, card]) => card.contains(e.target as Node))?.[0] ?? null;
+      if (e.key === 'j' || e.key === 'k') {
+        const to = stepCard(e.key, items.map((i) => i.id), focused, selected);
+        if (to) moveTo(to);
+        return;
+      }
+      const id = cardForKey(focused, selected);
+      const current = id ? byId.get(id) : undefined;
+      if (!current || !view) return;
+      const its = { hasRecord: current.record !== null && current.record !== undefined, waiting: pendingAuthorisation(requests, current.id) !== undefined, saving: saving.has(current.id) };
+      if (e.key === 'a' && mayAct({ ...its, allowed: view.permissions.approve, ready: canApprove(current, pick) })) setAuthorising(current.id);
+      else if (e.key === 'r' && mayAct({ ...its, allowed: view.permissions.reject, ready: current.reviewStatus !== 'rejected' })) void decide(current, 'rejected');
     }
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
-  }, [items, selected, current, select, decide, pick, view, requests]);
+  }, [items, byId, selected, moveTo, decide, pick, view, requests, saving]);
 
   if (error && !view) return <p role="alert" className="error">{error}</p>;
   if (!view) return <p className="loading">Loading</p>;
@@ -218,7 +266,11 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
 
   return (
     <div className={`review${sourceFor ? ' showing-source' : ''}`} ref={root}>
-      <p><a href={`#/notes/${view.source.sourceId}/v/${view.source.versionNo}`}>Back to {view.source.title}</a></p>
+      <p>
+        {view.source.opens === false
+          ? <a href={`#/projects/${view.projectId}/proposals`}>Back to Proposals</a>
+          : <a href={`#/notes/${view.source.sourceId}/v/${view.source.versionNo}`}>Back to {view.source.title}</a>}
+      </p>
       <div className="row">
         <h2>Review proposals</h2>
         <p className="tally" aria-live="polite">
@@ -230,6 +282,7 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
         {view.permissions.reject ? 'Keys: j and k move, a approves, r rejects.' : 'Keys: j and k move.'}
       </p>
       {view.permissions.note && <p className="warn">{view.permissions.note}</p>}
+      {missing && <p role="status" className="warn">That proposal is not in this run.</p>}
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
       {items.length > 0 && (
@@ -269,6 +322,13 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
           {items.map((item, n) => (
             <article
               key={item.id}
+              id={`item-${item.id}`}
+              tabIndex={-1}
+              onFocus={() => {
+                // Whatever brings focus into a card (a click, Tab, a form opening) selects it, so a key never acts on another one.
+                moved.current = true;
+                setSelected(item.id);
+              }}
               ref={(el) => void (el ? cards.current.set(item.id, el) : cards.current.delete(item.id))}
               className={`proposal ai-proposed kind-${item.kind} status-${item.reviewStatus}${item.id === selected ? ' is-selected' : ''}`}
               aria-current={item.id === selected ? 'true' : undefined}
@@ -453,7 +513,8 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                 </button>
               )}
               {(() => {
-                const ev = evidenceView({ quote: item.quote, quoteMasked: item.quoteMasked, sourceFlag: item.sourceFlag, discussionEvidence: item.discussionEvidence }, view.projectId);
+                const ev = evidenceView({ quote: item.quote, quoteMasked: item.quoteMasked, sourceFlag: item.sourceFlag, discussionEvidence: item.discussionEvidence }, view.source.opens === false ? undefined : view.projectId);
+                const place = placeLink(view.projectId, view.source, item, pick[item.id]);
                 return (
                   ev.kind === 'quote' && (
                     <>
@@ -461,6 +522,14 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
                       {ev.flag && <p className="warn" role="note">{ev.flag}</p>}
                       {item.quoteChanged && <p className="warn" role="note">{item.quoteChanged}</p>}
                       {ev.from && <p className="meta">{ev.href ? <a href={ev.href}>{ev.from}</a> : ev.from}</p>}
+                      {!ev.from && place && (
+                        <p className="meta">
+                          <a href={place.href}>
+                            {place.exact ? 'Open this passage in its source' : 'Open the source'}
+                            <span className="visually-hidden">: proposal {n + 1} of {items.length}</span>
+                          </a>
+                        </p>
+                      )}
                     </>
                   )
                 );
@@ -511,9 +580,15 @@ export function Review({ runId, meId }: { runId: string; meId: string }) {
               )}
               <div className="decision">
                 {item.record ? (
-                  <a className="badge badge-approved" href={`#/projects/${view.projectId}/work`}>
-                    Authorised: see the Work tab
-                  </a>
+                  item.recordOpens ? (
+                    <a className="badge badge-approved" href={recordHref(view.projectId, item.record)}>
+                      Authorised: open the {item.record.kind}<span className="visually-hidden"> from proposal {n + 1} of {items.length}</span>
+                    </a>
+                  ) : (
+                    <a className="badge badge-approved" href={`#/projects/${view.projectId}/work`}>
+                      Authorised: see the Work tab
+                    </a>
+                  )
                 ) : item.approvedWithoutRecord ? (
                   <span className="badge badge-pending">Approved before records existed</span>
                 ) : (

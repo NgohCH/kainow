@@ -187,7 +187,8 @@ export function DeadlineReview({ project }: { project: Project }) {
           <p className="meta">Each new date is a request: the task restarts with it once it is authorised.</p>
           <DataTable caption="Tasks that need a new due date" columns={columns} rows={open} rowKey={(t) => t.id} empty="No tasks need a new date." />
           <div className="decision">
-            <button className="primary" disabled={!anyDate}>Send for authorisation</button>
+            <button className="primary" disabled={!anyDate} aria-describedby={anyDate ? undefined : 'dr-send-why'}>Send for authorisation</button>
+            {!anyDate && <span id="dr-send-why" className="hint">Enter at least one new date first.</span>}
           </div>
         </form>
       )}

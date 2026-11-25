@@ -1,6 +1,17 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { logoUploadError, previewPlaces } from './branding.ts';
+import { type Branding, logoUploadError, memberOf, previewPlaces } from './branding.ts';
+
+test('what the server refuses until setup is finished is asked for only then: preferences load after Finish setup', () => {
+  const user = { id: 'u' };
+  const branding = { registered: false, name: 'Kainow', colour: null, places: {} } as unknown as Branding;
+  assert.equal(memberOf(user, false, null), null, 'not before the organisation has been read');
+  assert.equal(memberOf(user, true, branding), null, 'not while it is being set up');
+  assert.equal(memberOf(user, true, { ...branding, registered: true }), user, 'Finish setup reads the organisation again, and now they are');
+  assert.equal(memberOf(user, true, null), user, 'the organisation could not be read: the server decides');
+  assert.equal(memberOf(null, true, { ...branding, registered: true }), null);
+  assert.equal(memberOf(undefined, true, { ...branding, registered: true }), null);
+});
 
 test('a logo upload is checked early for its type and size; the server stays the judge', () => {
   assert.equal(logoUploadError({ type: 'image/svg+xml', size: 1000 }), 'Use a PNG or JPEG file.');

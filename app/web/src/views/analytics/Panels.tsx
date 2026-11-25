@@ -29,7 +29,7 @@ import {
   sortRows,
   trendSeries,
 } from '../../analytics.ts';
-import { awaitingLabel, cancelledLabel, completionLabel, dayLabel, lateLabel, onTimeLabel, plannedEndLabel } from '../../dashboard.ts';
+import { awaitingLabel, cancelledLabel, completionLabel, dayLabel, lateLabel, onTimeLabel, plannedEndLabel, stageLabel } from '../../dashboard.ts';
 import { plural } from '../../format.ts';
 import { STATUS_LABEL } from '../../projects.ts';
 import { Bars } from '../Bars.tsx';
@@ -131,8 +131,6 @@ function useSort(initial: string) {
   return { sort, onSort };
 }
 
-const stageText = (s: ProgressRow['stage']) => (s ? `${s.stage}${s.substage ? `, ${s.substage}` : ''}, ${plural(s.days, 'day')}` : 'None');
-
 function rollCompletion(r: Roll): string {
   return r.completionPercent === null
     ? 'Progress not yet measurable'
@@ -164,7 +162,7 @@ export function ProgressView({
       case 'status':
         return r.status in STATUS_LABEL ? <StatusLabel meaning={projectMeaning(r.status)} word={STATUS_LABEL[r.status]} /> : r.status;
       case 'stage':
-        return stageText(r.stage);
+        return stageLabel(r.stage);
       case 'completion': {
         const cancelled = cancelledLabel(r.completion);
         return <><DrillButton text={completionLabel(r.completion)} target={target('completion')} onDrill={onDrill} />{cancelled && <span className="meta"> · {cancelled}</span>}</>;

@@ -1,4 +1,4 @@
-import { Body, Controller, Get, HttpCode, Param, Post, Req } from '@nestjs/common';
+import { Body, Controller, Get, HttpCode, Param, Post, Put, Req } from '@nestjs/common';
 import { RequireAction } from '../auth/access';
 import type { HttpRequest } from '../auth/auth.guard';
 import { UsersService } from './users.service';
@@ -28,6 +28,13 @@ export class UsersController {
       requireEligibleDomain: true,
     });
     return { user };
+  }
+
+  /** { departmentId | null } → { department }; information only, it gives no access (D134). */
+  @Put(':id/department')
+  @RequireAction('user.manage')
+  async department(@Param('id') id: string, @Body() body: unknown, @Req() req: HttpRequest) {
+    return { department: await this.users.setDepartment(id, field(body, 'departmentId'), req.auth?.user.id ?? null) };
   }
 
   @Post(':id/disable')

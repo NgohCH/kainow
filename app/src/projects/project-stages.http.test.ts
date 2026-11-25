@@ -10,6 +10,7 @@ const EVENT = STARTER_TEMPLATES.find((x) => x.name === 'Event')!;
 const RESEARCH_STAGES = RESEARCH.stages.map((s) => s.name);
 const GENERAL_STAGES = ['Initiation', 'Planning', 'Execution', 'Review & Acceptance', 'Closure'];
 const reason = 'Agreed at the project board';
+const SECRET = `ghp_${'a1B2c3D4e5F6'.repeat(3)}`;
 
 type Stage = { id: string; name: string; substages: string[]; status: 'active' | 'retired' };
 
@@ -66,6 +67,30 @@ describe("a project's own stages (D131)", { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(p.stageTemplate, { id: GENERAL_TEMPLATE_ID, name: 'General' });
     assert.deepEqual(names(p.stages), GENERAL_STAGES);
     assert.deepEqual(p.stages[2].substages, ['In Progress', 'Monitoring & Follow-up']);
+  });
+
+  test('two stages whose names were cleaned to the same text can both still be chosen, by substage', async () => {
+    const id = await research();
+    const name = 'Trial [credential removed]';
+    for (const [i, sub] of ['First pass', 'Second pass'].entries()) {
+      await t.pool.query(
+        `INSERT INTO project_stages (id, project_id, position, name, substages, added_at) VALUES (gen_random_uuid(), $1, $2, $3, $4, now())`,
+        [id, 20 + i, name, [sub]],
+      );
+    }
+    const cleaned = (await stages(id)).filter((s) => s.name === name);
+    for (const s of cleaned) {
+      const r = await pm.request('POST', `/projects/${id}/stage`, { stage: name, substage: s.substages[0] });
+      assert.equal(r.status, 200, s.substages[0]);
+    }
+    // The test clock stands still, so the two events have no order: each stage is named once.
+    const { rows } = await t.pool.query(`SELECT detail->>'stageId' AS id FROM audit_events WHERE action = 'project.stage' AND subject_id = $1`, [id]);
+    assert.deepEqual(rows.map((r) => r.id).sort(), cleaned.map((s) => s.id).sort(), 'the audit names the stage that has the substage');
+    assert.equal((await pm.request('POST', `/projects/${id}/stage`, { stage: name, substage: 'Third pass' })).status, 400);
+    // While either is current neither can be retired; moving on frees both.
+    assert.equal((await pm.request('POST', `/projects/${id}/stages/${cleaned[0].id}/retire`, { reason })).status, 409);
+    assert.equal((await pm.request('POST', `/projects/${id}/stage`, { stage: 'Analysis' })).status, 200);
+    assert.equal((await pm.request('POST', `/projects/${id}/stages/${cleaned[0].id}/retire`, { reason })).status, 200);
   });
 
   test('a retired or unknown template is refused', async () => {
@@ -258,5 +283,226 @@ describe("a project's own stages (D131)", { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(p.stageTemplate, { id: GENERAL_TEMPLATE_ID, name: 'General' });
     assert.deepEqual(names(p.stages), GENERAL_STAGES);
     assert.equal((await pm.request('POST', `/projects/${id}/stage`, { stage: 'Planning', substage: 'Define Scope' })).status, 200);
+  });
+
+  const rename = (c: Client, id: string, stageId: string, name: unknown, why: unknown = reason) =>
+    c.request('POST', `/projects/${id}/stages/${stageId}/rename`, { name, reason: why });
+  const periodNames = async (id: string) =>
+    (await t.pool.query(`SELECT stage FROM project_stage_periods WHERE project_id = $1 ORDER BY started_at, ended_at NULLS LAST`, [id])).rows.map((r) => r.stage as string);
+
+  test('a stage is renamed everywhere, past and current periods included, with the old and new names in the history (D137)', async () => {
+    const id = await research();
+    const other = await research();
+    const proposal = (await stages(id))[0];
+    t.clock.advanceSeconds(1);
+    assert.equal((await pm.request('POST', `/projects/${id}/stage`, { stage: 'Analysis' })).status, 200);
+    t.clock.advanceSeconds(1);
+    assert.equal((await pm.request('POST', `/projects/${id}/stage`, { stage: 'Proposal' })).status, 200);
+    const r = await rename(pm, id, proposal.id, ' Bid ');
+    assert.equal(r.status, 200);
+    assert.deepEqual(names(r.body.project.stages), ['Bid', ...RESEARCH_STAGES.slice(1)]);
+    assert.equal(r.body.project.stage.stage, 'Bid');
+    assert.deepEqual(await periodNames(id), ['Bid', 'Analysis', 'Bid']);
+    const [change] = r.body.project.stageChanges;
+    assert.deepEqual([change.kind, change.stage, change.reason, change.actor], ['renamed', 'Bid', reason, 'pm']);
+    assert.deepEqual([change.previous[0], change.next[0]].map((s: Stage) => s.name), ['Proposal', 'Bid']);
+    const audit = (await t.pool.query(`SELECT detail FROM audit_events WHERE action = 'project.stage_renamed' AND subject_id = $1`, [id])).rows;
+    assert.deepEqual(audit.map((a) => a.detail), [{ stageId: proposal.id }], 'ids only');
+    // The old name may no longer be chosen, the new one may; the other project and the template keep theirs.
+    assert.equal((await pm.request('POST', `/projects/${id}/stage`, { stage: 'Proposal' })).status, 400);
+    assert.equal((await pm.request('POST', `/projects/${id}/stage`, { stage: 'Bid' })).status, 200);
+    assert.deepEqual(names(await stages(other)), RESEARCH_STAGES);
+    assert.deepEqual(await periodNames(other), ['Proposal']);
+    const template = (await t.pool.query(`SELECT name FROM stage_template_stages WHERE template_id = $1 ORDER BY position`, [RESEARCH.id])).rows;
+    assert.deepEqual(template.map((x) => x.name), RESEARCH_STAGES);
+    // A retired stage keeps its state under its new name, and its past period follows.
+    const analysis = (await stages(id)).find((s) => s.name === 'Analysis')!;
+    assert.equal((await pm.request('POST', `/projects/${id}/stages/${analysis.id}/retire`, { reason })).status, 200);
+    const again = await rename(owner, id, analysis.id, 'Findings');
+    assert.equal(again.status, 200);
+    assert.deepEqual(again.body.project.stages.find((s: Stage) => s.id === analysis.id), { ...analysis, name: 'Findings', status: 'retired' });
+    const after = await periodNames(id);
+    assert.ok(after.includes('Findings') && !after.includes('Analysis'));
+  });
+
+  test('only the letter case of a name may change; a taken, same, bad or credential name is refused', async () => {
+    const id = await research();
+    const [first, second] = await stages(id);
+    const cased = await rename(pm, id, first.id, 'PROPOSAL');
+    assert.equal(cased.status, 200);
+    assert.equal(cased.body.project.stage.stage, 'PROPOSAL');
+    const taken = await rename(pm, id, first.id, 'literature REVIEW');
+    assert.deepEqual([taken.status, taken.body.message], [400, 'This project already has a stage with that name.']);
+    // A retired stage's name is in use as well.
+    assert.equal((await pm.request('POST', `/projects/${id}/stages/${second.id}/retire`, { reason })).status, 200);
+    assert.equal((await rename(pm, id, first.id, second.name)).status, 400);
+    // The database's own idea of the same name (dotted capital I) is refused in words.
+    assert.equal((await pm.request('POST', `/projects/${id}/stages`, { name: 'I', position: 1, reason })).status, 200);
+    const dotted = await rename(pm, id, first.id, 'İ');
+    assert.deepEqual([dotted.status, dotted.body.message], [400, 'This project already has a stage with that name.']);
+    const same = await rename(pm, id, first.id, 'PROPOSAL');
+    assert.deepEqual([same.status, same.body.message], [400, 'Give the stage a different name.']);
+    const before = (await detail(id)).stageChanges.length;
+    for (const bad of ['', '  ', 'x'.repeat(81), 7, undefined]) assert.equal((await rename(pm, id, first.id, bad)).status, 400, String(bad));
+    assert.equal((await rename(pm, id, first.id, SECRET)).status, 400);
+    assert.equal((await rename(pm, id, first.id, 'Bid', SECRET)).status, 400);
+    assert.equal((await rename(pm, id, first.id, 'Bid', ' ')).status, 400);
+    assert.equal((await rename(member, id, first.id, 'Bid')).status, 403);
+    for (const unknown of ['00000000-0000-4000-8000-000000000000', 'not-an-id']) assert.equal((await rename(pm, id, unknown, 'Bid')).status, 404);
+    assert.equal((await detail(id)).stageChanges.length, before, 'nothing is recorded for a refused rename');
+    assert.deepEqual(await periodNames(id), ['PROPOSAL']);
+    assert.equal((await rename(pm, id, first.id, 'x'.repeat(80))).status, 200);
+  });
+
+  test('renaming is refused while the project is Deferred, Closed or archived', async () => {
+    const deferred = await research();
+    assert.equal((await pm.request('POST', `/projects/${deferred}/transition`, { to: 'deferred', reason })).status, 200);
+    const closed = await research('closed');
+    const archived = await research('closed');
+    assert.equal((await owner.request('POST', `/projects/${archived}/archive`, { reason })).status, 200);
+    for (const id of [deferred, closed, archived]) {
+      const [first] = await stages(id);
+      assert.equal((await rename(owner, id, first.id, 'Bid')).status, 403);
+      assert.deepEqual(await periodNames(id), ['Proposal']);
+    }
+  });
+
+  test('earlier entries in the change history keep the name the stage had then', async () => {
+    const id = await research();
+    const step = async (path: string, b: object) => {
+      t.clock.advanceSeconds(1);
+      const r = await pm.request('POST', `/projects/${id}/stages${path}`, { reason, ...b });
+      assert.equal(r.status, 200, path);
+      return r.body.project;
+    };
+    const made = (await step('', { name: 'Fieldwork', position: 4 })).stages[3] as Stage;
+    await step(`/${made.id}/retire`, {});
+    await step(`/${made.id}/restore`, {});
+    await step('/order', { ids: (await stages(id)).reverse().map((s) => s.id) });
+    await step(`/${made.id}/rename`, { name: 'Site work' });
+    await step(`/${made.id}/retire`, {});
+    const p = await step(`/${made.id}/rename`, { name: 'On site' });
+    const shown = (list: Array<{ kind: string; stage: string | null }>) => list.map((c) => [c.kind, c.stage]);
+    const expected = [
+      ['renamed', 'On site'], ['retired', 'Site work'], ['renamed', 'Site work'], ['reordered', null],
+      ['restored', 'Fieldwork'], ['retired', 'Fieldwork'], ['added', 'Fieldwork'],
+    ];
+    assert.deepEqual(shown(p.stageChanges), expected);
+    assert.ok(p.stageChanges.every((c: { previous: object[]; next: object[] }) => [...c.previous, ...c.next].every((s) => !('id' in s))));
+    // Entries recorded before renames existed hold no stage ids; their names come from what changed.
+    await t.pool.query(
+      `INSERT INTO project_stage_changes (id, project_id, kind, stage_id, actor_id, at, reason, previous, next)
+       SELECT gen_random_uuid(), project_id, kind, stage_id, actor_id, at - interval '1 day', reason,
+              (SELECT jsonb_agg(e - 'id' ORDER BY n) FROM jsonb_array_elements(previous) WITH ORDINALITY x (e, n)),
+              (SELECT jsonb_agg(e - 'id' ORDER BY n) FROM jsonb_array_elements(next) WITH ORDINALITY x (e, n))
+         FROM project_stage_changes WHERE project_id = $1`,
+      [id],
+    );
+    assert.deepEqual(shown((await detail(id)).stageChanges), [...expected, ...expected]);
+  });
+
+  test('of two stages with the same stored name (after cleaning) only the one named is renamed, and no period', async () => {
+    const id = await research();
+    const name = 'Trial [credential removed]';
+    for (const position of [20, 21]) {
+      await t.pool.query(`INSERT INTO project_stages (id, project_id, position, name, added_at) VALUES (gen_random_uuid(), $1, $2, $3, now())`, [id, position, name]);
+    }
+    assert.equal((await pm.request('POST', `/projects/${id}/stage`, { stage: name })).status, 200);
+    const [a, b] = (await stages(id)).filter((s) => s.name === name);
+    const r = await rename(pm, id, b.id, 'Second trial');
+    assert.equal(r.status, 200);
+    assert.deepEqual(r.body.project.stages.slice(-2).map((s: Stage) => [s.id, s.name]), [[a.id, name], [b.id, 'Second trial']]);
+    assert.equal(r.body.project.stage.stage, name);
+    assert.equal(r.body.project.stageChanges[0].stage, 'Second trial');
+    // The other is refused the name just given.
+    assert.equal((await rename(pm, id, a.id, 'second TRIAL')).status, 400);
+  });
+
+  /** Runs `change` up to where it writes the stage periods, then a rename of Analysis, and lets both finish. */
+  const renameDuring = async (id: string, change: () => Promise<{ status: number }>) => {
+    const analysis = (await stages(id)).find((s) => s.name === 'Analysis')!;
+    const other = await t.pool.connect();
+    try {
+      await other.query('BEGIN');
+      await other.query(`SELECT 1 FROM project_stage_periods WHERE project_id = $1 AND ended_at IS NULL FOR UPDATE`, [id]);
+      const changing = change();
+      await new Promise((r) => setTimeout(r, 500)); // it has read the stages and waits for the open period
+      let done = false;
+      const renaming = rename(pm, id, analysis.id, 'Findings').finally(() => {
+        done = true;
+      });
+      await new Promise((r) => setTimeout(r, 500));
+      assert.equal(done, false, 'the rename waits for the change to finish');
+      await other.query('COMMIT');
+      assert.deepEqual([(await changing).status, (await renaming).status], [200, 200]);
+    } finally {
+      await other.query('ROLLBACK');
+      other.release();
+    }
+    assert.equal((await periodNames(id)).at(-1), 'Findings');
+    const p = await detail(id);
+    assert.equal(p.stage.stage, 'Findings');
+    assert.ok(names(p.stages).includes('Findings') && !names(p.stages).includes('Analysis'));
+  };
+
+  test('a rename during a change to that stage waits for it and renames the new period too', async () => {
+    const id = await research();
+    t.clock.advanceSeconds(1);
+    await renameDuring(id, () => pm.request('POST', `/projects/${id}/stage`, { stage: 'Analysis' }));
+  });
+
+  test('a rename during a reopening into that stage waits for it and renames the new period too', async () => {
+    const id = await research('closed');
+    t.clock.advanceSeconds(1);
+    await renameDuring(id, () => owner.request('POST', `/projects/${id}/transition`, { to: 'active', reason: 'More data', stage: 'Analysis' }));
+  });
+
+  test('a rename writes the periods before the stages, as the cleaning does, so the two cannot deadlock', async () => {
+    const id = await research();
+    const proposal = (await stages(id))[0];
+    const cleaning = await t.pool.connect();
+    try {
+      await cleaning.query('BEGIN');
+      await cleaning.query(`SELECT 1 FROM project_stage_periods WHERE project_id = $1 FOR UPDATE`, [id]);
+      const renaming = rename(pm, id, proposal.id, 'Bid');
+      await new Promise((r) => setTimeout(r, 500));
+      await cleaning.query(`SET LOCAL lock_timeout = '5s'`);
+      await cleaning.query(`SELECT 1 FROM project_stages WHERE project_id = $1 FOR UPDATE`, [id]);
+      await cleaning.query('COMMIT');
+      assert.equal((await renaming).status, 200);
+    } finally {
+      await cleaning.query('ROLLBACK');
+      cleaning.release();
+    }
+    assert.deepEqual([(await stages(id))[0].name, ...(await periodNames(id))], ['Bid', 'Bid']);
+  });
+
+  test('a change to the old name that waits for a rename is refused; two renames at once leave one name', async () => {
+    const id = await research();
+    const analysis = (await stages(id)).find((s) => s.name === 'Analysis')!;
+    const other = await t.pool.connect();
+    try {
+      await other.query('BEGIN');
+      // The rename stops at its first write, holding the project.
+      await other.query(`SELECT 1 FROM project_stages WHERE id = $1 FOR UPDATE`, [analysis.id]);
+      const renaming = rename(pm, id, analysis.id, 'Findings');
+      await new Promise((r) => setTimeout(r, 500));
+      const changing = pm.request('POST', `/projects/${id}/stage`, { stage: 'Analysis' });
+      await new Promise((r) => setTimeout(r, 500));
+      await other.query('COMMIT');
+      assert.equal((await renaming).status, 200);
+      const refused = await changing;
+      assert.deepEqual([refused.status, refused.body.message], [400, 'Choose a stage.']);
+    } finally {
+      await other.query('ROLLBACK');
+      other.release();
+    }
+    assert.deepEqual(await periodNames(id), ['Proposal']);
+    const proposal = (await stages(id))[0];
+    const both = await Promise.all([rename(pm, id, proposal.id, 'Bid'), rename(owner, id, proposal.id, 'Tender')]);
+    assert.deepEqual(both.map((r) => r.status), [200, 200]);
+    const p = await detail(id);
+    assert.ok(['Bid', 'Tender'].includes(p.stage.stage));
+    assert.deepEqual([p.stages[0].name, ...(await periodNames(id))], [p.stage.stage, p.stage.stage]);
   });
 });

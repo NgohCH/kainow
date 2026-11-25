@@ -161,7 +161,7 @@ describe('analytics Resources and finance panel', { skip: SKIP_NO_DB }, () => {
     const zero = d.lines.projects.find((p: any) => p.name === 'Zeta plan');
     assert.equal(zero.needed + zero.arranged + zero.inUse, 0);
     assert.ok(d.computedAt);
-    assert.equal(r.body.definitionsVersion, '1');
+    assert.equal(r.body.definitionsVersion, '2');
     // The period moves "Finished in the period" and nothing else.
     const early = await panel('period=last_4w');
     assert.equal(early.lines.organisation.finishedInPeriod, 0);
@@ -229,7 +229,7 @@ describe('analytics Resources and finance panel', { skip: SKIP_NO_DB }, () => {
     const parsed = parseCsv(lines.text);
     assert.equal(parsed.meta[0], '# Panel: Resources and finance: Resource lines');
     assert.ok(parsed.meta.some((m) => m.startsWith('# Period: Last 12 weeks, 2026-08-24 to 2026-11-09')));
-    assert.ok(parsed.meta.some((m) => m.startsWith('# Measure definitions version: 1')));
+    assert.ok(parsed.meta.some((m) => m.startsWith('# Measure definitions version: 2')));
     assert.deepEqual(parsed.rows[0], ['Level', 'Name', 'Owning department', 'Projects', 'Needed', 'Arranged', 'In use', 'Finished in the period', 'Needed-by passed', 'Lines with overlaps']);
     assert.deepEqual(parsed.rows.find((r) => r[0] === 'Project' && r[1] === 'Alpha works'), ['Project', 'Alpha works', 'Alpha Unit', '', '1', '1', '1', '1', '1', '1']);
     // A project named "=Gamma yard" is guarded against formula injection.

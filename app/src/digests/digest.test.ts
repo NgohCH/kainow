@@ -126,8 +126,8 @@ describe('building a digest', { skip: SKIP_NO_DB }, () => {
     assert.equal(overdueLines.length, 1, 'only the one past-due open task of the recipient is marked');
     assert.match(d.body, /Status: Blocked; Overdue/);
     assert.match(d.body, /Own subtask[\s\S]*?Status: Not started; Deadline review required/);
-    assert.ok(d.body.includes(`https://kainow.example.org/#/projects/${projectId}/work/${overdue}`));
-    assert.ok(d.body.includes(`/work/${sooner}`) && d.body.includes(`/work/${sub}`));
+    assert.ok(d.body.includes(`https://kainow.example.org/#/projects/${projectId}/tasks/${overdue}`));
+    assert.ok(d.body.includes(`/tasks/${sooner}`) && d.body.includes(`/tasks/${sub}`));
     assert.ok(!/Bob (late|early)[\s\S]{0,80}Overdue/.test(d.body));
     for (const banned of ['proposal', 'risk', 'decision', 'question']) assert.ok(!d.body.toLowerCase().includes(banned), banned);
   });

@@ -178,13 +178,46 @@ describe('loadProjectMeasures', { skip: SKIP_NO_DB }, () => {
     const m = (await loadProjectMeasures(pool, [project], TODAY, new Date('2026-11-19T02:00:00Z'))).get(project);
     assert.ok(m);
     assert.deepEqual(m.questions, { open: 2, answered: 1 });
-    assert.equal(m.dueSoon, 2);
-    assert.deepEqual(m.stage, { stage: 'Initiation', substage: null, days: 18 });
+    assert.equal(m.dueSoon, 3, 'seven working days from Thursday 19 Nov reach Monday 30 Nov');
+    assert.deepEqual(m.stage, { stage: 'Initiation', substage: null, days: 18, stopped: null });
     assert.deepEqual(m.plannedEnd, { state: 'ahead', days: 10 });
     assert.equal(m.pendingInvitations, 1);
     assert.equal(m.nextTaskDue, '2026-11-19');
     assert.equal(m.nextRiskReview, null);
     assert.equal(m.projectId, project);
+  });
+
+  test('due soon counts seven days by the project calendar, per project', async () => {
+    const other = await workingProject();
+    for (const projectId of [project, other]) {
+      await task({ projectId, dueOn: '2026-11-19' });
+      await task({ projectId, dueOn: '2026-11-30' }); // 11 calendar days, the 7th working day
+      await task({ projectId, dueOn: '2026-12-01' }); // the 8th
+      await task({ projectId, dueOn: '2026-11-30', status: 'completed' });
+      await task({ projectId, dueOn: '2026-11-18' }); // overdue, not due soon
+    }
+    const dueSoon = async () => {
+      const all = await loadProjectMeasures(pool, [project, other], TODAY);
+      return [all.get(project)?.dueSoon, all.get(other)?.dueSoon];
+    };
+    assert.deepEqual(await dueSoon(), [2, 2]);
+    await pool.query(`INSERT INTO holidays (id, project_id, on_date, name, added_by, added_at) VALUES ($1, $2, '2026-11-25', 'Dummy holiday', $3, now())`, [uuidv7(), project, pm]);
+    assert.deepEqual(await dueSoon(), [3, 2], 'a project holiday moves only that project end to 1 Dec');
+    await pool.query(`INSERT INTO project_notification_settings (project_id, day_counting) VALUES ($1, 'calendar')`, [other]);
+    assert.deepEqual(await dueSoon(), [3, 1], 'plain days: 19 to 26 Nov');
+  });
+
+  test('a project whose holidays leave no working day does not break the others', async () => {
+    const other = await workingProject();
+    for (const projectId of [project, other]) await task({ projectId, dueOn: '2026-11-26' });
+    await pool.query(
+      `INSERT INTO holidays (id, project_id, on_date, name, added_by, added_at)
+       SELECT gen_random_uuid(), $1, d::date, 'Dummy holiday', $2, now() FROM generate_series('2026-11-01'::date, '2027-12-31'::date, '1 day') d`,
+      [project, pm],
+    );
+    const all = await loadProjectMeasures(pool, [project, other], TODAY);
+    assert.equal(all.get(project)?.dueSoon, 1, 'plain days for the degenerate project');
+    assert.equal(all.get(other)?.dueSoon, 1);
   });
 
   test('on-time completion uses the deferral day and the UTC+8 completion day', async () => {
@@ -200,6 +233,24 @@ describe('loadProjectMeasures', { skip: SKIP_NO_DB }, () => {
     const m = await measures();
     assert.deepEqual(m.onTime, { state: 'measured', due: 3, done: 2, late: 1, percent: 66, awaitingReview: 1 }, 'reference day 10 Nov');
     assert.equal(m.flags.deadlineReview, true);
+  });
+
+  test('the days in a stage stop at the deferral or closure, and run again once resumed (D138)', async () => {
+    const move = async (from: string, to: string, at: string) => {
+      await pool.query(`INSERT INTO project_transitions (id, project_id, from_status, to_status, actor_id, reason, at) VALUES ($1, $2, $3, $4, $5, 'Why', $6)`, [uuidv7(), project, from, to, pm, at]);
+      await pool.query(`UPDATE projects SET status = $2, closure_outcome = CASE WHEN $2 = 'closed' THEN 'abandoned' END WHERE id = $1`, [project, to]);
+    };
+    // Stage began 1 Nov (UTC+8); deferred at 00:30 on 10 Nov (UTC+8); today is 19 Nov.
+    await move('active', 'deferred', '2026-11-09T16:30:00Z');
+    assert.deepEqual((await measures()).stage, { stage: 'Initiation', substage: null, days: 9, stopped: 'deferred' });
+    await move('deferred', 'closed', '2026-11-12T02:00:00Z');
+    assert.equal((await measures()).stage?.days, 9, 'closed while Deferred: still from the deferral');
+    await move('closed', 'active', '2026-11-15T02:00:00Z');
+    await pool.query(`UPDATE project_stage_periods SET ended_at = '2026-11-15T02:00:00Z' WHERE project_id = $1`, [project]);
+    await pool.query(`INSERT INTO project_stage_periods (id, project_id, stage, started_at, started_by) VALUES ($1, $2, 'Execution', '2026-11-15T02:00:00Z', $3)`, [uuidv7(), project, pm]);
+    assert.deepEqual((await measures()).stage, { stage: 'Execution', substage: null, days: 4, stopped: null });
+    await move('active', 'closed', '2026-11-17T02:00:00Z');
+    assert.deepEqual((await measures()).stage, { stage: 'Execution', substage: null, days: 2, stopped: 'closed' });
   });
 
   test('flags: missing role, no independent escalation recipient, deadline review', async () => {

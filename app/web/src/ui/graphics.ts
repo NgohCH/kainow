@@ -1,18 +1,24 @@
 /** Text equivalents for the stage flow and the stacked bar (every graphic carries its values in words, O15). */
 import type { Meaning } from './meanings.ts';
 
-export interface Stage { name: string; state: 'done' | 'current' | 'todo'; days?: number }
+/** What stopped a stage, when its project was deferred or closed while it ran (D138). */
+export type Stopped = 'deferred' | 'closed';
+export const STOPPED_LABEL: Record<Stopped, string> = { deferred: 'Stopped when deferred', closed: 'Stopped when closed' };
+
+/** `stopped` goes with the state 'stopped'; `days` are those of the current or stopped stage. */
+export interface Stage { name: string; state: 'done' | 'current' | 'stopped' | 'todo'; days?: number; stopped?: Stopped }
 
 const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`;
 
 /** "Stage 3 of 5: Build, 34 days. Done: Initiation, Design." */
 export function stageFlowText(stages: Stage[]): string {
-  const at = stages.findIndex((s) => s.state === 'current');
+  const at = stages.findIndex((s) => s.state === 'current' || s.state === 'stopped');
   const done = stages.filter((s) => s.state === 'done').map((s) => s.name);
   const parts: string[] = [];
   if (at >= 0) {
     const s = stages[at];
-    parts.push(`Stage ${at + 1} of ${stages.length}: ${s.name}${s.days === undefined ? '' : ', ' + plural(s.days, 'day', 'days')}.`);
+    const days = s.days === undefined ? '' : `, ${s.stopped ? 'after ' : ''}${plural(s.days, 'day', 'days')}`;
+    parts.push(`Stage ${at + 1} of ${stages.length}: ${s.name}${s.stopped ? `, ${STOPPED_LABEL[s.stopped].toLowerCase()}` : ''}${days}.`);
   } else {
     parts.push(stages.length === 0 ? 'No stages.' : 'No stage is under way.');
   }

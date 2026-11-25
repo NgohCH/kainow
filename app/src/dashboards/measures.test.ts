@@ -68,7 +68,7 @@ test('plannedEnd none / ahead 10 / ended 3', () => {
 });
 
 test('definitions: one per measure of the §3 table, with the version and coverage note', () => {
-  assert.equal(MEASURES_VERSION, '1');
+  assert.equal(MEASURES_VERSION, '2');
   assert.equal(COVERAGE_NOTE, 'Counts all authorised records in the project except deleted ones and any under credential review.');
   assert.deepEqual(
     MEASURE_DEFINITIONS.map((d) => d.label),

@@ -4,6 +4,13 @@ export type LogoShape = 'wide' | 'square';
 export type PlaceBranding = { url: string; width: number; height: number; isDefault: boolean };
 export type Branding = { registered: boolean; name: string; colour: string | null; places: Record<Place, PlaceBranding> };
 
+/**
+ * Who the member-only parts of the app are read for. Until the organisation is set up the server refuses them, so that is
+ * nobody until the organisation has been read and is set up; when it could not be read, the server decides.
+ */
+export const memberOf = <U>(user: U | null | undefined, brandingRead: boolean, branding: Branding | null): U | null =>
+  (brandingRead && branding?.registered !== false ? user : null) ?? null;
+
 export type LogoMeta = { width: number; height: number; byteSize: number; uploadedAt: string };
 export type OrganisationProfile = {
   registered: boolean;

@@ -103,7 +103,7 @@ describe('analytics drill-down', { skip: SKIP_NO_DB }, () => {
     assert.equal(r.status, 200, JSON.stringify(r.body));
     assert.equal(r.body.counts.total, 1);
     assert.equal(r.body.limited, undefined);
-    assert.deepEqual(r.body.records, [{ id: late, title: 'Late work', assignee: 'pm', dueOn: '2026-11-02', link: `#/projects/${mine}/work/${late}` }]);
+    assert.deepEqual(r.body.records, [{ id: late, title: 'Late work', assignee: 'pm', dueOn: '2026-11-02', link: `#/projects/${mine}/tasks/${late}` }]);
     const b = await drill(`level=project&id=${mine}&measure=blocked`);
     assert.deepEqual(b.body.records.map((x: any) => x.id), [blocked]);
     assert.equal(b.body.counts.total, 1);

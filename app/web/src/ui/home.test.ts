@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import type { MyTask, NeedsYouItem, PersonalDashboard } from '../dashboard.ts';
-import { attentionFlags, greetingFor, homeEmptyCopy, progressText, reviewItems, statusWord, taskRows, todayLabel } from './home.ts';
+import type { MyTask, NeedsYouItem, PersonalDashboard, PersonalProject } from '../dashboard.ts';
+import type { ProjectStatus } from '../projects.ts';
+import { attentionFlags, greetingFor, groupProjects, historyLink, homeEmptyCopy, homeProjects, parseHistoryHash, progressText, reviewItems, statusWord, taskRows, todayLabel } from './home.ts';
 
 const item = (kind: NeedsYouItem['kind']): NeedsYouItem => ({ kind, projectId: 'p', projectName: 'P', label: kind, since: null, link: '#/x' });
 const task = (id: string, dueOn: string, status = 'todo'): MyTask => ({ id, title: id, projectId: 'p', projectName: 'P', dueOn, status });
@@ -51,3 +52,44 @@ test('tasks list overdue first, then by due day', () => {
   assert.deepEqual(rows.map((r) => r.id), ['o1', 'o2', 'c', 'a', 's', 'l']);
 });
 test('status words', () => assert.equal(statusWord('in_progress'), 'In progress'));
+
+const listedProject = (id: string, status: ProjectStatus, archived = false) => ({ id, status, archived });
+const LIST = [
+  listedProject('d', 'draft'), listedProject('p', 'planned'), listedProject('a', 'active'), listedProject('x', 'deferred'), listedProject('c', 'closed'),
+  listedProject('aa', 'active', true), listedProject('ax', 'deferred', true), listedProject('ac', 'closed', true),
+];
+const ids = (list: { id: string }[] | null) => list && list.map((p) => p.id).join(' ');
+const grouped = (state: ProjectStatus | null, archived: boolean) => {
+  const g = groupProjects(LIST, state, archived);
+  return { current: ids(g.current), deferred: ids(g.deferred), closed: ids(g.closed) };
+};
+
+test('projects are grouped into current, Deferred and Closed; archived ones only when included, in their own group', () => {
+  assert.deepEqual(grouped(null, false), { current: 'd p a', deferred: 'x', closed: 'c' });
+  assert.deepEqual(grouped(null, true), { current: 'd p a aa', deferred: 'x ax', closed: 'c ac' });
+});
+test('a state tile shows only the group that state is in', () => {
+  assert.deepEqual(grouped('active', false), { current: 'a', deferred: null, closed: null });
+  assert.deepEqual(grouped('deferred', false), { current: null, deferred: 'x', closed: null });
+  assert.deepEqual(grouped('closed', true), { current: null, deferred: null, closed: 'c ac' });
+});
+const homeProject = (id: string, status: string | null, archived = false): PersonalProject =>
+  status === null
+    ? { id, name: id, onHold: true }
+    : { id, name: id, onHold: false, archived, header: { status, stage: null, completion: { state: 'not_measurable', cancelled: 0 }, flags: { overdue: 0, blocked: 0, missingRole: false, noIndependentEscalation: false, deadlineReview: false } } };
+test('Home lists current projects and those where the membership is on hold, and counts the rest', () => {
+  const h = homeProjects([homeProject('d', 'draft'), homeProject('h', null), homeProject('x', 'deferred'), homeProject('c', 'closed'), homeProject('aa', 'active', true)]);
+  assert.deepEqual(h.current.map((p) => p.id), ['d', 'h', 'aa']);
+  assert.deepEqual(h.history.map((p) => p.id), ['x', 'c']);
+  assert.deepEqual(historyLink(h.history), { href: '#/projects/history', text: '2 in History' });
+  assert.equal(historyLink([]), null);
+});
+test('a history with archived projects opens with them included, so the count is what the page lists', () => {
+  assert.deepEqual(historyLink([homeProject('x', 'deferred'), homeProject('c', 'closed', true)]), { href: '#/projects/history/archived', text: '2 in History (1 archived)' });
+  assert.deepEqual(parseHistoryHash('#/projects/history/archived'), { archived: true });
+  assert.deepEqual(parseHistoryHash('#/projects/history'), { archived: false });
+  assert.equal(parseHistoryHash('#/projects'), null);
+});
+test('with only Deferred or Closed projects, Home says there is none current', () => {
+  assert.equal(homeEmptyCopy({ ...empty, projects: [homeProject('c', 'closed')] }).projects, 'None of your projects is current.');
+});

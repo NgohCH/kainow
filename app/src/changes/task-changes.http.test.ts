@@ -102,7 +102,7 @@ describe('amending and cancelling tasks', { skip: SKIP_NO_DB }, () => {
   test('nothing changed is refused', async () => {
     const id = await task();
     const r = await submit(pm, 'amend_task', id, { dueOn: '2026-11-20', title: 'Task', assigneeId: ids.ann, reason: 'x' });
-    assert.deepEqual([r.status, r.body.message], [409, 'Change at least one of the wording, the assignee or the due date.']);
+    assert.deepEqual([r.status, r.body.message], [409, 'Change at least one of the wording, the description, the assignee or the due date.']);
     const noReason = await submit(pm, 'amend_task', id, { dueOn: '2026-11-21' });
     assert.deepEqual([noReason.status, noReason.body.message], [400, 'A reason is required.']);
   });

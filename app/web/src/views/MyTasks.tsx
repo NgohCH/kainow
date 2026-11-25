@@ -1,13 +1,15 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api.ts';
 import { type PersonalDashboard, dayLabel, overdueDaysLabel } from '../dashboard.ts';
+import { taskHref } from '../taskPage.ts';
 import { DataTable, type Column } from '../ui/DataTable.tsx';
 import { PageHeader } from '../ui/PageHeader.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
+import { TaskGroups } from '../ui/TaskGroups.tsx';
 import { type TaskRow, statusWord, taskRows } from '../ui/home.ts';
 
 const columns: Column<TaskRow>[] = [
-  { key: 'task', header: 'Task', sortValue: (t) => t.title.toLowerCase(), cell: (t) => <a href={`#/projects/${t.projectId}/work/${t.id}`}>{t.title}</a> },
+  { key: 'task', header: 'Task', sortValue: (t) => t.title.toLowerCase(), cell: (t) => <a href={taskHref(t.projectId, t.id)}>{t.title}</a> },
   { key: 'project', header: 'Project', sortValue: (t) => t.projectName.toLowerCase(), cell: (t) => t.projectName },
   {
     key: 'due', header: 'Due (UTC+8)', sortValue: (t) => t.dueOn,
@@ -21,12 +23,13 @@ const columns: Column<TaskRow>[] = [
   { key: 'status', header: 'Status', sortValue: (t) => t.status, cell: (t) => statusWord(t.status) },
 ];
 
-/** The person's tasks across projects in one table (spec 7.2), overdue first, with status and project filters. */
+/** The person's tasks by project (11a.1 spec 15) or, by due date, in one table; the status and project filters apply to both. */
 export function MyTasks() {
   const [d, setD] = useState<PersonalDashboard | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [status, setStatus] = useState('');
   const [project, setProject] = useState('');
+  const [groupBy, setGroupBy] = useState<'project' | 'due'>('project');
 
   useEffect(() => {
     let stale = false;
@@ -50,6 +53,13 @@ export function MyTasks() {
       {error && <p role="alert" className="error">{error}</p>}
       <div className="table-filters">
         <label>
+          Group by
+          <select value={groupBy} onChange={(e) => setGroupBy(e.target.value === 'due' ? 'due' : 'project')}>
+            <option value="project">Project</option>
+            <option value="due">Due date</option>
+          </select>
+        </label>
+        <label>
           Status
           <select value={status} onChange={(e) => setStatus(e.target.value)}>
             <option value="">All statuses</option>
@@ -64,14 +74,18 @@ export function MyTasks() {
           </select>
         </label>
       </div>
-      <DataTable
-        caption="Your tasks"
-        columns={columns}
-        rows={rows}
-        rowKey={(t) => t.id}
-        loading={!d && !error}
-        empty={all.length === 0 ? 'No tasks are assigned to you.' : 'No tasks match these filters.'}
-      />
+      {groupBy === 'project' && rows.length > 0 ? (
+        <TaskGroups rows={rows} headingLevel={2} />
+      ) : (
+        <DataTable
+          caption="Your tasks"
+          columns={columns}
+          rows={rows}
+          rowKey={(t) => t.id}
+          loading={!d && !error}
+          empty={all.length === 0 ? 'No tasks are assigned to you.' : 'No tasks match these filters.'}
+        />
+      )}
     </main>
   );
 }

@@ -67,7 +67,8 @@ test('hrefFor', () => {
   assert.equal(hrefFor({ ...base, kind: 'note', versionNo: 2, isCurrent: false }), '#/notes/I/v/2');
   assert.equal(hrefFor({ ...base, kind: 'ai_proposal', runId: 'R' }), '#/runs/R');
   assert.equal(hrefFor({ ...base, kind: 'human_proposal' }), '#/projects/P/notes/I');
-  for (const k of ['task', 'decision', 'question', 'risk'] as const) assert.equal(hrefFor({ ...base, kind: k }), '#/projects/P/work/I');
+  assert.equal(hrefFor({ ...base, kind: 'task' }), '#/projects/P/tasks/I');
+  for (const k of ['decision', 'question', 'risk'] as const) assert.equal(hrefFor({ ...base, kind: k }), '#/projects/P/work/I');
 });
 
 test('parsePhrase drops one-character words before keeping eight', () => {

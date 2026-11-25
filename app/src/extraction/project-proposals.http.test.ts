@@ -6,7 +6,7 @@ import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
 
-type Run = { runId: string; sourceId: string; sourceTitle: string; versionNo: number; finishedAt: string; waiting: number; total: number };
+type Run = { runId: string; sourceId: string; sourceTitle: string; sourceKind: string; threadId: string | null; versionNo: number; finishedAt: string; waiting: number; total: number };
 
 /** `GET /projects/:projectId/proposal-runs`: the Proposals tab's list of extraction runs (spec 6.3). */
 describe('project proposal runs', { skip: SKIP_NO_DB }, () => {
@@ -103,8 +103,8 @@ describe('project proposal runs', { skip: SKIP_NO_DB }, () => {
     await run(b.versionId, { finishedAt: '2026-11-06T02:00:00Z', items: [] });
     await run(a.versionId, { finishedAt: '2026-11-07T02:00:00Z', items: [], status: 'failed' });
     assert.deepEqual(await list('mem'), [
-      { runId: newer, sourceId: b.sourceId, sourceTitle: 'Site visit', versionNo: 1, finishedAt: '2026-11-05T02:00:00.000Z', waiting: 0, total: 1 },
-      { runId: older, sourceId: a.sourceId, sourceTitle: 'Kick-off', versionNo: 1, finishedAt: '2026-11-03T02:00:00.000Z', waiting: 1, total: 3 },
+      { runId: newer, sourceId: b.sourceId, sourceTitle: 'Site visit', sourceKind: 'notes', threadId: null, versionNo: 1, finishedAt: '2026-11-05T02:00:00.000Z', waiting: 0, total: 1 },
+      { runId: older, sourceId: a.sourceId, sourceTitle: 'Kick-off', sourceKind: 'notes', threadId: null, versionNo: 1, finishedAt: '2026-11-03T02:00:00.000Z', waiting: 1, total: 3 },
     ]);
   });
 
@@ -120,13 +120,14 @@ describe('project proposal runs', { skip: SKIP_NO_DB }, () => {
     const outside = await list('outsider');
     assert.deepEqual(outside.map((r) => r.sourceTitle), ['Weekly']);
     assert.ok(!JSON.stringify(outside).includes(hidden) && !JSON.stringify(outside).includes(closed.sourceId));
+    assert.deepEqual(outside.map((r) => [r.sourceKind, r.threadId]), [['notes', null]]);
   });
 
   test("a discussion's runs are listed, counted and can be opened", async () => {
     const d = await discussion('Site plan');
     const runId = await run(d.versionId, { finishedAt: '2026-11-03T02:00:00Z', items: ['pending', 'pending', 'approved'] });
     assert.deepEqual(await list('mem'), [
-      { runId, sourceId: d.sourceId, sourceTitle: 'Discussion: Site plan', versionNo: 1, finishedAt: '2026-11-03T02:00:00.000Z', waiting: 2, total: 3 },
+      { runId, sourceId: d.sourceId, sourceTitle: 'Discussion: Site plan', sourceKind: 'discussion', threadId: d.threadId, versionNo: 1, finishedAt: '2026-11-03T02:00:00.000Z', waiting: 2, total: 3 },
     ]);
     assert.equal(await waiting('mem'), 2);
     const page = await people.mem.request('GET', `/extractions/${runId}`);
@@ -147,7 +148,7 @@ describe('project proposal runs', { skip: SKIP_NO_DB }, () => {
     const outside = await list('outsider');
     assert.deepEqual(outside.map((r) => r.runId), [openRun]);
     const raw = JSON.stringify(outside);
-    for (const leak of [closedRun, closed.sourceId, 'Pay review']) assert.ok(!raw.includes(leak), leak);
+    for (const leak of [closedRun, closed.sourceId, closed.threadId, 'Pay review']) assert.ok(!raw.includes(leak), leak);
     assert.equal(await waiting('outsider'), 1, 'the count leaves the restricted proposals out');
     assert.equal((await people.outsider.request('GET', `/extractions/${closedRun}`)).status, 404);
     // The notes list still holds notes only.
@@ -191,6 +192,66 @@ describe('project proposal runs', { skip: SKIP_NO_DB }, () => {
     await t.pool.query(`UPDATE sources SET status = 'deleted' WHERE id = $1`, [gone.sourceId]);
     const runs = await list('mem');
     assert.deepEqual(runs.map((r) => [r.sourceId, r.sourceTitle]), [[masked.sourceId, POSSIBLE_COPY_TEXT]]);
+  });
+
+  test("minutes give the note's address, never their meeting's thread; every address listed opens", async () => {
+    const d = await discussion('Site plan');
+    await run(d.versionId, { finishedAt: '2026-11-02T02:00:00Z', items: ['pending'] });
+    const meeting = await people.pm.request('POST', `/projects/${projectId}/threads`, { kind: 'discussion', title: 'Weekly meeting' });
+    const meetingId = (meeting.body.thread?.id ?? meeting.body.id) as string;
+    const m = await note('Weekly meeting');
+    await t.pool.query(`UPDATE sources SET kind = 'minutes', thread_id = $2 WHERE id = $1`, [m.sourceId, meetingId]);
+    await run(m.versionId, { finishedAt: '2026-11-03T02:00:00Z', items: ['pending'] });
+    const listed = await list('mem');
+    assert.deepEqual(listed.map((r) => [r.sourceKind, r.sourceId, r.threadId]), [['minutes', m.sourceId, null], ['discussion', d.sourceId, d.threadId]]);
+    assert.equal((await people.mem.request('GET', `/notes/${m.sourceId}/versions/1`)).status, 200);
+    assert.equal((await people.mem.request('GET', `/threads/${d.threadId}`)).status, 200);
+  });
+
+  test("a run's page gives its source's address, and says when the source cannot be opened", async () => {
+    const d = await discussion('Keys');
+    const n = await note('Site visit');
+    const dRun = await run(d.versionId, { finishedAt: '2026-11-03T02:00:00Z', items: ['pending'] });
+    const nRun = await run(n.versionId, { finishedAt: '2026-11-04T02:00:00Z', items: ['pending'] });
+    const source = async (id: string) => (await people.mem.request('GET', `/extractions/${id}`)).body.source;
+    assert.deepEqual(await source(nRun), { sourceId: n.sourceId, title: 'Site visit', sourceKind: 'notes', threadId: null, versionNo: 1, opens: true });
+    assert.deepEqual(await source(dRun), { sourceId: d.sourceId, title: 'Discussion: Keys', sourceKind: 'discussion', threadId: d.threadId, versionNo: 1, opens: true });
+    const caseId = uuidv7();
+    await t.pool.query(
+      `INSERT INTO quarantine_cases (id, project_id, item_kind, item_id, reason, marked_length, state, waiting_for_key, reported_at) VALUES ($1, $2, 'thread', $3, 'test', 8, 'held', true, now())`,
+      [caseId, projectId, d.threadId],
+    );
+    await t.pool.query(`UPDATE discussion_threads SET held_case_id = $2 WHERE id = $1`, [d.threadId, caseId]);
+    assert.equal((await source(dRun)).opens, false, 'a held discussion');
+    await t.pool.query(`UPDATE sources SET held_case_id = $2 WHERE id = $1`, [n.sourceId, caseId]);
+    assert.equal((await source(nRun)).opens, false, 'a held note');
+    assert.equal((await people.mem.request('GET', `/notes/${n.sourceId}`)).status, 404, 'as the note itself answers');
+    await t.pool.query(`UPDATE sources SET held_case_id = NULL, status = 'deleted' WHERE id = $1`, [n.sourceId]);
+    assert.equal((await source(nRun)).opens, false, 'a Deleted note');
+    assert.equal((await people.mem.request('GET', `/notes/${n.sourceId}`)).status, 404);
+  });
+
+  test("a proposal's record opens while it is live, whatever its kind; a Deleted or held one does not", async () => {
+    const n = await note('Site visit');
+    const runId = await run(n.versionId, { finishedAt: '2026-11-04T02:00:00Z', items: ['approved', 'approved', 'approved', 'approved', 'pending'] });
+    const items = (await t.pool.query(`SELECT id FROM extraction_items WHERE run_id = $1 ORDER BY position`, [runId])).rows.map((r) => r.id as string);
+    const made = { task: uuidv7(), decision: uuidv7(), question: uuidv7(), risk: uuidv7() };
+    const common = `project_id, origin_item_id, authorised_by, authorised_at`;
+    await t.pool.query(`INSERT INTO tasks (id, title, assignee_id, due_on, depth, status, ${common}) VALUES ($1, 'T', $4, '2026-11-30', 0, 'not_started', $2, $3, $4, now())`, [made.task, projectId, items[0], ids.pm]);
+    await t.pool.query(`INSERT INTO decisions (id, statement, ${common}) VALUES ($1, 'D', $2, $3, $4, now())`, [made.decision, projectId, items[1], ids.pm]);
+    await t.pool.query(`INSERT INTO questions (id, text, requester_id, ${common}) VALUES ($1, 'Q', $4, $2, $3, $4, now())`, [made.question, projectId, items[2], ids.pm]);
+    await t.pool.query(`INSERT INTO risks (id, description, severity, ${common}) VALUES ($1, 'R', 'high', $2, $3, $4, now())`, [made.risk, projectId, items[3], ids.pm]);
+    const read = async () => ((await people.mem.request('GET', `/extractions/${runId}`)).body.items as Array<{ record: unknown; recordOpens: boolean }>).map((i) => [i.record, i.recordOpens]);
+    const rec = (kind: keyof typeof made) => ({ kind, id: made[kind] });
+    assert.deepEqual(await read(), [[rec('task'), true], [rec('decision'), true], [rec('question'), true], [rec('risk'), true], [null, false]]);
+    await t.pool.query(`UPDATE tasks SET deleted_at = now(), deleted_by = $2, delete_reason = 'Duplicate' WHERE id = $1`, [made.task, ids.pm]);
+    const caseId = uuidv7();
+    await t.pool.query(
+      `INSERT INTO quarantine_cases (id, project_id, item_kind, item_id, reason, marked_length, state, waiting_for_key, reported_at) VALUES ($1, $2, 'decision', $3, 'test', 8, 'held', true, now())`,
+      [caseId, projectId, made.decision],
+    );
+    await t.pool.query(`UPDATE decisions SET held_case_id = $2 WHERE id = $1`, [made.decision, caseId]);
+    assert.deepEqual((await read()).map((r) => r[1]), [false, false, true, true, false]);
   });
 
   test('404 for anyone who may not read the notes list', async () => {

@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import { formatWhen, plural } from '../format.ts';
+import { taskHref } from '../taskPage.ts';
 
 const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did not work. Try again.');
 
@@ -96,7 +97,7 @@ export function EscalationFlags({ projectId }: { projectId: string }) {
       <ul className="plain">
         {flags.map((f) => (
           <li key={f.taskId}>
-            <a href={`#/projects/${projectId}/work/${f.taskId}`}>{f.title}</a> · due {f.dueOn}
+            <a href={taskHref(projectId, f.taskId)}>{f.title}</a> · due {f.dueOn}
           </li>
         ))}
       </ul>

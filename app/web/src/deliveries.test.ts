@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { failuresFirst, lastDay } from './deliveries.ts';
+import { failuresFirst, lastDay, moreLoaded } from './deliveries.ts';
 
 const at = (hoursAgo: number) => new Date(Date.UTC(2026, 10, 24, 12) - hoursAgo * 3600 * 1000).toISOString();
 const now = Date.UTC(2026, 10, 24, 12);
@@ -28,4 +28,10 @@ test('the last 24 hours count sent, failed, uncertain and waiting emails, and ig
   ];
   assert.deepEqual(lastDay(rows, now), { sent: 2, failed: 1, uncertain: 1, waiting: 1, total: 5 });
   assert.deepEqual(lastDay([], now), { sent: 0, failed: 0, uncertain: 0, waiting: 0, total: 0 });
+});
+
+test('further emails are counted; a fresh list (after Send again, for example) drops the earlier count', () => {
+  assert.equal(moreLoaded(true, 50), '50 more emails loaded.');
+  assert.equal(moreLoaded(true, 1), '1 more email loaded.');
+  assert.equal(moreLoaded(false, 50), null);
 });

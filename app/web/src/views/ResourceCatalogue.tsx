@@ -1,7 +1,7 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import { plural } from '../format.ts';
-import { EMPTY_ITEM as EMPTY, type ItemDraft, itemProblem } from '../resourceScreens.ts';
+import { type ItemDraft, NEW_CATEGORY, type CatalogueCategory as Category, itemProblem, newItem, saveItem } from '../resourceScreens.ts';
 import { useReturnFocus } from './useReturnFocus.ts';
 import { DataTable, type Column } from '../ui/DataTable.tsx';
 import { StatTile } from '../ui/StatTile.tsx';
@@ -22,17 +22,12 @@ interface Item {
   status: 'active' | 'retired';
   projectsWithLines?: number;
 }
-interface Category {
-  id: string;
-  name: string;
-  status: 'active' | 'retired';
-}
-
 function ItemForm({ initial, categories, editing, onSubmit, onCancel, focusFirst = false }: {
   initial: ItemDraft;
   categories: Category[];
   editing: boolean;
-  onSubmit: (d: ItemDraft) => Promise<string | null>;
+  /** Saves the item, its new category first; returns the refusal, or null. `onCategory` selects the added category, which stays when the item is refused. */
+  onSubmit: (d: ItemDraft, onCategory: (id: string) => void) => Promise<string | null>;
   onCancel: () => void;
   /** Moves focus to the first field when the form opens away from its button (Edit opens it above the table). */
   focusFirst?: boolean;
@@ -47,10 +42,10 @@ function ItemForm({ initial, categories, editing, onSubmit, onCancel, focusFirst
   const set = (patch: Partial<ItemDraft>) => setD((x) => ({ ...x, ...patch }));
   async function submit(e: FormEvent) {
     e.preventDefault();
-    const problem = itemProblem(d);
+    const problem = itemProblem(d, categories);
     if (problem) return setError(problem);
     setBusy(true);
-    const refused = await onSubmit(d);
+    const refused = await onSubmit(d, (id) => set({ categoryId: id, newCategory: '' }));
     setBusy(false);
     setError(refused);
   }
@@ -77,8 +72,16 @@ function ItemForm({ initial, categories, editing, onSubmit, onCancel, focusFirst
           <select required value={d.categoryId} onChange={(e) => set({ categoryId: e.target.value })}>
             <option value="">Choose a category</option>
             {categories.filter((c) => c.status === 'active' || c.id === d.categoryId).map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            <option value={NEW_CATEGORY}>New category</option>
           </select>
         </label>
+        {d.categoryId === NEW_CATEGORY && (
+          <label>
+            New category name
+            <input required maxLength={80} value={d.newCategory} onChange={(e) => set({ newCategory: e.target.value })} />
+            <span className="hint">The category is added with the item.</span>
+          </label>
+        )}
       </div>
       <label>
         Description (optional)
@@ -87,7 +90,7 @@ function ItemForm({ initial, categories, editing, onSubmit, onCancel, focusFirst
       {error && <p role="alert" className="error">{error}</p>}
       <div className="decision">
         <button className="primary" disabled={busy}>{editing ? 'Save item' : 'Add item'}</button>
-        <button type="button" onClick={onCancel}>Cancel</button>
+        <button type="button" disabled={busy} onClick={onCancel}>Cancel</button>
       </div>
     </form>
   );
@@ -128,7 +131,9 @@ function RetireForm({ label, onRetire, onCancel }: { label: string; onRetire: (r
 export function ResourceCatalogue({ embedded = false, bare = false, onChanged }: { embedded?: boolean; bare?: boolean; onChanged?: () => void } = {}) {
   const Wrapper = bare ? 'div' : embedded ? 'section' : 'main';
   const Heading = embedded ? 'h2' : 'h1';
-  const Sub = bare ? 'h4' : 'h3';
+  const Sub = bare ? 'h4' : embedded ? 'h3' : 'h2';
+  /** While an item is being saved, the buttons that would close its form wait, so a refusal is never lost. */
+  const saving = useRef(false);
   const [items, setItems] = useState<Item[] | null>(null);
   const [categories, setCategories] = useState<Category[]>([]);
   const [error, setError] = useState<string | null>(null);
@@ -177,8 +182,31 @@ export function ResourceCatalogue({ embedded = false, bare = false, onChanged }:
     }
   }
 
+  /** Saves an item, its new category first. Whatever was refused, the list is read again: the category may be there. */
+  async function submitItem(d: ItemDraft, onCategory: (id: string) => void, sendItem: (body: object) => Promise<unknown>, done: string): Promise<string | null> {
+    setNotice(null);
+    saving.current = true;
+    const { refused, added } = await saveItem(d, {
+      addCategory: (name) => api.post('/resources/catalogue/categories', { name }),
+      sendItem,
+      onCategory: (c) => {
+        setCategories((all) => [...all, c]);
+        onCategory(c.id);
+      },
+      errText,
+    });
+    saving.current = false;
+    const words = [added && `Category ${added} added.`, refused === null && done].filter(Boolean).join(' ');
+    if (words) {
+      setNotice(words);
+      onChanged?.();
+    }
+    if (words || d.categoryId === NEW_CATEGORY) load();
+    return refused;
+  }
+
   const shown = (items ?? []).filter((i) => (kind === '' || i.kind === kind) && (category === '' || i.categoryId === category) && (status === '' || i.status === status));
-  const draftOf = (i: Item): ItemDraft => ({ kind: i.kind, reference: i.reference, name: i.name, categoryId: i.categoryId ?? '', description: i.description });
+  const draftOf = (i: Item): ItemDraft => ({ kind: i.kind, reference: i.reference, name: i.name, categoryId: i.categoryId ?? '', newCategory: '', description: i.description });
 
   const editingItem = editing ? (items ?? []).find((i) => i.id === editing) : undefined;
   // On its own page each part is a box; inside a settings box (bare) the parts are plain sections.
@@ -260,7 +288,7 @@ export function ResourceCatalogue({ embedded = false, bare = false, onChanged }:
           />
         ) : i.status === 'active' ? (
           <span className="actions">
-            <button type="button" className="link-button" data-opener={`edit-${i.id}`} aria-label={`Edit ${i.reference}`} aria-expanded={editing === i.id} onClick={() => setEditing(editing === i.id ? null : i.id)}>Edit</button>
+            <button type="button" className="link-button" data-opener={`edit-${i.id}`} aria-label={`Edit ${i.reference}`} aria-expanded={editing === i.id} onClick={() => !saving.current && setEditing(editing === i.id ? null : i.id)}>Edit</button>
             <button type="button" className="link-button" data-opener={`retire-${i.id}`} aria-label={`Retire ${i.reference}`} onClick={() => setRetiring(retiring === i.id ? null : i.id)}>Retire</button>
           </span>
         ) : (
@@ -319,24 +347,29 @@ export function ResourceCatalogue({ embedded = false, bare = false, onChanged }:
           </label>
           <button className="primary">Add category</button>
         </form>
-        <DataTable caption="Categories" columns={categoryColumns} rows={categories} rowKey={(c) => c.id} empty="No categories yet. Add one before adding items." loading={items === null && !error} />
+        <DataTable caption="Categories" columns={categoryColumns} rows={categories} rowKey={(c) => c.id} empty="No categories yet. Add one here, or with your first item." loading={items === null && !error} />
       </section>
 
       <section className={partClass} aria-labelledby="catalogue-items">
         <div className="settings-box-head">
           <Sub id="catalogue-items" className={subClass}>Items</Sub>
-          <button type="button" className="primary" data-opener="add-item" aria-expanded={adding} onClick={() => setAdding((a) => !a)} disabled={categories.every((c) => c.status !== 'active')}>
+          <button type="button" className="primary" data-opener="add-item" aria-expanded={adding} onClick={() => {
+            if (saving.current) return;
+            if (!adding && items === null) load();
+            setAdding(!adding);
+          }}>
             + Add item
           </button>
         </div>
-        {adding && (
+        {adding && !items && <p className="meta">{error ? 'The catalogue could not be loaded, so an item cannot be added yet. Reload the page to try again.' : 'Loading the catalogue…'}</p>}
+        {adding && items && (
           <ItemForm
-            initial={EMPTY}
+            initial={newItem(categories)}
             categories={categories}
             editing={false}
             onCancel={() => setAdding(false)}
-            onSubmit={async (d) => {
-              const refused = await run(() => api.post('/resources/catalogue/items', { ...d, reference: d.reference.trim(), name: d.name.trim(), description: d.description.trim() }), 'Item added.');
+            onSubmit={async (d, onCategory) => {
+              const refused = await submitItem(d, onCategory, (body) => api.post('/resources/catalogue/items', body), 'Item added.');
               if (!refused) setAdding(false);
               return refused;
             }}
@@ -350,8 +383,8 @@ export function ResourceCatalogue({ embedded = false, bare = false, onChanged }:
             editing
             focusFirst
             onCancel={() => setEditing(null)}
-            onSubmit={async (d) => {
-              const refused = await run(() => api.put(`/resources/catalogue/items/${editingItem.id}`, { ...d, reference: d.reference.trim(), name: d.name.trim(), description: d.description.trim() }), 'Item saved.');
+            onSubmit={async (d, onCategory) => {
+              const refused = await submitItem(d, onCategory, (body) => api.put(`/resources/catalogue/items/${editingItem.id}`, body), 'Item saved.');
               if (!refused) setEditing(null);
               return refused;
             }}

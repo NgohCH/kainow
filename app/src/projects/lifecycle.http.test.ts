@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, test } from 'node:test';
+import { uuidv7 } from '../common/uuid7';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { type SeedMember, seedProject, seedUser } from '../testing/projects';
@@ -58,6 +59,71 @@ describe('project lifecycle', { skip: SKIP_NO_DB }, () => {
       ['Initiation', false], ['Execution', false], ['Review & Acceptance', true],
     ]);
     assert.equal((await t.pool.query(`SELECT count(*)::int AS n FROM audit_events WHERE action = 'project.transition'`)).rows[0].n, 6);
+  });
+
+  test('the project detail shows a stage stopped by a deferral or closure; what is stored and resuming are unchanged (D138)', async () => {
+    const id = await seedProject(t.pool, { status: 'active', members: full });
+    type P = { stage: string; endedAt: string | null; endedOn: string | null; stopped: string | null };
+    const read = async (project = id) => (await pm.request('GET', `/projects/${project}`)).body.project as { stage: P; stagePeriods: P[] };
+    const draft = await read(await seedProject(t.pool, { members: full }));
+    assert.deepEqual([draft.stage.endedOn, draft.stage.stopped], [null, null]);
+
+    await move(pm, id, { to: 'deferred', reason: 'Waiting for budget' });
+    const deferredAt = (await t.pool.query(`SELECT at FROM project_transitions WHERE project_id = $1`, [id])).rows[0].at.toISOString();
+    let p = await read();
+    // The latest stage stays, so resuming can offer it; it is stopped, not current.
+    assert.deepEqual([p.stage.stage, p.stage.endedAt, p.stage.endedOn, p.stage.stopped], ['Initiation', deferredAt, '2026-11-09', 'deferred']);
+    assert.equal((await t.pool.query(`SELECT count(*)::int AS n FROM project_stage_periods WHERE project_id = $1 AND ended_at IS NULL`, [id])).rows[0].n, 1);
+    // Resumed, then closed, the same day.
+    assert.equal((await move(pm, id, { to: 'active', reason: 'Budget approved', stage: 'Execution' })).status, 200);
+    p = await read();
+    assert.deepEqual(p.stagePeriods.map((s) => [s.stage, s.endedOn, s.stopped]), [['Initiation', '2026-11-09', 'deferred'], ['Execution', null, null]]);
+    assert.equal(p.stagePeriods[0].endedAt, deferredAt, 'it ends at the deferral, not at the resumption');
+    await move(owner, id, { to: 'closed', reason: 'Done', outcome: 'delivered', objectivesMet: true });
+    p = await read();
+    assert.deepEqual(p.stagePeriods.map((s) => [s.stage, s.stopped]), [['Initiation', 'deferred'], ['Execution', 'closed']]);
+    assert.equal(p.stage.stopped, 'closed');
+    await move(owner, id, { to: 'active', reason: 'More work', stage: 'Execution' });
+    p = await read();
+    assert.deepEqual(p.stagePeriods.map((s) => [s.stage, s.stopped]), [['Initiation', 'deferred'], ['Execution', 'closed'], ['Execution', null]]);
+    assert.deepEqual([p.stage.stage, p.stage.endedAt, p.stage.stopped], ['Execution', null, null]);
+  });
+
+  test('the project list says since when and why a project is Deferred, or with what outcome it closed, only to those who read it in the detail (D138)', async () => {
+    const id = await seedProject(t.pool, { status: 'active', members: full });
+    const other = await seedProject(t.pool, { status: 'active', members: full });
+    const outsider = await seedUser(t.pool, 'out@example.org');
+    const out = await t.signIn('out@example.org');
+    const row = async (c: Client, project = id) =>
+      (await c.request('GET', '/projects')).body.projects.find((x: { id: string }) => x.id === project) as { deferred: unknown; closed: unknown } | undefined;
+    assert.deepEqual([(await row(member))?.deferred, (await row(member))?.closed], [null, null]);
+
+    await move(pm, id, { to: 'deferred', reason: 'Waiting for the budget board' });
+    const deferred = { on: '2026-11-09', reason: 'Waiting for the budget board' };
+    for (const c of [pm, owner, member]) {
+      assert.deepEqual([(await row(c))?.deferred, (await row(c))?.closed], [deferred, null]);
+      assert.equal((await c.request('GET', `/projects/${id}`)).body.project.transitions.at(-1).reason, deferred.reason);
+    }
+    assert.equal((await row(member, other))?.deferred, null, 'another project in the same list');
+    // Not to an outsider, and not in the administrator's list of every project.
+    for (const c of [out, admin]) assert.ok(!JSON.stringify((await c.request('GET', '/projects')).body).includes(deferred.reason));
+    assert.equal((await out.request('GET', `/projects/${id}`)).status, 404);
+    // Nor on a leadership card, or to a member whose membership is On Hold.
+    await t.pool.query(
+      `INSERT INTO leadership_grants (id, user_id, scope_kind, starts_on, reason, granted_by, granted_at) VALUES ($1, $2, 'organisation', '2026-11-01', 'Oversight', $3, now())`,
+      [uuidv7(), outsider, admin.userId],
+    );
+    const cards = await out.request('GET', '/dashboard/leadership');
+    assert.equal(cards.body.cards.length, 2);
+    assert.ok(!JSON.stringify(cards.body).includes(deferred.reason));
+    await t.pool.query(`UPDATE memberships SET held_at = now(), hold_reason = 'Check' WHERE project_id = $1 AND user_id = $2`, [id, member.userId]);
+    assert.equal(await row(member), undefined);
+    await t.pool.query(`UPDATE memberships SET restored_at = now() WHERE project_id = $1 AND user_id = $2`, [id, member.userId]);
+
+    await move(owner, id, { to: 'closed', reason: 'Not needed', outcome: 'abandoned' });
+    assert.deepEqual([(await row(pm))?.deferred, (await row(pm))?.closed], [null, { on: '2026-11-09', outcome: 'abandoned' }]);
+    await move(owner, id, { to: 'active', reason: 'Needed', stage: 'Execution' });
+    assert.deepEqual([(await row(pm))?.deferred, (await row(pm))?.closed], [null, null]);
   });
 
   test('the fast track is recorded, and refusals give the reason', async () => {

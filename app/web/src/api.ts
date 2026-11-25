@@ -262,6 +262,8 @@ export interface Item {
   record: { kind: 'task' | 'decision' | 'question' | 'risk'; id: string } | null;
   /** Approved before records existed: it still needs authorising to become a record. */
   approvedWithoutRecord: boolean;
+  /** The record is in view today (neither Deleted nor held): it can be linked to. */
+  recordOpens?: boolean;
   /** Set when the quote lies in a discussion message that is now hidden or deleted, or the source is Deleted. */
   sourceFlag?: 'deleted' | 'hidden' | 'source_deleted' | null;
   /** Set when the quote was cleaned of a credential and needs a second look. */
@@ -303,6 +305,9 @@ export interface ProjectSummary {
   status: ProjectStatus;
   owningDepartment: string;
   stage: { stage: string; substage: string | null } | null;
+  /** Set while the project is Deferred, or Closed: the UTC+8 day and the reason or outcome (D138). */
+  deferred: { on: string; reason: string | null } | null;
+  closed: { on: string; outcome: ClosureOutcome | null } | null;
   myRoles: ProjectRole[];
   missingAccountability: boolean;
   /** Set when the person reads this project through an Audit or Oversight grant only. */
@@ -383,6 +388,8 @@ export interface StagePeriod {
   substage: string | null;
   startedAt: string;
   endedAt: string | null;
+  /** What stopped it, when the project was deferred or closed while it ran; `endedAt` is then that moment (D138). */
+  stopped: 'deferred' | 'closed' | null;
   reason: string | null;
 }
 
@@ -397,6 +404,8 @@ export interface Transition {
 }
 
 export interface Project {
+  /** Where it was copied from (D140): named only to someone who may open the original. */
+  copiedFrom?: { id: string; name: string } | { hidden: true } | null;
   id: string;
   name: string;
   purpose: string;

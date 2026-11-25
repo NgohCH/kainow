@@ -81,7 +81,7 @@ describe('analytics definitions and CSV export', { skip: SKIP_NO_DB }, () => {
     assert.equal((await member.request('GET', '/admin/analytics/definitions')).status, 403);
     const r = await admin.request('GET', '/admin/analytics/definitions');
     assert.equal(r.status, 200);
-    assert.equal(r.body.version, '1');
+    assert.equal(r.body.version, '2');
     assert.deepEqual(r.body.measures, MEASURE_DEFINITIONS);
     assert.ok(r.body.events.some((e: any) => e.name === 'analytics.exported' && e.table === 'audit_events'));
     assert.ok(r.body.events.some((e: any) => e.name === 'granted' && e.table === 'leadership_grant_events'));
@@ -129,7 +129,7 @@ describe('analytics definitions and CSV export', { skip: SKIP_NO_DB }, () => {
       '# Panel: Project progress',
       '# Filters: department: all; status: Planned, Active, Deferred; ownership: owned and contributed; include archived: no',
       '# Period: Last 12 weeks, 2026-08-24 to 2026-11-09',
-      '# Measure definitions version: 1',
+      '# Measure definitions version: 2',
       `# Computed at: ${new Date(t.clock.now().getTime() + 8 * 3_600_000).toISOString().slice(0, 16).replace('T', ' ')} (UTC+8)`,
       `# Coverage: ${COVERAGE_NOTE}`,
     ]);

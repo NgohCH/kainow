@@ -10,11 +10,21 @@ import {
   onTimeLabel,
   overdueDaysLabel,
   plannedEndLabel,
+  stageLabel,
   updatedLabel,
   visibleHomeSections,
   homeQuery,
   withTodayMarker,
 } from './dashboard.ts';
+
+test('the stage and its days; a stopped one says so', () => {
+  const s = { stage: 'Build', substage: null, days: 4, stopped: null };
+  assert.equal(stageLabel(null), 'None');
+  assert.equal(stageLabel(s), 'Build, 4 days');
+  assert.equal(stageLabel({ ...s, substage: 'Testing', days: 1 }), 'Build, Testing, 1 day');
+  assert.equal(stageLabel({ ...s, stopped: 'deferred' }), 'Build, stopped when deferred, after 4 days');
+  assert.equal(stageLabel({ ...s, stopped: 'closed', days: 0 }), 'Build, stopped when closed, after 0 days');
+});
 
 test('completion label: measurable, cancelled, and not measurable', () => {
   assert.equal(completionLabel({ state: 'measurable', done: 31, total: 50, cancelled: 4, percent: 62 }), '62% task completion (31 of 50 tasks)');

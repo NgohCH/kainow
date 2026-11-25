@@ -410,9 +410,9 @@ export function SummaryPage({ summaryId }: { summaryId: string }) {
 
       {!editing && !approving && !reviewing && (
         <div className="actions">
-          {v.canEdit && <button type="button" ref={editButton} disabled={!isNewest} onClick={startEdit}>Edit</button>}
+          {v.canEdit && <button type="button" ref={editButton} disabled={!isNewest} aria-describedby={isNewest ? undefined : 'newest-why'} onClick={startEdit}>Edit</button>}
           {v.canAskApproval && cur && (
-            <button type="button" disabled={busy || !isNewest} onClick={(e) => void act(() => askSummaryApproval(v.id, cur.no), 'Approval was asked for: the Project Manager, Owner and Sponsors were told', e.currentTarget)}>
+            <button type="button" disabled={busy || !isNewest} aria-describedby={isNewest ? undefined : 'newest-why'} onClick={(e) => void act(() => askSummaryApproval(v.id, cur.no), 'Approval was asked for: the Project Manager, Owner and Sponsors were told', e.currentTarget)}>
               {cur.approvalRequested ? 'Ask for approval again' : 'Ask for approval'}
             </button>
           )}
@@ -435,6 +435,9 @@ export function SummaryPage({ summaryId }: { summaryId: string }) {
             </>
           )}
         </div>
+      )}
+      {!isNewest && !editing && !approving && !reviewing && (v.canEdit || v.canAskApproval) && (
+        <p id="newest-why" className="meta">Editing and asking for approval work on the newest version.</p>
       )}
       {v.approval && !editing && (
         <p id="approve-why" className="meta">
@@ -511,8 +514,9 @@ export function SummaryPage({ summaryId }: { summaryId: string }) {
           </label>
           <span className="hint">{text.length.toLocaleString('en')} / {MAX_BODY.toLocaleString('en')} characters. Removing a marked phrase resolves its mark. Saving makes a new version marked as edited by you.</span>
           <div className="actions">
-            <button className="primary" disabled={busy || text.trim() === ''}>Save as a new version</button>
+            <button className="primary" disabled={busy || text.trim() === ''} aria-describedby={text.trim() === '' ? 'summary-save-why' : undefined}>Save as a new version</button>
             <button type="button" onClick={() => { setEditing(false); setStale(false); setError(null); focusLater(editButton); }}>Cancel</button>
+            {text.trim() === '' && <span id="summary-save-why" className="hint">Write the summary text first.</span>}
           </div>
         </form>
       )}

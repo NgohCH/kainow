@@ -276,7 +276,8 @@ const TABLES: TableDef[] = [
     table: 'human_proposals',
     project: `t.project_id ${P}`,
     owner: { kind: `'human_proposal'`, id: 't.id' },
-    text: ['text', 'owner', 'due', 'reject_reason'],
+    text: ['text', 'owner', 'due', 'reject_reason', 'description'],
+    json: ['proposed_subtasks'],
     items: { human_proposal: `t.id ${P}` },
   },
 
@@ -338,7 +339,7 @@ const TABLES: TableDef[] = [
     table: 'tasks',
     project: `t.project_id ${P}`,
     owner: { kind: `'task'`, id: 't.id' },
-    text: ['title', 'owner_as_written', 'delete_reason'],
+    text: ['title', 'owner_as_written', 'delete_reason', 'description'],
     items: { task: `t.id ${P}` },
   },
   {
@@ -681,7 +682,8 @@ const TABLES: TableDef[] = [
   // scope, so out of the sweep (spec 7.4); its reason box runs the credential check.
   { table: 'analysis_settings_changes', project: `t.project_id ${P}`, text: ['reason'] },
   { table: 'approval_policy_changes', project: `t.project_id ${P}`, text: ['reason'] },
-  { table: 'notification_settings_changes', project: `t.project_id ${P}`, text: ['reason'] },
+  // The values hold a holiday's name as it was typed.
+  { table: 'notification_settings_changes', project: `t.project_id ${P}`, text: ['reason', 'old_value', 'new_value'] },
   { table: 'memberships', project: `t.project_id ${P}`, text: ['revoke_reason', 'hold_reason', 'restore_reason'] },
   {
     table: 'membership_events',
@@ -1063,8 +1065,6 @@ export const NO_USER_TEXT: Readonly<Record<string, string>> = {
   'minutes_drafts.origin': ENUM,
   'notification_settings.day_counting': ORG,
   'notification_settings_changes.field': ENUM,
-  'notification_settings_changes.new_value': SETTING,
-  'notification_settings_changes.old_value': SETTING,
   'notification_settings_changes.scope': ENUM,
   'notification_triggers.key': 'a deduplication key built from kinds, ids and dates',
   'notification_triggers.kind': ENUM,

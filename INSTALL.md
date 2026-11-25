@@ -130,14 +130,18 @@ Keep only the parts you need: a mount whose key file does not exist yet makes Do
 3. As the Project Manager: **Move to Planned**, then **Make Active**. Until everyone has accepted, Kainow says which role is still needed.
 4. As the Project Manager, on the **Notes** tab, add notes: paste any meeting notes, or upload one of `tests/extraction/inputs/synthetic/*.md`.
 5. Choose "Find decisions and actions". The run should go from waiting to ready in under a minute.
-6. Sign in as the Owner, choose Review, **Authorise** one proposal (for an action: pick the accountable person and the due date) and reject another. The highlighted passage should change colour, and the authorised item appears on the project's **Work** tab. The spend figure should rise by a few sen. (The Project Manager and Members can read the proposals but cannot authorise them.)
+6. Sign in as the Owner, choose Review, **Authorise** one proposal (for an action: pick the accountable person and the due date) and reject another. The highlighted passage should change colour, and the authorised item is linked to its record: a task to its own page, anything else to its row on the project's **Work** tab. The spend figure should rise by a few sen. (The Project Manager and Members can read the proposals but cannot authorise them.)
 7. If a request ends "AI is not set up for this project" or says there is no eligible connection, finish "Set up AI" below: an approved model, the organisation limits, and in the project a connection with its key and limits. If a connection says "Waiting for the protected key", create and mount the protected key (see "Protected key") and restart `api` and `worker`.
 
 8. Optional, as the Administrator: under **Settings** › **Administrators**, disable the Member's account. The project now says "A member is On Hold — investigation needed" and the Project Manager gets an email (or a line in `docker compose logs api`). Enable the account again, then as the Project Manager or Owner record a finding on the People tab and choose **Restore**.
 
 9. Optional, as the Administrator: under **Settings** › **Approvals** you can raise the number of Owners or Sponsors who must approve a change from 1 to 2 or 3, and choose whether projects may set their own number. Nothing new needs installing for changes, closing or the deadline review; the update applies its two new migrations (0017, 0018) when you run `docker compose up -d --build`.
 
+10. Optional, as the Project Manager: on the project's page choose **Duplicate project**. Nothing is created until **Create project** at the end of that page; the copy is a Draft with you as its only member. **My profile** in the person menu shows your details and roles, and where you choose colours and the style of the tabs.
+
 Notes added before projects existed (before 8 November 2026) stay in the database but are not shown.
+
+The walkthrough changes (sub-project 11a.1) add migrations 0040 and 0041: new empty columns and one unique rule, applied when you run `docker compose up -d --build`. They need no new setting, key or service. "Due soon" counts can change after the update (up to seven working days ahead by each project's calendar).
 
 Cross-project search adds migration 0019, which creates the `pg_trgm` extension. That needs the CREATE privilege on the database; under the provided Compose setup the database user already has it. The migration also builds its search indexes while it runs, which can take a while on a large existing database, so expect `docker compose up -d --build` to wait for it.
 

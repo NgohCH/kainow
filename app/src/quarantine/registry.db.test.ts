@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { after, before, describe, test } from 'node:test';
-import { Pool } from 'pg';
+import { Pool, type PoolClient } from 'pg';
 import { loadDatabaseConfig } from '../config';
 import { uuidv7 } from '../common/uuid7';
 import { runMigrations } from '../db/migrate';
@@ -164,6 +164,65 @@ describe('text registry (spec 7.4)', { skip: SKIP_NO_DB }, () => {
     );
     const registered = new Set(TEXT_COLUMNS.map(name));
     assert.deepEqual(typed.rows.map((r) => r.name).filter((n: string) => registered.has(n)), [], 'no registered column has a length in its type');
+  });
+
+  /**
+   * Unique rules (unique indexes, UNIQUE and PRIMARY KEY constraints, exclusions) whose key uses a registered column
+   * and which do not leave out values holding the marker. The exception counts only as a whole condition of the
+   * index's WHERE, never as one side of an OR.
+   */
+  async function uniqueRules(db: Pick<PoolClient, 'query'>): Promise<{ blocking: string[]; excepted: string[] }> {
+    const { rows } = await db.query<{ table: string; index: string; keys: string[]; predicate: string | null }>(
+      `SELECT t.relname AS table, i.relname AS index, pg_get_expr(x.indpred, x.indrelid) AS predicate,
+              array(SELECT pg_get_indexdef(x.indexrelid, k, false) FROM generate_series(1, x.indnkeyatts) k ORDER BY k) AS keys
+         FROM pg_index x JOIN pg_class i ON i.oid = x.indexrelid JOIN pg_class t ON t.oid = x.indrelid
+        WHERE (x.indisunique OR x.indisexclusion) AND t.relnamespace = 'public'::regnamespace`,
+    );
+    const blocking: string[] = [];
+    const excepted: string[] = [];
+    for (const c of TEXT_COLUMNS) {
+      const uses = new RegExp(`\\b${c.column}\\b`);
+      for (const r of rows.filter((x) => x.table === c.table && x.keys.some((k) => uses.test(k)))) {
+        const way = `(strpos(${c.column}, '${MARKER}'::text) = 0)`;
+        const p = r.predicate ?? '';
+        (p.includes(way) && !/\b(OR|NOT)\b/.test(p.replace(/IS NOT NULL/g, '')) ? excepted : blocking).push(`${name(c)}: ${r.index}`);
+      }
+    }
+    return { blocking: blocking.sort(), excepted: excepted.sort() };
+  }
+
+  /** Unique rules the cleaning engine keeps true itself. */
+  const KEPT_BY_THE_ENGINE = [
+    // The primary key: equal cleaned phrases get " (2)", " (3)" (clean.ts; proved in clean.db.test.ts).
+    'summary_marks.phrase: summary_marks_pkey',
+  ];
+
+  test('no unique rule on a registered column can stop cleaning', async () => {
+    // Two values that differ only in what is removed clean to the same text: the unique rule must ignore a value holding
+    // the marker, or the sweep rolls back and the secret stays visible.
+    const { blocking, excepted } = await uniqueRules(pool);
+    assert.deepEqual(blocking, KEPT_BY_THE_ENGINE, `unique rules cleaning can break:\n${blocking.join('\n')}`);
+    assert.ok(excepted.includes('project_stages.name: project_stages_name'), 'the rules with the exception were found');
+
+    // The check sees each way such a rule can be made.
+    const c = await pool.connect();
+    try {
+      await c.query('BEGIN');
+      await c.query(`CREATE UNIQUE INDEX seen_plain ON sources (project_id, title)`);
+      await c.query(`CREATE UNIQUE INDEX seen_lower ON tasks (lower(btrim(title))) WHERE depth = 0`);
+      await c.query(`ALTER TABLE decisions ADD CONSTRAINT seen_constraint UNIQUE (statement)`);
+      await c.query(`CREATE UNIQUE INDEX seen_or ON holidays (name) WHERE strpos(name, '${MARKER}') = 0 OR project_id IS NULL`);
+      await c.query(`CREATE UNIQUE INDEX unseen_marker ON risks (description) WHERE strpos(description, '${MARKER}') = 0 AND project_id IS NOT NULL`);
+      const seen = await uniqueRules(c);
+      assert.deepEqual(
+        seen.blocking.filter((b) => !blocking.includes(b)),
+        ['decisions.statement: seen_constraint', 'holidays.name: seen_or', 'sources.title: seen_plain', 'tasks.title: seen_lower'],
+      );
+      assert.ok(seen.excepted.includes('risks.description: unseen_marker'));
+    } finally {
+      await c.query('ROLLBACK');
+      c.release();
+    }
   });
 
   describe('derived rows', () => {

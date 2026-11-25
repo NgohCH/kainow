@@ -1,13 +1,61 @@
 /** Wording and ordering for Home, My tasks, Reviews and Projects (spec 7.1 to 7.4). Pure; the screens only draw it. */
 import type { Completion, MyTask, NeedsYouItem, PersonalDashboard, PersonalProject } from '../dashboard.ts';
+import type { ProjectStatus } from '../projects.ts';
 import { groupAttention } from './attention.ts';
 
 /** What to say when a part of Home has nothing in it; null when it has something. */
 export function homeEmptyCopy(d: PersonalDashboard): { needsYou: string | null; projects: string | null } {
   return {
     needsYou: d.needsYou.length === 0 ? 'Nothing needs you.' : null,
-    projects: d.projects.length === 0 ? 'You are not in any project yet. A Project Manager adds you when a project needs you.' : null,
+    projects: 
+      d.projects.length === 0
+        ? 'You are not in any project yet. A Project Manager adds you when a project needs you.'
+        : homeProjects(d.projects).current.length === 0
+          ? 'None of your projects is current.'
+          : null,
   };
+}
+
+/** Deferred and Closed projects are history; the others are current (D138). */
+const isHistory = (status: string | undefined) => status === 'deferred' || status === 'closed';
+
+/**
+ * The Projects page's tables (spec 9): current, Deferred and Closed. Archived projects are in the group of their state,
+ * only when included. With a state chosen, a group that cannot hold it is null: its table is not shown.
+ */
+export function groupProjects<P extends { status: ProjectStatus; archived: boolean }>(
+  list: readonly P[],
+  state: ProjectStatus | null,
+  archived: boolean,
+): { current: P[] | null; deferred: P[] | null; closed: P[] | null } {
+  const shown = list.filter((p) => archived || !p.archived);
+  const only = (s: 'deferred' | 'closed') => (state === null || state === s ? shown.filter((p) => p.status === s) : null);
+  return {
+    current: isHistory(state ?? undefined) ? null : shown.filter((p) => !isHistory(p.status) && (state === null || p.status === state)),
+    deferred: only('deferred'),
+    closed: only('closed'),
+  };
+}
+
+/** Home's projects: the current ones, with those where the person's membership is on hold (no state is told), and the rest. */
+export function homeProjects(list: readonly PersonalProject[]): { current: PersonalProject[]; history: PersonalProject[] } {
+  return { current: list.filter((p) => !isHistory(p.header?.status)), history: list.filter((p) => isHistory(p.header?.status)) };
+}
+
+/** Home's link to History; with archived projects among them, the page opens with those included. */
+export function historyLink(history: readonly PersonalProject[]): { href: string; text: string } | null {
+  if (history.length === 0) return null;
+  const archived = history.filter((p) => p.archived).length;
+  return {
+    href: `#/projects/history${archived > 0 ? '/archived' : ''}`,
+    text: `${history.length} in History${archived > 0 ? ` (${archived} archived)` : ''}`,
+  };
+}
+
+/** The address of the Projects page at its History, or null for another address. */
+export function parseHistoryHash(hash: string): { archived: boolean } | null {
+  const m = /^#\/projects\/history(\/archived)?$/.exec(hash);
+  return m ? { archived: m[1] !== undefined } : null;
 }
 
 /** The Review and decisions items of Needs you: Reviews lists them and the menu badge counts them. */

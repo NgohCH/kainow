@@ -9,6 +9,7 @@ import {
   lateLabel,
   onTimeLabel,
   plannedEndLabel,
+  stageLabel,
   updatedLabel,
 } from '../dashboard.ts';
 import { formatWhen, plural } from '../format.ts';
@@ -82,14 +83,14 @@ export function ProjectFigures({ projectId, canReadWork, state }: { projectId: s
         <Box title="At a glance" headingLevel={3}>
           <dl className="facts">
             <dt>Stage</dt>
-            <dd>{m.stage ? `${m.stage.stage}${m.stage.substage ? `, ${m.stage.substage}` : ''}, ${plural(m.stage.days, 'day')} in stage` : 'No stage recorded'}</dd>
+            <dd>{m.stage ? `${stageLabel(m.stage)}${m.stage.stopped ? '' : ' in stage'}` : 'No stage recorded'}</dd>
             <dt>Planned end</dt>
             <dd>{plannedEndLabel(m.plannedEnd)}</dd>
             <dt>Overdue</dt>
             <dd>{count(m.overdue, 'task')}</dd>
             <dt>Blocked</dt>
             <dd>{count(m.blocked, 'task')}</dd>
-            <dt>Due in the next 7 days</dt>
+            <dt>Due soon</dt>
             <dd>{count(m.dueSoon, 'task')}</dd>
             <dt>Pending invitations</dt>
             <dd>

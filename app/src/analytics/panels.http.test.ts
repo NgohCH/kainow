@@ -70,7 +70,7 @@ describe('analytics progress and problems panels', { skip: SKIP_NO_DB }, () => {
     await task(pb, '2026-11-03', 'completed', '2026-11-04T02:00:00Z');
     const body = await progress();
     assert.equal(body.panel, 'progress');
-    assert.equal(body.definitionsVersion, '1');
+    assert.equal(body.definitionsVersion, '2');
     assert.equal(body.data.computedAt, t.clock.now().toISOString());
     assert.equal(body.computedAt, t.clock.now().toISOString());
     const depts = body.data.departments as Array<any>;

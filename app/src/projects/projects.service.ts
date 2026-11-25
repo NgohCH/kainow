@@ -15,12 +15,14 @@ import { writeOutbox } from '../email/outbox';
 import { isCalendarDate } from '../extraction/due';
 import { type ProjectContext, ProjectAccess, managesGrants, managesRoles } from './access.service';
 import { loadArchiveState } from './archive';
+import { type CopiedFrom, copiedFromViews } from './copied-from';
 import { DepartmentTransferService } from './department-transfer.service';
 import { OrganisationService } from './organisation.service';
 import { grantState } from './grants';
 import { type ClosureOutcome, checkTransition } from './lifecycle';
 import { type MembershipRow, membershipState, requiredRolesCheck, separationCheck } from './membership';
 import { type ProjectStatus, PROJECT_STATUSES } from './matrix';
+import { clipPeriods } from './stage-periods';
 import { TEMPLATE_LIMITS } from './stage-templates';
 import { refuseSecrets } from '../discussion/messages';
 
@@ -32,6 +34,17 @@ export interface ProjectStage {
   status: 'active' | 'retired';
 }
 
+/** A project in the list of the person's own projects. */
+export interface ProjectSummary {
+  id: string;
+  name: string;
+  status: ProjectStatus;
+  owningDepartment: string;
+  stage: { stage: string; substage: string | null } | null;
+  deferred: { on: string; reason: string | null } | null;
+  closed: { on: string; outcome: ClosureOutcome | null } | null;
+}
+
 /** The project's stages in their order, retired ones in their place. */
 async function loadStages(db: Pool | PoolClient, projectId: string): Promise<ProjectStage[]> {
   return (await db.query(`SELECT id, name, substages, status FROM project_stages WHERE project_id = $1 ORDER BY position, id`, [projectId])).rows;
@@ -40,8 +53,8 @@ async function loadStages(db: Pool | PoolClient, projectId: string): Promise<Pro
 /** One recorded change to a project's own stages, as everyone who can see the stages reads it. */
 export interface StageChange {
   id: string;
-  kind: 'added' | 'reordered' | 'retired' | 'restored';
-  /** The stage added, retired or brought back; null for a new order. */
+  kind: 'added' | 'reordered' | 'retired' | 'restored' | 'renamed';
+  /** The stage added, retired, brought back or renamed, by the name this change left it with; null for a new order. */
   stage: string | null;
   actor: string;
   at: Date;
@@ -52,20 +65,37 @@ export interface StageChange {
 
 /** The changes to the project's stages, newest first. */
 async function loadStageChanges(db: Pool | PoolClient, projectId: string): Promise<StageChange[]> {
-  return (
-    await db.query(
-      `SELECT c.id, c.kind, s.name AS stage, u.display_name AS actor, c.at, c.reason, c.previous, c.next
-         FROM project_stage_changes c JOIN users u ON u.id = c.actor_id LEFT JOIN project_stages s ON s.id = c.stage_id
-        WHERE c.project_id = $1 ORDER BY c.at DESC, c.id DESC`,
-      [projectId],
-    )
-  ).rows;
+  type Row = Omit<StageChange, 'stage' | 'previous' | 'next'> & { stageId: string | null; nameNow: string | null; previous: RecordedStage[]; next: RecordedStage[] };
+  const { rows } = await db.query<Row>(
+    `SELECT c.id, c.kind, c.stage_id AS "stageId", s.name AS "nameNow", u.display_name AS actor, c.at, c.reason, c.previous, c.next
+       FROM project_stage_changes c JOIN users u ON u.id = c.actor_id LEFT JOIN project_stages s ON s.id = c.stage_id
+      WHERE c.project_id = $1 ORDER BY c.at DESC, c.id DESC`,
+    [projectId],
+  );
+  return rows.map(({ stageId, nameNow, previous, next, ...c }) => ({
+    ...c,
+    stage: stageId === null ? null : (nameAfter(stageId, previous, next) ?? nameNow),
+    previous: previous.map(withoutId),
+    next: next.map(withoutId),
+  }));
+}
+
+/** A stage in a recorded list; lists from before stages could be renamed hold no ids. */
+type RecordedStage = Omit<ProjectStage, 'id'> & { id?: string };
+const withoutId = ({ name, substages, status }: RecordedStage): Omit<ProjectStage, 'id'> => ({ name, substages, status });
+
+/**
+ * The name a recorded change left its stage with, so a later rename does not alter the entry: by the stage's id, or in
+ * a list without ids by the first place where the two lists differ (an addition, or a status). Undefined if neither tells.
+ */
+function nameAfter(stageId: string, previous: RecordedStage[], next: RecordedStage[]): string | undefined {
+  return (next.find((s) => s.id === stageId) ?? next.find((s, i) => s.name !== previous[i]?.name || s.status !== previous[i]?.status))?.name;
 }
 
 /** A list of stages as the history keeps it. */
-const recorded = (stages: ProjectStage[]): string => JSON.stringify(stages.map(({ name, substages, status }) => ({ name, substages, status })));
+const recorded = (stages: ProjectStage[]): string => JSON.stringify(stages.map(({ id, name, substages, status }) => ({ id, name, substages, status })));
 
-const SAME_STAGE_NAME = 'This project already has a stage with that name.';
+export const SAME_STAGE_NAME = 'This project already has a stage with that name.';
 
 /** A project has at most as many stages in use as a template may have. */
 function refuseTooManyStages(stages: ProjectStage[]): void {
@@ -77,7 +107,7 @@ function refuseTooManyStages(stages: ProjectStage[]): void {
 const NOT_OFFERED = 'Choose a type of project that is still offered.';
 
 /** A stage or substage name: trimmed, 1 to 80 characters, credential-checked. */
-function readStageName(input: unknown, refusal: string): string {
+export function readStageName(input: unknown, refusal: string): string {
   const name = typeof input === 'string' ? input.normalize('NFC').trim() : '';
   if (name === '' || name.length > TEMPLATE_LIMITS.nameChars) throw new BadRequestException(refusal);
   refuseSecrets(name);
@@ -92,7 +122,7 @@ const optionalText = (v: unknown): string | null => {
   return t === '' ? null : t;
 };
 
-interface Details {
+export interface Details {
   name: string;
   purpose: string;
   owningDepartmentId: string;
@@ -113,7 +143,7 @@ export class ProjectsService {
   ) {}
 
   /** Checks a full or partial set of project details. Missing keys keep `current` values. */
-  private async cleanDetails(db: Pool | PoolClient, input: Record<string, unknown>, current?: Details): Promise<Details> {
+  async cleanDetails(db: Pool | PoolClient, input: Record<string, unknown>, current?: Details): Promise<Details> {
     const name = 'name' in input || !current ? text(input.name) : current.name;
     if (name === '') throw new BadRequestException('Give the project a name.');
     if (name.length > 200) throw new BadRequestException('A project name can be at most 200 characters.');
@@ -151,51 +181,14 @@ export class ProjectsService {
     let id: string;
     try {
       await client.query('BEGIN');
-      // One project at a time decides "first", so two administrators racing cannot both skip the rule.
-      await client.query(`SELECT pg_advisory_xact_lock(hashtext('kainow.projects.create'))`);
-      const first = ((await client.query(`SELECT 1 FROM projects LIMIT 1`)).rowCount ?? 0) === 0;
-      const isAdmin = user.role === 'enterprise_administrator';
-      if (first && !isAdmin) throw new ForbiddenException('An Enterprise Administrator creates the first project.');
-      // Later projects are created by eligible existing users; eligibility is checked again now (V1.0 D01).
-      if (!isAdmin && !(await this.org.isEligible(user.email))) {
-        throw new ForbiddenException('Your email domain is no longer eligible; ask an Administrator.');
-      }
+      const first = await this.beginCreation(client, user);
       const d = await this.cleanDetails(client, input);
       const templateId = await this.chooseTemplate(client, input.stageTemplateId);
-      id = uuidv7(at.getTime());
-      await client.query(
-        `INSERT INTO projects (id, name, purpose, owning_department_id, planned_end, status, created_by, created_at, stage_template_id)
-         VALUES ($1, $2, $3, $4, $5, 'draft', $6, $7, $8)`,
-        [id, d.name, d.purpose, d.owningDepartmentId, d.plannedEnd, user.id, at, templateId],
-      );
-      for (const dep of d.contributingDepartmentIds) {
-        await client.query(`INSERT INTO project_departments (project_id, department_id) VALUES ($1, $2)`, [id, dep]);
-      }
       // The project keeps its own copy of the template's stages (spec 14): later template edits never reach it.
       const stages = (
         await client.query<{ name: string; substages: string[] }>(`SELECT name, substages FROM stage_template_stages WHERE template_id = $1 ORDER BY position, id`, [templateId])
       ).rows;
-      for (const [i, s] of stages.entries()) {
-        await client.query(
-          `INSERT INTO project_stages (id, project_id, position, name, substages, status, added_by, added_at) VALUES ($1, $2, $3, $4, $5, 'active', $6, $7)`,
-          [uuidv7(at.getTime()), id, i + 1, s.name, s.substages, user.id, at],
-        );
-      }
-      await client.query(
-        `INSERT INTO project_stage_periods (id, project_id, stage, started_at, started_by) VALUES ($1, $2, $3, $4, $5)`,
-        [uuidv7(at.getTime()), id, stages[0].name, at, user.id],
-      );
-      // The administrator who creates the first project appoints its roles; anyone else becomes its first PM.
-      if (!first) {
-        const m = uuidv7(at.getTime());
-        const today = this.access.today();
-        await client.query(`INSERT INTO memberships (id, project_id, user_id, role, starts_on) VALUES ($1, $2, $3, 'pm', $4)`, [m, id, user.id, today]);
-        await client.query(
-          `INSERT INTO membership_events (id, membership_id, kind, new_starts_on, actor_id, reason, at) VALUES ($1, $2, 'appointed', $3, $4, 'Created the project', $5)`,
-          [uuidv7(at.getTime()), m, today, user.id, at],
-        );
-      }
-      await writeAudit(client, { at, action: 'project.created', actorUserId: user.id, subjectType: 'project', subjectId: id, detail: { first, stageTemplateId: templateId } });
+      id = await this.insertNew(client, user, at, { details: d, stages, stageTemplateId: templateId, first });
       await client.query('COMMIT');
     } catch (err) {
       await client.query('ROLLBACK').catch(() => undefined);
@@ -204,6 +197,67 @@ export class ProjectsService {
       client.release();
     }
     return this.detail(user, id);
+  }
+
+  /** Takes the creating lock and checks that this person may create a project now. True for the very first project. */
+  async beginCreation(c: PoolClient, user: AuthUser): Promise<boolean> {
+    // One project at a time decides "first", so two administrators racing cannot both skip the rule.
+    await c.query(`SELECT pg_advisory_xact_lock(hashtext('kainow.projects.create'))`);
+    const first = ((await c.query(`SELECT 1 FROM projects LIMIT 1`)).rowCount ?? 0) === 0;
+    if (first && user.role !== 'enterprise_administrator') throw new ForbiddenException('An Enterprise Administrator creates the first project.');
+    await this.assertMayCreate(user);
+    return first;
+  }
+
+  /** Later projects are created by eligible existing users; eligibility is checked again now (V1.0 D01). */
+  async assertMayCreate(user: AuthUser): Promise<void> {
+    if (user.role !== 'enterprise_administrator' && !(await this.org.isEligible(user.email))) {
+      throw new ForbiddenException('Your email domain is no longer eligible; ask an Administrator.');
+    }
+  }
+
+  /** Writes a new Draft project from checked details, in its first stage, with its creator as Project Manager (not for the first project). */
+  async insertNew(
+    c: PoolClient,
+    user: AuthUser,
+    at: Date,
+    p: { details: Details; stages: Array<{ name: string; substages: string[] }>; stageTemplateId: string | null; first: boolean; copiedFromId?: string },
+  ): Promise<string> {
+    const id = uuidv7(at.getTime());
+    const d = p.details;
+    await c.query(
+      `INSERT INTO projects (id, name, purpose, owning_department_id, planned_end, status, created_by, created_at, stage_template_id, copied_from_id)
+       VALUES ($1, $2, $3, $4, $5, 'draft', $6, $7, $8, $9)`,
+      [id, d.name, d.purpose, d.owningDepartmentId, d.plannedEnd, user.id, at, p.stageTemplateId, p.copiedFromId ?? null],
+    );
+    for (const dep of d.contributingDepartmentIds) {
+      await c.query(`INSERT INTO project_departments (project_id, department_id) VALUES ($1, $2)`, [id, dep]);
+    }
+    for (const [i, s] of p.stages.entries()) {
+      await c.query(
+        `INSERT INTO project_stages (id, project_id, position, name, substages, status, added_by, added_at) VALUES ($1, $2, $3, $4, $5, 'active', $6, $7)`,
+        [uuidv7(at.getTime()), id, i + 1, s.name, s.substages, user.id, at],
+      );
+    }
+    await c.query(
+      `INSERT INTO project_stage_periods (id, project_id, stage, started_at, started_by) VALUES ($1, $2, $3, $4, $5)`,
+      [uuidv7(at.getTime()), id, p.stages[0].name, at, user.id],
+    );
+    // The administrator who creates the first project appoints its roles; anyone else becomes its first PM.
+    if (!p.first) {
+      const m = uuidv7(at.getTime());
+      const today = this.access.today();
+      await c.query(`INSERT INTO memberships (id, project_id, user_id, role, starts_on) VALUES ($1, $2, $3, 'pm', $4)`, [m, id, user.id, today]);
+      await c.query(
+        `INSERT INTO membership_events (id, membership_id, kind, new_starts_on, actor_id, reason, at) VALUES ($1, $2, 'appointed', $3, $4, 'Created the project', $5)`,
+        [uuidv7(at.getTime()), m, today, user.id, at],
+      );
+    }
+    await writeAudit(c, {
+      at, action: 'project.created', actorUserId: user.id, subjectType: 'project', subjectId: id,
+      detail: { first: p.first, stageTemplateId: p.stageTemplateId, ...(p.copiedFromId ? { copiedFromId: p.copiedFromId } : {}) },
+    });
+    return id;
   }
 
   /**
@@ -228,11 +282,12 @@ export class ProjectsService {
   async list(user: AuthUser) {
     const ids = await this.access.visibleProjectIds(user.id);
     const projects = [];
+    const summaries = await this.summaries(ids);
     for (const id of ids) {
       // A held membership or a suspended grant leaves a candidate with no access: it is simply not listed.
       const ctx = await this.access.load(id, user);
       if (!ctx || (ctx.roles.length === 0 && ctx.grantKinds.length === 0)) continue;
-      const p = await this.summary(id);
+      const p = summaries.get(id) as ProjectSummary;
       projects.push({
         ...p,
         myRoles: ctx.roles,
@@ -276,20 +331,32 @@ export class ProjectsService {
     return { projects, all };
   }
 
-  private async summary(id: string) {
-    const { rows } = await this.pool.query(
+  /**
+   * Name, status, department and latest stage; for a Deferred or Closed project also since when (UTC+8) and why (D138).
+   * Only for people with a role or a grant in the project, who read the same reason and outcome in its detail: the
+   * administrator's list of every project does not use it.
+   */
+  private async summaries(ids: string[]): Promise<Map<string, ProjectSummary>> {
+    const { rows } = await this.pool.query<ProjectSummary>(
       `SELECT p.id, p.name, p.status, d.name AS "owningDepartment",
               (SELECT json_build_object('stage', s.stage, 'substage', s.substage) FROM project_stage_periods s
-                WHERE s.project_id = p.id AND s.ended_at IS NULL) AS stage
-         FROM projects p JOIN departments d ON d.id = p.owning_department_id WHERE p.id = $1`,
-      [id],
+                WHERE s.project_id = p.id AND s.ended_at IS NULL) AS stage,
+              CASE WHEN p.status = 'deferred' AND x."on" IS NOT NULL THEN json_build_object('on', x."on", 'reason', x.reason) END AS deferred,
+              CASE WHEN p.status = 'closed' AND x."on" IS NOT NULL THEN json_build_object('on', x."on", 'outcome', p.closure_outcome) END AS closed
+         FROM projects p JOIN departments d ON d.id = p.owning_department_id
+         LEFT JOIN LATERAL (
+           SELECT to_char(t.at AT TIME ZONE 'Asia/Kuala_Lumpur', 'YYYY-MM-DD') AS "on", t.reason FROM project_transitions t
+            WHERE t.project_id = p.id AND t.to_status = p.status ORDER BY t.at DESC, t.id DESC LIMIT 1
+         ) x ON p.status IN ('deferred', 'closed')
+        WHERE p.id = ANY($1::uuid[])`,
+      [ids],
     );
-    return rows[0];
+    return new Map(rows.map((r) => [r.id, r]));
   }
 
   async detail(user: AuthUser, id: string) {
     const ctx = await this.access.context(user, id);
-    return { project: await this.render(ctx) };
+    return { project: await this.render(ctx, user) };
   }
 
   private async recordDelegation(projectId: string) {
@@ -297,12 +364,12 @@ export class ProjectsService {
     return d === null ? null : { pm: d.pm, by: d.by, reason: d.reason, at: d.at };
   }
 
-  private async render(ctx: ProjectContext) {
+  private async render(ctx: ProjectContext, user: AuthUser) {
     const id = ctx.project.id;
-    const p = (
+    const { copiedFromId, ...p } = (
       await this.pool.query(
         `SELECT p.id, p.name, p.purpose, to_char(p.planned_end, 'YYYY-MM-DD') AS "plannedEnd", p.status, p.closure_outcome AS "closureOutcome",
-                p.created_at AS "createdAt", json_build_object('id', d.id, 'name', d.name) AS "owningDepartment",
+                p.created_at AS "createdAt", p.copied_from_id AS "copiedFromId", json_build_object('id', d.id, 'name', d.name) AS "owningDepartment",
                 CASE WHEN t.id IS NULL THEN NULL ELSE json_build_object('id', t.id, 'name', t.name) END AS "stageTemplate"
            FROM projects p JOIN departments d ON d.id = p.owning_department_id LEFT JOIN stage_templates t ON t.id = p.stage_template_id
           WHERE p.id = $1`,
@@ -315,8 +382,8 @@ export class ProjectsService {
         [id],
       )
     ).rows;
-    const stagePeriods = (
-      await this.pool.query(
+    const storedPeriods = (
+      await this.pool.query<{ stage: string; substage: string | null; startedAt: Date; endedAt: Date | null; reason: string | null }>(
         `SELECT stage, substage, started_at AS "startedAt", ended_at AS "endedAt", reason FROM project_stage_periods
           WHERE project_id = $1 ORDER BY started_at, id`,
         [id],
@@ -330,6 +397,7 @@ export class ProjectsService {
         [id],
       )
     ).rows;
+    const stagePeriods = clipPeriods(storedPeriods, transitions, p.status);
     // The project team sees pending invitations (V1.0 invitation rules, section 4); never the token.
     const now = this.now();
     const invitations = (
@@ -341,11 +409,14 @@ export class ProjectsService {
         [id, now],
       )
     ).rows;
+    const copiedFrom: CopiedFrom = (await copiedFromViews(this.pool, this.access, user, [copiedFromId]))(copiedFromId);
     return {
       ...p,
+      copiedFrom,
       invitations,
       contributingDepartments: contributing,
-      stage: stagePeriods.find((s) => s.endedAt === null) ?? null,
+      // The latest stage, also while Deferred or Closed (resuming offers it); `stopped` says it is not under way.
+      stage: stagePeriods.find((_, i) => storedPeriods[i].endedAt === null) ?? null,
       stagePeriods,
       stages: await loadStages(this.pool, id),
       stageChanges: await loadStageChanges(this.pool, id),
@@ -588,7 +659,9 @@ export class ProjectsService {
       await client.query('BEGIN');
       await this.access.authorize(user, 'project.stage', id, client, true);
       // Any of the project's own active stages may be next (stages are not sequential, C09).
-      const chosen = (await loadStages(client, id)).find((s) => s.status === 'active' && s.name === stage);
+      // Two names can be equal once a credential was removed from each: the one with the substage asked for is meant.
+      const named = (await loadStages(client, id)).filter((s) => s.status === 'active' && s.name === stage);
+      const chosen = named.find((s) => substage !== null && s.substages.includes(substage)) ?? named[0];
       if (stage === null || !chosen) throw new BadRequestException('Choose a stage.');
       if (substage !== null && !chosen.substages.includes(substage)) throw new BadRequestException(`Choose a substage of ${stage}.`);
       refuseSecretsIn(input.reason);
@@ -665,6 +738,30 @@ export class ProjectsService {
   }
 
   /**
+   * `{ name, reason }`: a new name for a stage, retired or not, in its current and past periods too (D137). A period
+   * holds only the name, so where another stage has the same one (possible only after a credential was removed from
+   * both) the periods cannot be told apart and stay as they are. The lock of changeStages holds the project row, as
+   * changing the stage and reopening do, so no period can be started under the old name meanwhile.
+   */
+  async renameStage(user: AuthUser, id: string, stageId: string, input: Record<string, unknown>) {
+    const name = readStageName(input.name, `Give the stage a name of 1 to ${TEMPLATE_LIMITS.nameChars} characters.`);
+    const reason = readReason(input.reason, 'a reason', { max: TEMPLATE_LIMITS.reasonChars });
+    return this.changeStages(user, id, reason, async (c, stages) => {
+      const stage = stages.find((s) => s.id === stageId);
+      if (!stage) throw new NotFoundException('That stage is not in this project.');
+      if (stage.name === name) throw new BadRequestException('Give the stage a different name.');
+      const others = stages.filter((s) => s.id !== stageId);
+      if (others.some((s) => s.name.toLowerCase() === name.toLowerCase())) throw new BadRequestException(SAME_STAGE_NAME);
+      // Periods, then stages: the order in which a cleaning writes them (quarantine/registry.ts), so the two cannot deadlock.
+      if (!others.some((s) => s.name === stage.name)) {
+        await c.query(`UPDATE project_stage_periods SET stage = $3 WHERE project_id = $1 AND stage = $2`, [id, stage.name, name]);
+      }
+      await c.query(`UPDATE project_stages SET name = $2 WHERE id = $1`, [stageId, name]);
+      return { kind: 'renamed', stageId, action: 'project.stage_renamed', detail: { stageId } };
+    });
+  }
+
+  /**
    * Delegated to the Project Manager, Owner and Sponsors while the project is open. Each change is recorded in the
    * project's stage history with its reason and the list before and after; the audit event holds ids and counts only.
    */
@@ -674,11 +771,12 @@ export class ProjectsService {
     reason: string,
     fn: (c: PoolClient, stages: ProjectStage[], at: Date) => Promise<{ kind: StageChange['kind']; stageId: string | null; action: string; detail: Record<string, unknown> }>,
   ) {
-    const at = this.now();
     const client = await this.pool.connect();
     try {
       await client.query('BEGIN');
       await this.access.authorize(user, 'project.stages', id, client, true);
+      // Read once the lock is held, so the history is in the order the changes took effect.
+      const at = this.now();
       const previous = await loadStages(client, id);
       const { kind, stageId, action, detail } = await fn(client, previous, at);
       await client.query(

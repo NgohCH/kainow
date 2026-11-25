@@ -103,8 +103,8 @@ All measures live in one server module, `app/src/dashboards/measures.ts` (pure f
 | On-time completion | D88. Due so far = eligible leaf tasks with `due_on` before the reference day and no deadline review pending. Done = those Completed. Late = Done whose completion day (UTC+8) is after `due_on`. The reference day is today, or the deferral day for Deferred projects, or the closing day for Closed ones. With nothing due: "Nothing due yet". "Awaiting deadline review: n" is shown beside it when n > 0. |
 | Overdue | The existing `taskIndicators` rule: not Completed or Cancelled, `due_on` before today, no deadline review pending. All tasks (not only leaves) are listed; counts are of tasks. |
 | Blocked | Tasks with status Blocked. |
-| Due soon | Not finished, due today to today + 7 days. |
-| Stage and stage duration | The open `project_stage_periods` row: stage, substage and whole days since `started_at`, as the existing Overview shows (`stageDuration`). |
+| Due soon | Not finished, due from today to seven working days ahead by the project's calendar (D139, 25 November 2026; before that, today + 7 days). |
+| Stage and stage duration | The open `project_stage_periods` row: stage, substage and whole days since `started_at`, as the Overview shows (`stageTiming`). In a Deferred or Closed project the last stage is not current: it is the stage the project stopped in, with the days until the day it was deferred or closed and "Stopped when deferred" or "Stopped when closed" (D138). |
 | Planned end | Days from today to the project's planned end date, "Ended n days ago" when past, or "No planned end date". |
 | Open questions | Questions Open or Answered. |
 | Risks | Open or Mitigating risks by severity. "Significant" = High or Critical. Overdue review = Open, Mitigating or Accepted with `review_on` before today. |

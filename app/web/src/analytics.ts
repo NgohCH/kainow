@@ -2,7 +2,7 @@
  * Administrator analytics on the web (dashboards spec 7). The shapes mirror what the server sends (app/src/analytics/*.ts);
  * the web cannot import server code. The web never works out a figure: it words, orders and lays out what the server gave.
  */
-import { type Completion, type OnTime, type PlannedEnd, dayLabel, onTimeLabel } from './dashboard.ts';
+import { type Completion, type MeasuredStage, type OnTime, type PlannedEnd, dayLabel, onTimeLabel } from './dashboard.ts';
 import type { Currency } from './finance.ts';
 import type { ProjectStatus } from './projects.ts';
 
@@ -85,7 +85,7 @@ export interface ProgressRow {
   departmentId: string;
   owningDepartment: string;
   status: ProjectStatus;
-  stage: { stage: string; substage: string | null; days: number } | null;
+  stage: MeasuredStage | null;
   completion: Completion;
   onTime: OnTime;
   plannedEnd: PlannedEnd;

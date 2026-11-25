@@ -4,16 +4,21 @@ import {
   HOME_SECTION_LABELS,
   LEADERSHIP_FIELDS,
   LEADERSHIP_FIXED_FIELDS,
-  defaultPrefs,
+  TAB_STYLES,
+  TAB_STYLE_LABELS,
+  resetPrefs,
   moveItem,
   moveSection,
   schemeChoices,
   schemeFor,
   setHidden,
+  tabStyleOf,
   type HomeSection,
   type Prefs,
+  type PrefsPart,
   type Theme,
 } from '../prefs.ts';
+import { TabPreview } from '../ui/TabPreview.tsx';
 
 const THEME_LABELS: Record<Theme, string> = { light: 'Light', dark: 'Dark' };
 
@@ -36,7 +41,7 @@ export function useSaveStatus(onChange: (next: Prefs) => Promise<void>) {
 }
 
 /**
- * Colour scheme and Light or dark (spec section 8). The scheme marked is the one shown: until the person picks one that is
+ * Colour scheme, Light or dark and tab style (spec section 8, D135). The scheme marked is the one shown: until the person picks one that is
  * the installation default, whatever accent the stored document holds. Picking a scheme records that the person chose it.
  */
 export function AppearanceChoice({ prefs, orgColour, save, name }: { prefs: Prefs; orgColour: string | null; save: (next: Prefs) => void; name: string }) {
@@ -59,6 +64,16 @@ export function AppearanceChoice({ prefs, orgColour, save, name }: { prefs: Pref
           <label key={t} className="choice">
             <input type="radio" name={`${name}-theme`} checked={prefs.theme === t} onChange={() => save({ ...prefs, theme: t })} />
             {THEME_LABELS[t]}
+          </label>
+        ))}
+      </fieldset>
+      <fieldset className="tab-style-choice">
+        <legend>Tab style</legend>
+        {TAB_STYLES.map((s) => (
+          <label key={s} className="choice">
+            <input type="radio" name={`${name}-tabs`} checked={tabStyleOf(prefs) === s} onChange={() => save({ ...prefs, tabStyle: s })} />
+            <span className="tab-style-name">{TAB_STYLE_LABELS[s]}</span>
+            <TabPreview style={s} />
           </label>
         ))}
       </fieldset>
@@ -114,7 +129,7 @@ function OrderList({
 }
 
 /**
- * The Customise panel (spec section 8): light or dark, colour scheme, Home section order and visibility, and leadership field order and
+ * The Customise panel (spec section 8): appearance, Home section order and visibility, and leadership field order and
  * visibility. Every change is saved at once through onChange, which the app sends to PUT /me/preferences.
  */
 export function Customise({
@@ -134,7 +149,7 @@ export function Customise({
   ready?: boolean;
   /** True when loading the saved preferences failed: only then is the reload alert shown. */
   failed?: boolean;
-  show?: ('appearance' | 'home' | 'leadership')[];
+  show?: PrefsPart[];
   /** The organisation colour, when set: offers the Organisation scheme. */
   orgColour?: string | null;
   /** The heading, so whoever opened the panel can move focus to it. */
@@ -187,7 +202,7 @@ export function Customise({
           />
         )}
         <div className="actions">
-          <button type="button" onClick={() => save(defaultPrefs())}>
+          <button type="button" onClick={() => save(resetPrefs(prefs, show))}>
             Reset to defaults
           </button>
           <span role={error ? 'alert' : 'status'} className={error ? 'error' : 'meta'}>

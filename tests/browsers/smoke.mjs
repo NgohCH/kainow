@@ -1,5 +1,6 @@
 // Supported-browsers smoke run (10b spec 14.1): the same journey in every browser and size, each step asserting what is on
-// screen and that the browser logged no console error, with a screenshot. See README.md. It signs in with a code read from
+// screen, that the browser logged no console error and got no 4xx or 5xx reply, and that the page does not scroll sideways, with a
+// screenshot. See README.md. It signs in with a code read from
 // the API log, so the API must run with LOG_SIGN_IN_CODES=true on a scratch database seeded by `npm run load-test -- --seed`.
 import { mkdirSync, readFileSync, writeFileSync, rmSync } from 'node:fs';
 import { createRequire } from 'node:module';
@@ -141,6 +142,17 @@ const STEPS = [
     await page.getByRole('status').filter({ hasText: `${action}: done.` }).waitFor();
     await task.getByText(after, { exact: true }).first().waitFor();
   }],
+  ['Follow a task link to its page', async (page) => {
+    // The first task of the Work list: its title opens the task page, inside the project with the Work tab open (D133).
+    const link = page.getByRole('table', { name: /^Tasks/ }).locator('tbody a[href*="/tasks/"]').first();
+    const title = (await link.textContent()).trim();
+    await link.click();
+    await page.getByRole('heading', { name: title, level: 2, exact: true }).waitFor();
+    await page.getByRole('heading', { name: 'Description', level: 3 }).waitFor();
+    await page.getByText(/^(Not started: nobody|In progress: the work|Blocked: the work|Completed: the work|Cancelled: the work)/).waitFor();
+    await page.getByRole('link', { name: 'Back to Work' }).click();
+    await page.getByRole('heading', { name: 'Tasks', level: 2 }).waitFor();
+  }],
   ['Post a discussion comment', async (page, run) => {
     await projectTab(page, 'Discussion');
     await page.getByRole('heading', { name: 'Discussion', level: 2 }).waitFor();
@@ -190,7 +202,9 @@ const STEPS = [
     await card.scrollIntoViewIfNeeded();
     await card.getByRole('button', { name: 'Authorise', exact: true }).click();
     await page.getByRole('form', { name: 'Authorise this proposal' }).getByRole('button', { name: 'Authorise', exact: true }).click();
-    await card.getByRole('link', { name: 'Authorised: see the Work tab' }).waitFor();
+    // The link opens the record it became: a decision's row in Work (D136).
+    await card.getByRole('link', { name: /^Authorised: open the decision/ }).click();
+    await page.locator('tr[id^="item-"]').filter({ hasText: run.decision }).first().waitFor();
   }],
   ["Authorise a person's proposal", async (page) => {
     // People's proposals (the project's Proposals tab › Proposals from people). Each journey authorises one decision; when
@@ -212,12 +226,40 @@ const STEPS = [
     await item.getByRole('button', { name: 'Authorise', exact: true }).click();
     await page.getByRole('form', { name: 'Authorise this proposal' }).getByRole('button', { name: 'Authorise', exact: true }).click();
     await page.getByText('Authorised: it is now on the Work tab.').waitFor();
-    await page.locator('li.work-item').filter({ has: page.locator('strong', { hasText: exactly(text) }) }).getByText('authorised (see the Work tab)').waitFor();
+    await page.locator('li.work-item').filter({ has: page.locator('strong', { hasText: exactly(text) }) }).getByRole('link', { name: /^authorised: open the decision/ }).waitFor();
   }],
   ['Personal dashboard', async (page) => {
     await menuLink(page, 'Home');
     await page.getByRole('heading', { name: 'Needs you', level: 2 }).waitFor();
     await page.getByRole('heading', { name: 'My tasks', level: 2 }).waitFor();
+  }],
+  ['My profile', async (page) => {
+    await page.locator('#person-menu-button').click();
+    await page.getByRole('link', { name: 'My profile' }).click();
+    await page.getByRole('heading', { name: 'My profile', level: 1 }).waitFor();
+    await page.getByRole('table', { name: 'Projects and roles' }).getByRole('link', { name: WORK_PROJECT, exact: true }).first().waitFor();
+    await page.getByRole('table', { name: 'Past roles' }).or(page.getByText('No past roles.')).first().waitFor();
+  }],
+  ['Each tab style', async (page) => {
+    // Chosen on My profile, then looked at on a project: the open tab is marked, and every tab is inside the page (D135).
+    for (const [label, style] of [['Grey dividers', 'grey'], ['Tinted dividers', 'tinted'], ['Boxes', 'boxes']]) {
+      await page.locator('#person-menu-button').click();
+      await page.getByRole('link', { name: 'My profile' }).click();
+      const saved = page.waitForResponse((r) => r.url().endsWith('/me/preferences') && r.request().method() === 'PUT');
+      const choice = page.getByRole('group', { name: 'Tab style' }).getByRole('radio', { name: new RegExp('^' + label) });
+      // Boxes, the default, may already be the choice of the person (then nothing is saved).
+      if (await choice.isChecked()) saved.catch(() => undefined);
+      else {
+        await choice.check();
+        await saved;
+      }
+      await openProject(page, WORK_PROJECT);
+      await page.locator(`html[data-tabs="${style}"] nav.binder-tabs a[aria-current="page"]`).filter({ hasText: 'Overview' }).waitFor();
+      await notSideways(page);
+      await projectTab(page, 'Work');
+      await page.locator('nav.binder-tabs a[aria-current="page"]').filter({ hasText: 'Work' }).waitFor();
+      await page.getByRole('heading', { name: 'Tasks', level: 2 }).waitFor();
+    }
   }],
   ['Project dashboard', async (page) => {
     await menuLink(page, 'Projects');
@@ -244,6 +286,12 @@ const STEPS = [
     await page.getByLabel('Work email').waitFor();
   }],
 ];
+
+/** The page never scrolls sideways (wide drawings and tables scroll inside their own box). */
+async function notSideways(page) {
+  const w = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, inner: document.documentElement.clientWidth }));
+  if (w.scroll > w.inner) throw new Error(`the page scrolls sideways: ${w.scroll} px wide in ${w.inner} px`);
+}
 
 /** A side-menu link. Below 900 px the side menu is closed behind the top bar's Menu button, so that is opened first. */
 async function menuLink(page, name) {
@@ -290,6 +338,11 @@ async function runJourney(browser, key, sizeKey, shotDir) {
     if (m.type() !== 'error' || expectedWhileSignedOut(m)) return;
     errors.push(`console: ${m.text()}${m.location()?.url ? ` (${m.location().url})` : ''}`);
   });
+  // Any 4xx or 5xx reply, whatever the browser logs (WebKit does not log every one): signed out, only the session check's 401.
+  page.on('response', (r) => {
+    const path = new URL(r.url()).pathname;
+    if (r.status() >= 400 && !(r.status() === 401 && path === '/auth/me')) errors.push(`reply: ${r.status()} ${r.request().method()} ${path}`);
+  });
   page.on('pageerror', (e) => errors.push(`page error: ${e.message}`));
   const steps = [];
   const state = { browser: key, size: sizeKey };
@@ -306,6 +359,7 @@ async function runJourney(browser, key, sizeKey, shotDir) {
     try {
       await step(page, state);
       await wait(400); // let late requests (and their console errors) land
+      await notSideways(page);
     } catch (e) {
       if (e instanceof NotChecked) {
         steps.push({ n, name, result: 'not checked', detail: e.message });
@@ -371,7 +425,7 @@ const rel = (p) => p.slice(resultsDir.length + 1).replace(/\\/g, '/');
 const lines = [
   `# Browser smoke run, ${date}`,
   '',
-  `Against ${base} as ${EMAIL} (the seeded load-test organisation, "Example Organisation"). Journey: ${STEPS.length} steps (10b spec 14.1); each asserts visible content and no console error, and takes a screenshot (in \`results/${date}/\`, not committed).`,
+  `Against ${base} as ${EMAIL} (the seeded load-test organisation, "Example Organisation"). Journey: ${STEPS.length} steps (10b spec 14.1); each asserts visible content, no console error, no 4xx or 5xx reply and no sideways scroll, and takes a screenshot (in \`results/${date}/\`, not committed).`,
   '',
   '| Browser | Exact version | Size | Result | Steps passed |',
   '|---|---|---|---|---|',

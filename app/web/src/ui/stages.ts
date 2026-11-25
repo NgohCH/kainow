@@ -1,5 +1,7 @@
 /** Stage templates (D131, spec 14): the checks the server makes, shown in plain words before saving. */
-import type { Stage } from './graphics.ts';
+import { plural } from '../format.ts';
+import { stageDuration } from '../projects.ts';
+import { STOPPED_LABEL, type Stage, type Stopped } from './graphics.ts';
 
 export interface TemplateStage { name: string; substages: string[] }
 export interface TemplateDraft { name: string; stages: TemplateStage[] }
@@ -51,37 +53,57 @@ export interface StageTemplate {
 /** One of a project's own stages, as the project's page lists them (in order; retired ones keep their place). */
 export interface ProjectStage { id: string; name: string; substages: string[]; status: 'active' | 'retired' }
 
-/** Whole UTC+8 calendar days from an instant to now (0 on the day it happened). */
-function daysSince(iso: string, now: Date): number {
+/** What the server would refuse in a stage's new name, in its words; changing only the letter case is allowed. */
+export function renameProblems(stages: readonly Pick<ProjectStage, 'id' | 'name'>[], id: string, name: string): string[] {
+  const next = name.normalize('NFC').trim();
+  if (badName(next)) return [`Give the stage a name of 1 to ${L.nameChars} characters.`];
+  if (stages.some((s) => s.id === id && s.name === next)) return ['Give the stage a different name.'];
+  if (stages.some((s) => s.id !== id && s.name.toLowerCase() === next.toLowerCase())) return ['This project already has a stage with that name.'];
+  return [];
+}
+
+/** Whole UTC+8 calendar days from one instant to another (0 on the same day). */
+function daysBetween(iso: string, to: Date): number {
   const day = (ms: number) => Math.floor((ms + 8 * 3_600_000) / 86_400_000);
-  return Math.max(0, day(now.getTime()) - day(new Date(iso).getTime()));
+  return Math.max(0, day(to.getTime()) - day(new Date(iso).getTime()));
+}
+
+/** How long the project has been in its stage; or, once a deferral or closure stopped it, that and how long it ran (D138). */
+export function stageTiming(s: { startedAt: string; endedAt: string | null; stopped: Stopped | null }, now: Date): string {
+  if (!s.stopped || !s.endedAt) return stageDuration(s.startedAt, now);
+  return `${STOPPED_LABEL[s.stopped]}, after ${plural(daysBetween(s.startedAt, new Date(s.endedAt)), 'day')}`;
 }
 
 /**
  * The stage flow from the project's own stages: active stages in order. Done = before the current one and has a
- * period; current = the open period, with its days; the rest to do. A current stage that is retired stays in its
+ * period; current = the open period, with its days; the rest to do. In a Deferred or Closed project the last period is
+ * stopped instead of current, with the days until then (D138). A current or stopped stage that is retired stays in its
  * place; one not in the list at all is added at the end, so the flow never hides where the project is.
  */
 export function stageFlowFrom(
   stages: readonly { name: string; status: 'active' | 'retired' }[],
-  periods: readonly { stage: string; startedAt: string; endedAt: string | null }[],
+  periods: readonly { stage: string; startedAt: string; endedAt: string | null; stopped?: Stopped | null }[],
   now: Date,
 ): Stage[] {
-  const open = periods.find((p) => p.endedAt === null) ?? null;
-  const names = stages.filter((s) => s.status === 'active' || s.name === open?.stage).map((s) => s.name);
-  if (open && !names.includes(open.stage)) names.push(open.stage);
-  const at = open ? names.indexOf(open.stage) : -1;
+  const last = periods[periods.length - 1];
+  const here = periods.find((p) => p.endedAt === null) ?? (last?.stopped ? last : null);
+  const names = stages.filter((s) => s.status === 'active' || s.name === here?.stage).map((s) => s.name);
+  if (here && !names.includes(here.stage)) names.push(here.stage);
+  const at = here ? names.indexOf(here.stage) : -1;
   const had = new Set(periods.map((p) => p.stage));
-  return names.map((name, i): Stage =>
-    i === at ? { name, state: 'current', days: daysSince(open!.startedAt, now) } : i < at && had.has(name) ? { name, state: 'done' } : { name, state: 'todo' },
-  );
+  return names.map((name, i): Stage => {
+    if (i !== at) return { name, state: i < at && had.has(name) ? 'done' : 'todo' };
+    const { startedAt, endedAt, stopped } = here!;
+    if (endedAt !== null && stopped) return { name, state: 'stopped', stopped, days: daysBetween(startedAt, new Date(endedAt)) };
+    return { name, state: 'current', days: daysBetween(startedAt, now) };
+  });
 }
 
 /** One recorded change to a project's own stages. */
 export interface StageChange {
   id: string;
-  kind: 'added' | 'reordered' | 'retired' | 'restored';
-  /** The stage added, retired or brought back; null for a new order. */
+  kind: 'added' | 'reordered' | 'retired' | 'restored' | 'renamed';
+  /** The stage added, retired, brought back or renamed (its new name); null for a new order. */
   stage: string | null;
   actor: string;
   at: string;
@@ -96,6 +118,11 @@ export function stageChangeText(c: StageChange): string {
   if (c.kind === 'reordered') return `New order: ${order(c.next)}. Before: ${order(c.previous)}.`;
   if (c.kind === 'retired') return `Retired ${c.stage} (was in use).`;
   if (c.kind === 'restored') return `Brought back ${c.stage} (was retired).`;
+  if (c.kind === 'renamed') {
+    // The old name is in the same place of the list before; only one name differs.
+    const was = c.previous.find((s, i) => s.name !== c.next[i]?.name)?.name;
+    return was === undefined ? `Renamed to ${c.stage}.` : `Renamed ${was} to ${c.stage}.`;
+  }
   const at = c.next.findIndex((s) => s.name === c.stage);
   const substages = c.next[at]?.substages ?? [];
   return `Added ${c.stage}${at >= 0 ? ` at place ${at + 1} of ${c.next.length}` : ''}${substages.length > 0 ? `, with substages ${substages.join(', ')}` : ''}.`;

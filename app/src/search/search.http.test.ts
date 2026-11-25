@@ -419,7 +419,7 @@ describe('cross-project search', { skip: SKIP_NO_DB }, () => {
         status: 'pending',
         href: `#/projects/${harbour}/notes/${seeded.human_proposal}`,
       },
-      task: { id: seeded.task, title: 'Kestrel task', matchNote: null, status: 'not_started', href: `#/projects/${harbour}/work/${seeded.task}` },
+      task: { id: seeded.task, title: 'Kestrel task', matchNote: null, status: 'not_started', href: `#/projects/${harbour}/tasks/${seeded.task}` },
       decision: { id: seeded.decision, title: 'Kestrel decision', matchNote: null, status: 'active', href: `#/projects/${harbour}/work/${seeded.decision}` },
       question: { id: seeded.question, title: 'Kestrel question', matchNote: null, status: 'open', href: `#/projects/${harbour}/work/${seeded.question}` },
       risk: { id: seeded.risk, title: 'Kestrel risk', matchNote: null, status: 'open', href: `#/projects/${harbour}/work/${seeded.risk}` },
