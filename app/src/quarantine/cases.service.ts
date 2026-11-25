@@ -48,6 +48,7 @@ import { cleanItem, findPlaces, releaseWithheldFiles, restoreOriginals } from '.
 import { MARKER, searchForms } from './clean-text';
 import { POSSIBLE_COPY_TEXT } from './labels';
 import { MAX_MARK_CHARS, MIN_MARK } from './mark-limits';
+import { taskLink } from '../records/task-link';
 import { PROTECTED_KEY, type ProtectedKey } from './protected-key';
 import { lockSweeps } from './sweep-lock';
 import { ITEM_KINDS, ITEM_PROJECT, type ItemKind, TEXT_COLUMNS } from './registry';
@@ -1121,7 +1122,7 @@ export class CasesService {
         : c.kind === 'summary'
           ? `#/summaries/${c.itemId}`
           : c.kind === 'task'
-            ? `#/projects/${c.projectId}/work/${c.itemId}`
+            ? taskLink(c.projectId, c.itemId)
             : `#/projects/${c.projectId}`;
     const pms = [...new Set(c.ctx.rows.map((r) => r.userId))].filter((u) => effectiveRoles(c.ctx.rows, u, c.ctx.today).includes('pm'));
     const people = [...new Set([...(c.reporterId ? [c.reporterId] : []), ...pms])].sort();

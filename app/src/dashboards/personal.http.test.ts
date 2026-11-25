@@ -95,6 +95,14 @@ describe('personal dashboard endpoint', { skip: SKIP_NO_DB }, () => {
     return id;
   }
 
+  test('an approval of a change to a task opens the task page', async () => {
+    const id = await task({ title: 'Order pipes', dueOn: '2026-11-30' });
+    await t.pool.query(`UPDATE approval_policy SET required = 3`);
+    const r = await people.pm.request('POST', `/projects/${projectId}/changes`, { kind: 'amend_task', targetKind: 'task', targetId: id, terms: { title: 'Order the pipes', reason: 'Wording' }, reason: 'Wording' });
+    assert.ok([201, 202].includes(r.status), JSON.stringify(r.body));
+    assert.equal(kinds(await me('owner'), 'approval')[0]?.link, `#/projects/${projectId}/tasks/${id}`);
+  });
+
   test('approval appears for an eligible Owner, not after they approve, not for a Member', async () => {
     const text = 'Ann will export the records by 20 November 2026.';
     const versionId = (await people.pm.request('POST', `/projects/${projectId}/notes`, { title: 'N', text })).body.version.id;
@@ -325,14 +333,14 @@ describe('personal dashboard endpoint', { skip: SKIP_NO_DB }, () => {
 
     const mem = await me('mem');
     assert.deepEqual(kinds(mem, 'overdue'), [
-      { kind: 'overdue', projectId, projectName: 'Harbour works', label: 'Overdue', since: midnight('2026-11-05'), link: `#/projects/${projectId}/work/${overdue}` },
+      { kind: 'overdue', projectId, projectName: 'Harbour works', label: 'Overdue', since: midnight('2026-11-05'), link: `#/projects/${projectId}/tasks/${overdue}` },
     ]);
     assert.deepEqual(kinds(mem, 'blocked'), [
-      { kind: 'blocked', projectId, projectName: 'Harbour works', label: 'Blocked', since: midnight('2026-11-30'), link: `#/projects/${projectId}/work/${blocked}` },
+      { kind: 'blocked', projectId, projectName: 'Harbour works', label: 'Blocked', since: midnight('2026-11-30'), link: `#/projects/${projectId}/tasks/${blocked}` },
     ]);
     const soon = kinds(mem, 'due_soon');
     assert.deepEqual(soon.map((n) => n.label), ['Due today', 'Due in seven working days']);
-    assert.deepEqual(soon[0], { kind: 'due_soon', projectId, projectName: 'Harbour works', label: 'Due today', since: midnight('2026-11-09'), link: `#/projects/${projectId}/work/${today}` });
+    assert.deepEqual(soon[0], { kind: 'due_soon', projectId, projectName: 'Harbour works', label: 'Due today', since: midnight('2026-11-09'), link: `#/projects/${projectId}/tasks/${today}` });
 
     // The PM sees every Blocked task of the project; the Owner and a Sponsor only their own.
     const pm = await me('pm');

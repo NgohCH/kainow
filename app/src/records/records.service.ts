@@ -22,6 +22,8 @@ import { InvitationsService } from '../projects/invitations.service';
 import { GRANT_READ_ONLY } from '../projects/matrix';
 import { checkNewAppointment } from '../projects/memberships.service';
 import { membershipState, todayUtc8 } from '../projects/membership';
+import { dueSoonEnd } from '../dashboards/due-soon';
+import { loadEffective } from '../notifications/settings';
 import { DELETED_LINK, liveRecordRefSql, liveRecordSql, notHeldSql, refuseHeld } from '../history/deleted-sql';
 import { QUOTE_CHANGED_TEXT, quoteChangedItems } from '../quarantine/clean';
 import { POSSIBLE_COPY_TEXT, UNDER_REVIEW_TEXT, possibleCopyLabelSql, possibleCopySql } from '../quarantine/labels';
@@ -595,9 +597,12 @@ export class RecordsService {
       )
     ).rows;
     const parent = tasks.find((t) => t.id === view.parentId);
+    // "Due soon" by the one rule (D135); a task that is overdue or waits for a deadline review shows that instead.
+    const open = view.status !== 'completed' && view.status !== 'cancelled' && !view.deadlineReviewRequired && view.dueOn >= ctx.today;
+    const dueSoon = open && view.dueOn <= dueSoonEnd(ctx.today, (await loadEffective(this.pool, ctx.project.id)).cal);
     const block = view.status === 'blocked' ? history.filter((h) => h.kind === 'blocked').at(-1) : undefined;
     return {
-      task: { ...view, description: more.description as string | null },
+      task: { ...view, description: more.description as string | null, dueSoon },
       history,
       parent: parent ? { id: parent.id, title: parent.title } : null,
       subtasks: tasks.filter((t) => t.parentId === view.id).map((t) => ({ id: t.id, title: t.title, status: t.status, dueOn: t.dueOn })),

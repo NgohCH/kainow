@@ -39,6 +39,15 @@ test('a new subtask is shown as an addition', () => {
   ]);
 });
 
+test('a description is shown beside the one in force; clearing it says so', () => {
+  assert.deepEqual(termsRows('amend_task', { description: 'New text' }, { description: null }), [{ label: 'Description', from: 'No description', to: 'New text' }]);
+  assert.deepEqual(termsRows('amend_task', { description: null }, { description: 'Old text' }), [{ label: 'Description', from: 'Old text', to: 'No description' }]);
+  assert.deepEqual(termsRows('amend_task', { description: 'New text' }, {}), [{ label: 'Description', from: '', to: 'New text' }]);
+  assert.deepEqual(termsRows('amend_task', { addSubtask: { title: 'Part', description: 'How' } }, {}), [{ label: 'New subtask', from: '', to: 'Part' }, { label: 'Description', from: '', to: 'How' }]);
+  assert.deepEqual(termsRows('authorise_proposal', { description: 'Detail' }, {}), [{ label: 'Description', from: '', to: 'Detail' }]);
+  assert.deepEqual(termsRows('authorise_proposal', { description: null }, {}), [{ label: 'Description', from: '', to: 'No description' }]);
+});
+
 test('a cancellation shows the reason and what happens to each subtask', () => {
   const rows = termsRows('cancel_task', { reason: 'No longer needed', subtasks: { s1: 'cancel', s2: 'keep' } }, { subtaskTitles: { s1: 'Draft', s2: 'Review' } });
   assert.deepEqual(rows, [

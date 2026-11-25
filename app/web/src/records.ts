@@ -90,7 +90,7 @@ export function defaultDueOn(due: { state: string; earliest: string | null; late
   return null;
 }
 
-export type TaskHistoryEntry = { kind: string; from: string | null; to: string; note: string | null; overrideReason: string | null; actor: string; at: string };
+export type TaskHistoryEntry = { kind: string; from: string | null; to: string; note: string | null; overrideReason: string | null; actor: string; at: string; detail?: Record<string, unknown> | null };
 
 const HISTORY_VERB: Record<string, string> = {
   authorised: 'Authorised',
@@ -99,6 +99,12 @@ const HISTORY_VERB: Record<string, string> = {
   unblocked: 'Unblocked',
   completed: 'Completed',
   reopened: 'Reopened',
+  amended: 'Changed',
+  cancelled: 'Cancelled',
+  deadline_reviewed: 'Deadline reviewed',
+  reconciled: 'Confirmed finished',
+  deleted: 'Deleted',
+  restored: 'Restored',
 };
 
 /** One line of a task's history: what happened, who did it, when (Malaysia time) and why. */

@@ -977,6 +977,19 @@ button.stat-tile[aria-pressed="true"] { border-color: var(--accent); box-shadow:
   .work-title.depth-1, .work-title.depth-2 { padding-left: 0; }
 }
 
+/* Task page (11a.1) */
+.task-page { overflow-wrap: anywhere; min-width: 0; }
+.task-page-head { display: flex; flex-wrap: wrap; gap: 0.3rem 0.8rem; align-items: center; margin: 0 0 0.6rem; }
+.task-page-head h2 { margin: 0; min-width: 0; }
+.task-page .box-title { margin-top: 0; }
+.task-page .facts { margin: 0.4rem 0 0; }
+.task-description { white-space: pre-wrap; overflow-wrap: anywhere; }
+.task-subtasks { margin: 0; }
+.task-history { margin: 0; padding-left: 1.2rem; }
+.task-history li + li { margin-top: 0.4rem; }
+.task-history dd { white-space: pre-wrap; }
+.terms td { white-space: pre-line; overflow-wrap: anywhere; }
+
 /* The remaining screens (Task 19, spec 7.10). Panels read as boxes. */
 .panel { border-color: var(--muted-wash); padding: 0.9rem 1.1rem; }
 .panel > h2:first-child, .panel > h3:first-child { font-family: var(--serif); font-size: 18px; }

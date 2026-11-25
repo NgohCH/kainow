@@ -1,5 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ApiError, api } from '../api.ts';
+import { taskHref } from '../taskPage.ts';
 import {
   type MyTask,
   type PersonalDashboard,
@@ -31,7 +32,7 @@ type Save = (next: Prefs) => Promise<void>;
 function TaskRow({ t }: { t: MyTask }) {
   return (
     <li>
-      <a href={`#/projects/${t.projectId}/work/${t.id}`}>{t.title}</a>
+      <a href={taskHref(t.projectId, t.id)}>{t.title}</a>
       <span className="meta">
         {' '}
         {t.projectName} · due {dayLabel(t.dueOn)}

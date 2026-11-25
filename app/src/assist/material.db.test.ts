@@ -200,7 +200,7 @@ describe('material search', { skip: SKIP_NO_DB }, () => {
     assert.ok(human?.snapshot?.startsWith('Proposed — not authorised: Risk: Chiller may fail in the heatwave'));
     const authorised = mine.find((i) => i.recordKind === 'task') as MaterialItem;
     assert.equal(authorised.snapshot, 'Task: Service the chiller. Status: In progress. Assigned to: Ada Lim. Due: 2026-11-20.');
-    assert.equal(authorised.href, `#/projects/${project}/work/${task}`);
+    assert.equal(authorised.href, `#/projects/${project}/tasks/${task}`);
     assert.equal(authorised.recordAudienceId, null);
 
     const open = await thread(pm, { kind: 'discussion', title: 'General' });

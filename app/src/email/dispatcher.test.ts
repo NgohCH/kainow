@@ -626,7 +626,7 @@ test('a digest listing a task held since goes again without that task (PO, 18 No
   assert.notEqual(next[0].status, 'cancelled'); // queued, or already sent by the same pass
   assert.ok(next[0].text_body.includes('Other open task'), next[0].text_body);
   assert.ok(!next[0].text_body.includes('Listed vault task'), next[0].text_body);
-  assert.ok(next[0].text_body.includes(`https://kainow.example.org/#/projects/${projectId}/work/${other}`));
+  assert.ok(next[0].text_body.includes(`https://kainow.example.org/#/projects/${projectId}/tasks/${other}`));
   assert.deepEqual(next[0].relevance, { kind: 'project_active', projectId, taskIds: [other], appUrl: 'https://kainow.example.org', scope: 'project' });
 
   // A digest whose project is no longer Active is only cancelled.

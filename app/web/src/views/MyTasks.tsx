@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api.ts';
 import { type PersonalDashboard, dayLabel, overdueDaysLabel } from '../dashboard.ts';
+import { taskHref } from '../taskPage.ts';
 import { DataTable, type Column } from '../ui/DataTable.tsx';
 import { PageHeader } from '../ui/PageHeader.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
 import { type TaskRow, statusWord, taskRows } from '../ui/home.ts';
 
 const columns: Column<TaskRow>[] = [
-  { key: 'task', header: 'Task', sortValue: (t) => t.title.toLowerCase(), cell: (t) => <a href={`#/projects/${t.projectId}/work/${t.id}`}>{t.title}</a> },
+  { key: 'task', header: 'Task', sortValue: (t) => t.title.toLowerCase(), cell: (t) => <a href={taskHref(t.projectId, t.id)}>{t.title}</a> },
   { key: 'project', header: 'Project', sortValue: (t) => t.projectName.toLowerCase(), cell: (t) => t.projectName },
   {
     key: 'due', header: 'Due (UTC+8)', sortValue: (t) => t.dueOn,

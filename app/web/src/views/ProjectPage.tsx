@@ -21,6 +21,7 @@ import {
 import { go } from '../App.tsx';
 import { type NeedsYouItem, type PersonalDashboard, type ProjectDashboard, dayLabel, plannedEndLabel } from '../dashboard.ts';
 import { todayUtc8 } from '../changes.ts';
+import { taskHref } from '../taskPage.ts';
 import { TASK_STATUS_LABEL, TASK_STATUS_MEANING, type TaskStatus } from '../records.ts';
 import { addDays, dueWithin, projectAttention, taskStatusParts } from '../overview.ts';
 import { stageFlowFrom, type ProjectStage } from '../ui/stages.ts';
@@ -43,6 +44,7 @@ import { AskPanel } from './AskPanel.tsx';
 import { AssistReview } from './AssistReview.tsx';
 import { Drafts } from './Drafts.tsx';
 import { Discussion, Notes } from './Discussion.tsx';
+import { TaskPage } from './TaskPage.tsx';
 import { Work } from './Work.tsx';
 import { ProjectOutputs } from './ProjectOutputs.tsx';
 import { Resources } from './Resources.tsx';
@@ -63,8 +65,8 @@ import { DeletionsList } from './HistoryList.tsx';
 import { CopiesAwaitingList, HeldForReviewList } from './HeldReview.tsx';
 import { type Act, ArchivePanel, DepartmentMove, GrantsSection, HandoverForm, HoldActions } from './ProjectAccessPanels.tsx';
 
-/** What the address shows: a tab's key (`resources/report` sits under Resources), or `run`, one run's review under Proposals. */
-export type ProjectView = 'overview' | 'resources' | 'resources/report' | 'people' | 'discussion' | 'notes' | 'proposals' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | 'timeline' | 'outputs' | 'run';
+/** What the address shows: a tab's key (`resources/report` sits under Resources), `run`, one run's review under Proposals, or `task`, one task's page under Work. */
+export type ProjectView = 'overview' | 'resources' | 'resources/report' | 'people' | 'discussion' | 'notes' | 'proposals' | 'work' | 'drafts' | 'review' | 'settings' | 'ai' | 'feedback' | 'closing' | 'deadline-review' | 'deleted' | 'timeline' | 'outputs' | 'run' | 'task';
 
 /** What the binder tabs' badges and lifecycle tabs need. */
 interface TabCounts { waiting: number; overdue: number; mayPrepare: boolean; deadlineTasks: number }
@@ -315,6 +317,19 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
         />
       )}
       {view === 'run' && runId && <Review key={runId} runId={runId} meId={meId} />}
+      {view === 'task' && itemId && (
+        <TaskPage
+          key={itemId}
+          projectId={project.id}
+          taskId={itemId}
+          people={people}
+          canPropose={roles.length > 0}
+          canClear={roles.some((r) => r === 'pm' || r === 'deputy_pm')}
+          roles={roles}
+          status={project.status}
+          delegated={Boolean(project.recordDeletionDelegation)}
+        />
+      )}
       {view === 'work' && contentAllowed && (
         <Work
           projectId={project.id}
@@ -614,7 +629,7 @@ function OverviewGlance({ project, contentAllowed, dashboard }: { project: Proje
   const due = dueWithin(tasks ?? [], today, 14);
   const plannedEnd = dashboard.d ? plannedEndLabel(dashboard.d.measures.plannedEnd) : null;
   const dueColumns: Column<OverviewTask>[] = [
-    { key: 'task', header: 'Task', sortValue: (t) => t.title.toLowerCase(), cell: (t) => <a href={`#/projects/${project.id}/work/${t.id}`}>{t.title}</a> },
+    { key: 'task', header: 'Task', sortValue: (t) => t.title.toLowerCase(), cell: (t) => <a href={taskHref(project.id, t.id)}>{t.title}</a> },
     { key: 'due', header: 'Due', sortValue: (t) => t.dueOn, cell: (t) => (t.dueOn === today ? `Today, ${dayLabel(t.dueOn)}` : dayLabel(t.dueOn)) },
     { key: 'assignee', header: 'Assignee', sortValue: (t) => t.assignee.displayName.toLowerCase(), cell: (t) => t.assignee.displayName },
     { key: 'status', header: 'Status', sortValue: (t) => TASK_STATUS_LABEL[t.status], cell: (t) => <StatusLabel meaning={TASK_STATUS_MEANING[t.status]} word={TASK_STATUS_LABEL[t.status]} /> },

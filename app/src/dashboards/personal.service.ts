@@ -18,6 +18,7 @@ import { membershipState, todayUtc8 } from '../projects/membership';
 import { loadAccessSettings } from '../organisation/access-settings';
 import { POSSIBLE_COPY_TEXT, possibleCopySql } from '../quarantine/labels';
 import { type TaskStatus, taskIndicators } from '../records/tasks';
+import { taskLink } from '../records/task-link';
 import { type ProjectMeasures, loadProjectMeasures } from './measures';
 import { archivedAmong, groupBy, loadProjectContexts } from './project-contexts';
 import { shown } from './project-dashboard.service';
@@ -114,6 +115,7 @@ function approvalLink(r: RequestRow & { runId: string | null }): string {
   if (r.kind === 'risk_handover') return `${base}/work`;
   if (r.targetKind === 'extraction_item') return r.runId ? `#/runs/${r.runId}` : `${base}/notes`;
   if (r.targetKind === 'human_proposal') return `${base}/notes/${r.targetId}`;
+  if (r.targetKind === 'task') return taskLink(r.projectId, r.targetId);
   return `${base}/work/${r.targetId}`;
 }
 
@@ -220,7 +222,7 @@ export class PersonalDashboardService {
       projectName: nameOf(r.projectId),
       label: r.title,
       since: dayStart(r.dueOn),
-      link: recordLink(r.projectId, r.id),
+      link: taskLink(r.projectId, r.id),
     });
     for (const r of taskRows) {
       const row: MyTask = { id: r.id, title: r.title, projectId: r.projectId, projectName: nameOf(r.projectId), dueOn: r.dueOn, status: r.status };

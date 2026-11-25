@@ -10,6 +10,7 @@ import { liveRecordSql } from '../history/deleted-sql';
 import { type ProjectContext, canReadContent } from '../projects/access.service';
 import type { ProjectStatus } from '../projects/matrix';
 import { todayUtc8 } from '../projects/membership';
+import { taskLink } from '../records/task-link';
 import type { AnalyticsFilters } from './filters';
 import { LinesService, type LineView } from '../resources/lines.service';
 import { PROBLEM_KEYS, PanelsService, type ProgressRow } from './panels.service';
@@ -246,7 +247,7 @@ export class DrillService {
             WHERE r.project_id = $1 AND ${liveRecordSql('r')} AND ${await bind(RISK_WHERE[listing.where])}
             ORDER BY r.review_on NULLS LAST, r.id`;
     const rows = (await this.pool.query(sql, params)).rows as Array<Omit<DrillRecord, 'link'>>;
-    return rows.map((r) => ({ ...r, link: `#/projects/${projectId}/work/${r.id}` }));
+    return rows.map((r) => ({ ...r, link: listing.kind === 'task' ? taskLink(projectId, r.id) : `#/projects/${projectId}/work/${r.id}` }));
   }
 
   /** The On-time reference day (today, or the deferral or closing day), as the measures work it out. */

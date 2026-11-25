@@ -248,6 +248,18 @@ describe('the task page', { skip: SKIP_NO_DB }, () => {
     assert.ok(!JSON.stringify(orphan.body).includes('Top'));
   });
 
+  test('due soon follows the project calendar, and only for unfinished work', async () => {
+    const soon = async (over: Parameters<typeof task>[0]) => (await get(ben, await task(over))).body.task.dueSoon;
+    // Today is Monday 9 November 2026: seven working days on is Wednesday 18 November.
+    assert.equal(await soon({ due: '2026-11-18' }), true);
+    assert.equal(await soon({ due: '2026-11-19' }), false);
+    assert.equal(await soon({ due: '2026-11-06' }), false, 'overdue');
+    assert.equal(await soon({ due: '2026-11-18', status: 'completed' }), false);
+    const marked = await task({ due: '2026-11-18' });
+    await t.pool.query(`UPDATE tasks SET deadline_review_required = true WHERE id = $1`, [marked]);
+    assert.equal((await get(ben, marked)).body.task.dueSoon, false, 'waits for a deadline review');
+  });
+
   test('blocked gives the latest block, and nothing once unblocked', async () => {
     const id = await task();
     const act = async (c: Client, action: string, note?: string) => {

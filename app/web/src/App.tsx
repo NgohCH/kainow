@@ -39,6 +39,7 @@ import { ReportTypes } from './views/ReportTypes.tsx';
 import { Operations } from './views/Operations.tsx';
 import { OpsBanner, ProtectiveLine } from './views/OpsBanner.tsx';
 import { AppShell } from './ui/AppShell.tsx';
+import { parseProjectHash } from './ui/projectTabs.ts';
 import { SettingsHub } from './views/SettingsHub.tsx';
 import { Definitions } from './views/Definitions.tsx';
 import { StageTemplates } from './views/StageTemplates.tsx';
@@ -316,7 +317,7 @@ export function App() {
   }
   const note = /^#\/notes\/([0-9a-f-]{36})(?:\/v\/(\d+))?$/i.exec(hash);
   const run = /^#\/runs\/([0-9a-f-]{36})$/i.exec(hash);
-  const project = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|discussion|notes|proposals|work|drafts|review|settings|ai|feedback|closing|deadline-review|deleted|timeline|outputs|resources\/report|resources)(?:\/([0-9a-f-]{36}))?)?$/i.exec(hash);
+  const project = parseProjectHash(hash);
   const deletedItem = /^#\/projects\/([0-9a-f-]{36})\/deleted\/([a-z]+)\/([0-9a-f-]{36})$/i.exec(hash);
   const quarantineCase = /^#\/quarantine\/cases\/([0-9a-f-]{36})(?:\/copies)?$/i.exec(hash);
   const securityPage = /^#\/security\/(cases|grants)$/.test(hash);
@@ -360,7 +361,7 @@ export function App() {
   else if (deletedItem) page = <DeletedItemPage key={deletedItem[3]} projectId={deletedItem[1]} kind={deletedItem[2]} itemId={deletedItem[3]} />;
   else if (run) page = <RunInProject key={run[1]} runId={run[1]} meId={user.id} prefs={prefs} prefsReady={prefsLoaded} onPrefs={savePrefs} />;
   else if (note) page = <NoteDetail sourceId={note[1]} versionNo={note[2] ? Number(note[2]) : null} />;
-  else if (project) page = <ProjectPage key={project[1]} projectId={project[1]} meId={user.id} tab={(project[2] as ProjectView | undefined) ?? 'overview'} itemId={project[3]} prefs={prefs} prefsReady={prefsLoaded} onPrefs={savePrefs} />;
+  else if (project) page = <ProjectPage key={project.projectId} projectId={project.projectId} meId={user.id} tab={project.tab as ProjectView} itemId={project.itemId} prefs={prefs} prefsReady={prefsLoaded} onPrefs={savePrefs} />;
   else if (hash === '#/projects') page = <Projects isAdmin={isAdmin} />;
   else if (hash === '#/my-tasks') page = <MyTasks />;
   else if (hash === '#/reviews') page = <Reviews />;

@@ -5,6 +5,7 @@ import { formatWhen } from '../format.ts';
 import { approvalNoticeFor } from '../outputs.ts';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
 import type { Meaning } from '../ui/meanings.ts';
+import { useTaskDescription } from './useTaskDescription.ts';
 import { AddSubtaskForm, AmendForm, CancelForm, SupersedeForm, type WorkContext, WithdrawForm } from './ChangeForms.tsx';
 
 /** A project's waiting change requests (newest first), reloaded on demand. Failing to load them leaves the list empty. */
@@ -26,7 +27,7 @@ export const pendingAuthorisation = (requests: RequestView[], proposalId: string
   requests.find((r) => r.status === 'pending' && r.kind === 'authorise_proposal' && r.target.id === proposalId);
 
 /** What the viewer already knows of the request's target, to set beside the proposal. */
-function currentFor(request: RequestView, work?: WorkContext): CurrentView {
+function currentFor(request: RequestView, work?: WorkContext, description?: string | null): CurrentView {
   if (!work) return {};
   const names = Object.fromEntries(work.people.map((p) => [p.userId, p.displayName]));
   const task = request.target.kind === 'task' ? work.tasks.find((t) => t.id === request.target.id) : undefined;
@@ -34,7 +35,7 @@ function currentFor(request: RequestView, work?: WorkContext): CurrentView {
   return {
     names,
     subtaskTitles: Object.fromEntries(work.tasks.map((t) => [t.id, t.title])),
-    ...(task ? { title: task.title, assigneeId: task.assignee.id, dueOn: task.dueOn } : {}),
+    ...(task ? { title: task.title, assigneeId: task.assignee.id, dueOn: task.dueOn, description } : {}),
     ...(decision ? { statement: decision.statement } : {}),
   };
 }
@@ -60,7 +61,9 @@ export function ChangeRequestPanel({ request, work, onChanged, projectId }: { re
   const [reviewOn, setReviewOn] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
-  const rows = termsRows(request.kind, request.terms, request.currentTerms ?? currentFor(request, work));
+  const amended = request.kind === 'amend_task' && 'description' in request.terms ? request.target.id : null;
+  const description = useTaskDescription(amended, work?.tasks.find((t) => t.id === amended)?.description);
+  const rows = termsRows(request.kind, request.terms, request.currentTerms ?? currentFor(request, work, description));
   const pending = request.status === 'pending';
 
   /** Sends one action; shows the server's refusal if it fails. */

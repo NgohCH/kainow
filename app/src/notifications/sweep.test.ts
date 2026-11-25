@@ -124,7 +124,7 @@ describe('the sweep', { skip: SKIP_NO_DB }, () => {
     assert.equal(n.length, 1);
     assert.equal(n[0].user_id, ann.id);
     assert.equal(n[0].summary, "Reminder: 'Draft the tender' is due on Mon 16 Nov");
-    assert.equal(n[0].link, `#/projects/${p}/work/${tk}`);
+    assert.equal(n[0].link, `#/projects/${p}/tasks/${tk}`);
     assert.equal(n[0].urgent, false);
     assert.equal(n[0].email_off, false);
     assert.equal(n[0].trigger_id, trs[0].id);
@@ -135,7 +135,7 @@ describe('the sweep', { skip: SKIP_NO_DB }, () => {
     assert.equal(m[0].to_address, ann.email);
     assert.equal(m[0].kind, 'notice');
     assert.equal(m[0].subject, 'Kainow: 1 item needs your attention in Harbour Works');
-    assert.ok(m[0].text_body.includes(`Reminder: 'Draft the tender' is due on Mon 16 Nov — ${APP_URL}/#/projects/${p}/work/${tk}`));
+    assert.ok(m[0].text_body.includes(`Reminder: 'Draft the tender' is due on Mon 16 Nov — ${APP_URL}/#/projects/${p}/tasks/${tk}`));
     assert.equal(m[0].initiated_by, 'schedule');
     assert.deepEqual(m[0].trigger_ids, [trs[0].id]);
     assert.equal(m[0].relevance.scope, 'project');

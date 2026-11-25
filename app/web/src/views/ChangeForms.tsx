@@ -1,13 +1,16 @@
 import { type FormEvent, type ReactNode, useState } from 'react';
 import { isPastDay } from '../changes.ts';
-import { INVITE, type Person, who } from './AuthoriseForm.tsx';
+import { DescriptionField, INVITE, type Person, who } from './AuthoriseForm.tsx';
 import { NonWorkingDayNote } from './ProjectCalendar.tsx';
+import { useTaskDescription } from './useTaskDescription.ts';
 
 export interface WorkTask {
   id: string;
   parentId: string | null;
   depth: number;
   title: string;
+  /** Known on the task page; the list of work does not carry it. */
+  description?: string | null;
   assignee: { id: string; displayName: string };
   dueOn: string;
   status: string;
@@ -94,6 +97,10 @@ const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object'
 /** Propose a change to a task's wording, assignee or due date. */
 export function AmendForm({ task, people, initial, onSubmit, onCancel }: { task: WorkTask; people: Person[]; initial?: Record<string, unknown>; onSubmit: Submit; onCancel: () => void }) {
   const [title, setTitle] = useState(str(initial?.title) || task.title);
+  const current = useTaskDescription(task.id, task.description);
+  // What has been typed; null until then, when the field shows the description in force (or the one proposed before).
+  const [typed, setTyped] = useState<string | null>(initial && 'description' in initial ? str(initial.description) : null);
+  const description = typed ?? current ?? '';
   const [assignee, setAssignee] = useState(str(initial?.inviteEmail) ? INVITE : str(initial?.assigneeId));
   const [email, setEmail] = useState(str(initial?.inviteEmail));
   const [dueOn, setDueOn] = useState(str(initial?.dueOn) || task.dueOn);
@@ -106,6 +113,7 @@ export function AmendForm({ task, people, initial, onSubmit, onCancel }: { task:
       onSubmit={() =>
         onSubmit({
           ...(title.trim() !== task.title ? { title } : {}),
+          ...(current !== undefined && description.trim() !== (current ?? '') ? { description } : {}),
           ...(assignee ? who(assignee, email) : {}),
           ...(dueOn !== task.dueOn ? { dueOn } : {}),
           reason,
@@ -113,6 +121,7 @@ export function AmendForm({ task, people, initial, onSubmit, onCancel }: { task:
       }
     >
       <label>Wording <input required value={title} onChange={(e) => setTitle(e.target.value)} /></label>
+      {current === undefined ? <p className="meta">The description could not be read yet, so it stays as it is.</p> : <DescriptionField value={description} onChange={setTyped} />}
       <PersonField label="Assignee" people={people} value={assignee} email={email} onChange={setAssignee} onEmail={setEmail} keepLabel={`Keep ${task.assignee.displayName}`} />
       <label>Due date <input type="date" required value={dueOn} onChange={(e) => setDueOn(e.target.value)} /></label>
       {dueOn !== task.dueOn && <PastWarning day={dueOn} />}
@@ -126,6 +135,7 @@ export function AmendForm({ task, people, initial, onSubmit, onCancel }: { task:
 export function AddSubtaskForm({ task, people, initial, onSubmit, onCancel }: { task: WorkTask; people: Person[]; initial?: Record<string, unknown>; onSubmit: Submit; onCancel: () => void }) {
   const add = obj(initial?.addSubtask);
   const [title, setTitle] = useState(str(add.title));
+  const [description, setDescription] = useState(str(add.description));
   const [assignee, setAssignee] = useState(str(add.inviteEmail) ? INVITE : str(add.assigneeId));
   const [email, setEmail] = useState(str(add.inviteEmail));
   const [dueOn, setDueOn] = useState(str(add.dueOn) || task.dueOn);
@@ -135,9 +145,10 @@ export function AddSubtaskForm({ task, people, initial, onSubmit, onCancel }: { 
       label="Propose a subtask"
       action="Propose subtask"
       onCancel={onCancel}
-      onSubmit={() => onSubmit({ addSubtask: { title, ...who(assignee, email), dueOn }, reason })}
+      onSubmit={() => onSubmit({ addSubtask: { title, ...(description.trim() ? { description } : {}), ...who(assignee, email), dueOn }, reason })}
     >
       <label>Wording <input required value={title} onChange={(e) => setTitle(e.target.value)} /></label>
+      <DescriptionField value={description} onChange={setDescription} />
       <PersonField label="Assignee" people={people} value={assignee} email={email} onChange={setAssignee} onEmail={setEmail} />
       <label>Due date <input type="date" required value={dueOn} onChange={(e) => setDueOn(e.target.value)} /></label>
       <PastWarning day={dueOn} />
@@ -192,6 +203,7 @@ export function CancelForm({ task, tasks, initial, onSubmit, onCancel }: { task:
 /** Propose a follow-up task for a Cancelled one (a people's proposal; an Owner or Sponsor authorises it later). */
 export function FollowUpForm({ task, onSubmit, onCancel }: { task: WorkTask; onSubmit: Submit; onCancel: () => void }) {
   const [text, setText] = useState('');
+  const [description, setDescription] = useState('');
   const [owner, setOwner] = useState('');
   const [due, setDue] = useState('');
   return (
@@ -199,8 +211,9 @@ export function FollowUpForm({ task, onSubmit, onCancel }: { task: WorkTask; onS
       label={`Propose a follow-up to ${task.title}`}
       action="Propose follow-up"
       consequence="It becomes a people's proposal; an Owner or Sponsor can authorise it from the Proposals tab."
-      onCancel={onCancel} onSubmit={() => onSubmit({ text, ...(owner ? { owner } : {}), ...(due ? { due } : {}) })}>
+      onCancel={onCancel} onSubmit={() => onSubmit({ text, ...(description.trim() ? { description } : {}), ...(owner ? { owner } : {}), ...(due ? { due } : {}) })}>
       <label>What should follow <textarea required rows={2} maxLength={2000} value={text} onChange={(e) => setText(e.target.value)} /></label>
+      <DescriptionField value={description} onChange={setDescription} />
       <label>Who (optional) <input maxLength={200} value={owner} onChange={(e) => setOwner(e.target.value)} /></label>
       <label>By when (optional) <input maxLength={200} value={due} onChange={(e) => setDue(e.target.value)} /></label>
     </Form>

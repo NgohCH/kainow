@@ -49,4 +49,6 @@ test('a task history line says what happened, who did it and why', () => {
     historyLine({ kind: 'completed', from: 'in_progress', to: 'completed', note: 'Done', overrideReason: 'Finance part dropped', actor: 'PM', at }),
     'Completed by PM, 9 Nov 2026: Done (override: Finance part dropped)',
   );
+  assert.equal(historyLine({ kind: 'amended', from: 'in_progress', to: 'in_progress', note: 'Clearer', overrideReason: null, actor: 'PM', at }), 'Changed by PM, 9 Nov 2026: Clearer');
+  assert.equal(historyLine({ kind: 'deadline_reviewed', from: 'blocked', to: 'blocked', note: null, overrideReason: null, actor: 'PM', at }), 'Deadline reviewed by PM, 9 Nov 2026');
 });

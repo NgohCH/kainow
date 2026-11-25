@@ -52,6 +52,16 @@ function Assignee({
   );
 }
 
+/** An action's optional longer text. */
+export function DescriptionField({ value, onChange }: { value: string; onChange: (v: string) => void }) {
+  return (
+    <label>
+      Description (optional, up to 4,000 characters)
+      <textarea rows={4} maxLength={4000} value={value} onChange={(e) => onChange(e.target.value)} />
+    </label>
+  );
+}
+
 export const who = (value: string, email: string) => (value === INVITE ? { inviteEmail: email } : { assigneeId: value });
 
 /**
@@ -66,6 +76,7 @@ export function AuthoriseForm({
   due,
   people,
   meId,
+  description: proposed = null,
   onSubmit,
   onCancel,
 }: {
@@ -75,6 +86,8 @@ export function AuthoriseForm({
   due: DueReading | null;
   people: Person[];
   meId: string;
+  /** The description a person gave with their proposal; the AI gives none. */
+  description?: string | null;
   onSubmit: (body: Record<string, unknown>) => Promise<boolean>;
   onCancel: () => void;
 }) {
@@ -89,6 +102,7 @@ export function AuthoriseForm({
   const [requester, setRequester] = useState(meId);
   const [severity, setSeverity] = useState<Severity | ''>('');
   const [responsible, setResponsible] = useState('');
+  const [description, setDescription] = useState(proposed ?? '');
   const [rationale, setRationale] = useState('');
   const [busy, setBusy] = useState(false);
 
@@ -99,6 +113,8 @@ export function AuthoriseForm({
       body = {
         ...who(lead, leadEmail),
         dueOn,
+        // Left out when it is as proposed; sent blank, it removes the proposer's.
+        ...(description.trim() !== (proposed ?? '') ? { description } : {}),
         subtasks: split ? subs.map((s) => ({ title: s.title, ...who(s.assignee, s.email), dueOn: s.dueOn })) : [],
       };
     } else if (kind === 'question') body = { requesterId: requester };
@@ -125,6 +141,7 @@ export function AuthoriseForm({
             <input type="date" required value={dueOn} onChange={(e) => setDueOn(e.target.value)} />
           </label>
           <NonWorkingDayNote date={dueOn} />
+          <DescriptionField value={description} onChange={setDescription} />
           {names.length > 1 && (
             <label className="check">
               <input type="checkbox" checked={split} onChange={(e) => setSplit(e.target.checked)} /> Split into subtasks for the other people named

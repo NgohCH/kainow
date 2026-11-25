@@ -65,5 +65,17 @@ export function tabForHash(tab: string | undefined, itemId?: string): string {
   if (tab === 'notes' && itemId) return 'proposals';
   if (tab === 'resources/report') return 'resources';
   if (tab === 'run') return 'proposals';
+  if (tab === 'task') return 'work';
   return tab;
+}
+
+const PROJECT_ADDRESS = /^#\/projects\/([0-9a-f-]{36})(?:\/(people|discussion|notes|proposals|work|drafts|review|settings|ai|feedback|closing|deadline-review|deleted|timeline|outputs|resources\/report|resources)(?:\/([0-9a-f-]{36}))?)?$/i;
+const TASK_ADDRESS = /^#\/projects\/([0-9a-f-]{36})\/tasks\/([0-9a-f-]{36})$/i;
+
+/** What a project address shows: `tasks/<id>` is one task's page (`task`), `work/<id>` still the Work tab at that row. Null for any other address. */
+export function parseProjectHash(hash: string): { projectId: string; tab: string; itemId: string | undefined } | null {
+  const task = TASK_ADDRESS.exec(hash);
+  if (task) return { projectId: task[1], tab: 'task', itemId: task[2] };
+  const m = PROJECT_ADDRESS.exec(hash);
+  return m ? { projectId: m[1], tab: m[2] ?? 'overview', itemId: m[3] } : null;
 }

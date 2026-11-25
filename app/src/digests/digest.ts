@@ -8,6 +8,7 @@ import { type Calendar, isWorkingDay, stepBackWorking } from '../notifications/c
 import { loadHolders } from '../notifications/recipients';
 import type { DigestSchedule } from '../notifications/settings';
 import { todayUtc8 } from '../projects/membership';
+import { taskLink } from '../records/task-link';
 
 type Db = Pool | PoolClient;
 
@@ -90,7 +91,7 @@ export async function buildDigest(
     return [
       `- ${t.title}`,
       `  Assignee: ${t.assignee}; Due: ${longDate(t.dueOn)}; Status: ${STATUS_LABEL[t.status] ?? t.status}${marks.length ? `; ${marks.join('; ')}` : ''}`,
-      `  ${base}/#/projects/${projectId}/work/${t.id}`,
+      `  ${base}/${taskLink(projectId, t.id)}`,
     ].join('\n');
   };
   const own = tasks
