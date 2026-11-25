@@ -14,7 +14,7 @@
 
 - No new npm dependency. No permission, audience or lifecycle rule becomes wider. Every existing `#/…` address keeps working.
 - No real organisation name or domain anywhere; dummy data uses "Example Organisation" and `example.org`.
-- Next free numbers: decisions D133–D140, catalogue C114–C115, migrations `0040_walkthrough.sql` and `0041_duplicate_project.sql` (check again on main before merging). Shipped migrations are never edited.
+- Next free numbers: decisions D133–D141, catalogue C114–C115, migrations `0040_walkthrough.sql` and `0041_duplicate_project.sql` (check again on main before merging). Shipped migrations are never edited.
 - New text columns: in the quarantine registry, credential-checked on entry, length limits in the relaxed form of 0039. Audit detail holds ids, kinds and counts only.
 - Colours only in the token block of `styles.css`, mirrored in `prefs.ts`, contrast-checked: text 4.5:1, edges 3:1. Never colour alone. No sideways page scroll at 375 px.
 - Dates in UTC+8.
@@ -140,9 +140,18 @@
 - [ ] Tests (RED): Create is off with the list of what is still needed; highlighting and confirming; choosing a subtask chooses its parent and dropping a parent drops its subtasks; leaving warns; `copiedFrom` wording.
 - [ ] Implement with the 11a building blocks (boxes in the order: what must change, details, settings, tasks, risks, resources, review and create); `npm test`, build; demo at 1280 and 375 px: duplicate Load Project 16, authorise three copied tasks at once as Owner. Commit `feat(web): duplicate a project and authorise several proposals (D140)`.
 
+### Task 14: Needs you and tasks by project (web; runs after Task 10, before Task 11)
+
+**Files:** Create `app/web/src/ui/byProject.ts`, `byProject.test.ts`, `ui/ProjectGroups.tsx`; Modify `Home.tsx`, `MyTasks.tsx`, `ui/AttentionQueue.tsx`, `ui/home.ts`, `styles.css`.
+
+**Interfaces — Produces:** `attentionByProject(items: NeedsYouItem[]): { projectId, projectName, counts: {group, count}[], groups: AttentionBucket[] }[]`; `tasksByProject(rows: TaskRow[]): { projectId, projectName, counts, rows }[]`; both in the order of spec §15. `ProjectGroups` renders the boxes (open/close, first five, Show all).
+
+- [ ] Tests (RED): project order by each rule and tie; urgency order inside; counts add up to the original list (items with `count` > 1 included); two projects with one name stay apart; filters drop empty projects; one project; nothing at all keeps today's wording.
+- [ ] Implement; `npm test`, build; demo as load-001 at 1280 and 375 px, keyboard included. Commit `feat(web): needs you and tasks grouped by project (D141)`.
+
 ### Task 11: Checks and documents (runs last)
 
-- [ ] Accessibility audit: task page (each status), My profile, Projects History, rename form, Duplicate project (empty, with old terms highlighted, refused), authorise several, three tab styles (1200 and 375 px, Light and Dark); the audit fails on any violation or sideways scroll.
+- [ ] Accessibility audit: task page (each status), My profile, Projects History, rename form, Home and My tasks grouped by project, Duplicate project (empty, with old terms highlighted, refused), authorise several, three tab styles (1200 and 375 px, Light and Dark); the audit fails on any violation or sideways scroll.
 - [ ] Browser smoke follows a task link, the profile and each tab style; run in the four browsers.
-- [ ] Documents: D133–D140, C114–C115, INSTALL.md, app/README.md, CHANGELOG, screenshots; tests for the two 11a fixes left unchecked (AI limits first save, Deliveries count).
+- [ ] Documents: D133–D141, C114–C115, INSTALL.md, app/README.md, CHANGELOG, screenshots; tests for the two 11a fixes left unchecked (AI limits first save, Deliveries count).
 - [ ] Full server suite once at the end, in the background. Commit `docs: 11a.1 decisions, catalogue and checks`.

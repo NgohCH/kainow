@@ -93,3 +93,16 @@ The address names; description length; renaming past periods as well as the curr
 - **Approval:** copied proposals carry "Copied from <original>" and follow the normal authorisation rules, the required number of approvals included. An Owner or Sponsor can authorise several at once on one page, each needing its assignee and due date; each is authorised separately, so one failure does not undo the others and is named.
 - **Leak rule:** the original's name and a link appear only to someone who may open the original. Everyone else sees "Copied from another project".
 - **Limits:** 500 tasks and subtasks, 200 risks, 200 resource lines per duplication; more is refused with the counts and nothing is created.
+
+## 15. Needs you and tasks by project (D141; asked for by the Product Owner, 25 November 2026)
+
+**Why.** Needs you and My tasks mix every project in one long list; the Product Owner found it messy and disorienting.
+
+- **Home, Needs you:** one box per project, headed by the project's name (a link) and its counts by urgency (symbol, word and number). Inside, the items keep the urgency order Overdue, Review and decisions, Blocked, Due soon, each with its symbol and word.
+- **Home, My tasks, and the My tasks page:** one box per project in the same way, each with its own table: overdue first, then by due date. The project column goes, since the box says it.
+- **Order of projects:** most overdue items first, then most items needing review, then most due soon, then by name.
+- Each box opens and closes with a button. On Home and on the page the first three are open to start with; a box shows its first five rows with "Show all n".
+- **My tasks page:** a "Group by" choice, Project (default) or Due date (today's single table). Status and project filters stay and apply to both; a project left with no match is not shown.
+- With one project only, its box is open and the "Group by" choice stays.
+- Inside a project, the project's own Needs attention list is unchanged.
+- Nothing is added or hidden: the same items, counts and links as before.
