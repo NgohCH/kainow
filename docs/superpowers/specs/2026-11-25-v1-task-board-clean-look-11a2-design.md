@@ -1,6 +1,6 @@
 # Sub-project 11a.2: task boards and a cleaner look
 
-Status: Draft for the Product Owner's approval, 25 November 2026. Built after 11a.1 merges and before v0.1.
+Status: Approved by the Product Owner, 25 November 2026. Built after 11a.1 merges and before v0.1.
 
 ## 1. Why
 
