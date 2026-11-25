@@ -26,8 +26,8 @@ interface Pause {
   until: number;
 }
 
-/** Deferred and then closed is one pause, from the deferral. */
-function pausesOf(transitions: readonly TransitionTime[]): Pause[] {
+/** Deferred and then closed is one pause, from the deferral. One with no end counts only while the project is Deferred or Closed now. */
+function pausesOf(transitions: readonly TransitionTime[], status: ProjectStatus): Pause[] {
   const out: Pause[] = [];
   for (const { to, at } of transitions) {
     const last = out[out.length - 1];
@@ -36,16 +36,16 @@ function pausesOf(transitions: readonly TransitionTime[]): Pause[] {
       if (!paused) out.push({ why: to, from: at.getTime(), until: Infinity });
     } else if (paused) last.until = at.getTime();
   }
-  return out;
+  return status === 'deferred' || status === 'closed' ? out : out.filter((x) => x.until !== Infinity);
 }
 
 /**
- * Each period clipped at the first deferral or closure inside it. `transitions` are the project's, oldest first. A pause
+ * Each period clipped at the first deferral or closure inside it. `transitions` are the project's, oldest first, and `status` is its status now. A pause
  * over by the time the period began does not touch it (a resumption's period begins at the same instant as it), nor does
  * one that began as the period ended, unless the resumption is what ended it.
  */
-export function clipPeriods<P extends PeriodTimes>(periods: readonly P[], transitions: readonly TransitionTime[]): ClippedPeriod<P>[] {
-  const pauses = pausesOf(transitions);
+export function clipPeriods<P extends PeriodTimes>(periods: readonly P[], transitions: readonly TransitionTime[], status: ProjectStatus): ClippedPeriod<P>[] {
+  const pauses = pausesOf(transitions, status);
   return periods.map((p) => {
     const start = p.startedAt.getTime();
     const end = p.endedAt === null ? Infinity : p.endedAt.getTime();

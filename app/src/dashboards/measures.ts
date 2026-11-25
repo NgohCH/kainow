@@ -133,8 +133,8 @@ export interface ProjectMeasures {
   overdue: number;
   blocked: number;
   dueSoon: number;
-  /** The open stage period, its days stopping at a deferral or closure (D138); null only for a project without one. */
-  stage: { stage: string; substage: string | null; days: number } | null;
+  /** The open stage period, its days stopping at a deferral or closure (D138), named in `stopped`; null only for a project without one. */
+  stage: { stage: string; substage: string | null; days: number; stopped: 'deferred' | 'closed' | null } | null;
   plannedEnd: PlannedEnd;
   questions: { open: number; answered: number };
   risks: { bySeverity: Record<Severity, number>; significant: number; overdueReviews: number };
@@ -191,10 +191,10 @@ export function plannedEnd(planned: string | null, today: string): PlannedEnd {
   return days >= 0 ? { state: 'ahead', days } : { state: 'ended', daysAgo: -days };
 }
 
-/** Whole days in the open stage: to today, or to the deferral or closure that stopped it. */
-function stageDays(startedAt: Date, transitions: TransitionTime[], today: string): number {
-  const [period] = clipPeriods([{ startedAt, endedAt: null }], transitions);
-  return Math.max(0, daysBetween(todayUtc8(startedAt), period.endedOn ?? today));
+/** Whole days in the open stage, to today or to the deferral or closure that stopped it, and which of them did. */
+function stageDays(startedAt: Date, transitions: TransitionTime[], status: ProjectStatus, today: string): Pick<NonNullable<ProjectMeasures['stage']>, 'days' | 'stopped'> {
+  const [period] = clipPeriods([{ startedAt, endedAt: null }], transitions, status);
+  return { days: Math.max(0, daysBetween(todayUtc8(startedAt), period.endedOn ?? today)), stopped: period.stopped };
 }
 
 /** The UTC+8 calendar day of a timestamptz column, as 'YYYY-MM-DD'. */
@@ -327,7 +327,7 @@ export async function loadProjectMeasures(
       overdue: indicators.filter((i) => i.overdue).length,
       blocked: all.filter((t) => t.status === 'blocked').length,
       dueSoon: unfinished.filter((t) => t.dueOn >= today && t.dueOn <= soonEnd).length,
-      stage: p.stage === null ? null : { stage: p.stage, substage: p.substage, days: stageDays(p.stageStartedAt as Date, transitionsBy.get(p.id) ?? [], today) },
+      stage: p.stage === null ? null : { stage: p.stage, substage: p.substage, ...stageDays(p.stageStartedAt as Date, transitionsBy.get(p.id) ?? [], p.status, today) },
       plannedEnd: plannedEnd(p.plannedEnd, today),
       questions: { open: questionsBy.get(p.id)?.open ?? 0, answered: questionsBy.get(p.id)?.answered ?? 0 },
       risks: { bySeverity, significant: bySeverity.high + bySeverity.critical, overdueReviews: r?.overdueReviews ?? 0 },

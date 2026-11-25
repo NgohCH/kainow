@@ -5,7 +5,8 @@ import { clipPeriods } from './stage-periods';
 
 const period = (start: string, end: string | null = null) => ({ startedAt: new Date(start), endedAt: end === null ? null : new Date(end) });
 const to = (status: ProjectStatus, at: string) => ({ to: status, at: new Date(at) });
-const shown = (periods: ReturnType<typeof period>[], transitions: ReturnType<typeof to>[]) => clipPeriods(periods, transitions).map((p) => [p.endedOn, p.stopped]);
+const shown = (periods: ReturnType<typeof period>[], transitions: ReturnType<typeof to>[], status: ProjectStatus = transitions.at(-1)?.to ?? 'active') =>
+  clipPeriods(periods, transitions, status).map((p) => [p.endedOn, p.stopped]);
 
 const S = '2026-11-01T02:00:00Z';
 
@@ -65,8 +66,15 @@ test('a period that begins inside a pause stops where it began, never before', (
   assert.deepEqual(shown([period('2026-11-05T02:00:00Z')], [to('deferred', '2026-11-04T02:00:00Z')]), [['2026-11-05', 'deferred']]);
 });
 
+test('a history that says paused while the project is under way stops nothing; what it paused earlier still did', () => {
+  const resumed = '2026-11-06T02:00:00Z';
+  const history = [to('deferred', '2026-11-04T02:00:00Z'), to('active', resumed), to('closed', '2026-11-08T02:00:00Z')];
+  assert.deepEqual(shown([period(S, resumed), period(resumed)], history, 'active'), [['2026-11-04', 'deferred'], [null, null]]);
+  assert.deepEqual(shown([period(S)], [to('deferred', '2026-11-04T02:00:00Z')], 'planned'), [[null, null]]);
+});
+
 test('the stored rows are left alone', () => {
   const p = period(S);
-  clipPeriods([p], [to('deferred', '2026-11-04T02:00:00Z')]);
+  clipPeriods([p], [to('deferred', '2026-11-04T02:00:00Z')], 'deferred');
   assert.equal(p.endedAt, null);
 });

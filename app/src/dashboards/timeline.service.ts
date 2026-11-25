@@ -70,8 +70,11 @@ export class TimelineService {
         [projectId],
       )
     ).rows;
+    const project = (
+      await this.pool.query<{ status: ProjectStatus; plannedEnd: string | null }>(`SELECT status, to_char(planned_end, 'YYYY-MM-DD') AS "plannedEnd" FROM projects WHERE id = $1`, [projectId])
+    ).rows[0];
     // The bars and the list read the same clipped periods, so they end a stage on the same day.
-    for (const s of clipPeriods(stages, transitions)) {
+    for (const s of clipPeriods(stages, transitions, project.status)) {
       const base: StagePeriod = { stage: s.stage, substage: s.substage ?? null, startedOn: s.startedOn, endedOn: s.endedOn, stopped: s.stopped };
       if (base.startedOn <= to && (base.endedOn === null || base.endedOn >= from)) stagePeriods.push(base);
       lines.push({ day: s.startedOn, kind: 'stage', label: `${s.stage} started`, detail: base });
@@ -89,8 +92,7 @@ export class TimelineService {
     ).rows;
     for (const a of archives) lines.push({ day: a.day, kind: 'archive', label: a.kind === 'archived' ? 'Archived' : 'Unarchived' });
 
-    const planned = (await this.pool.query(`SELECT to_char(planned_end, 'YYYY-MM-DD') AS day FROM projects WHERE id = $1`, [projectId])).rows[0]?.day;
-    if (planned) lines.push({ day: planned, kind: 'planned_end', label: 'Planned end' });
+    if (project.plannedEnd) lines.push({ day: project.plannedEnd, kind: 'planned_end', label: 'Planned end' });
 
     // One line per due day: live tasks only; a Cancelled task is not due.
     const tasks = (

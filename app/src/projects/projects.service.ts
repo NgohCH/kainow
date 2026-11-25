@@ -397,7 +397,7 @@ export class ProjectsService {
         [id],
       )
     ).rows;
-    const stagePeriods = clipPeriods(storedPeriods, transitions);
+    const stagePeriods = clipPeriods(storedPeriods, transitions, p.status);
     // The project team sees pending invitations (V1.0 invitation rules, section 4); never the token.
     const now = this.now();
     const invitations = (
@@ -752,10 +752,11 @@ export class ProjectsService {
       if (stage.name === name) throw new BadRequestException('Give the stage a different name.');
       const others = stages.filter((s) => s.id !== stageId);
       if (others.some((s) => s.name.toLowerCase() === name.toLowerCase())) throw new BadRequestException(SAME_STAGE_NAME);
-      await c.query(`UPDATE project_stages SET name = $2 WHERE id = $1`, [stageId, name]);
+      // Periods, then stages: the order in which a cleaning writes them (quarantine/registry.ts), so the two cannot deadlock.
       if (!others.some((s) => s.name === stage.name)) {
         await c.query(`UPDATE project_stage_periods SET stage = $3 WHERE project_id = $1 AND stage = $2`, [id, stage.name, name]);
       }
+      await c.query(`UPDATE project_stages SET name = $2 WHERE id = $1`, [stageId, name]);
       return { kind: 'renamed', stageId, action: 'project.stage_renamed', detail: { stageId } };
     });
   }

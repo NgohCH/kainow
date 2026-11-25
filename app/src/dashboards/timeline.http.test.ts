@@ -204,8 +204,10 @@ describe('project timeline endpoint', { skip: SKIP_NO_DB }, () => {
 
   test('a deferral or closure ends the bar, and the list says so on the same day (D138)', async () => {
     const at = (day: string) => `${day}T02:00:00Z`;
-    const move = (from: string, to: string, when: string) =>
-      t.pool.query(`INSERT INTO project_transitions (id, project_id, from_status, to_status, actor_id, at) VALUES ($1, $2, $3, $4, $5, $6)`, [uuidv7(), projectId, from, to, ids.pm, when]);
+    const move = async (from: string, to: string, when: string) => {
+      await t.pool.query(`INSERT INTO project_transitions (id, project_id, from_status, to_status, actor_id, at) VALUES ($1, $2, $3, $4, $5, $6)`, [uuidv7(), projectId, from, to, ids.pm, when]);
+      await t.pool.query(`UPDATE projects SET status = $2, closure_outcome = CASE WHEN $2 = 'closed' THEN 'abandoned' END WHERE id = $1`, [projectId, to]);
+    };
     const bars = (b: { stagePeriods: Record<string, unknown>[] }) => b.stagePeriods.map((p) => [p.stage, p.startedOn, p.endedOn, p.stopped]);
     const stageLines = (b: Parameters<typeof lines>[0]) => lines(b).filter((l) => l.kind === 'stage').map((l) => [l.day, l.label]);
 

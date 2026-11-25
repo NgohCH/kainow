@@ -179,7 +179,7 @@ describe('loadProjectMeasures', { skip: SKIP_NO_DB }, () => {
     assert.ok(m);
     assert.deepEqual(m.questions, { open: 2, answered: 1 });
     assert.equal(m.dueSoon, 3, 'seven working days from Thursday 19 Nov reach Monday 30 Nov');
-    assert.deepEqual(m.stage, { stage: 'Initiation', substage: null, days: 18 });
+    assert.deepEqual(m.stage, { stage: 'Initiation', substage: null, days: 18, stopped: null });
     assert.deepEqual(m.plannedEnd, { state: 'ahead', days: 10 });
     assert.equal(m.pendingInvitations, 1);
     assert.equal(m.nextTaskDue, '2026-11-19');
@@ -236,19 +236,21 @@ describe('loadProjectMeasures', { skip: SKIP_NO_DB }, () => {
   });
 
   test('the days in a stage stop at the deferral or closure, and run again once resumed (D138)', async () => {
-    const move = (from: string, to: string, at: string) =>
-      pool.query(`INSERT INTO project_transitions (id, project_id, from_status, to_status, actor_id, reason, at) VALUES ($1, $2, $3, $4, $5, 'Why', $6)`, [uuidv7(), project, from, to, pm, at]);
+    const move = async (from: string, to: string, at: string) => {
+      await pool.query(`INSERT INTO project_transitions (id, project_id, from_status, to_status, actor_id, reason, at) VALUES ($1, $2, $3, $4, $5, 'Why', $6)`, [uuidv7(), project, from, to, pm, at]);
+      await pool.query(`UPDATE projects SET status = $2, closure_outcome = CASE WHEN $2 = 'closed' THEN 'abandoned' END WHERE id = $1`, [project, to]);
+    };
     // Stage began 1 Nov (UTC+8); deferred at 00:30 on 10 Nov (UTC+8); today is 19 Nov.
     await move('active', 'deferred', '2026-11-09T16:30:00Z');
-    assert.deepEqual((await measures()).stage, { stage: 'Initiation', substage: null, days: 9 });
+    assert.deepEqual((await measures()).stage, { stage: 'Initiation', substage: null, days: 9, stopped: 'deferred' });
     await move('deferred', 'closed', '2026-11-12T02:00:00Z');
     assert.equal((await measures()).stage?.days, 9, 'closed while Deferred: still from the deferral');
     await move('closed', 'active', '2026-11-15T02:00:00Z');
     await pool.query(`UPDATE project_stage_periods SET ended_at = '2026-11-15T02:00:00Z' WHERE project_id = $1`, [project]);
     await pool.query(`INSERT INTO project_stage_periods (id, project_id, stage, started_at, started_by) VALUES ($1, $2, 'Execution', '2026-11-15T02:00:00Z', $3)`, [uuidv7(), project, pm]);
-    assert.deepEqual((await measures()).stage, { stage: 'Execution', substage: null, days: 4 });
+    assert.deepEqual((await measures()).stage, { stage: 'Execution', substage: null, days: 4, stopped: null });
     await move('active', 'closed', '2026-11-17T02:00:00Z');
-    assert.equal((await measures()).stage?.days, 2);
+    assert.deepEqual((await measures()).stage, { stage: 'Execution', substage: null, days: 2, stopped: 'closed' });
   });
 
   test('flags: missing role, no independent escalation recipient, deadline review', async () => {

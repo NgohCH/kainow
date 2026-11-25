@@ -457,6 +457,26 @@ describe("a project's own stages (D131)", { skip: SKIP_NO_DB }, () => {
     await renameDuring(id, () => owner.request('POST', `/projects/${id}/transition`, { to: 'active', reason: 'More data', stage: 'Analysis' }));
   });
 
+  test('a rename writes the periods before the stages, as the cleaning does, so the two cannot deadlock', async () => {
+    const id = await research();
+    const proposal = (await stages(id))[0];
+    const cleaning = await t.pool.connect();
+    try {
+      await cleaning.query('BEGIN');
+      await cleaning.query(`SELECT 1 FROM project_stage_periods WHERE project_id = $1 FOR UPDATE`, [id]);
+      const renaming = rename(pm, id, proposal.id, 'Bid');
+      await new Promise((r) => setTimeout(r, 500));
+      await cleaning.query(`SET LOCAL lock_timeout = '5s'`);
+      await cleaning.query(`SELECT 1 FROM project_stages WHERE project_id = $1 FOR UPDATE`, [id]);
+      await cleaning.query('COMMIT');
+      assert.equal((await renaming).status, 200);
+    } finally {
+      await cleaning.query('ROLLBACK');
+      cleaning.release();
+    }
+    assert.deepEqual([(await stages(id))[0].name, ...(await periodNames(id))], ['Bid', 'Bid']);
+  });
+
   test('a change to the old name that waits for a rename is refused; two renames at once leave one name', async () => {
     const id = await research();
     const analysis = (await stages(id)).find((s) => s.name === 'Analysis')!;
