@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState, type FormEvent, type ReactNode } from 'react';
 import { ApiError, api, setCsrfToken, type User } from './api.ts';
-import type { Branding } from './branding.ts';
+import { type Branding, memberOf } from './branding.ts';
 import { Invitation } from './views/Invitation.tsx';
 import { Letterhead, LogoImage } from './views/Letterhead.tsx';
 import { DeletedItemPage } from './views/DeletedItems.tsx';
@@ -219,7 +219,7 @@ export function App() {
   }, []);
 
   // Until the organisation is set up the server refuses everything below; it is read once setup is finished.
-  const member = brandingRead && branding?.registered !== false ? user : null;
+  const member = memberOf(user, brandingRead, branding);
 
   // Personal display preferences: loaded once signed in, saved at once on each change, and applied to <html>.
   const [prefs, setPrefs] = useState<Prefs>(DEFAULT_PREFS);
