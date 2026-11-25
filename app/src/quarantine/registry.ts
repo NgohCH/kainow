@@ -277,6 +277,7 @@ const TABLES: TableDef[] = [
     project: `t.project_id ${P}`,
     owner: { kind: `'human_proposal'`, id: 't.id' },
     text: ['text', 'owner', 'due', 'reject_reason', 'description'],
+    json: ['proposed_subtasks'],
     items: { human_proposal: `t.id ${P}` },
   },
 

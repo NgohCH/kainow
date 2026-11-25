@@ -58,7 +58,7 @@ const ROLE_ORDER: ProjectRole[] = ['pm', 'deputy_pm', 'owner', 'sponsor', 'membe
 const OPEN_TASK = `('not_started', 'in_progress', 'blocked')`;
 
 /** The fields a person sets on a line; the event detail carries them under these names. */
-type Values = {
+export type Values = {
   itemId: string | null;
   oneOffKind: string | null;
   description: string;
@@ -70,7 +70,7 @@ type Values = {
   notes: string;
 };
 const FIELDS: (keyof Values)[] = ['itemId', 'oneOffKind', 'description', 'quantity', 'unit', 'startsOn', 'endsOn', 'neededBy', 'notes'];
-const EMPTY: Values = { itemId: null, oneOffKind: null, description: '', quantity: null, unit: null, startsOn: null, endsOn: null, neededBy: null, notes: '' };
+export const EMPTY: Values = { itemId: null, oneOffKind: null, description: '', quantity: null, unit: null, startsOn: null, endsOn: null, neededBy: null, notes: '' };
 
 const obj = (v: unknown): Record<string, unknown> => (v && typeof v === 'object' && !Array.isArray(v) ? (v as Record<string, unknown>) : {});
 const blank = (v: unknown) => v === null || (typeof v === 'string' && v.trim() === '');
@@ -209,6 +209,22 @@ const LINE_SELECT = `
    WHERE l.project_id = $1`;
 const LINE_ORDER = `ORDER BY l.needed_by NULLS LAST, l.starts_on NULLS LAST, coalesce(i.reference, l.description), l.created_at, l.id`;
 
+function lineEvent(c: PoolClient, lineId: string, kind: string, user: AuthUser, at: Date, reason: string | null, detail: unknown) {
+  return c.query(`INSERT INTO resource_line_events (id, line_id, kind, actor_id, at, reason, detail) VALUES ($1, $2, $3, $4, $5, $6, $7)`, [
+    uuidv7(at.getTime()), lineId, kind, user.id, at, reason, JSON.stringify(detail),
+  ]);
+}
+
+/** Writes a new Needed line from checked values, with its first event. */
+export async function insertLine(c: PoolClient, id: string, projectId: string, v: Values, user: AuthUser, at: Date): Promise<void> {
+  await c.query(
+    `INSERT INTO resource_lines (id, project_id, item_id, one_off_kind, description, quantity, unit, starts_on, ends_on, needed_by, notes, created_by, created_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)`,
+    [id, projectId, v.itemId, v.oneOffKind, v.description, v.quantity, v.unit, v.startsOn, v.endsOn, v.neededBy, v.notes, user.id, at],
+  );
+  await lineEvent(c, id, 'created', user, at, null, { previous: null, next: { ...v, status: 'needed' } });
+}
+
 type LineRow = Omit<LineView, 'item' | 'overlap'> & {
   itemId: string | null;
   itemKind: string | null;
@@ -341,9 +357,7 @@ export class LinesService {
   }
 
   private event(c: PoolClient, lineId: string, kind: string, user: AuthUser, at: Date, reason: string | null, detail: unknown) {
-    return c.query(`INSERT INTO resource_line_events (id, line_id, kind, actor_id, at, reason, detail) VALUES ($1, $2, $3, $4, $5, $6, $7)`, [
-      uuidv7(at.getTime()), lineId, kind, user.id, at, reason, JSON.stringify(detail),
-    ]);
+    return lineEvent(c, lineId, kind, user, at, reason, detail);
   }
 
   private async requireActiveItem(c: PoolClient, itemId: string): Promise<void> {
@@ -373,12 +387,7 @@ export class LinesService {
       refuseSecretsIn([b.description, b.notes]);
       const v = mergeLineValues(EMPTY, b);
       if (v.itemId !== null) await this.requireActiveItem(c, v.itemId);
-      await c.query(
-        `INSERT INTO resource_lines (id, project_id, item_id, one_off_kind, description, quantity, unit, starts_on, ends_on, needed_by, notes, created_by, created_at, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $13)`,
-        [id, projectId, v.itemId, v.oneOffKind, v.description, v.quantity, v.unit, v.startsOn, v.endsOn, v.neededBy, v.notes, user.id, at],
-      );
-      await this.event(c, id, 'created', user, at, null, { previous: null, next: { ...v, status: 'needed' } });
+      await insertLine(c, id, projectId, v, user, at);
     });
     return this.one(this.pool, user, projectId, id);
   }

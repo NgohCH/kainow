@@ -2,6 +2,8 @@
 import { liveRecordSql } from '../history/deleted-sql';
 import { BadRequestException } from '@nestjs/common';
 import type { Pool, PoolClient } from 'pg';
+import { writeAudit } from '../audit/audit';
+import { uuidv7 } from '../common/uuid7';
 import type { Calendar, DayCounting } from './calendar';
 import type { RiskSnap, TaskSnap, Timings } from './planner';
 import type { RiskStatus } from '../records/lifecycles';
@@ -183,6 +185,46 @@ export async function loadProjectRow(db: Db, projectId: string, lock = false): P
     weekdays: r.weekdays ? asc(toNums(r.weekdays)) : null,
     leadDays: r.leadDays ? desc(toNums(r.leadDays)) : null,
   };
+}
+
+/** One entry of the settings history. */
+export async function logSettingChange(c: Db, projectId: string | null, field: string, from: unknown, to: unknown, reason: string, actorId: string, at: Date): Promise<void> {
+  await c.query(
+    `INSERT INTO notification_settings_changes (id, scope, project_id, field, old_value, new_value, reason, actor_id, at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+    [uuidv7(at.getTime()), projectId ? 'project' : 'organisation', projectId, snake(field), historyText(from), historyText(to), reason, actorId, at],
+  );
+}
+
+/** A checked holiday, with its history entry and audit event. */
+export async function insertHoliday(c: Db, projectId: string | null, date: string, name: string, reason: string, actorId: string, at: Date): Promise<void> {
+  const id = uuidv7(at.getTime());
+  await c.query(`INSERT INTO holidays (id, project_id, on_date, name, added_by, added_at) VALUES ($1, $2, $3::date, $4, $5, $6)`, [id, projectId, date, name, actorId, at]);
+  await logSettingChange(c, projectId, 'holiday', null, `${date} ${name}`, reason, actorId, at);
+  await writeAudit(c, {
+    at, action: 'notification_holiday.added', actorUserId: actorId,
+    subjectType: projectId ? 'project' : 'organisation', subjectId: projectId ?? undefined, detail: { holidayId: id, date },
+  });
+}
+
+/** Saves a project's checked settings over `old`, with a history entry per field changed and one audit event. */
+export async function saveProjectRow(c: Db, projectId: string, old: ProjectRow, next: ProjectRow, reason: string, actorId: string, at: Date): Promise<void> {
+  const fields = (Object.keys(EMPTY_PROJECT) as (keyof ProjectRow)[]).filter((k) => !sameValue(old[k], next[k]));
+  if (fields.length === 0) return;
+  for (const k of fields) await logSettingChange(c, projectId, k, old[k], next[k], reason, actorId, at);
+  await c.query(
+    `INSERT INTO project_notification_settings (project_id, day_counting, weekdays, lead_days, escalation_days, digest_enabled, digest_frequency, digest_weekday, digest_time, updated_by, updated_at)
+     VALUES ($1, $2, $3::smallint[], $4::smallint[], $5, $6, $7, $8, $9::time, $10, $11)
+     ON CONFLICT (project_id) DO UPDATE SET day_counting = EXCLUDED.day_counting, weekdays = EXCLUDED.weekdays, lead_days = EXCLUDED.lead_days,
+       escalation_days = EXCLUDED.escalation_days, digest_enabled = EXCLUDED.digest_enabled, digest_frequency = EXCLUDED.digest_frequency,
+       digest_weekday = EXCLUDED.digest_weekday, digest_time = EXCLUDED.digest_time, updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at`,
+    [projectId, next.dayCounting, next.weekdays, next.leadDays, next.escalationDays,
+      next.digestEnabled, next.digestFrequency, next.digestWeekday, next.digestTime, actorId, at],
+  );
+  await writeAudit(c, {
+    at, action: 'notification_settings.project_changed', actorUserId: actorId, subjectType: 'project', subjectId: projectId,
+    detail: { fields: fields.map(snake) },
+  });
 }
 
 /** Current holidays: the organisation's, plus the project's when given. */

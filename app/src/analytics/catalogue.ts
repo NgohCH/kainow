@@ -107,6 +107,7 @@ export const CATALOGUE: readonly CatalogueEntry[] = [
   ]),
   ...audit('Projects', PERSON, 'project', [
     ['project.created', 'A project was created as a draft.'],
+    ['project.duplicated', 'A project was used to make a new one (the new project’s id and the number of things copied only).'],
     ['project.edited', 'A project’s details were edited.'],
     ['project.stage', 'A project moved to another stage or substage.', ['stage']],
     ['project.stage_added', 'A stage was added to a project’s own list of stages (the stage id and its place only; the reason is in the stage history).'],

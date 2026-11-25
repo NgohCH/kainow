@@ -4,6 +4,8 @@ import { ProfileService } from '../users/profile.service';
 import { ProjectAccess } from './access.service';
 import { InvitationsController } from './invitations.controller';
 import { InvitationsService } from './invitations.service';
+import { DuplicateController } from './duplicate.controller';
+import { DuplicateService } from './duplicate.service';
 import { HoldsService } from './holds.service';
 import { DepartmentTransferService } from './department-transfer.service';
 import { GrantsController } from './grants.controller';
@@ -18,8 +20,8 @@ import { StageTemplatesController } from './stage-templates.controller';
 import { StageTemplatesService } from './stage-templates.service';
 
 @Module({
-  controllers: [OrganisationController, ProjectsController, MembersController, InvitationsController, GrantsController, StageTemplatesController, ProfileController],
-  providers: [ProjectAccess, OrganisationService, ProjectsService, MembershipsService, InvitationsService, HoldsService, GrantsService, DepartmentTransferService, StageTemplatesService, ProfileService],
+  controllers: [OrganisationController, ProjectsController, DuplicateController, MembersController, InvitationsController, GrantsController, StageTemplatesController, ProfileController],
+  providers: [ProjectAccess, OrganisationService, ProjectsService, DuplicateService, MembershipsService, InvitationsService, HoldsService, GrantsService, DepartmentTransferService, StageTemplatesService, ProfileService],
   exports: [ProjectAccess, OrganisationService, InvitationsService, StageTemplatesService],
 })
 export class ProjectsModule {}

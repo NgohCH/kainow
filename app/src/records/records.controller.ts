@@ -60,6 +60,17 @@ export class RecordsController {
     return this.records.proposals(who(req), id);
   }
 
+  /**
+   * { items: [{ proposalId, assigneeId, dueOn, subtasks?, ... }] }, each as for POST /proposals/:id/authorise, at most 100.
+   * { results: [{ proposalId, ok, error?, record?, waiting? }] }: each is authorised on its own.
+   */
+  @Post('projects/:id/proposals/authorise-many')
+  @AnySignedInUser()
+  @HttpCode(200)
+  authoriseMany(@Param('id') id: string, @Body() b: unknown, @Req() req: HttpRequest) {
+    return this.records.authoriseMany(who(req), id, body(b));
+  }
+
   /** Same body as authorising an extraction proposal; 201 when created, 200 when already authorised, 202 when waiting. */
   @Post('proposals/:id/authorise')
   @AnySignedInUser()

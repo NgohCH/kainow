@@ -1,5 +1,5 @@
 import { itemDiscussionEvidence, itemSourceFlags } from '../discussion/masking';
-import { BadRequestException, ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { BadRequestException, ConflictException, ForbiddenException, HttpException, Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { readReason, refuseSecretsIn } from '../common/reason';
 import type { Pool, PoolClient } from 'pg';
 import { writeAudit } from '../audit/audit';
@@ -18,6 +18,7 @@ import { ExtractionService } from '../extraction/extraction.service';
 import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { audienceVisibleSql } from '../discussion/audience';
 import { AudienceService } from '../discussion/audience.service';
+import { copiedFromViews } from '../projects/copied-from';
 import { InvitationsService } from '../projects/invitations.service';
 import { GRANT_READ_ONLY } from '../projects/matrix';
 import { checkNewAppointment } from '../projects/memberships.service';
@@ -28,6 +29,7 @@ import { DELETED_LINK, liveRecordRefSql, liveRecordSql, notHeldSql, refuseHeld }
 import { QUOTE_CHANGED_TEXT, quoteChangedItems } from '../quarantine/clean';
 import { POSSIBLE_COPY_TEXT, UNDER_REVIEW_TEXT, possibleCopyLabelSql, possibleCopySql } from '../quarantine/labels';
 import { type QuestionAction, type RiskAction, SEVERITIES, type Severity, questionTransition, riskTransition } from './lifecycles';
+import { insertHumanProposal } from './human-proposal';
 import { type ProposalLink, proposalLinks } from './proposal-links';
 import { DESCRIPTION_FOR_ACTIONS, readTaskDescription } from './task-description';
 import { TASK_ACTIONS, type TaskAction, type TaskStatus, ancestorsToReopen, parentMayComplete, taskIndicators, taskTransition } from './tasks';
@@ -49,6 +51,15 @@ export interface Created {
 
 /** What authorising a proposal answers: the record (made now, or already), or the request still waiting for approvers. */
 export type Authorised = (Created & { created: boolean }) | { request: RequestView; created: false; waiting: true };
+
+/** Most proposals authorised in one go. */
+export const MAX_AUTHORISE_MANY = 100;
+
+/** How one of several authorisations ended: made (now or before), waiting for more approvers, or refused with the single route's words. */
+export type ManyResult =
+  | { proposalId: string; ok: true; record: Created['record'] }
+  | { proposalId: string; ok: true; waiting: true; request: RequestView }
+  | { proposalId: string; ok: false; error: string };
 
 /** What a human proposal or an approved extraction item contributes to a record. */
 export interface Content {
@@ -254,7 +265,7 @@ export class RecordsService {
           subtaskIds.push(
             await this.insertTask(
               c, ctx,
-              { parentId: taskId, depth: 1, title, assigneeId: sub.userId, ownerAsWritten: null, dueOn: this.dueOf(s.dueOn), invitationId: sub.invitationId, origin: null },
+              { parentId: taskId, depth: 1, title, description: readTaskDescription(s.description), assigneeId: sub.userId, ownerAsWritten: null, dueOn: this.dueOf(s.dueOn), invitationId: sub.invitationId, origin: null },
               user, at, 'Split at authorisation',
             ),
           );
@@ -312,12 +323,7 @@ export class RecordsService {
     const at = this.now();
     return this.tx(async (c) => {
       await this.access.authorize(user, 'proposal.submit', projectId, c, true);
-      const id = uuidv7(at.getTime());
-      await c.query(
-        `INSERT INTO human_proposals (id, project_id, kind, text, owner, due, proposed_by, proposed_at, description) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
-        [id, projectId, kind, text, opt(input.owner), opt(input.due), user.id, at, description],
-      );
-      await writeAudit(c, { at, action: 'proposal.submitted', actorUserId: user.id, subjectType: 'project', subjectId: projectId, detail: { proposalId: id, kind } });
+      const id = await insertHumanProposal(c, { projectId, kind: kind as string, text, description, owner: opt(input.owner), due: opt(input.due) }, user.id, at);
       return { proposal: { id, kind, text } };
     });
   }
@@ -333,12 +339,9 @@ export class RecordsService {
       const { ctx, task } = await this.taskContext(c, user, taskId, true);
       await this.access.authorize(user, 'proposal.submit', ctx.project.id, c, true);
       if (task.status !== 'cancelled') throw new ConflictException('A follow-up task can be proposed only for a cancelled task.');
-      const id = uuidv7(at.getTime());
-      await c.query(
-        `INSERT INTO human_proposals (id, project_id, kind, text, owner, due, proposed_by, proposed_at, follows_task_id, description) VALUES ($1, $2, 'action', $3, $4, $5, $6, $7, $8, $9)`,
-        [id, ctx.project.id, text, opt(input.owner), opt(input.due), user.id, at, task.id, description],
+      const id = await insertHumanProposal(
+        c, { projectId: ctx.project.id, kind: 'action', text, description, owner: opt(input.owner), due: opt(input.due), followsTaskId: task.id }, user.id, at,
       );
-      await writeAudit(c, { at, action: 'proposal.submitted', actorUserId: user.id, subjectType: 'project', subjectId: ctx.project.id, detail: { proposalId: id, kind: 'action', followsTaskId: task.id } });
       return { proposal: { id, kind: 'action', text, followsTaskId: task.id } };
     });
   }
@@ -348,15 +351,17 @@ export class RecordsService {
     const { rows } = await this.pool.query(
       `SELECT h.id, h.kind, h.text, h.description, h.owner, h.due, u.display_name AS "proposedBy", h.proposed_at AS "proposedAt",
               h.review_status AS "reviewStatus", h.reject_reason AS "rejectReason", h.follows_task_id AS "followsTaskId",
+              h.proposed_subtasks AS "proposedSubtasks", h.copied_from_project_id AS "copiedFromId",
               ${possibleCopyLabelSql('human_proposal', 'h.id')}
          FROM human_proposals h JOIN users u ON u.id = h.proposed_by WHERE h.project_id = $1 AND ${notHeldSql('h')} ORDER BY h.proposed_at, h.id`,
       [projectId],
     );
+    const copiedFrom = await copiedFromViews(this.pool, this.access, user, rows.map((r) => r.copiedFromId as string | null));
     const out = [];
-    for (const r of rows) {
+    for (const { copiedFromId, ...r } of rows) {
       // The written due, read against the day it was proposed (UTC+8), so the Authorise form can pre-fill the date.
       const dueReading = readDue({ due: r.due, dueEvent: null, meetingDate: todayUtc8(new Date(r.proposedAt)) });
-      out.push({ ...r, dueReading, label: HUMAN_LABEL, record: await this.existingRecord(this.pool, { proposalId: r.id }), recordOpens: false });
+      out.push({ ...r, copiedFrom: copiedFrom(copiedFromId), dueReading, label: HUMAN_LABEL, record: await this.existingRecord(this.pool, { proposalId: r.id }), recordOpens: false });
     }
     // Whether each record is in view today (neither Deleted nor held), so that its link leads somewhere.
     const live = await this.pool.query<{ id: string }>(
@@ -384,6 +389,34 @@ export class RecordsService {
     await this.access.authorize(user, 'project.view', p.project_id);
     refuseHeld(p);
     return this.authoriseThrough(user, p.project_id, 'human_proposal', proposalId, body);
+  }
+
+  /**
+   * Authorises several of one project's people's proposals, each exactly as `authoriseProposal` does it and on its own:
+   * one that is refused is named and undoes none of the others (D140).
+   */
+  async authoriseMany(user: AuthUser, projectId: string, input: Record<string, unknown>): Promise<{ results: ManyResult[] }> {
+    await this.access.authorize(user, 'proposal.review', projectId);
+    const items = input.items;
+    if (!Array.isArray(items) || items.length === 0) throw new BadRequestException('Choose the proposals to authorise.');
+    if (items.length > MAX_AUTHORISE_MANY) throw new BadRequestException(`At most ${MAX_AUTHORISE_MANY} proposals can be authorised at once; you chose ${items.length}.`);
+    const results: ManyResult[] = [];
+    for (const raw of items as unknown[]) {
+      const item = raw && typeof raw === 'object' && !Array.isArray(raw) ? (raw as Record<string, unknown>) : {};
+      const { proposalId: given, ...terms } = item;
+      const proposalId = typeof given === 'string' ? given : '';
+      try {
+        if (!UUID.test(proposalId)) throw new NotFoundException();
+        if (!(await this.pool.query(`SELECT 1 FROM human_proposals WHERE id = $1 AND project_id = $2`, [proposalId, projectId])).rowCount) throw new NotFoundException();
+        const done = await this.authoriseProposal(user, proposalId, terms);
+        results.push('waiting' in done ? { proposalId, ok: true, waiting: true, request: done.request } : { proposalId, ok: true, record: done.record });
+      } catch (err) {
+        if (!(err instanceof HttpException)) console.error('Could not authorise one of several proposals', err);
+        const error = err instanceof NotFoundException ? 'That proposal was not found.' : err instanceof HttpException ? err.message : 'This one could not be authorised. Try it again on its own.';
+        results.push({ proposalId, ok: false, error });
+      }
+    }
+    return { results };
   }
 
   async rejectProposal(user: AuthUser, proposalId: string, input: Record<string, unknown>) {

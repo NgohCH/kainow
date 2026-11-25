@@ -187,7 +187,10 @@ const CURRENT_TEXT: Record<ItemKind, string> = {
   proposal: `SELECT concat_ws(E'\\n', i.text, i.owner, i.due, i.due_event, i.quote, array_to_string(i.alternatives, E'\\n'),
                      (SELECT string_agg(concat_ws(E'\\n', e.text, e.owner, e.due, e.due_event, e.reason), E'\\n' ORDER BY e.edited_at, e.id) FROM extraction_item_edits e WHERE e.item_id = i.id)) AS text
                FROM extraction_items i WHERE i.id = $1`,
-  human_proposal: `SELECT concat_ws(E'\\n', text, description, owner, due) AS text FROM human_proposals WHERE id = $1`,
+  human_proposal: `SELECT concat_ws(E'\\n', p.text, p.description, p.owner, p.due,
+                            (SELECT string_agg(concat_ws(E'\\n', s.sub->>'title', s.sub->>'description'), E'\\n' ORDER BY s.n)
+                               FROM jsonb_array_elements(p.proposed_subtasks) WITH ORDINALITY s(sub, n))) AS text
+                     FROM human_proposals p WHERE p.id = $1`,
   answer: `SELECT concat_ws(E'\\n', question, answer_markdown) AS text FROM ai_answers WHERE request_id = $1`,
   report_draft: `SELECT concat_ws(E'\\n', d.title, d.brief, (SELECT v.body FROM report_draft_versions v WHERE v.draft_id = d.id ORDER BY v.version_no DESC LIMIT 1)) AS text FROM report_drafts d WHERE d.id = $1`,
   summary: `SELECT concat_ws(E'\\n', sm.leave_out, (SELECT v.body FROM summary_versions v WHERE v.summary_id = sm.id ORDER BY v.version_no DESC LIMIT 1)) AS text FROM summaries sm WHERE sm.id = $1`,

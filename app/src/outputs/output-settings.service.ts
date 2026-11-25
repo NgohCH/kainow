@@ -30,7 +30,7 @@ export interface OutputSettingsPatch {
   exportRoles?: string[];
 }
 
-const NOT_DELEGATED = {
+export const NOT_DELEGATED = {
   destination: 'The Administrator has not allowed projects to choose their own output destination.',
   formats: 'The Administrator has not allowed projects to change their own formats.',
   exportRoles: 'The Administrator has not allowed projects to set their own export roles.',
@@ -72,13 +72,42 @@ export function parseOutputSettingsBody(body: unknown): { reason: string; patch:
 
 const same = (a: unknown, b: unknown) => JSON.stringify(a) === JSON.stringify(b);
 
-async function readRow(db: Pool | PoolClient, projectId: string, lock = false): Promise<(ProjectOutputSettingsRow & { updatedAt: Date | null }) | null> {
+export async function readOutputSettings(db: Pool | PoolClient, projectId: string, lock = false): Promise<(ProjectOutputSettingsRow & { updatedAt: Date | null }) | null> {
   const { rows } = await db.query(
     `SELECT destination_id, input_formats, output_formats, export_roles, updated_at FROM project_output_settings WHERE project_id = $1 ${lock ? 'FOR UPDATE' : ''}`,
     [projectId],
   );
   const r = rows[0];
   return r ? { destinationId: r.destination_id, inputFormats: r.input_formats, outputFormats: r.output_formats, exportRoles: r.export_roles, updatedAt: r.updated_at } : null;
+}
+
+/** Saves a project's output settings with their history entry and audit event. */
+export async function saveOutputSettings(
+  c: PoolClient,
+  projectId: string,
+  previous: ProjectOutputSettingsRow,
+  next: ProjectOutputSettingsRow,
+  reason: string,
+  actorId: string,
+  at: Date,
+): Promise<void> {
+  await c.query(
+    `INSERT INTO project_output_settings (project_id, destination_id, input_formats, output_formats, export_roles, updated_by, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7)
+     ON CONFLICT (project_id) DO UPDATE SET destination_id = EXCLUDED.destination_id, input_formats = EXCLUDED.input_formats,
+       output_formats = EXCLUDED.output_formats, export_roles = EXCLUDED.export_roles, updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at`,
+    [projectId, next.destinationId, next.inputFormats, next.outputFormats, next.exportRoles, actorId, at],
+  );
+  await c.query(`INSERT INTO project_output_settings_changes (id, project_id, actor_id, at, reason, previous, next) VALUES ($1, $2, $3, $4, $5, $6, $7)`, [
+    uuidv7(at.getTime()),
+    projectId,
+    actorId,
+    at,
+    reason,
+    JSON.stringify(previous),
+    JSON.stringify(next),
+  ]);
+  await writeAudit(c, { at, action: 'project.output_settings_changed', actorUserId: actorId, subjectType: 'project', subjectId: projectId, detail: { previous, next } });
 }
 
 @Injectable()
@@ -93,7 +122,7 @@ export class OutputSettingsService {
   async get(user: AuthUser, projectId: string) {
     const ctx = await this.access.context(user, projectId); // a non-participant gets 404
     const storage = await loadStorageSettings(this.pool);
-    const own = await readRow(this.pool, projectId);
+    const own = await readOutputSettings(this.pool, projectId);
     const stateOk = PROJECT_MATRIX[ACTION].states.includes(ctx.project.status);
     const decided = decide({ action: ACTION, roles: ctx.roles, status: ctx.project.status });
     const may = (delegated: boolean) => stateOk && (ctx.isAdmin || (decided.allowed && delegated));
@@ -149,7 +178,7 @@ export class OutputSettingsService {
       const row = PROJECT_MATRIX[ACTION];
       if (!row.states.includes(ctx.project.status)) throw new ForbiddenException(row.refusal);
       const storage = await loadStorageSettings(c);
-      const existing = await readRow(c, projectId, true);
+      const existing = await readOutputSettings(c, projectId, true);
       const previous: ProjectOutputSettingsRow = existing
         ? { destinationId: existing.destinationId, inputFormats: existing.inputFormats, outputFormats: existing.outputFormats, exportRoles: existing.exportRoles }
         : { destinationId: null, inputFormats: null, outputFormats: null, exportRoles: [...DEFAULT_EXPORT_ROLES] };
@@ -170,23 +199,7 @@ export class OutputSettingsService {
         await c.query('COMMIT');
         return;
       }
-      await c.query(
-        `INSERT INTO project_output_settings (project_id, destination_id, input_formats, output_formats, export_roles, updated_by, updated_at)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
-         ON CONFLICT (project_id) DO UPDATE SET destination_id = EXCLUDED.destination_id, input_formats = EXCLUDED.input_formats,
-           output_formats = EXCLUDED.output_formats, export_roles = EXCLUDED.export_roles, updated_by = EXCLUDED.updated_by, updated_at = EXCLUDED.updated_at`,
-        [projectId, next.destinationId, next.inputFormats, next.outputFormats, next.exportRoles, user.id, at],
-      );
-      await c.query(`INSERT INTO project_output_settings_changes (id, project_id, actor_id, at, reason, previous, next) VALUES ($1, $2, $3, $4, $5, $6, $7)`, [
-        uuidv7(at.getTime()),
-        projectId,
-        user.id,
-        at,
-        reason,
-        JSON.stringify(previous),
-        JSON.stringify(next),
-      ]);
-      await writeAudit(c, { at, action: 'project.output_settings_changed', actorUserId: user.id, subjectType: 'project', subjectId: projectId, detail: { previous, next } });
+      await saveOutputSettings(c, projectId, previous, next, reason, user.id, at);
       await c.query('COMMIT');
     } catch (err) {
       await c.query('ROLLBACK').catch(() => undefined);
