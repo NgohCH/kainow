@@ -444,6 +444,9 @@ export async function walkthrough({ base, db, api, must, check, wide, narrow, si
   await sees(wide, 'Copied from Alpha rollout 2026');
   const copyId = idIn(await hashOf(wide));
   await both("a copied project's overview (its origin)", `#/projects/${copyId}`);
+  await sees(wide, 'Start the project to authorise proposals');
+  await both("a copied project's proposals while it is a Draft (why none can be authorised)", `#/projects/${copyId}/proposals`);
+  await sees(wide, 'Start the project to authorise proposals');
   await both("a copied project's resources", `#/projects/${copyId}/resources`);
   // A Sponsor of the copy who may not open the original sees neither its name nor a link.
   const sponsorId = randomUUID();
@@ -499,7 +502,14 @@ export async function walkthrough({ base, db, api, must, check, wide, narrow, si
   await press(wide, 'Create project');
   await sees(wide, 'under review');
   await check('wide: duplicate project, refused while a case is open (Load again)', wide);
+  for (let n = 0; n < 2; n++) {
+    await press(wide, 'Load again');
+    await wide.waitForFunction(() => document.activeElement?.textContent?.startsWith('Loaded again.'), { timeout: 10_000 });
+    await wide.evaluate(() => document.activeElement.blur());
+  }
   await leave(wide);
+  await both('duplicate project, opened while a case is open', duplicate);
+  await sees(wide, 'This project cannot be copied now');
   await both('organisation, a quarantine case of a copied project', '#/organisation');
   await sees(wide, 'This project was copied to Beta rollout 2027. Check these projects too.');
   await both('security review, a quarantine case of a copied project', '#/security/cases');
