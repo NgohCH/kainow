@@ -1,8 +1,6 @@
 import { useEffect, useState } from 'react';
 import { ApiError, api } from '../api.ts';
-import { taskHref } from '../taskPage.ts';
 import {
-  type MyTask,
   type PersonalDashboard,
   type PersonalProject,
   awaitingLabel,
@@ -10,7 +8,6 @@ import {
   expandAllPatch,
   homeQuery,
   onTimeLabel,
-  overdueDaysLabel,
   plannedEndLabel,
   updatedLabel,
   visibleHomeSections,
@@ -24,33 +21,11 @@ import { DataTable, type Column } from '../ui/DataTable.tsx';
 import { PageHeader } from '../ui/PageHeader.tsx';
 import { ProgressBar } from '../ui/ProgressBar.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
-import { attentionFlags, greetingFor, historyLink, homeEmptyCopy, homeProjects, todayLabel } from '../ui/home.ts';
+import { TaskGroups } from '../ui/TaskGroups.tsx';
+import { attentionFlags, greetingFor, historyLink, homeEmptyCopy, homeProjects, taskRows, todayLabel } from '../ui/home.ts';
 import { projectMeaning } from '../ui/meanings.ts';
 
 type Save = (next: Prefs) => Promise<void>;
-
-function TaskRow({ t }: { t: MyTask }) {
-  return (
-    <li>
-      <a href={taskHref(t.projectId, t.id)}>{t.title}</a>
-      <span className="meta">
-        {' '}
-        {t.projectName} · due {dayLabel(t.dueOn)}
-        {t.overdueDays !== undefined && ` (${overdueDaysLabel(t.overdueDays)})`} · {t.status.replace(/_/g, ' ')}
-      </span>
-    </li>
-  );
-}
-
-function TaskGroup({ title, tasks }: { title: string; tasks: MyTask[] | undefined }) {
-  if (!tasks || tasks.length === 0) return null;
-  return (
-    <section aria-label={title}>
-      <h3>{title} ({tasks.length})</h3>
-      <ul className="plain">{tasks.map((t) => <TaskRow key={t.id} t={t} />)}</ul>
-    </section>
-  );
-}
 
 function ProjectCell({ p, open, onToggle }: { p: PersonalProject; open: boolean; onToggle: () => void }) {
   const panel = `project-${p.id}`;
@@ -161,6 +136,7 @@ export function Home({ userName, prefs, ready, failed, onChange }: { userName: s
   };
 
   const empty = d ? homeEmptyCopy(d) : null;
+  const tasks = d && taskRows(showCompleted ? d.myTasks : { ...d.myTasks, completed: undefined });
   const columns = projectColumns(isOpen, (id) => choose({ [id]: !isOpen(id) }));
 
   const render: Record<HomeSection, () => React.ReactNode> = {
@@ -171,23 +147,12 @@ export function Home({ userName, prefs, ready, failed, onChange }: { userName: s
     ),
     myTasks: () => (
       <Box title={HOME_SECTION_LABELS.myTasks}>
-        <p><a href="#/my-tasks">All your tasks in one table</a></p>
+        <p><a href="#/my-tasks">All your tasks</a></p>
         <label className="check">
           <input type="checkbox" checked={showCompleted} disabled={!ready} onChange={(e) => save({ ...prefs, home: { ...prefs.home, showCompleted: e.target.checked } })} />
           Show completed (last 30 days)
         </label>
-        {d && (
-          <>
-            <TaskGroup title="Overdue" tasks={d.myTasks.overdue} />
-            <TaskGroup title="Due soon" tasks={d.myTasks.dueSoon} />
-            <TaskGroup title="Later" tasks={d.myTasks.later} />
-            <TaskGroup title="Awaiting deadline review" tasks={d.myTasks.awaitingReview} />
-            {showCompleted && <TaskGroup title="Completed" tasks={d.myTasks.completed} />}
-            {[d.myTasks.overdue, d.myTasks.dueSoon, d.myTasks.later, d.myTasks.awaitingReview, ...(showCompleted ? [d.myTasks.completed ?? []] : [])].every((g) => g.length === 0) && (
-              <p className="meta">No tasks are assigned to you.</p>
-            )}
-          </>
-        )}
+        {tasks && (tasks.length === 0 ? <p className="meta">No tasks are assigned to you.</p> : <TaskGroups rows={tasks} headingLevel={3} />)}
       </Box>
     ),
     myProjects: () => (

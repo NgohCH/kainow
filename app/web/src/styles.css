@@ -859,8 +859,39 @@ a.stat-tile.linked:hover { border-color: var(--accent); }
 .attention-group ul { list-style: none; margin: 0; padding: 0; }
 .attention-group li { display: flex; flex-wrap: wrap; gap: 0.25rem 0.8rem; justify-content: space-between; padding: 0.35rem 0; border-top: 1px solid var(--muted-wash); }
 .attention-what { font-weight: 600; }
-.attention-where { font-size: 13px; color: var(--muted); }
 .attention-empty { color: var(--muted); }
+
+/* Needs you and tasks by project (D141): a box per project, rows in columns that line up from box to box. */
+.project-groups { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0.7rem; }
+.check + .project-groups { margin-top: 0.7rem; }
+.project-group { background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; }
+.project-group-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3rem 0.5rem; padding: 0.35rem 0.9rem 0.35rem 0.4rem; background: var(--paper); border-radius: 6px; }
+.project-group-toggle { flex: none; width: 2rem; height: 2rem; padding: 0; border: 0; background: none; color: var(--accent); font-size: 1.1rem; line-height: 1; cursor: pointer; }
+.project-group-name { flex: 1 1 12rem; min-width: 0; margin: 0; font-family: inherit; font-size: 15px; line-height: 1.4; overflow-wrap: anywhere; }
+.project-group-name a { color: var(--ink); text-decoration: none; }
+.project-group-name a:hover { text-decoration: underline; }
+.project-group-counts { list-style: none; display: flex; flex-wrap: wrap; align-items: center; gap: 0.2rem 0.9rem; margin: 0; padding: 0; }
+.project-group-counts .status-label, .group-table .status-label { background: none; padding: 0; }
+.project-group-plain { font-size: 13px; color: var(--muted); }
+.group-table { width: 100%; table-layout: fixed; border-collapse: collapse; font-size: 14px; }
+.group-table th, .group-table td { text-align: left; font-weight: 400; vertical-align: baseline; padding: 0.35rem 0.5rem; border-top: 1px solid var(--muted-wash); overflow-wrap: anywhere; }
+.group-table thead th { font-size: 13px; color: var(--muted); padding-block: 0.2rem; }
+.group-table tr > :first-child { padding-left: 0.9rem; }
+.group-table tr > :last-child { padding-right: 0.9rem; }
+.group-state { width: 10.5rem; }
+.group-status { width: 8rem; }
+.group-date { width: 11.5rem; font-variant-numeric: tabular-nums; }
+.group-table td.group-status, .group-table td.group-date { font-size: 13px; color: var(--muted); }
+.project-group button.quiet { margin: 0.1rem 0 0.35rem 0.4rem; }
+@media (max-width: 700px) {
+  .project-group-counts { flex-basis: 100%; padding-left: 2.5rem; }
+  .group-table, .group-table tbody { display: block; }
+  .group-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+  .group-table tbody tr { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.1rem 0.6rem; padding: 0.5rem 0.9rem; border-top: 1px solid var(--muted-wash); }
+  .group-table tbody tr > :is(th, td):nth-child(n) { width: auto; padding: 0; border: 0; }
+  .group-table tbody tr > .group-head { flex: 1 0 100%; order: -1; font-size: 15px; }
+  .group-table tbody tr > .group-date { margin-left: auto; }
+}
 
 /* Tabs in the person's style (D135). The same rules draw a project's tabs and the previews on My profile. Each row of
    wrapped tabs stands on its own line: every slot draws the line across the whole row, under its neighbours. */
