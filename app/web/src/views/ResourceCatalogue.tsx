@@ -131,7 +131,7 @@ function RetireForm({ label, onRetire, onCancel }: { label: string; onRetire: (r
 export function ResourceCatalogue({ embedded = false, bare = false, onChanged }: { embedded?: boolean; bare?: boolean; onChanged?: () => void } = {}) {
   const Wrapper = bare ? 'div' : embedded ? 'section' : 'main';
   const Heading = embedded ? 'h2' : 'h1';
-  const Sub = bare ? 'h4' : 'h3';
+  const Sub = bare ? 'h4' : embedded ? 'h3' : 'h2';
   /** While an item is being saved, the buttons that would close its form wait, so a refusal is never lost. */
   const saving = useRef(false);
   const [items, setItems] = useState<Item[] | null>(null);

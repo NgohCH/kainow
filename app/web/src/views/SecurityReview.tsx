@@ -89,12 +89,13 @@ function ReasonButton({
 
 const caseName = (c: SecurityCase) => `A ${kindNoun(c.kind)} in ${c.project}`;
 
-/** The Known disclosures block of a case: AI requests, emails sent and the audience size. */
-function Disclosures({ c }: { c: SecurityCase }) {
+/** The Known disclosures block of a case: AI requests, emails sent and the audience size. Its heading is one level below the heading it stands under. */
+function Disclosures({ c, headingLevel }: { c: SecurityCase; headingLevel: 3 | 4 }) {
   const d = c.disclosures;
+  const H = `h${headingLevel}` as 'h3' | 'h4';
   return (
     <div>
-      <h4>{DISCLOSURES_HEADING}</h4>
+      <H>{DISCLOSURES_HEADING}</H>
       <ul className="plain">
         <li>
           {d.aiRequests.length === 0
@@ -476,7 +477,7 @@ export function SecurityReviewPage() {
               <Box key={c.caseId} title={caseName(c)} headingLevel={3} meaning={CASE_MEANING[c.state] ?? 'draft'}>
                 <div className="stack">
                   <CaseLine c={c} />
-                  <Disclosures c={c} />
+                  <Disclosures c={c} headingLevel={4} />
                   {c.currentGrant ? (
                     <div className="decision">
                       {(c.items && c.items.length > 0 ? c.items : [{ kind: c.kind, id: c.itemId, role: 'reported' }]).map((it) => (
@@ -642,7 +643,7 @@ export function QuarantineCasesSection() {
           {cases.map((c) => (
             <li key={c.caseId} className="stack">
               <CaseLine c={c} />
-              <Disclosures c={c} />
+              <Disclosures c={c} headingLevel={3} />
             </li>
           ))}
         </ul>
