@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 const here = dirname(fileURLToPath(import.meta.url));
 const pg = createRequire(join(here, '..', '..', 'app', 'package.json'))('pg');
 import { randomUUID } from 'node:crypto';
+import { walkthrough } from './walkthrough.mjs';
 
 const base = process.env.KAINOW_URL ?? 'http://localhost:3066';
 const EMAIL = process.env.KAINOW_EMAIL ?? 'a11y@example.org';
@@ -18,15 +19,47 @@ const WORKER_LOG = process.env.KAINOW_WORKER_LOG ?? '/tmp/a11y/worker.log';
 const axe = readFileSync(createRequire(import.meta.url).resolve('axe-core/axe.min.js'), 'utf8');
 const browser = await puppeteer.launch({ executablePath: CHROME, headless: true, args: ['--no-sandbox'] });
 const results = [];
+
+/**
+ * Everything the browser says is wrong on a page counts as a failure: console errors, page errors, and any 4xx or 5xx
+ * reply. Excused: what `expected` lists for that page ([status, path]), and the refusals the walk asks for, once each.
+ */
+const faults = [];
+let lastState = 'start';
+const SIGNED_OUT = [[401, /^\/auth\/me$/]]; // signed out, the session check answers 401 by design
+const refusals = [];
+function expectRefusal(page, status, path) {
+  refusals.push({ page, status, path });
+}
+function watch(page, expected = []) {
+  page.on('response', (r) => {
+    if (r.status() < 400) return;
+    const path = new URL(r.url()).pathname;
+    if (expected.some(([s, p]) => s === r.status() && p.test(path))) return;
+    const asked = refusals.findIndex((e) => e.page === page && e.status === r.status() && e.path.test(path));
+    if (asked >= 0) return void refusals.splice(asked, 1);
+    faults.push(`${r.status()} ${r.request().method()} ${path} (after "${lastState}")`);
+  });
+  page.on('console', (m) => {
+    // The browser logs every 4xx and 5xx reply as "Failed to load resource": those are judged above, by their status.
+    if (m.type() === 'error' && !/^Failed to load resource: the server responded with a status/.test(m.text())) faults.push(`console: ${m.text()} (after "${lastState}")`);
+  });
+  page.on('pageerror', (e) => faults.push(`page error: ${e.message} (after "${lastState}")`));
+  page.on('requestfailed', (r) => {
+    if (r.failure()?.errorText !== 'net::ERR_ABORTED') faults.push(`request failed: ${r.failure()?.errorText} ${r.url()} (after "${lastState}")`);
+  });
+  return page;
+}
 async function check(name, page) {
+  lastState = name;
   const seen = await page.evaluate(() => ({ h: [...document.querySelectorAll('h1,h2')].map((e) => e.textContent.trim()).slice(0, 3), buttons: document.querySelectorAll('button').length, inputs: document.querySelectorAll('input,textarea,select').length, len: document.body.innerText.length }));
   console.log('RENDERED', name, JSON.stringify(seen));
   await page.evaluate(axe);
   const r = await page.evaluate(() => axe.run(document, { runOnly: { type: 'tag', values: ['wcag2a', 'wcag2aa', 'wcag21a', 'wcag21aa', 'wcag22aa', 'best-practice'] } }));
   const violations = r.violations.map((x) => ({ id: x.id, impact: x.impact, help: x.help, nodes: x.nodes.map((n) => n.target.join(' ') + ' :: ' + (n.failureSummary || '').split('\n').slice(1, 3).join(' ')) }));
-  // At 375 px no state may scroll the page sideways (spec 10, Review Focus 3); this is counted as a violation too.
-  const width = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, inner: innerWidth }));
-  if (width.inner <= 400 && width.scroll > width.inner) {
+  // No state may scroll the page sideways, at 375 px or at 1200 px (spec 10, Review Focus 3); this is counted as a violation too.
+  const width = await page.evaluate(() => ({ scroll: document.documentElement.scrollWidth, inner: document.documentElement.clientWidth }));
+  if (width.scroll > width.inner) {
     const wide = await page.evaluate(() =>
       [...document.querySelectorAll('body *')]
         .filter((e) => e.getBoundingClientRect().right > innerWidth + 0.5)
@@ -36,6 +69,22 @@ async function check(name, page) {
     violations.push({ id: 'page-scrolls-sideways', impact: 'serious', help: `the page is ${width.scroll} px wide in a ${width.inner} px window`, nodes: wide });
   }
   results.push({ name, violations });
+}
+function report() {
+  let total = 0;
+  for (const r of results) {
+    total += r.violations.length;
+    console.log(`
+## ${r.name}: ${r.violations.length} violation(s)`);
+    for (const x of r.violations) { console.log(`- [${x.impact}] ${x.id}: ${x.help}`); for (const n of x.nodes.slice(0, 4)) console.log(`    ${n}`); }
+  }
+  for (const e of refusals) faults.push(`the refusal ${e.status} ${e.path} the walk asks for did not come`);
+  console.log(`
+## Browser: ${faults.length} console error(s), page error(s) and unexpected 4xx or 5xx replies`);
+  for (const f of faults) console.log(`- ${f}`);
+  console.log(`
+TOTAL violations: ${total}, browser faults: ${faults.length}, screen states: ${results.length}`);
+  process.exitCode = total + faults.length > 0 ? 1 : 0;
 }
 /** Click the first button in `scope` whose visible text (hidden words aside) is `text`; false when there is none. */
 async function clickButton(page, text, scope = 'main') {
@@ -49,6 +98,10 @@ async function clickButton(page, text, scope = 'main') {
   return false;
 }
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+const must = (label, r) => {
+  if (r.statusCode) throw new Error(`${label}: ${JSON.stringify(r)}`);
+  return r;
+};
 const log = readFileSync(API_LOG, 'utf8');
 const code = [...log.matchAll(new RegExp(EMAIL.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ': (\\d{6})', 'g'))].pop()[1];
 const v = await fetch(`${base}/auth/verify`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email: EMAIL, code }) });
@@ -64,14 +117,14 @@ const uploadLogo = (shape) =>
 const removeLogo = (shape) => api('POST', `/organisation/logos/${shape}/remove`, {});
 const [cookieName, ...cookieValue] = cookie.split('=');
 const signedInPage = async (width) => {
-  const page = await browser.newPage();
+  const page = watch(await browser.newPage());
   await page.setViewport({ width, height: 800 });
   await page.setCookie({ name: cookieName, value: cookieValue.join('='), domain: 'localhost', path: '/' });
   return page;
 };
 const signedOutCheck = async (theme, width, label, hash) => {
   const ctx = await browser.createBrowserContext();
-  const page = await ctx.newPage();
+  const page = watch(await ctx.newPage(), SIGNED_OUT);
   await page.setViewport({ width, height: 800 });
   await page.goto(`${base}/${hash}`, { waitUntil: 'networkidle0' });
   await wait(300);
@@ -165,11 +218,39 @@ await db.query("insert into question_answers (id, question_id, answer, author_id
 await db.query("insert into decisions (id, project_id, statement, rationale, origin_proposal_id, authorised_by, authorised_at) values ($1, $2, 'Move to the new system', 'Cheaper', $3, $4, now())", [randomUUID(), recordsId, await origin('decision'), user]);
 await db.query("insert into risks (id, project_id, description, severity, responsible_id, review_on, status, origin_proposal_id, authorised_by, authorised_at) values ($1, $2, 'The vendor may be late', 'high', $3, (now() at time zone 'Asia/Kuala_Lumpur')::date + 20, 'mitigating', $4, $3, now())", [randomUUID(), recordsId, user, await origin('risk')]);
 
-// Sub-project 2b: an approval count of 2, requests waiting and applied, review flags, closing and the deadline review.
-const must = (label, r) => {
-  if (r.statusCode) throw new Error(`${label}: ${JSON.stringify(r)}`);
-  return r;
+// Sub-project 11a.1: the walk, while one approval is enough (the count is set to 2 below).
+const signInAs = async (email) => {
+  const before = readFileSync(API_LOG, 'utf8').length;
+  await fetch(`${base}/auth/request-code`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email }) });
+  await wait(800);
+  const theirs = [...readFileSync(API_LOG, 'utf8').slice(before).matchAll(new RegExp(email.replace(/\./g, '\\.') + ': (\\d{6})', 'g'))].pop()[1];
+  const verified = await fetch(`${base}/auth/verify`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ email, code: theirs }) });
+  return ownWindow(verified.headers.get('set-cookie').split(';')[0], 1200);
 };
+/** A signed-in page in a window of its own: two pages of one window hide each other, and a hidden page does not react. */
+async function ownWindow(theirCookie, width) {
+  const [name, ...value] = theirCookie.split('=');
+  const ctx = await browser.createBrowserContext();
+  const page = watch(await ctx.newPage());
+  await page.setViewport({ width, height: 800 });
+  await page.setCookie({ name, value: value.join('='), domain: 'localhost', path: '/' });
+  return { page, close: () => ctx.close() };
+}
+{
+  const [wide, narrow] = [await ownWindow(cookie, 1200), await ownWindow(cookie, 375)];
+  await walkthrough({ base, db, api, must, check, wide: wide.page, narrow: narrow.page, signInAs, expectRefusal, user, memberId, department });
+  await wide.close();
+  await narrow.close();
+}
+// KAINOW_WALK_ONLY=1: stop after the walk (a quick check while working on its screens; the full run is the one that counts).
+if (process.env.KAINOW_WALK_ONLY) {
+  await db.end();
+  await browser.close();
+  report();
+  process.exit();
+}
+
+// Sub-project 2b: an approval count of 2, requests waiting and applied, review flags, closing and the deadline review.
 if (!must('policy', await api('POST', '/approval-policy', { required: 2, projectsMayOverride: true, reason: 'Access check', pending: 'keep' }))) throw new Error('no policy');
 const second = 'sponsor2.a11y@example.org';
 const secondId = randomUUID();
@@ -323,14 +404,15 @@ const goFresh = async (page, hash) => {
 };
 
 for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
-  const open = async (ctx) => {
-    const page = await ctx.newPage();
+  const open = async (ctx, expected) => {
+    const page = watch(await ctx.newPage(), expected);
     await page.setViewport({ width, height: 800 });
     return page;
   };
   // Signed out, in a private context so the cookie above is not shared
   const ctx = await browser.createBrowserContext();
-  let page = await open(ctx);
+  // The wrong code is refused on purpose.
+  let page = await open(ctx, [...SIGNED_OUT, [401, /^\/auth\/verify$/]]);
   await page.goto(base + '/', { waitUntil: 'networkidle0' });
   await check(`${theme}: sign-in`, page);
   await page.type('input[type=email]', EMAIL);
@@ -418,6 +500,12 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
   await wait(300);
   if (!(await page.$('#colour-problem'))) throw new Error('the refused colour shows no problem');
   await check(`${theme}: organisation colour form with a refused colour`, page);
+  // Before any AI limit is saved, only the spending box may save the first ones: the others say so.
+  await goFresh(page, '#/ai');
+  await page.click('main button[data-opener="places"]');
+  await wait(200);
+  if (!(await page.$eval('#setting-form-places', (e) => e.textContent)).includes('Save the spending limits first')) throw new Error('an AI limits box can be saved before the spending limits');
+  await check(`${theme}: AI limits box before the spending limits are saved`, page);
   // Stage templates with one template's form open.
   await goFresh(page, '#/stage-templates');
   const opener = await page.$('main button[data-opener^="t-"]');
@@ -498,10 +586,4 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
 }
 await uploadLogo('wide');
 await browser.close();
-let total = 0;
-for (const r of results) {
-  total += r.violations.length;
-  console.log(`\n## ${r.name}: ${r.violations.length} violation(s)`);
-  for (const x of r.violations) { console.log(`- [${x.impact}] ${x.id}: ${x.help}`); for (const n of x.nodes.slice(0, 4)) console.log(`    ${n}`); }
-}
-console.log(`\nTOTAL violations: ${total}`);
+report();
