@@ -13,7 +13,7 @@ import {
   visibleHomeSections,
 } from '../dashboard.ts';
 import { plural } from '../format.ts';
-import { HOME_SECTION_LABELS, openChoice, viewsOf, type HomeSection, type Prefs } from '../prefs.ts';
+import { HOME_SECTION_LABELS, openChoice, shownViews, type HomeSection, type Prefs, type Views } from '../prefs.ts';
 import { type ProjectStatus, roleLabel } from '../projects.ts';
 import { AttentionQueue } from '../ui/AttentionQueue.tsx';
 import { Box } from '../ui/Box.tsx';
@@ -98,6 +98,7 @@ export function Home({ userName, prefs, ready, failed, onChange }: { userName: s
   const [error, setError] = useState<string | null>(null);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [local, setLocal] = useState<Record<string, boolean>>({});
+  const [localViews, setLocalViews] = useState<Partial<Views>>({});
   const { includeArchived, showCompleted } = prefs.home;
 
   useEffect(() => {
@@ -135,7 +136,9 @@ export function Home({ userName, prefs, ready, failed, onChange }: { userName: s
     if (ready) void save({ ...prefs, expanded: { ...prefs.expanded, ...patch } });
   };
 
-  const views = viewsOf(prefs);
+  // Saved per person; when preferences failed to load, chosen for this visit only.
+  const views = shownViews(prefs, ready, localViews);
+  const chooseView = (needsYou: Views['needsYou']) => (ready ? void save({ ...prefs, views: { ...views, needsYou } }) : setLocalViews((v) => ({ ...v, needsYou })));
   const empty = d ? homeEmptyCopy(d) : null;
   const tasks = d && taskRows(showCompleted ? d.myTasks : { ...d.myTasks, completed: undefined });
   const columns = projectColumns(isOpen, (id) => choose({ [id]: !isOpen(id) }));
@@ -147,7 +150,7 @@ export function Home({ userName, prefs, ready, failed, onChange }: { userName: s
           <div className="table-filters">
             <label>
               View
-              <select value={views.needsYou} disabled={!ready} onChange={(e) => void save({ ...prefs, views: { ...views, needsYou: e.target.value === 'project' ? 'project' : 'board' } })}>
+              <select value={views.needsYou} disabled={!ready && !failed} onChange={(e) => chooseView(e.target.value === 'project' ? 'project' : 'board')}>
                 <option value="board">Board</option>
                 <option value="project">By project</option>
               </select>

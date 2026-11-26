@@ -1,11 +1,18 @@
 import { useState, type Ref } from 'react';
 import { ApiError } from '../api.ts';
 import {
+  ACCENTS,
+  DENSITIES,
   HOME_SECTION_LABELS,
+  MENUS,
   LEADERSHIP_FIELDS,
   LEADERSHIP_FIXED_FIELDS,
   TAB_STYLES,
   TAB_STYLE_LABELS,
+  densityOf,
+  followOrganisation,
+  menuOf,
+  resetLabel,
   resetPrefs,
   moveItem,
   moveSection,
@@ -13,7 +20,9 @@ import {
   schemeFor,
   setHidden,
   tabStyleOf,
+  type Density,
   type HomeSection,
+  type MenuStyle,
   type Prefs,
   type PrefsPart,
   type Theme,
@@ -21,6 +30,8 @@ import {
 import { TabPreview } from '../ui/TabPreview.tsx';
 
 const THEME_LABELS: Record<Theme, string> = { light: 'Light', dark: 'Dark' };
+const MENU_LABELS: Record<MenuStyle, string> = { light: 'Light', dark: 'Dark, in the scheme colour' };
+const DENSITY_LABELS: Record<Density, string> = { comfortable: 'Comfortable', compact: 'Compact' };
 
 /** Saves a change and keeps a short status line: "Saving", "Saved", or the reason it failed. */
 export function useSaveStatus(onChange: (next: Prefs) => Promise<void>) {
@@ -41,18 +52,30 @@ export function useSaveStatus(onChange: (next: Prefs) => Promise<void>) {
 }
 
 /**
- * Colour scheme, Light or dark and tab style (spec section 8, D135). The scheme marked is the one shown: until the person picks one that is
- * the installation default, whatever accent the stored document holds. Picking a scheme records that the person chose it.
+ * Colour scheme, Light or dark, tab style, side menu and spacing (spec section 8, D135, 11a.2 spec 7). "Follow the
+ * organisation" is the installation default (the organisation colour, else Red) and is marked until the person picks a
+ * fixed scheme; picking one records that the person chose it, and "Follow the organisation" goes back.
  */
 export function AppearanceChoice({ prefs, orgColour, save, name }: { prefs: Prefs; orgColour: string | null; save: (next: Prefs) => void; name: string }) {
   const shown = schemeFor(prefs, orgColour).key;
+  // A scheme saved as "organisation" before this choice existed follows the organisation too: it falls back to Red the same way.
+  const following = !prefs.accentChosen || prefs.accent === 'organisation';
+  const followed = schemeFor(followOrganisation(prefs), orgColour);
   return (
     <>
       <fieldset>
         <legend>Colour scheme</legend>
-        {schemeChoices(prefs.theme, orgColour).map((c) => (
+        <label className="choice">
+          <input type="radio" name={`${name}-scheme`} checked={following} onChange={() => save(followOrganisation(prefs))} />
+          <span className="swatch" aria-hidden="true" style={{ background: followed.key === 'organisation' ? followed.tokens.accent : ACCENTS.red[prefs.theme].accent }} />
+          <span>
+            Follow the organisation
+            <span className="hint">{followed.key === 'organisation' ? "The organisation's colour." : 'Red, as the organisation has no colour of its own.'}</span>
+          </span>
+        </label>
+        {schemeChoices(prefs.theme, orgColour).filter((c) => c.key !== 'organisation').map((c) => (
           <label key={c.key} className="choice">
-            <input type="radio" name={`${name}-scheme`} checked={shown === c.key} onChange={() => save({ ...prefs, accent: c.key, accentChosen: true })} />
+            <input type="radio" name={`${name}-scheme`} checked={!following && shown === c.key} onChange={() => save({ ...prefs, accent: c.key, accentChosen: true })} />
             <span className="swatch" aria-hidden="true" style={{ background: c.swatch }} />
             {c.label}
           </label>
@@ -76,6 +99,25 @@ export function AppearanceChoice({ prefs, orgColour, save, name }: { prefs: Pref
             <TabPreview style={s} />
           </label>
         ))}
+      </fieldset>
+      <fieldset>
+        <legend>Side menu</legend>
+        {MENUS.map((m) => (
+          <label key={m} className="choice">
+            <input type="radio" name={`${name}-menu`} checked={menuOf(prefs) === m} onChange={() => save({ ...prefs, menu: m })} />
+            {MENU_LABELS[m]}
+          </label>
+        ))}
+      </fieldset>
+      <fieldset>
+        <legend>Spacing</legend>
+        {DENSITIES.map((d) => (
+          <label key={d} className="choice">
+            <input type="radio" name={`${name}-density`} checked={densityOf(prefs) === d} onChange={() => save({ ...prefs, density: d })} />
+            {DENSITY_LABELS[d]}
+          </label>
+        ))}
+        <p className="hint">Compact puts more rows of lists, tables and boards on the screen.</p>
       </fieldset>
     </>
   );
@@ -203,7 +245,7 @@ export function Customise({
         )}
         <div className="actions">
           <button type="button" onClick={() => save(resetPrefs(prefs, show))}>
-            Reset to defaults
+            {resetLabel(show)}
           </button>
           <span role={error ? 'alert' : 'status'} className={error ? 'error' : 'meta'}>
             {status}

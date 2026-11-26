@@ -1,6 +1,6 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
 import { todayUtc8 } from '../changes.ts';
-import { type Prefs, type Views, viewsOf } from '../prefs.ts';
+import { type Prefs, type Views, shownViews } from '../prefs.ts';
 import { boardTasks, byAssignee, byStatus } from '../ui/board.ts';
 import { TaskBoxView } from '../ui/BoardBoxes.tsx';
 import { leaveGuard } from '../ui/leaveGuard.ts';
@@ -145,11 +145,11 @@ type Selected = { id: string; focusHeading: boolean };
  * questions, decisions and risks.
  */
 export function Work({
-  projectId, projectName, people, canPropose, canClear, focusId, roles, status, delegated, prefs, prefsReady, onPrefs,
+  projectId, projectName, people, canPropose, canClear, focusId, roles, status, delegated, prefs, prefsReady, prefsFailed = false, onPrefs,
 }: {
   projectId: string; projectName: string; people: Person[]; canPropose: boolean; canClear: boolean; focusId?: string;
   roles: ProjectRole[]; status: ProjectStatus; delegated: boolean;
-  prefs: Prefs; prefsReady: boolean; onPrefs: (next: Prefs) => Promise<void>;
+  prefs: Prefs; prefsReady: boolean; prefsFailed?: boolean; onPrefs: (next: Prefs) => Promise<void>;
 }) {
   const [records, setRecords] = useState<Records | null>(null);
   const mayDelete = mayDeleteRecord(roles, status, delegated);
@@ -187,8 +187,10 @@ export function Work({
   const { error: changeError, setError, notice, setNotice, act, propose, changed } = useRecordChanges(projectId, load);
   const error = changeError ?? loadError;
 
-  // The view: saved per person; an address naming a task that only the list shows opens the list until the person chooses.
-  const views = viewsOf(prefs);
+  // The view: saved per person (when preferences failed to load, chosen for this visit only); an address naming a task
+  // that only the list shows opens the list until the person chooses.
+  const [localViews, setLocalViews] = useState<Partial<Views>>({});
+  const views = shownViews(prefs, prefsReady, localViews);
   const [leftAddress, setLeftAddress] = useState<string | undefined>(undefined);
   const today = todayUtc8();
   const tasks = records ? withProject(records.tasks, projectId, projectName) : [];
@@ -285,6 +287,10 @@ export function Work({
     setSelected(null);
     setPanelTyped(false);
     setLeftAddress(focusId);
+    if (!prefsReady) {
+      setLocalViews((v) => ({ ...v, ...next }));
+      return true;
+    }
     void onPrefs({ ...prefs, views: { ...views, ...next } }).catch(() => setError('Your choice of view could not be saved. Try again.'));
     return true;
   };
@@ -411,7 +417,7 @@ export function Work({
           <div className="table-filters work-view">
             <label>
               View
-              <select value={view} disabled={!prefsReady} onChange={(e) => choose({ work: e.target.value === 'list' ? 'list' : 'board' })}>
+              <select value={view} disabled={!prefsReady && !prefsFailed} onChange={(e) => choose({ work: e.target.value === 'list' ? 'list' : 'board' })}>
                 <option value="board">Board</option>
                 <option value="list">List</option>
               </select>
@@ -419,7 +425,7 @@ export function Work({
             {view === 'board' && (
               <label>
                 Columns
-                <select value={views.workBy} disabled={!prefsReady} onChange={(e) => choose({ workBy: e.target.value === 'assignee' ? 'assignee' : 'status' })}>
+                <select value={views.workBy} disabled={!prefsReady && !prefsFailed} onChange={(e) => choose({ workBy: e.target.value === 'assignee' ? 'assignee' : 'status' })}>
                   <option value="status">By status</option>
                   <option value="assignee">By assignee</option>
                 </select>

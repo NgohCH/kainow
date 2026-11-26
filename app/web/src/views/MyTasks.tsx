@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '../api.ts';
 import { type PersonalDashboard, dayLabel, overdueDaysLabel } from '../dashboard.ts';
 import { todayUtc8 } from '../changes.ts';
-import { type Prefs, type Views, viewsOf } from '../prefs.ts';
+import { type Prefs, type Views, shownViews } from '../prefs.ts';
 import { taskHref } from '../taskPage.ts';
 import { TaskBoxView } from '../ui/BoardBoxes.tsx';
 import { DataTable, type Column } from '../ui/DataTable.tsx';
@@ -35,10 +35,13 @@ export function MyTasks({ meId, meName, prefs, ready, failed, onPrefs }: { meId:
   const [status, setStatus] = useState('');
   const [project, setProject] = useState('');
   const [saveError, setSaveError] = useState<string | null>(null);
-  const views = viewsOf(prefs);
+  // Saved per person; when preferences failed to load, chosen for this visit only.
+  const [localViews, setLocalViews] = useState<Partial<Views>>({});
+  const views = shownViews(prefs, ready, localViews);
   const view = views.myTasks;
   const choose = (myTasks: Views['myTasks']) => {
     setSaveError(null);
+    if (!ready) return setLocalViews((v) => ({ ...v, myTasks }));
     void onPrefs({ ...prefs, views: { ...views, myTasks } }).catch(() => setSaveError('Your choice of view could not be saved. Try again.'));
   };
 
@@ -67,7 +70,7 @@ export function MyTasks({ meId, meName, prefs, ready, failed, onPrefs }: { meId:
       <div className="table-filters">
         <label>
           View
-          <select value={view} disabled={!ready} onChange={(e) => choose(e.target.value === 'due' ? 'due' : e.target.value === 'project' ? 'project' : 'board')}>
+          <select value={view} disabled={!ready && !failed} onChange={(e) => choose(e.target.value === 'due' ? 'due' : e.target.value === 'project' ? 'project' : 'board')}>
             <option value="board">Board</option>
             <option value="project">By project</option>
             <option value="due">Due date</option>

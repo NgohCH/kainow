@@ -103,11 +103,21 @@ export function resetPrefs(prefs: Prefs, parts: readonly PrefsPart[]): Prefs {
   const d = defaultPrefs();
   return {
     ...prefs,
-    ...(parts.includes('appearance') ? { theme: d.theme, accent: d.accent, accentChosen: d.accentChosen, tabStyle: d.tabStyle } : {}),
+    ...(parts.includes('appearance')
+      ? { theme: d.theme, accent: d.accent, accentChosen: d.accentChosen, tabStyle: d.tabStyle, menu: d.menu, density: d.density }
+      : {}),
     ...(parts.includes('home') ? { home: { ...prefs.home, order: d.home.order, hidden: d.home.hidden } } : {}),
     ...(parts.includes('leadership') ? { leadership: d.leadership } : {}),
   };
 }
+
+/** The reset button's words: for appearance they name everything it puts back. */
+export function resetLabel(parts: readonly PrefsPart[]): string {
+  return parts.includes('appearance') ? 'Reset colour scheme, light or dark, tab style, side menu and spacing' : 'Reset to defaults';
+}
+
+/** Back to the installation default: the organisation colour when it has a usable one, else Red. Nothing else changes. */
+export const followOrganisation = (prefs: Prefs): Prefs => ({ ...prefs, accentChosen: false });
 
 /** The tab style shown; a document without one shows the default. */
 export const tabStyleOf = (prefs: Partial<Pick<Prefs, 'tabStyle'>>): TabStyle => prefs.tabStyle ?? DEFAULT_PREFS.tabStyle;
@@ -128,6 +138,14 @@ export function viewsOf(prefs: { views?: Partial<Views> | null }): Views {
     myTasks: pick('myTasks', ['board', 'project', 'due']),
     needsYou: pick('needsYou', ['board', 'project']),
   };
+}
+
+/**
+ * The views shown: the saved choices once preferences have loaded; otherwise this visit's own choices (not saved) over the
+ * saved or default ones, so every view stays reachable when preferences failed to load.
+ */
+export function shownViews(prefs: { views?: Partial<Views> | null }, ready: boolean, local: Partial<Views>): Views {
+  return ready ? viewsOf(prefs) : { ...viewsOf(prefs), ...local };
 }
 
 /** A personal or leadership list of projects: expanded when the person chose so, else when 5 or fewer are shown. */
@@ -166,6 +184,8 @@ export function setHidden<T extends string>(hidden: readonly T[], key: T, hide: 
 /** The colours that every accent is checked against, and the fixed surfaces. styles.css must carry exactly these. */
 export type ThemeTokens = {
   paper: string;
+  /** Behind board columns: a step away from the page. */
+  well: string;
   surface: string;
   ink: string;
   muted: string;
@@ -183,7 +203,8 @@ export type ThemeTokens = {
 
 export const THEME_TOKENS: Record<Theme, ThemeTokens> = {
   light: {
-    paper: '#f4f7f6',
+    paper: '#ffffff',
+    well: '#f3f5f5',
     surface: '#ffffff',
     ink: '#13262b',
     muted: '#52666b',
@@ -200,6 +221,7 @@ export const THEME_TOKENS: Record<Theme, ThemeTokens> = {
   },
   dark: {
     paper: '#0f1a1d',
+    well: '#132226',
     surface: '#172529',
     ink: '#e6eeee',
     muted: '#9fb3b6',
@@ -248,6 +270,22 @@ export const ACCENTS: Record<FixedAccentKey, Record<Theme, SchemeTokens>> = {
   },
 };
 
+/**
+ * The light side menu of each scheme (the default; the dark menu is the scheme's own menu colour): the page colour with a
+ * trace of the accent. Its text is ink and muted; its current item is the accent wash with deep text and an accent edge.
+ * In the Dark theme it is a quiet dark, as the page is.
+ */
+export const LIGHT_MENUS: Record<FixedAccentKey, Record<Theme, string>> = {
+  red: { light: '#fcf6f7', dark: '#1b2023' },
+  teal: { light: '#f5f9f9', dark: '#122225' },
+  blue: { light: '#f6f8fc', dark: '#152228' },
+  plum: { light: '#faf7fb', dark: '#192027' },
+  slate: { light: '#f8f8f9', dark: '#162225' },
+};
+
+/** How much accent the light menu takes, by theme (the fixed values above were made the same way). */
+const LIGHT_MENU_TINT: Record<Theme, { base: string; share: number }> = { light: { base: '#ffffff', share: 0.04 }, dark: { base: '#0f1a1d', share: 0.05 } };
+
 function mixHex(a: string, b: string, t: number): string {
   const n = (h: string) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
   const [x, y] = [n(a), n(b)];
@@ -286,6 +324,14 @@ export function schemeFor(prefs: Pick<Prefs, 'theme' | 'accent' | 'accentChosen'
   return { key: fixedKey, tokens: ACCENTS[fixedKey][prefs.theme] };
 }
 
+/** The light menu shown: a fixed scheme's value, or the organisation scheme's made from its accent. */
+export function lightMenuFor(prefs: Pick<Prefs, 'theme' | 'accent' | 'accentChosen'>, orgColour: string | null): string {
+  const { key, tokens } = schemeFor(prefs, orgColour);
+  if (key !== 'organisation') return LIGHT_MENUS[key][prefs.theme];
+  const { base, share } = LIGHT_MENU_TINT[prefs.theme];
+  return mixHex(base, tokens.accent, share);
+}
+
 export const ACCENT_LABELS: Record<AccentKey, string> = { red: 'Red', teal: 'Teal', blue: 'Blue', plum: 'Plum', slate: 'Slate', organisation: 'Organisation' };
 
 /** The colour schemes a person may pick, each with the accent it shows in this theme. Organisation only when its colour is usable. */
@@ -306,18 +352,27 @@ const SCHEME_VARS: Record<keyof SchemeTokens, string> = {
 };
 
 /**
- * Puts the theme, scheme and tab style on <html>. The fixed schemes come from the token blocks in styles.css; the organisation
+ * Puts the theme, scheme, tab style, side menu and spacing on <html>. The fixed schemes come from the token blocks in styles.css; the organisation
  * scheme has no block, so its values are set directly (and removed again when another scheme is shown).
  */
-export function applyAppearance(prefs: Pick<Prefs, 'theme' | 'accent' | 'accentChosen' | 'tabStyle'>, orgColour: string | null, root: HTMLElement = document.documentElement): void {
+export function applyAppearance(
+  prefs: Pick<Prefs, 'theme' | 'accent' | 'accentChosen' | 'tabStyle'> & Partial<Pick<Prefs, 'menu' | 'density'>>,
+  orgColour: string | null,
+  root: HTMLElement = document.documentElement,
+): void {
   const { key, tokens } = schemeFor(prefs, orgColour);
   root.setAttribute('data-theme', prefs.theme);
   root.setAttribute('data-accent', key);
   root.setAttribute('data-tabs', tabStyleOf(prefs));
+  root.setAttribute('data-menu', menuOf(prefs));
+  root.setAttribute('data-density', densityOf(prefs));
+  const org = key === 'organisation';
   for (const [field, prop] of Object.entries(SCHEME_VARS)) {
-    if (key === 'organisation') root.style.setProperty(prop, tokens[field as keyof SchemeTokens]);
+    if (org) root.style.setProperty(prop, tokens[field as keyof SchemeTokens]);
     else root.style.removeProperty(prop);
   }
+  if (org) root.style.setProperty('--menu-light', lightMenuFor(prefs, orgColour));
+  else root.style.removeProperty('--menu-light');
 }
 
 /**

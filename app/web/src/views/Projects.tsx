@@ -13,6 +13,7 @@ import { StatTile } from '../ui/StatTile.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
 import { attentionFlags, groupProjects } from '../ui/home.ts';
 import { projectMeaning } from '../ui/meanings.ts';
+import { projectsChanged } from '../ui/menu.ts';
 import type { StageTemplate } from '../ui/stages.ts';
 import { StageList } from './StageTemplates.tsx';
 
@@ -266,6 +267,7 @@ function NewProject({ onCreated }: { onCreated: (p: Project) => void }) {
         plannedEnd: plannedEnd || null,
         ...(templateId ? { stageTemplateId: templateId } : {}),
       });
+      projectsChanged();
       onCreated(r.project);
     } catch (err) {
       setError(err instanceof ApiError ? err.message : 'The project was not created. Try again.');
