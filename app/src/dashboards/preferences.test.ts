@@ -89,6 +89,27 @@ describe('normalisePrefs', () => {
     for (const v of ['Grey', FREE, 3, null, { a: 1 }]) assert.equal(normalisePrefs({ tabStyle: v }).tabStyle, 'boxes');
   });
 
+  test('menu and spacing: light and comfortable by default, known values kept, others dropped', () => {
+    const d = normalisePrefs({});
+    assert.deepEqual([d.menu, d.density], ['light', 'comfortable']);
+    for (const v of ['light', 'dark']) assert.equal(normalisePrefs({ menu: v }).menu, v);
+    for (const v of ['comfortable', 'compact']) assert.equal(normalisePrefs({ density: v }).density, v);
+    for (const v of ['Dark', FREE, 3, null]) {
+      assert.equal(normalisePrefs({ menu: v }).menu, 'light');
+      assert.equal(normalisePrefs({ density: v }).density, 'comfortable');
+    }
+  });
+
+  test('views: board, status, board, board by default; each known value kept, unknown ones dropped, missing keys filled', () => {
+    assert.deepEqual(normalisePrefs({}).views, { work: 'board', workBy: 'status', myTasks: 'board', needsYou: 'board' });
+    const all = normalisePrefs({ views: { work: 'list', workBy: 'assignee', myTasks: 'due', needsYou: 'project' } }).views;
+    assert.deepEqual(all, { work: 'list', workBy: 'assignee', myTasks: 'due', needsYou: 'project' });
+    assert.deepEqual(normalisePrefs({ views: { myTasks: 'project' } }).views, { work: 'board', workBy: 'status', myTasks: 'project', needsYou: 'board' }, 'missing keys filled');
+    // A value known to another list is not known to this one.
+    assert.deepEqual(normalisePrefs({ views: { work: 'due', workBy: 'list', myTasks: 'status', needsYou: 'due', extra: FREE } }).views, DEFAULT_PREFS.views);
+    for (const v of [FREE, 3, null, [], 'board']) assert.deepEqual(normalisePrefs({ views: v }).views, DEFAULT_PREFS.views);
+  });
+
   test('normalising is idempotent', () => {
     const once = normalisePrefs({ theme: 'dark', expanded: { [ID]: false }, timeline: { hiddenKinds: ['stage'] } });
     assert.deepEqual(normalisePrefs(once), once);

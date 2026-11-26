@@ -11,7 +11,10 @@ const PEOPLE = ['pm', 'owner', 'sponsor', 'sponsor2', 'mem', 'loner'] as const;
 type Person = (typeof PEOPLE)[number];
 
 type NeedsYou = { kind: string; projectId: string; projectName: string; label: string; since: string | null; link: string; count?: number };
-type TaskRow = { id: string; title: string; projectId: string; projectName: string; dueOn: string; status: string; overdueDays?: number };
+type TaskRow = {
+  id: string; title: string; projectId: string; projectName: string; dueOn: string; status: string; overdueDays?: number;
+  completedOn: string | null; blockedReason: string | null; parent: { id: string; title: string } | null; subtasks: { done: number; total: number };
+};
 
 describe('personal dashboard endpoint', { skip: SKIP_NO_DB }, () => {
   let t: TestApp;
@@ -68,14 +71,14 @@ describe('personal dashboard endpoint', { skip: SKIP_NO_DB }, () => {
   }
   const kinds = (body: { needsYou: NeedsYou[] }, kind: string) => body.needsYou.filter((n) => n.kind === kind);
 
-  async function task(opts: { title?: string; assignee?: string; dueOn?: string; status?: string; project?: string; review?: boolean; completedAt?: string } = {}): Promise<string> {
+  async function task(opts: { title?: string; assignee?: string; dueOn?: string; status?: string; project?: string; review?: boolean; completedAt?: string; parent?: string } = {}): Promise<string> {
     const id = uuidv7();
     const status = opts.status ?? 'not_started';
     await t.pool.query(
       `INSERT INTO tasks (id, project_id, parent_id, depth, title, assignee_id, due_on, status, completed_at, deadline_review_required, authorised_by, authorised_at)
-       VALUES ($1, $2, NULL, 0, $3, $4, $5, $6, $7, $8, $9, now())`,
+       VALUES ($1, $2, $10, $11, $3, $4, $5, $6, $7, $8, $9, now())`,
       [id, opts.project ?? projectId, opts.title ?? 'Task', opts.assignee ?? ids.mem, opts.dueOn ?? '2026-11-30', status,
-        status === 'completed' ? (opts.completedAt ?? '2026-11-05T02:00:00Z') : null, opts.review ?? false, ids.pm],
+        status === 'completed' ? (opts.completedAt ?? '2026-11-05T02:00:00Z') : null, opts.review ?? false, ids.pm, opts.parent ?? null, opts.parent ? 1 : 0],
     );
     return id;
   }
@@ -199,6 +202,7 @@ describe('personal dashboard endpoint', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(titles(body.myTasks.overdue), ['Overdue']);
     assert.deepEqual(body.myTasks.overdue[0], {
       id: overdue, title: 'Overdue', projectId, projectName: 'Harbour works', dueOn: '2026-11-05', status: 'in_progress', overdueDays: 4,
+      completedOn: null, blockedReason: null, parent: null, subtasks: { done: 0, total: 0 },
     });
     assert.deepEqual(titles(body.myTasks.dueSoon), ['Due today', 'Due in seven']);
     assert.deepEqual(titles(body.myTasks.later), ['Due in eight']);
@@ -394,6 +398,60 @@ describe('personal dashboard endpoint', { skip: SKIP_NO_DB }, () => {
     assert.deepEqual(kinds(body, 'blocked'), []);
     assert.deepEqual(kinds(body, 'risk_review').map((n) => n.label), [UNDER_REVIEW_TEXT]);
     assert.ok(!JSON.stringify(body).includes('Secret'), 'no held text anywhere');
+  });
+
+  const block = (id: string, note: string, at: string) =>
+    t.pool.query(
+      `INSERT INTO task_events (id, task_id, kind, from_status, to_status, note, actor_id, at) VALUES ($1, $2, 'blocked', 'in_progress', 'blocked', $3, $4, $5)`,
+      [uuidv7(), id, note, ids.mem, at],
+    );
+  const deleteTask = (id: string) => t.pool.query(`UPDATE tasks SET deleted_at = now(), deleted_by = $2, delete_reason = 'Entered in error' WHERE id = $1`, [id, ids.pm]);
+  const mineByTitle = async () => {
+    const b = await me('mem', '?showCompleted=1');
+    return Object.fromEntries([...b.myTasks.overdue, ...b.myTasks.dueSoon, ...b.myTasks.later, ...(b.myTasks.completed ?? [])].map((r) => [r.title, r]));
+  };
+
+  test('My tasks gives the day finished, the latest block, the parent and the live subtask count', async () => {
+    const stuck = await task({ title: 'Stuck', status: 'blocked' });
+    await block(stuck, 'First reason', '2026-11-03T02:00:00Z');
+    await block(stuck, 'Second reason', '2026-11-04T02:00:00Z');
+    await task({ title: 'Free' });
+    await task({ title: 'Done late', status: 'completed', completedAt: '2026-11-05T23:30:00Z' });
+    const top = await task({ title: 'Top task', assignee: ids.pm });
+    await task({ title: 'Child', parent: top });
+    const withSubs = await task({ title: 'Has subtasks' });
+    for (const [title, status] of [['A', 'completed'], ['B', 'in_progress'], ['C', 'cancelled']] as const) await task({ title, parent: withSubs, status, assignee: ids.pm });
+    await deleteTask(await task({ title: 'D', parent: withSubs, assignee: ids.pm }));
+    await holdRecord('tasks', 'task', await task({ title: 'E', parent: withSubs, assignee: ids.pm }), 'held');
+    await holdRecord('tasks', 'task', await task({ title: 'F', parent: withSubs, assignee: ids.pm }), 'cleaned');
+    const rows = await mineByTitle();
+    assert.equal(rows.Stuck.blockedReason, 'Second reason');
+    assert.equal(rows.Free.blockedReason, null);
+    assert.equal(rows['Done late'].completedOn, '2026-11-06', 'the UTC+8 day');
+    assert.equal(rows.Free.completedOn, null);
+    assert.deepEqual(rows.Child.parent, { id: top, title: 'Top task' });
+    assert.equal(rows.Free.parent, null);
+    assert.deepEqual(rows['Has subtasks'].subtasks, { done: 1, total: 2 }, 'A and B: not cancelled, Deleted or held');
+    assert.deepEqual(rows.Free.subtasks, { done: 0, total: 0 });
+  });
+
+  test('a held or Deleted parent is not named; a held task gives no reason', async () => {
+    const parents = {
+      deleted: await task({ title: 'Secret deleted parent', assignee: ids.pm }),
+      held: await task({ title: 'Secret held parent', assignee: ids.pm }),
+      cleaned: await task({ title: 'Secret cleaned parent', assignee: ids.pm }),
+    };
+    for (const [name, id] of Object.entries(parents)) await task({ title: `Child of ${name}`, parent: id });
+    await deleteTask(parents.deleted);
+    await holdRecord('tasks', 'task', parents.held, 'held');
+    await holdRecord('tasks', 'task', parents.cleaned, 'cleaned');
+    const stuck = await task({ title: 'Secret stuck text', status: 'blocked' });
+    await block(stuck, 'Secret reason text', '2026-11-04T02:00:00Z');
+    await holdRecord('tasks', 'task', stuck, 'cleaned');
+    const rows = await mineByTitle();
+    for (const name of Object.keys(parents)) assert.equal(rows[`Child of ${name}`].parent, null, name);
+    assert.equal(rows[UNDER_REVIEW_TEXT].blockedReason, null);
+    assert.ok(!JSON.stringify(await me('mem')).includes('Secret'), 'no held or Deleted text anywhere');
   });
 
   test('an On Hold member gets none of the task and risk kinds for that project', async () => {

@@ -19,12 +19,28 @@ export const LEADERSHIP_FIELD_KEYS = LEADERSHIP_FIELDS.map((f) => f.key) as read
 /** Fields that can never be hidden (spec section 8: attention flags are never hideable). They can still be moved. */
 export const LEADERSHIP_FIXED_FIELDS: readonly string[] = LEADERSHIP_FIELDS.filter((f) => f.required).map((f) => f.key);
 
+/** How the menu looks (D140), the spacing of lists and boards, and how each list of tasks is laid out. */
+const MENUS = ['light', 'dark'] as const;
+const DENSITIES = ['comfortable', 'compact'] as const;
+const WORK_VIEWS = ['board', 'list'] as const;
+const WORK_BY = ['status', 'assignee'] as const;
+const MY_TASKS_VIEWS = ['board', 'project', 'due'] as const;
+const NEEDS_YOU_VIEWS = ['board', 'project'] as const;
+
 export const MAX_EXPANDED = 1000;
 
 export type Prefs = {
   theme: (typeof THEMES)[number];
   accent: (typeof ACCENTS)[number];
   tabStyle: (typeof TAB_STYLES)[number];
+  menu: (typeof MENUS)[number];
+  density: (typeof DENSITIES)[number];
+  views: {
+    work: (typeof WORK_VIEWS)[number];
+    workBy: (typeof WORK_BY)[number];
+    myTasks: (typeof MY_TASKS_VIEWS)[number];
+    needsYou: (typeof NEEDS_YOU_VIEWS)[number];
+  };
   /** True once the person has picked a scheme themselves (so the organisation's colour is not applied over it). */
   accentChosen: boolean;
   home: { order: HomeSection[]; hidden: HomeSection[]; showCompleted: boolean; includeArchived: boolean };
@@ -37,6 +53,9 @@ export const DEFAULT_PREFS: Prefs = {
   theme: 'light',
   accent: 'red',
   tabStyle: 'boxes',
+  menu: 'light',
+  density: 'comfortable',
+  views: { work: 'board', workBy: 'status', myTasks: 'board', needsYou: 'board' },
   accentChosen: false,
   home: { order: [...HOME_SECTIONS], hidden: [], showCompleted: false, includeArchived: false },
   leadership: { fields: { order: [...LEADERSHIP_FIELD_KEYS], hidden: [] } },
@@ -64,6 +83,7 @@ export function normalisePrefs(input: unknown): Prefs {
   const home = isObject(src.home) ? src.home : {};
   const fields = isObject(src.leadership) && isObject(src.leadership.fields) ? src.leadership.fields : {};
   const timeline = isObject(src.timeline) ? src.timeline : {};
+  const views = isObject(src.views) ? src.views : {};
 
   const sections = known(home.order, HOME_SECTIONS).filter((s) => s !== 'needsYou');
   for (const s of HOME_SECTIONS) if (s !== 'needsYou' && !sections.includes(s)) sections.push(s);
@@ -87,6 +107,14 @@ export function normalisePrefs(input: unknown): Prefs {
     theme: oneOf(src.theme, THEMES, DEFAULT_PREFS.theme),
     accent: oneOf(src.accent, ACCENTS, DEFAULT_PREFS.accent),
     tabStyle: oneOf(src.tabStyle, TAB_STYLES, DEFAULT_PREFS.tabStyle),
+    menu: oneOf(src.menu, MENUS, DEFAULT_PREFS.menu),
+    density: oneOf(src.density, DENSITIES, DEFAULT_PREFS.density),
+    views: {
+      work: oneOf(views.work, WORK_VIEWS, DEFAULT_PREFS.views.work),
+      workBy: oneOf(views.workBy, WORK_BY, DEFAULT_PREFS.views.workBy),
+      myTasks: oneOf(views.myTasks, MY_TASKS_VIEWS, DEFAULT_PREFS.views.myTasks),
+      needsYou: oneOf(views.needsYou, NEEDS_YOU_VIEWS, DEFAULT_PREFS.views.needsYou),
+    },
     accentChosen: bool(src.accentChosen, DEFAULT_PREFS.accentChosen),
     home: {
       order: ['needsYou', ...sections],
