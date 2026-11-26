@@ -193,6 +193,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
   ];
   const open = ['draft', 'planned', 'active'].includes(project.status);
   const base = `#/projects/${project.id}`;
+  const copiedWait = copiedDraftWait(project, roles.length, counts.waiting);
   // Notes are imported straight away by the managing roles; a Member submits them for one of those to publish.
   const canAddNotes = roles.some((r) => r !== 'member') && open;
   const canSubmitNotes = roles.length > 0 && !roles.some((r) => r !== 'member') && open;
@@ -280,8 +281,8 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
       {notice && <p role="status" className="meta">{notice}</p>}
       {/* The Overview keeps its boxes; the other tabs are divided by thin rules (11a.2 spec 7). */}
       <div className={view === 'overview' ? 'project-tab' : 'project-tab ruled'}>
-      {view === 'overview' && copiedDraftWait(project, roles.length, counts.waiting) && (
-        <p className="warn">{copiedDraftWait(project, roles.length, counts.waiting)} <a href={`${base}/proposals`}>Proposals</a>. {PROPOSALS_START}</p>
+      {view === 'overview' && copiedWait && (
+        <p className="warn">{copiedWait} <a href={`${base}/proposals`}>Proposals</a>. {PROPOSALS_START}</p>
       )}
       {view === 'overview' && <Overview project={project} act={act} contentAllowed={contentAllowed} />}
       {view === 'timeline' && contentAllowed && <Timeline projectId={project.id} prefs={prefs} ready={prefsReady} onChange={onPrefs} />}

@@ -285,10 +285,15 @@ const STEPS = [
     await chooseView(page, 'View', 'board');
     await page.getByRole('group', { name: 'Needs you' }).locator('.task-box:visible').first().waitFor();
     await notSideways(page);
+    // Only inside the Needs you box: Home's My tasks section is always by project.
+    const needsYou = page.locator('main section.box').filter({ has: page.getByRole('heading', { name: 'Needs you', level: 2, exact: true }) });
+    if ((await needsYou.locator('.project-group').count()) > 0) throw new Error('Needs you as a board also shows project groups');
     await chooseView(page, 'View', 'project');
-    await page.locator('main .project-group').first().waitFor();
+    await needsYou.locator('.project-group').first().waitFor();
+    if ((await needsYou.locator('.board, .task-box').count()) > 0) throw new Error('Needs you by project still shows a board');
     await notSideways(page);
     await chooseView(page, 'View', 'board');
+    await needsYou.locator('.board').first().waitFor();
   }],
   ['My tasks: board, by project and by due date', async (page) => {
     await menuLink(page, 'My tasks');
@@ -436,7 +441,6 @@ async function projectTab(page, name) {
   await page.locator('nav.binder-tabs').getByRole('link', { name: new RegExp('^' + escape(name) + '(\\s*\\d|$)') }).click();
 }
 /** From any page: Projects in the side menu, then the project in the page (the side menu also lists it, D143). Each click waits for the page it opens. */
-/** From any page: Projects in the side menu, then the project. Each click waits for the page it opens. */
 async function openProject(page, project) {
   await menuLink(page, 'Projects');
   await page.getByRole('heading', { name: 'Projects', level: 1 }).waitFor();

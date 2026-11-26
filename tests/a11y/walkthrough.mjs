@@ -31,6 +31,18 @@ export async function walkthrough({ base, db, api, must, check, wide, narrow, si
   };
   const text = (page, scope = 'main') => page.$eval(scope, (e) => e.innerText.replace(/\s+/g, ' '));
   const hashOf = (page) => page.evaluate(() => location.hash);
+  /**
+   * How Home's Needs you box is drawn: 'project' (project groups, no board) or 'board' (a board, no project groups), else
+   * what it holds. Only that box: Home's My tasks section is always by project.
+   */
+  const needsYouView = (page) =>
+    page.evaluate(() => {
+      const box = [...document.querySelectorAll('main section.box')].find((s) => s.querySelector(':scope > .box-title')?.textContent.trim() === 'Needs you');
+      if (!box) return 'no Needs you box';
+      const groups = box.querySelectorAll('.project-group').length;
+      const board = box.querySelectorAll('.board, .task-box').length;
+      return groups > 0 && board === 0 ? 'project' : board > 0 && groups === 0 ? 'board' : `${groups} project groups and ${board} board parts`;
+    });
   const focused = (page) => page.evaluate(() => document.activeElement?.id ?? '');
   /** What one box or table says, by its heading or caption; '' when it is not there. */
   const partText = (page, name) =>
@@ -373,7 +385,7 @@ export async function walkthrough({ base, db, api, must, check, wide, narrow, si
 
   // --- D141: Home and My tasks by project ---------------------------------------------------------------------------------------
   await both('home, Needs you by project and My tasks by project', '#/', (page) => fill(page, 'View', 'project'));
-  say((await wide.$$('main .project-group')).length > 1, 'Home is not grouped by project');
+  say((await needsYouView(wide)) === 'project', `Home's Needs you is not by project (${await needsYouView(wide)})`);
   await both('my tasks as a board', '#/my-tasks', (page) => fill(page, 'View', 'board'));
   await both('my tasks by project, every row of a box shown', '#/my-tasks', async (page) => { await fill(page, 'View', 'project'); await press(page, /^Show all \d+$/); });
   await both('my tasks by project, a box closed', '#/my-tasks', async (page) => { await fill(page, 'View', 'project'); await page.click('main .project-group-toggle'); });
@@ -535,7 +547,7 @@ export async function walkthrough({ base, db, api, must, check, wide, narrow, si
     ['proposals', `#/projects/${copyId}/proposals`],
   ]) {
     await both(`${label}, Dark`, hash);
-    if (label === 'home by project') say((await wide.$$('main .project-group')).length > 1, 'Home in Dark is not by project');
+    if (label === 'home by project') say((await needsYouView(wide)) === 'project', `Home's Needs you in Dark is not by project (${await needsYouView(wide)})`);
   }
   // Choosing a style on My profile changes the tabs at once, and it is kept.
   await open(wide, '#/me');
