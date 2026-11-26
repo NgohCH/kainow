@@ -2,6 +2,7 @@ import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react'
 import { todayUtc8 } from '../changes.ts';
 import { type Prefs, type Views, shownViews } from '../prefs.ts';
 import { boardTasks, byAssignee, byStatus } from '../ui/board.ts';
+import { taskLabelList } from '../ui/boardView.ts';
 import { TaskBoxView } from '../ui/BoardBoxes.tsx';
 import { leaveGuard } from '../ui/leaveGuard.ts';
 import { TaskBoard } from '../ui/TaskBoard.tsx';
@@ -14,7 +15,6 @@ import {
   QUESTION_STATUS_LABEL,
   QUESTION_STATUS_MEANING,
   RISK_STATUS_MEANING,
-  TASK_STATUS_MEANING,
   decisionMeaning,
   type QuestionAction,
   type QuestionStatus,
@@ -515,14 +515,7 @@ export type TaskLabelFields = Pick<TaskView, 'status' | 'overdue'> & Partial<Omi
 export function TaskLabels({ t }: { t: TaskLabelFields }) {
   return (
     <span className="label-stack">
-      <StatusLabel meaning={TASK_STATUS_MEANING[t.status]} word={TASK_STATUS_LABEL[t.status]} />
-      {t.overdue && <StatusLabel meaning="overdue" word="Overdue" />}
-      {t.dueSoon && <StatusLabel meaning="dueSoon" word="Due soon" />}
-      {t.awaitingMembership && <StatusLabel meaning="review" word={`Awaiting Membership${t.invitation ? ` (invitation ${t.invitation})` : ''}`} />}
-      {t.dueAfterParent && <StatusLabel meaning="review" word="Due after its parent task" />}
-      {t.changeWaiting && <StatusLabel meaning="review" word="Change waiting" />}
-      {t.deadlineReviewRequired && <StatusLabel meaning="overdue" word="Deadline review required" />}
-      {t.parentCancelled && <StatusLabel meaning="review" word="Parent cancelled" />}
+      {taskLabelList(t).map((l) => <StatusLabel key={l.word} meaning={l.meaning} word={l.word} />)}
     </span>
   );
 }

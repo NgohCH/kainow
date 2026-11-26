@@ -27,7 +27,7 @@ const results = [];
 const faults = [];
 let lastState = 'start';
 const SIGNED_OUT = [[401, /^\/auth\/me$/]]; // signed out, the session check answers 401 by design
-/** Box and column edges against what is beside them (11a.2): recorded as non-text contrast, not counted as violations. */
+/** Box and column edges against what is beside them (11a.2, D143): recorded, and an edge below 3:1 is a violation. */
 const edgeNotes = [];
 const refusals = [];
 function expectRefusal(page, status, path) {
@@ -85,7 +85,7 @@ function report() {
 ## Browser: ${faults.length} console error(s), page error(s) and unexpected 4xx or 5xx replies`);
   for (const f of faults) console.log(`- ${f}`);
   if (edgeNotes.length) console.log(`
-## Board edges (non-text contrast, recorded, not counted)
+## Board edges (non-text contrast; an edge below 3:1 is counted as a violation above)
 ${edgeNotes.map((n) => `- ${n}`).join('\n')}`);
   console.log(`
 TOTAL violations: ${total}, browser faults: ${faults.length}, screen states: ${results.length}`);
@@ -327,6 +327,13 @@ const doneTask = await mkTask(recordsId, 'Label the shelves', addDays(-1), 'comp
 await db.query('update tasks set completed_at = now() where id = $1', [doneTask]);
 const blockedTask = await mkTask(recordsId, 'Move the reading room', addDays(9), 'blocked');
 await db.query("insert into task_events (id, task_id, kind, from_status, to_status, actor_id, note, at) values ($1, $2, 'blocked', 'in_progress', 'blocked', $3, 'The shelves have not arrived', now())", [randomUUID(), blockedTask, user]);
+// A parent In progress with an overdue subtask and a Blocked one (with a reason), shown inside the parent's box.
+const nestParent = await mkTask(recordsId, 'Shelve the archive', addDays(10), 'in_progress');
+for (const [title, due, status] of [['Box the old files', addDays(-2), 'not_started'], ['Label the boxes', addDays(6), 'blocked']]) {
+  const id = randomUUID();
+  await db.query("insert into tasks (id, project_id, parent_id, depth, title, assignee_id, due_on, status, authorised_by, authorised_at) values ($1, $2, $3, 1, $4, $5, $6, $7, $5, now())", [id, recordsId, nestParent, title, user, due, status]);
+  if (status === 'blocked') await db.query("insert into task_events (id, task_id, kind, from_status, to_status, actor_id, note, at) values ($1, $2, 'blocked', 'in_progress', 'blocked', $3, 'The labels are out of stock', now())", [randomUUID(), id, user]);
+}
 const keyboardTasks = { wide: await mkTask(recordsId, 'Keyboard check, wide', addDays(8)), narrow: await mkTask(recordsId, 'Keyboard check, narrow', addDays(8)) };
 // A 120-character project name, for the overflow check at 375 px (the project header and the tables).
 await db.query('update projects set name = $2 where id = $1', [closeB, 'Closing ready: a deliberately long dummy project name that keeps going to check the header wraps on a phone screen, okay']);
@@ -433,12 +440,16 @@ async function recordEdges(name, page) {
     return {
       boxEdgeOnWell: ratio(s.borderTopColor, behind(box.parentElement)),
       boxEdgeOnBox: ratio(s.borderTopColor, s.backgroundColor),
-      boxOnWell: ratio(s.backgroundColor, c.backgroundColor),
+      columnEdgeOnPage: ratio(c.borderLeftColor, page),
+      columnEdgeOnWell: ratio(c.borderLeftColor, c.backgroundColor),
       columnTopEdgeOnPage: ratio(c.borderTopColor, page),
-      wellOnPage: ratio(c.backgroundColor, page),
     };
   });
-  if (seen) edgeNotes.push(`${name}: ${Object.entries(seen).map(([k, v]) => `${k} ${v}:1`).join(', ')}`);
+  if (!seen) return;
+  edgeNotes.push(`${name}: ${Object.entries(seen).map(([k, v]) => `${k} ${v}:1`).join(', ')}`);
+  // Edges reach 3:1 (D143 ruling 5): a lower one is a violation.
+  const low = Object.entries(seen).filter(([, v]) => v < 3);
+  if (low.length) results.push({ name: `${name}: board edges`, violations: [{ id: 'board-edge-contrast', impact: 'serious', help: 'a board edge is below 3:1', nodes: low.map(([k, v]) => `${k} ${v}:1`) }] });
 }
 /** On a board below 700 px one column shows at a time: choose the one with this key in its Column list. */
 async function pickColumn(page, key) {
@@ -463,6 +474,9 @@ async function boardsAndLook(page, theme, width) {
     await goFresh(page, workHash);
     if (!(await page.$('main .board .task-box'))) throw new Error('the Work tab does not open on its board');
     if (!(await page.$eval('main .board', (e) => e.textContent)).includes('The shelves have not arrived')) throw new Error("a Blocked box does not show its reason");
+    // Subtasks inside their parent's box show what their list rows show: Overdue, and a blocked one's reason.
+    const nested = await page.$eval(`[id="item-${nestParent}"] .task-box-subtasks`, (e) => e.textContent);
+    if (!nested.includes('Overdue') || !nested.includes('Blocked: The labels are out of stock') || !nested.includes('Due ')) throw new Error(`a subtask inside its parent's box lost its labels: ${nested}`);
     await check(`${at}work board by status, Completed folded`, page);
     await recordEdges(`${at}work board`, page);
     await pickColumn(page, 'completed');
@@ -502,6 +516,13 @@ async function boardsAndLook(page, theme, width) {
       await check(`${at}${label}`, page);
       if (label.includes('as a board')) await recordEdges(`${at}${label}`, page);
     }
+  }
+  // The board's edges in another scheme (Teal), Light and Dark.
+  for (const mode of ['light', 'dark']) {
+    must('teal', await prefsWith({ theme: mode, accent: 'teal', accentChosen: true }));
+    await goFresh(page, workHash);
+    await check(`${theme}: Teal${mode === 'dark' ? ', Dark' : ''}, work board`, page);
+    await recordEdges(`${theme}: Teal${mode === 'dark' ? ', Dark' : ''}, work board`, page);
   }
   // The dark side menu, and compact spacing, in Light; then both together in Dark.
   for (const [label, prefs] of [

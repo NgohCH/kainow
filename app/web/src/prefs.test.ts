@@ -10,6 +10,7 @@ import {
   THEME_TOKENS,
   applyAppearance,
   expansionDefault,
+  followHint,
   moveItem,
   moveSection,
   schemeChoices,
@@ -452,6 +453,17 @@ test('styles.css carries the light menu of each scheme and the well behind board
   }
 });
 
+test('board columns and task boxes have edges of at least 3:1 against what is beside them (D143)', () => {
+  // The edges use the theme's control border; the colour scheme does not change it, so Light and Dark cover every scheme.
+  assert.equal(rule('.task-box')['border'], '1px solid var(--control-border)');
+  assert.equal(rule('.board-col')['border'], '1px solid var(--control-border)');
+  for (const theme of ['light', 'dark'] as const) {
+    const t = THEME_TOKENS[theme];
+    // A column edge against the page and its own shading; a box edge against the column and the box.
+    for (const bg of [t.paper, t.surface, t.well]) assert.ok(contrastRatio(t.controlBorder, bg) >= 3, `${theme}: board edge on ${bg}`);
+  }
+});
+
 test('Follow the organisation saves accentChosen false: the organisation colour, or Red when it has none', async () => {
   const { followOrganisation } = await import('./prefs.ts');
   const teal: Prefs = { ...DEFAULT_PREFS, accent: 'teal', accentChosen: true };
@@ -504,5 +516,14 @@ test('views stay reachable when preferences failed to load: this visit\'s choice
   const read = (f: string) => readFileSync(new URL(f, import.meta.url), 'utf8');
   for (const f of ['./views/MyTasks.tsx', './views/Work.tsx', './views/Home.tsx']) {
     assert.doesNotMatch(read(f), /<select value=\{[\w.]+\} disabled=\{!(ready|prefsReady)\} /, `${f}: the View select opens when preferences failed`);
+  }
+});
+
+test('the Follow the organisation hint gives the true reason for Red (C117)', () => {
+  for (const theme of ['light', 'dark'] as const) {
+    assert.equal(followHint({ theme }, '#1f55a8'), "The organisation's colour.");
+    assert.equal(followHint({ theme }, null), 'Red, as the organisation has no colour of its own.');
+    // A colour Kainow refuses (it cannot carry white text, as the organisation form says).
+    assert.equal(followHint({ theme }, '#ffee58'), "Red, as the organisation's colour cannot be used here.");
   }
 });

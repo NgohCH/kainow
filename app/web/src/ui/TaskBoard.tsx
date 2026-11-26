@@ -1,6 +1,6 @@
 import { type ReactNode, useEffect, useId, useState } from 'react';
 import { type BoardBox, type BoardColumn, type BoardTask, inProjects, shownBoxes } from './board.ts';
-import { columnChoices, moreText } from './boardView.ts';
+import { columnChoices, moreText, startColumn } from './boardView.ts';
 import { plural } from '../format.ts';
 import { meaningVar, StatusLabel } from './StatusLabel.tsx';
 import type { Meaning } from './meanings.ts';
@@ -91,7 +91,7 @@ function Column<I>({ column, current, prefix, revealed, itemKey, renderItem, nou
 export function Board<I>({ label, columns, reveal, ...rest }: Props<I>) {
   const id = useId();
   const holds = (c: ItemColumn<I>) => reveal !== undefined && c.items.some((i) => rest.itemKey(i) === reveal);
-  const first = (columns.find((c) => c.items.length > 0) ?? columns[0])?.key ?? null;
+  const first = startColumn(columns.map((c) => ({ key: c.key, boxes: c.items })));
   const holding = columns.find(holds)?.key;
   const [picked, setPicked] = useState<string | null>(() => holding ?? null);
   useEffect(() => {

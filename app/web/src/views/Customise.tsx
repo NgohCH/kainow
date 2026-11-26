@@ -10,6 +10,7 @@ import {
   TAB_STYLES,
   TAB_STYLE_LABELS,
   densityOf,
+  followHint,
   followOrganisation,
   menuOf,
   resetLabel,
@@ -70,7 +71,7 @@ export function AppearanceChoice({ prefs, orgColour, save, name }: { prefs: Pref
           <span className="swatch" aria-hidden="true" style={{ background: followed.key === 'organisation' ? followed.tokens.accent : ACCENTS.red[prefs.theme].accent }} />
           <span>
             Follow the organisation
-            <span className="hint">{followed.key === 'organisation' ? "The organisation's colour." : 'Red, as the organisation has no colour of its own.'}</span>
+            <span className="hint">{followHint(prefs, orgColour)}</span>
           </span>
         </label>
         {schemeChoices(prefs.theme, orgColour).filter((c) => c.key !== 'organisation').map((c) => (

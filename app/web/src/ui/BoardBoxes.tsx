@@ -1,10 +1,9 @@
 import type { ReactNode } from 'react';
 import type { NeedsYouItem } from '../dashboard.ts';
 import { dayLabel } from '../dashboard.ts';
-import { TASK_STATUS_LABEL, TASK_STATUS_MEANING } from '../records.ts';
 import { type TaskLabelFields, TaskLabels } from '../views/Work.tsx';
 import type { BoardBox, BoardTask } from './board.ts';
-import { blockedText, boxName, parentText, progressText } from './boardView.ts';
+import { blockedText, boxName, parentText, progressText, subtaskLine } from './boardView.ts';
 import { itemDate } from './byProject.ts';
 import { KIND_GROUP } from './attention.ts';
 import { StatusLabel } from './StatusLabel.tsx';
@@ -46,13 +45,21 @@ export function TaskBoxView<T extends BoxTask>({ box, action, level = 4 }: { box
       {blocked && <p className="task-box-blocked">{blocked}</p>}
       {box.subtasks.length > 0 && (
         <ul className="task-box-subtasks">
-          {box.subtasks.map(({ task: s, depth }) => (
-            <li key={s.id} style={{ ['--depth' as string]: depth - 1 }}>
-              <span className="task-box-sub-title">{s.title}</span>
-              <StatusLabel meaning={TASK_STATUS_MEANING[s.status]} word={TASK_STATUS_LABEL[s.status]} />
-              <span className="meta">{s.assignee.displayName}</span>
-            </li>
-          ))}
+          {box.subtasks.map(({ task: s, depth }) => {
+            // Everything the subtask's row in the list shows; its title opens it as a box's title does.
+            const line = subtaskLine(s);
+            return (
+              <li key={s.id} style={{ ['--depth' as string]: depth - 1 }}>
+                <a className="task-box-sub-title" href={line.href}>{s.title}</a>
+                <span className="label-stack">
+                  {line.labels.map((l) => <StatusLabel key={l.word} meaning={l.meaning} word={l.word} />)}
+                </span>
+                <span className="meta">{line.due}</span>
+                <span className="meta">{s.assignee.displayName}</span>
+                {line.blocked && <span className="task-box-blocked task-box-sub-blocked">{line.blocked}</span>}
+              </li>
+            );
+          })}
         </ul>
       )}
     </article>

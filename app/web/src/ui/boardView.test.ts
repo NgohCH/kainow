@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { BoardTask } from './board.ts';
-import { blockedText, boxName, columnChoices, parentText, moreText, progressText, startColumn } from './boardView.ts';
+import { blockedText, boxName, columnChoices, parentText, moreText, progressText, startColumn, subtaskLine, taskLabelList } from './boardView.ts';
 
 const task = (o: Partial<BoardTask> = {}): BoardTask => ({
   id: 't1', title: 'Write plan', parentId: null, parentTitle: null, status: 'in_progress', dueOn: '2026-12-04', overdue: false, dueSoon: false,
@@ -42,4 +42,37 @@ test('Show more appears past ten boxes and offers fewer once open', () => {
   assert.equal(moreText(10, false), null);
   assert.equal(moreText(14, false), 'Show more (4 more)');
   assert.equal(moreText(14, true), 'Show fewer');
+});
+
+test('a subtask inside its parent box shows what its list row shows: an overdue one', () => {
+  const s = task({ id: 's1', parentId: 't1', title: 'Order cables', status: 'not_started', dueOn: '2026-11-20', overdue: true });
+  const line = subtaskLine({ ...s, changeWaiting: true, deadlineReviewRequired: false });
+  assert.deepEqual(line.labels.map((l) => l.word), ['Not started', 'Overdue', 'Change waiting']);
+  assert.equal(line.labels[1].meaning, 'overdue', 'Overdue keeps its symbol and colour');
+  assert.equal(line.due, 'Due 20 Nov 2026');
+  assert.equal(line.blocked, null);
+  // Its title opens it on the Work tab, as a box does.
+  assert.equal(line.href, '#/projects/pr/work/s1');
+});
+
+test('a blocked subtask inside its parent box shows its reason, and a held one its label and no reason', () => {
+  const s = task({ id: 's2', parentId: 't1', title: 'Fit shelves', status: 'blocked', dueSoon: true });
+  const line = subtaskLine({ ...s, blockedReason: 'The shelves have not arrived' });
+  assert.deepEqual(line.labels.map((l) => l.word), ['Blocked', 'Due soon']);
+  assert.equal(line.blocked, 'Blocked: The shelves have not arrived');
+  // Held for a credential review: the server sends no reason, and the line shows the held label.
+  const held = subtaskLine({ ...s, blockedReason: null, quarantineLabel: 'Credential removed — under review' });
+  assert.deepEqual(held.labels.map((l) => l.word), ['Blocked', 'Due soon', 'Credential removed — under review']);
+  assert.equal(held.blocked, null);
+});
+
+test('task labels: the status first, then each flag that holds, in the list row order', () => {
+  const all = taskLabelList({
+    status: 'in_progress', overdue: true, dueSoon: true, awaitingMembership: true, invitation: 'sent', dueAfterParent: true,
+    changeWaiting: true, deadlineReviewRequired: true, parentCancelled: true,
+  });
+  assert.deepEqual(all.map((l) => l.word), [
+    'In progress', 'Overdue', 'Due soon', 'Awaiting Membership (invitation sent)', 'Due after its parent task', 'Change waiting', 'Deadline review required', 'Parent cancelled',
+  ]);
+  assert.deepEqual(taskLabelList({ status: 'completed', overdue: false }).map((l) => l.word), ['Completed']);
 });

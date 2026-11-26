@@ -1,7 +1,8 @@
 /** What the board components say in words (11a.2): pure, so the wording is tested without a browser. */
 import { dayLabel } from '../dashboard.ts';
 import { plural } from '../format.ts';
-import { TASK_STATUS_LABEL } from '../records.ts';
+import { TASK_STATUS_LABEL, TASK_STATUS_MEANING } from '../records.ts';
+import type { Meaning } from './meanings.ts';
 import { type BoardTask, FIRST_BOXES } from './board.ts';
 
 /** The name a screen reader gets for a box: the title first, then status, due day and overdue. */
@@ -33,3 +34,41 @@ export const startColumn = (columns: readonly { key: string; boxes: readonly unk
 /** The "Show more" button's words, or null when every box already shows. */
 export const moreText = (total: number, all: boolean): string | null =>
   total <= FIRST_BOXES ? null : all ? 'Show fewer' : `Show more (${total - FIRST_BOXES} more)`;
+
+/** The flags a task's row shows, beside its status. Optional fields are absent on screens that do not have them. */
+export type LabelFields = {
+  status: BoardTask['status'];
+  overdue: boolean;
+  dueSoon?: boolean;
+  awaitingMembership?: boolean;
+  invitation?: string | null;
+  dueAfterParent?: boolean;
+  changeWaiting?: boolean;
+  deadlineReviewRequired?: boolean;
+  parentCancelled?: boolean;
+};
+
+/** A task's labels, each a meaning (symbol and colour) with its word: its status first, then each flag that holds. */
+export function taskLabelList(t: LabelFields): { meaning: Meaning; word: string }[] {
+  const out: { meaning: Meaning; word: string }[] = [{ meaning: TASK_STATUS_MEANING[t.status], word: TASK_STATUS_LABEL[t.status] }];
+  if (t.overdue) out.push({ meaning: 'overdue', word: 'Overdue' });
+  if (t.dueSoon) out.push({ meaning: 'dueSoon', word: 'Due soon' });
+  if (t.awaitingMembership) out.push({ meaning: 'review', word: `Awaiting Membership${t.invitation ? ` (invitation ${t.invitation})` : ''}` });
+  if (t.dueAfterParent) out.push({ meaning: 'review', word: 'Due after its parent task' });
+  if (t.changeWaiting) out.push({ meaning: 'review', word: 'Change waiting' });
+  if (t.deadlineReviewRequired) out.push({ meaning: 'overdue', word: 'Deadline review required' });
+  if (t.parentCancelled) out.push({ meaning: 'review', word: 'Parent cancelled' });
+  return out;
+}
+
+/**
+ * What one subtask line inside its parent's box says: everything its row in the list shows (its labels, the held label,
+ * its due day and its blocked reason), and where its title leads (its panel on the Work tab).
+ */
+export function subtaskLine(s: BoardTask & LabelFields & { quarantineLabel?: string | null; blockedReason?: string | null }): {
+  href: string; labels: { meaning: Meaning; word: string }[]; due: string; blocked: string | null;
+} {
+  const labels = taskLabelList(s);
+  if (s.quarantineLabel) labels.push({ meaning: 'review', word: s.quarantineLabel });
+  return { href: `#/projects/${s.projectId}/work/${s.id}`, labels, due: `Due ${dayLabel(s.dueOn)}`, blocked: blockedText(s.status, s.blockedReason) };
+}

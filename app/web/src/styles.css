@@ -1205,7 +1205,7 @@ button.stat-tile[aria-pressed="true"] { border-color: var(--accent); box-shadow:
 .board-picker { display: none; gap: 0.5rem; align-items: center; margin: 0 0 0.7rem; font-size: 14px; }
 .board-picker select { min-width: 0; max-width: 100%; font: inherit; }
 .board-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); gap: 0.8rem; align-items: start; }
-.board-col { min-width: 0; background: var(--well); border-radius: 6px; padding: 0.6rem 0.7rem; }
+.board-col { min-width: 0; background: var(--well); border: 1px solid var(--control-border); border-radius: 6px; padding: 0.6rem 0.7rem; }
 .board-col.edge-top { border-top: 4px solid var(--mc); }
 .board-col.board-plain { border-top: 4px solid var(--control-border); }
 .board-heading { display: flex; align-items: center; gap: 0.6rem; font-family: inherit; font-size: 15px; margin: 0 0 0.5rem; overflow-wrap: anywhere; }
@@ -1217,7 +1217,7 @@ button.stat-tile[aria-pressed="true"] { border-color: var(--accent); box-shadow:
 .board-col .board-project-name { font-family: inherit; font-size: 13px; color: var(--muted); margin: 0.4rem 0 0.3rem; overflow-wrap: anywhere; }
 .board-none { color: var(--muted); margin: 0; }
 .board-more { margin-top: 0.2rem; }
-.task-box { background: var(--surface); border: 1px solid var(--muted-wash); border-radius: 6px; padding: 0.6rem 0.8rem; min-width: 0; overflow-wrap: anywhere; }
+.task-box { background: var(--surface); border: 1px solid var(--control-border); border-radius: 6px; padding: 0.6rem 0.8rem; min-width: 0; overflow-wrap: anywhere; }
 .task-box-title { font-family: inherit; font-size: 15px; line-height: 1.4; margin: 0 0 0.3rem; }
 .task-box-title .link-button { text-align: left; font-weight: 600; }
 .task-box-line { display: flex; flex-wrap: wrap; gap: 0.1rem 0.8rem; margin: 0.3rem 0 0; }
@@ -1225,6 +1225,7 @@ button.stat-tile[aria-pressed="true"] { border-color: var(--accent); box-shadow:
 .task-box-subtasks { list-style: none; margin: 0.5rem 0 0; padding: 0; border-top: 1px solid var(--muted-wash); }
 .task-box-subtasks li { display: flex; flex-wrap: wrap; align-items: center; gap: 0.1rem 0.5rem; padding: 0.3rem 0 0.3rem calc(var(--depth, 0) * 1rem); font-size: 14px; }
 .task-box-sub-title { flex: 1 1 8rem; min-width: 0; }
+.task-box-sub-blocked { flex: 1 1 100%; margin: 0; }
 @media (max-width: 699px) {
   .board-picker { display: flex; }
   .board-col:not(.is-current) { display: none; }

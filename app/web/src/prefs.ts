@@ -408,3 +408,9 @@ export function createPrefsSaver(put: (next: Prefs) => Promise<Prefs>, onChange:
     },
   };
 }
+
+/** The hint under "Follow the organisation": the colour it shows, and why it is Red when it is (C117). */
+export function followHint(prefs: Pick<Prefs, 'theme'>, orgColour: string | null): string {
+  if (schemeFor({ theme: prefs.theme, accent: 'red', accentChosen: false }, orgColour).key === 'organisation') return "The organisation's colour.";
+  return orgColour ? "Red, as the organisation's colour cannot be used here." : 'Red, as the organisation has no colour of its own.';
+}
