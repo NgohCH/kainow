@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { BoardTask } from './board.ts';
-import { blockedText, boxName, columnChoices, holderText, moreText, progressText, startColumn } from './boardView.ts';
+import { blockedText, boxName, columnChoices, parentText, moreText, progressText, startColumn } from './boardView.ts';
 
 const task = (o: Partial<BoardTask> = {}): BoardTask => ({
   id: 't1', title: 'Write plan', parentId: null, parentTitle: null, status: 'in_progress', dueOn: '2026-12-04', overdue: false, dueSoon: false,
@@ -19,8 +19,8 @@ test('progress, holder and blocked wording', () => {
   assert.equal(progressText({ done: 2, total: 5 }), '2 of 5 subtasks done');
   assert.equal(progressText({ done: 0, total: 1 }), '0 of 1 subtask done');
   assert.equal(progressText({ done: 0, total: 0 }), null);
-  assert.equal(holderText(task()), 'Ann Lee');
-  assert.equal(holderText(task({ parentTitle: 'Plan' })), 'Subtask of Plan');
+  assert.equal(parentText(task()), null);
+  assert.equal(parentText(task({ parentTitle: 'Plan' })), 'Subtask of Plan');
   assert.equal(blockedText('blocked', 'Waiting on legal'), 'Blocked: Waiting on legal');
   assert.equal(blockedText('blocked', null), null);
   assert.equal(blockedText('in_progress', 'x'), null);

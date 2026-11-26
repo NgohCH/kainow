@@ -2,7 +2,7 @@
 import { dayLabel } from '../dashboard.ts';
 import { plural } from '../format.ts';
 import { TASK_STATUS_LABEL } from '../records.ts';
-import { type BoardColumn, type BoardTask, FIRST_BOXES } from './board.ts';
+import { type BoardTask, FIRST_BOXES } from './board.ts';
 
 /** The name a screen reader gets for a box: the title first, then status, due day and overdue. */
 export function boxName(t: BoardTask): string {
@@ -15,15 +15,15 @@ export function progressText(p: { done: number; total: number }): string | null 
   return p.total === 0 ? null : `${p.done} of ${plural(p.total, 'subtask')} done`;
 }
 
-/** Who holds the task, or what it is a subtask of. */
-export const holderText = (t: BoardTask): string => (t.parentTitle !== null ? `Subtask of ${t.parentTitle}` : t.assignee.displayName);
+/** What a subtask is a subtask of, or null. The assignee is always shown beside it. */
+export const parentText = (t: BoardTask): string | null => (t.parentTitle !== null ? `Subtask of ${t.parentTitle}` : null);
 
 /** "Blocked: <reason>", or null when it is not blocked or gave no reason. */
 export const blockedText = (status: BoardTask['status'], reason: string | null | undefined): string | null =>
   status === 'blocked' && reason ? `Blocked: ${reason}` : null;
 
 /** The choices of the "Column" select on a narrow screen: each column's name and count. */
-export const columnChoices = (columns: readonly BoardColumn<BoardTask>[]): { key: string; label: string }[] =>
+export const columnChoices = (columns: readonly { key: string; heading: string; boxes: readonly unknown[] }[]): { key: string; label: string }[] =>
   columns.map((c) => ({ key: c.key, label: `${c.heading} (${c.boxes.length})` }));
 
 /** The column a narrow screen starts on: the first with boxes, else the first. */
