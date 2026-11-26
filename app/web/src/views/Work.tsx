@@ -305,7 +305,8 @@ export function Work({
 const SEVERITY_ORDER: Severity[] = ['low', 'medium', 'high', 'critical'];
 
 /** A task's state and what else is true of it, each as a label with its symbol and word. */
-export function TaskLabels({ t }: { t: TaskView & { dueSoon?: boolean } }) {
+export type TaskLabelFields = Pick<TaskView, 'status' | 'overdue'> & Partial<Omit<TaskView, 'status' | 'overdue'>>;
+export function TaskLabels({ t }: { t: TaskLabelFields }) {
   return (
     <span className="label-stack">
       <StatusLabel meaning={TASK_STATUS_MEANING[t.status]} word={TASK_STATUS_LABEL[t.status]} />

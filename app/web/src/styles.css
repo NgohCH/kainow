@@ -1176,3 +1176,33 @@ button.stat-tile[aria-pressed="true"] { border-color: var(--accent); box-shadow:
   .dup-task.depth-1 { margin-left: 0.6rem; }
   .dup-task.depth-2 { margin-left: 1.2rem; }
 }
+
+/* Task boards (11a.2): columns that wrap; below 700 px one column at a time, chosen with the Column select. */
+.board-picker { display: none; gap: 0.5rem; align-items: center; margin: 0 0 0.7rem; font-size: 14px; }
+.board-picker select { min-width: 0; max-width: 100%; font: inherit; }
+.board-cols { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 16rem), 1fr)); gap: 0.8rem; align-items: start; }
+.board-col { min-width: 0; background: var(--paper); border: 1px solid var(--rule); border-radius: 6px; padding: 0.6rem 0.7rem; }
+.board-col.edge-top { border-top: 5px solid var(--mc); }
+.board-col.board-plain { border-top: 5px solid var(--rule); }
+.board-heading { display: flex; align-items: center; gap: 0.6rem; font-family: inherit; font-size: 15px; margin: 0 0 0.5rem; overflow-wrap: anywhere; }
+.board-heading .status-label { background: none; padding: 0; }
+.board-name { font-weight: 600; }
+.board-count { font-size: 13px; color: var(--muted); }
+.board-fold { display: inline-flex; gap: 0.4rem; align-items: center; background: none; border: 0; padding: 0.25rem 0; color: var(--ink); font: inherit; cursor: pointer; }
+.board-boxes { list-style: none; margin: 0 0 0.5rem; padding: 0; display: grid; gap: 0.5rem; }
+.board-project-name { font-family: inherit; font-size: 13px; color: var(--muted); margin: 0.4rem 0 0.3rem; overflow-wrap: anywhere; }
+.board-none { color: var(--muted); margin: 0; }
+.board-more { margin-top: 0.2rem; }
+.task-box { background: var(--surface); border: 1px solid var(--muted-wash); border-radius: 6px; padding: 0.6rem 0.8rem; min-width: 0; overflow-wrap: anywhere; }
+.task-box-title { font-family: inherit; font-size: 15px; line-height: 1.4; margin: 0 0 0.3rem; }
+.task-box-title .link-button { text-align: left; font-weight: 600; }
+.task-box-line { display: flex; flex-wrap: wrap; gap: 0.1rem 0.8rem; margin: 0.3rem 0 0; }
+.task-box-blocked { margin: 0.3rem 0 0; color: var(--m-blocked); font-size: 14px; }
+.task-box-subtasks { list-style: none; margin: 0.5rem 0 0; padding: 0; border-top: 1px solid var(--muted-wash); }
+.task-box-subtasks li { display: flex; flex-wrap: wrap; align-items: center; gap: 0.1rem 0.5rem; padding: 0.3rem 0 0.3rem calc(var(--depth, 0) * 1rem); font-size: 14px; }
+.task-box-sub-title { flex: 1 1 8rem; min-width: 0; }
+@media (max-width: 699px) {
+  .board-picker { display: flex; }
+  .board-col:not(.is-current) { display: none; }
+  .board-cols { grid-template-columns: minmax(0, 1fr); }
+}
