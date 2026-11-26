@@ -520,7 +520,7 @@ export async function walkthrough({ base, db, api, must, check, wide, narrow, si
   await api('POST', `/projects/${walkId}/proposals`, { kind: 'question', text: 'Who keeps the spare cables?' });
   for (const tabStyle of ['grey', 'tinted', 'boxes']) {
     for (const theme of ['light', 'dark']) {
-      must('preferences', await api('PUT', '/me/preferences', { theme, accent: 'red', accentChosen: true, tabStyle }));
+      must('preferences', await api('PUT', '/me/preferences', { theme, accent: 'red', accentChosen: true, tabStyle, views: { needsYou: 'project' } }));
       await both(`tab style ${tabStyle}, ${theme}`, `#/projects/${walkId}/work`);
       say((await wide.$eval('html', (e) => e.getAttribute('data-tabs'))) === tabStyle, `the tabs are not in the ${tabStyle} style`);
     }
@@ -535,6 +535,7 @@ export async function walkthrough({ base, db, api, must, check, wide, narrow, si
     ['proposals', `#/projects/${copyId}/proposals`],
   ]) {
     await both(`${label}, Dark`, hash);
+    if (label === 'home by project') say((await wide.$$('main .project-group')).length > 1, 'Home in Dark is not by project');
   }
   // Choosing a style on My profile changes the tabs at once, and it is kept.
   await open(wide, '#/me');

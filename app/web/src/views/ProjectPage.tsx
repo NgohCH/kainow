@@ -24,7 +24,7 @@ import { type NeedsYouItem, type PersonalDashboard, type ProjectDashboard, dayLa
 import { todayUtc8 } from '../changes.ts';
 import { taskHref } from '../taskPage.ts';
 import { TASK_STATUS_LABEL, TASK_STATUS_MEANING, type TaskStatus } from '../records.ts';
-import { addDays, dueWithin, projectAttention, taskStatusParts } from '../overview.ts';
+import { addDays, copiedDraftWait, dueWithin, projectAttention, taskStatusParts } from '../overview.ts';
 import { stageFlowFrom, stageTiming, type ProjectStage } from '../ui/stages.ts';
 import { AttentionQueue } from '../ui/AttentionQueue.tsx';
 import { BinderTabs } from '../ui/BinderTabs.tsx';
@@ -280,8 +280,8 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
       {notice && <p role="status" className="meta">{notice}</p>}
       {/* The Overview keeps its boxes; the other tabs are divided by thin rules (11a.2 spec 7). */}
       <div className={view === 'overview' ? 'project-tab' : 'project-tab ruled'}>
-      {view === 'overview' && project.copiedFrom && project.status === 'draft' && roles.length > 0 && (
-        <p className="warn">What was copied waits on <a href={`${base}/proposals`}>Proposals</a>. {PROPOSALS_START}</p>
+      {view === 'overview' && copiedDraftWait(project, roles.length, counts.waiting) && (
+        <p className="warn">{copiedDraftWait(project, roles.length, counts.waiting)} <a href={`${base}/proposals`}>Proposals</a>. {PROPOSALS_START}</p>
       )}
       {view === 'overview' && <Overview project={project} act={act} contentAllowed={contentAllowed} />}
       {view === 'timeline' && contentAllowed && <Timeline projectId={project.id} prefs={prefs} ready={prefsReady} onChange={onPrefs} />}

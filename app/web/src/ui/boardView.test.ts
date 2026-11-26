@@ -9,7 +9,7 @@ const task = (o: Partial<BoardTask> = {}): BoardTask => ({
 });
 
 test('a box is named by its title first, then status and due day', () => {
-  assert.equal(boxName(task()), 'Write plan, In Progress, due 4 Dec 2026');
+  assert.equal(boxName(task()), 'Write plan, In progress, due 4 Dec 2026');
   assert.ok(boxName(task({ overdue: true })).endsWith(', overdue'));
   assert.ok(boxName(task({ dueSoon: true })).endsWith(', due soon'));
   assert.match(boxName(task({ status: 'completed', completedOn: '2026-11-20' })), /^Write plan, Completed, due 4 Dec 2026, completed 20 Nov 2026/);

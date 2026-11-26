@@ -54,8 +54,8 @@ test('searchedLine pluralises', () => {
 });
 
 test('statusLabel uses the words the rest of the app uses', () => {
-  assert.equal(statusLabel('task', 'not_started'), 'Not Started');
-  assert.equal(statusLabel('task', 'in_progress'), 'In Progress');
+  assert.equal(statusLabel('task', 'not_started'), 'Not started');
+  assert.equal(statusLabel('task', 'in_progress'), 'In progress');
   assert.equal(statusLabel('decision', 'superseded'), 'Superseded');
   assert.equal(statusLabel('question', 'answered'), 'Answered');
   assert.equal(statusLabel('risk', 'mitigating'), 'Mitigating');

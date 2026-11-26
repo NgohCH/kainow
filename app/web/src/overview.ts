@@ -35,3 +35,11 @@ export function dueWithin<T extends { dueOn: string; status: string; title: stri
 export function projectAttention(items: readonly NeedsYouItem[], projectId: string): NeedsYouItem[] {
   return items.filter((i) => i.projectId === projectId);
 }
+
+/**
+ * The start of the Overview's line on a copied Draft, before its link to Proposals: only when proposals wait there.
+ * Copied stages, settings and resources are already in place; copied tasks and risks wait as proposals (D140).
+ */
+export function copiedDraftWait(project: { copiedFrom?: unknown; status: string }, roles: number, waiting: number): string | null {
+  return project.copiedFrom && project.status === 'draft' && roles > 0 && waiting > 0 ? 'Copied tasks and risks wait on' : null;
+}
