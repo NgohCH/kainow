@@ -47,6 +47,20 @@ export const TAB_STYLES = ['boxes', 'grey', 'tinted'] as const;
 export type TabStyle = (typeof TAB_STYLES)[number];
 export const TAB_STYLE_LABELS: Record<TabStyle, string> = { boxes: 'Boxes', grey: 'Grey dividers', tinted: 'Tinted dividers' };
 
+export const MENUS = ['light', 'dark'] as const;
+export type MenuStyle = (typeof MENUS)[number];
+export const DENSITIES = ['comfortable', 'compact'] as const;
+export type Density = (typeof DENSITIES)[number];
+
+/** How each list of tasks is laid out (mirrors the server's views). */
+export type Views = {
+  work: 'board' | 'list';
+  workBy: 'status' | 'assignee';
+  myTasks: 'board' | 'project' | 'due';
+  needsYou: 'board' | 'project';
+};
+export const DEFAULT_VIEWS: Views = { work: 'board', workBy: 'status', myTasks: 'board', needsYou: 'board' };
+
 export type Prefs = {
   theme: Theme;
   accent: AccentKey;
@@ -54,6 +68,11 @@ export type Prefs = {
   accentChosen: boolean;
   /** How a project's tabs look (D135). */
   tabStyle: TabStyle;
+  /** The side menu: light by default, dark as a personal option. */
+  menu: MenuStyle;
+  /** Spacing of lists and boards. */
+  density: Density;
+  views: Views;
   home: { order: HomeSection[]; hidden: HomeSection[]; showCompleted: boolean; includeArchived: boolean };
   leadership: { fields: { order: string[]; hidden: string[] } };
   expanded: Record<string, boolean>;
@@ -65,6 +84,9 @@ export const DEFAULT_PREFS: Prefs = {
   accent: 'red',
   accentChosen: false,
   tabStyle: 'boxes',
+  menu: 'light',
+  density: 'comfortable',
+  views: { ...DEFAULT_VIEWS },
   home: { order: [...HOME_SECTIONS], hidden: [], showCompleted: false, includeArchived: false },
   leadership: { fields: { order: LEADERSHIP_FIELDS.map((f) => f.key), hidden: [] } },
   expanded: {},
@@ -89,6 +111,24 @@ export function resetPrefs(prefs: Prefs, parts: readonly PrefsPart[]): Prefs {
 
 /** The tab style shown; a document without one shows the default. */
 export const tabStyleOf = (prefs: Partial<Pick<Prefs, 'tabStyle'>>): TabStyle => prefs.tabStyle ?? DEFAULT_PREFS.tabStyle;
+
+/** The menu shown; a document saved before the choice existed shows the light one. */
+export const menuOf = (prefs: Partial<Pick<Prefs, 'menu'>>): MenuStyle => (MENUS as readonly string[]).includes(prefs.menu as string) ? prefs.menu! : DEFAULT_PREFS.menu;
+
+/** The spacing shown; a document saved before the choice existed shows comfortable. */
+export const densityOf = (prefs: Partial<Pick<Prefs, 'density'>>): Density => (DENSITIES as readonly string[]).includes(prefs.density as string) ? prefs.density! : DEFAULT_PREFS.density;
+
+/** Every view choice, each falling back to its default when a document saved earlier lacks it. */
+export function viewsOf(prefs: { views?: Partial<Views> | null }): Views {
+  const v = prefs.views ?? {};
+  const pick = <K extends keyof Views>(k: K, allowed: readonly Views[K][]): Views[K] => (allowed.includes(v[k] as Views[K]) ? (v[k] as Views[K]) : DEFAULT_VIEWS[k]);
+  return {
+    work: pick('work', ['board', 'list']),
+    workBy: pick('workBy', ['status', 'assignee']),
+    myTasks: pick('myTasks', ['board', 'project', 'due']),
+    needsYou: pick('needsYou', ['board', 'project']),
+  };
+}
 
 /** A personal or leadership list of projects: expanded when the person chose so, else when 5 or fewer are shown. */
 export function expansionDefault(shownCount: number, saved: boolean | undefined): boolean {

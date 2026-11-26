@@ -81,6 +81,13 @@ export interface MyTask {
   dueOn: string;
   status: string;
   overdueDays?: number;
+  /** The UTC+8 day it was completed (YYYY-MM-DD), else null. */
+  completedOn: string | null;
+  blockedReason: string | null;
+  /** The task this one is a subtask of, when it is one. */
+  parent: { id: string; title: string } | null;
+  /** Its direct subtasks: live ones only, cancelled not counted. */
+  subtasks: { done: number; total: number };
 }
 
 export interface PersonalProject {

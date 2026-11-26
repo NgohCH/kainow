@@ -396,3 +396,17 @@ test('tab styles: the open tab differs by weight and by size or edge, not colour
   assert.equal(tabRule('boxes', '.tab')['border-radius'], '8px');
   assert.match(css, /@media \(forced-colors: active\) \{[^@]*\.tab\.open/, 'forced colours mark the open tab');
 });
+
+test('menu, spacing and view choices have the server defaults and read an older document', async () => {
+  const { menuOf, densityOf, viewsOf } = await import('./prefs.ts');
+  assert.equal(DEFAULT_PREFS.menu, 'light');
+  assert.equal(DEFAULT_PREFS.density, 'comfortable');
+  assert.deepEqual(DEFAULT_PREFS.views, { work: 'board', workBy: 'status', myTasks: 'board', needsYou: 'board' });
+  assert.equal(menuOf({}), 'light');
+  assert.equal(menuOf({ menu: 'dark' }), 'dark');
+  assert.equal(densityOf({}), 'comfortable');
+  assert.equal(densityOf({ density: 'compact' }), 'compact');
+  assert.deepEqual(viewsOf({}), DEFAULT_PREFS.views);
+  assert.deepEqual(viewsOf({ views: { work: 'list' } }), { ...DEFAULT_PREFS.views, work: 'list' });
+  assert.deepEqual(viewsOf({ views: { myTasks: 'nonsense' as never, needsYou: 'project' } }), { ...DEFAULT_PREFS.views, needsYou: 'project' });
+});

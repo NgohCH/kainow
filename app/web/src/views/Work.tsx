@@ -60,6 +60,10 @@ export interface TaskView {
   dueOn: string;
   status: TaskStatus;
   overdue: boolean;
+  dueSoon: boolean;
+  /** The UTC+8 day it was completed (YYYY-MM-DD), else null. */
+  completedOn: string | null;
+  blockedReason: string | null;
   awaitingMembership: boolean;
   invitation: string | null;
   dueAfterParent: boolean;
