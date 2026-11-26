@@ -31,6 +31,18 @@ export async function walkthrough({ base, db, api, must, check, wide, narrow, si
   };
   const text = (page, scope = 'main') => page.$eval(scope, (e) => e.innerText.replace(/\s+/g, ' '));
   const hashOf = (page) => page.evaluate(() => location.hash);
+  /**
+   * How Home's Needs you box is drawn: 'project' (project groups, no board) or 'board' (a board, no project groups), else
+   * what it holds. Only that box: Home's My tasks section is always by project.
+   */
+  const needsYouView = (page) =>
+    page.evaluate(() => {
+      const box = [...document.querySelectorAll('main section.box')].find((s) => s.querySelector(':scope > .box-title')?.textContent.trim() === 'Needs you');
+      if (!box) return 'no Needs you box';
+      const groups = box.querySelectorAll('.project-group').length;
+      const board = box.querySelectorAll('.board, .task-box').length;
+      return groups > 0 && board === 0 ? 'project' : board > 0 && groups === 0 ? 'board' : `${groups} project groups and ${board} board parts`;
+    });
   const focused = (page) => page.evaluate(() => document.activeElement?.id ?? '');
   /** What one box or table says, by its heading or caption; '' when it is not there. */
   const partText = (page, name) =>
@@ -372,11 +384,12 @@ export async function walkthrough({ base, db, api, must, check, wide, narrow, si
   await both('project tab bar and Stages of a closed project', `#/projects/${lifeId}/settings`);
 
   // --- D141: Home and My tasks by project ---------------------------------------------------------------------------------------
-  await both('home, Needs you and My tasks by project', '#/');
-  say((await wide.$$('main .project-group')).length > 1, 'Home is not grouped by project');
-  await both('my tasks by project, every row of a box shown', '#/my-tasks', (page) => press(page, /^Show all \d+$/));
-  await both('my tasks by project, a box closed', '#/my-tasks', (page) => page.click('main .project-group-toggle'));
-  await both('my tasks by due date', '#/my-tasks', (page) => fill(page, 'Group by', 'due'));
+  await both('home, Needs you by project and My tasks by project', '#/', (page) => fill(page, 'View', 'project'));
+  say((await needsYouView(wide)) === 'project', `Home's Needs you is not by project (${await needsYouView(wide)})`);
+  await both('my tasks as a board', '#/my-tasks', (page) => fill(page, 'View', 'board'));
+  await both('my tasks by project, every row of a box shown', '#/my-tasks', async (page) => { await fill(page, 'View', 'project'); await press(page, /^Show all \d+$/); });
+  await both('my tasks by project, a box closed', '#/my-tasks', async (page) => { await fill(page, 'View', 'project'); await page.click('main .project-group-toggle'); });
+  await both('my tasks by due date', '#/my-tasks', (page) => fill(page, 'View', 'due'));
   say(!(await wide.$('main .project-group')) && (await wide.$('main table')), 'My tasks by due date is still grouped');
 
   // --- D134: My profile, with a past role and a retired department -------------------------------------------------------------
@@ -519,7 +532,7 @@ export async function walkthrough({ base, db, api, must, check, wide, narrow, si
   await api('POST', `/projects/${walkId}/proposals`, { kind: 'question', text: 'Who keeps the spare cables?' });
   for (const tabStyle of ['grey', 'tinted', 'boxes']) {
     for (const theme of ['light', 'dark']) {
-      must('preferences', await api('PUT', '/me/preferences', { theme, accent: 'red', accentChosen: true, tabStyle }));
+      must('preferences', await api('PUT', '/me/preferences', { theme, accent: 'red', accentChosen: true, tabStyle, views: { needsYou: 'project' } }));
       await both(`tab style ${tabStyle}, ${theme}`, `#/projects/${walkId}/work`);
       say((await wide.$eval('html', (e) => e.getAttribute('data-tabs'))) === tabStyle, `the tabs are not in the ${tabStyle} style`);
     }
@@ -534,6 +547,7 @@ export async function walkthrough({ base, db, api, must, check, wide, narrow, si
     ['proposals', `#/projects/${copyId}/proposals`],
   ]) {
     await both(`${label}, Dark`, hash);
+    if (label === 'home by project') say((await needsYouView(wide)) === 'project', `Home's Needs you in Dark is not by project (${await needsYouView(wide)})`);
   }
   // Choosing a style on My profile changes the tabs at once, and it is kept.
   await open(wide, '#/me');

@@ -1,7 +1,7 @@
 import { COVERAGE_NOTE, MEASURES_VERSION, type PlannedEnd } from '../dashboards/measures';
 import type { ProjectStatus } from '../projects/matrix';
 import type { AnalyticsFilters } from './filters';
-import { PROBLEM_KEYS, type ProblemsPanel, type ProgressPanel } from './panels.service';
+import { PROBLEM_KEYS, type ProblemsPanel, type ProgressPanel, type ProgressRow } from './panels.service';
 import type { ResourcesPanel, ResourcesTable } from './resources-panel';
 import type { OperationsPanel } from './operations.service';
 import type { SystemPanel } from './system.service';
@@ -106,6 +106,10 @@ export function exportMeta(panel: ExportPanel, f: AnalyticsFilters, departmentNa
 const days = (n: number) => `${n} day${n === 1 ? '' : 's'}`;
 const plannedEndText = (p: PlannedEnd): string => (p.state === 'none' ? 'No planned end date' : p.state === 'ahead' ? `In ${days(p.days)}` : `Ended ${days(p.daysAgo)} ago`);
 
+/** "Build: Testing", or "Build: Testing (stopped)" once a deferral or closure stopped it; its days then run to the stop (D138). */
+const stageCell = (s: ProgressRow['stage']): string =>
+  s ? `${s.substage ? `${s.stage}: ${s.substage}` : s.stage}${s.stopped ? ' (stopped)' : ''}` : '';
+
 type Table = { columns: string[]; rows: unknown[][] };
 export type PanelData =
   | { panel: 'progress'; data: ProgressPanel }
@@ -132,7 +136,7 @@ export function panelTable(p: PanelData): Table {
       const measured = o.state === 'measured' ? o : null;
       rows.push([
         'Project', r.name, r.owningDepartment, STATUS_LABEL[r.status], r.stageTemplate ?? '',
-        r.stage ? (r.stage.substage ? `${r.stage.stage}: ${r.stage.substage}` : r.stage.stage) : '', r.stage?.days ?? '',
+        stageCell(r.stage), r.stage?.days ?? '',
         c.state === 'measurable' ? c.done : '', c.state === 'measurable' ? c.total : '', c.cancelled, c.state === 'measurable' ? c.percent : 'Progress not yet measurable',
         measured?.due ?? '', measured?.done ?? '', measured?.late ?? '', measured?.percent ?? 'Nothing due yet',
         o.awaitingReview, plannedEndText(r.plannedEnd), r.overdue, r.blocked,

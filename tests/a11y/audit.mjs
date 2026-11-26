@@ -27,6 +27,8 @@ const results = [];
 const faults = [];
 let lastState = 'start';
 const SIGNED_OUT = [[401, /^\/auth\/me$/]]; // signed out, the session check answers 401 by design
+/** Box and column edges against what is beside them (11a.2, D143): recorded, and an edge below 3:1 is a violation. */
+const edgeNotes = [];
 const refusals = [];
 function expectRefusal(page, status, path) {
   refusals.push({ page, status, path });
@@ -82,6 +84,9 @@ function report() {
   console.log(`
 ## Browser: ${faults.length} console error(s), page error(s) and unexpected 4xx or 5xx replies`);
   for (const f of faults) console.log(`- ${f}`);
+  if (edgeNotes.length) console.log(`
+## Board edges (non-text contrast; an edge below 3:1 is counted as a violation above)
+${edgeNotes.map((n) => `- ${n}`).join('\n')}`);
   console.log(`
 TOTAL violations: ${total}, browser faults: ${faults.length}, screen states: ${results.length}`);
   process.exitCode = total + faults.length > 0 ? 1 : 0;
@@ -316,6 +321,20 @@ await mkTask(barsProject, 'Send the invitations', addDays(40));
 for (const d of [16, 18]) await mkTask(barsProject, `Check the stock ${d}`, addDays(d));
 for (let d = 60; d <= 70; d++) await mkTask(barsProject, `Rehearse part ${d}`, addDays(d));
 await mkRisk(barsProject, 'The venue may be double-booked');
+// Sub-project 11a.2: a task completed today (the folded Completed column), one Blocked with its reason (shown on its box),
+// and one task per width that the keyboard-only check starts from the side panel.
+const doneTask = await mkTask(recordsId, 'Label the shelves', addDays(-1), 'completed');
+await db.query('update tasks set completed_at = now() where id = $1', [doneTask]);
+const blockedTask = await mkTask(recordsId, 'Move the reading room', addDays(9), 'blocked');
+await db.query("insert into task_events (id, task_id, kind, from_status, to_status, actor_id, note, at) values ($1, $2, 'blocked', 'in_progress', 'blocked', $3, 'The shelves have not arrived', now())", [randomUUID(), blockedTask, user]);
+// A parent In progress with an overdue subtask and a Blocked one (with a reason), shown inside the parent's box.
+const nestParent = await mkTask(recordsId, 'Shelve the archive', addDays(10), 'in_progress');
+for (const [title, due, status] of [['Box the old files', addDays(-2), 'not_started'], ['Label the boxes', addDays(6), 'blocked']]) {
+  const id = randomUUID();
+  await db.query("insert into tasks (id, project_id, parent_id, depth, title, assignee_id, due_on, status, authorised_by, authorised_at) values ($1, $2, $3, 1, $4, $5, $6, $7, $5, now())", [id, recordsId, nestParent, title, user, due, status]);
+  if (status === 'blocked') await db.query("insert into task_events (id, task_id, kind, from_status, to_status, actor_id, note, at) values ($1, $2, 'blocked', 'in_progress', 'blocked', $3, 'The labels are out of stock', now())", [randomUUID(), id, user]);
+}
+const keyboardTasks = { wide: await mkTask(recordsId, 'Keyboard check, wide', addDays(8)), narrow: await mkTask(recordsId, 'Keyboard check, narrow', addDays(8)) };
 // A 120-character project name, for the overflow check at 375 px (the project header and the tables).
 await db.query('update projects set name = $2 where id = $1', [closeB, 'Closing ready: a deliberately long dummy project name that keeps going to check the header wraps on a phone screen, okay']);
 await db.end();
@@ -403,6 +422,163 @@ const goFresh = async (page, hash) => {
   await wait(300);
 };
 
+// --- Sub-project 11a.2 (D142, D143): the boards, the side panel and the calmer look ----------------------------------------
+const prefsWith = (extra) => api('PUT', '/me/preferences', { theme: 'light', accent: 'red', accentChosen: false, ...extra });
+const workHash = `#/projects/${recordsId}/work`;
+async function recordEdges(name, page) {
+  const seen = await page.evaluate(() => {
+    const rgb = (s) => (s.match(/[\d.]+/g) ?? []).slice(0, 4).map(Number);
+    const lum = ([r, g, b]) => [r, g, b].map((v) => (v /= 255) <= 0.03928 ? v / 12.92 : ((v + 0.055) / 1.055) ** 2.4).reduce((s, v, i) => s + v * [0.2126, 0.7152, 0.0722][i], 0);
+    const ratio = (a, b) => { const [x, y] = [lum(rgb(a)), lum(rgb(b))].sort((p, q) => q - p); return Math.round(((x + 0.05) / (y + 0.05)) * 100) / 100; };
+    const behind = (el) => { for (let e = el; e; e = e.parentElement) { const c = getComputedStyle(e).backgroundColor; if (rgb(c)[3] !== 0) return c; } return 'rgb(255, 255, 255)'; };
+    const box = document.querySelector('main .task-box');
+    const col = document.querySelector('main .board-col.edge-top, main .board-col.board-plain');
+    if (!box || !col) return null;
+    const s = getComputedStyle(box);
+    const c = getComputedStyle(col);
+    const page = behind(col.parentElement);
+    return {
+      boxEdgeOnWell: ratio(s.borderTopColor, behind(box.parentElement)),
+      boxEdgeOnBox: ratio(s.borderTopColor, s.backgroundColor),
+      columnEdgeOnPage: ratio(c.borderLeftColor, page),
+      columnEdgeOnWell: ratio(c.borderLeftColor, c.backgroundColor),
+      columnTopEdgeOnPage: ratio(c.borderTopColor, page),
+    };
+  });
+  if (!seen) return;
+  edgeNotes.push(`${name}: ${Object.entries(seen).map(([k, v]) => `${k} ${v}:1`).join(', ')}`);
+  // Edges reach 3:1 (D143 ruling 5): a lower one is a violation.
+  const low = Object.entries(seen).filter(([, v]) => v < 3);
+  if (low.length) results.push({ name: `${name}: board edges`, violations: [{ id: 'board-edge-contrast', impact: 'serious', help: 'a board edge is below 3:1', nodes: low.map(([k, v]) => `${k} ${v}:1`) }] });
+}
+/** On a board below 700 px one column shows at a time: choose the one with this key in its Column list. */
+async function pickColumn(page, key) {
+  const picker = await page.$('main .board-picker select');
+  if (picker && (await picker.evaluate((e) => e.getClientRects().length > 0))) {
+    await picker.select(key);
+    await wait(200);
+  }
+}
+/** Waits until the side panel shows the task (not "Loading"). */
+async function panelLoaded(page) {
+  await page.waitForFunction(() => { const p = document.querySelector('main .task-panel'); return p && !p.querySelector('.loading') && p.querySelector('h4'); }, { timeout: 8000 });
+  await wait(300);
+}
+const focusText = (page) => page.evaluate(() => { const a = document.activeElement; return a ? `${a.tagName.toLowerCase()}${a.id ? '#' + a.id : ''} "${a.textContent.trim().slice(0, 60)}"` : 'nothing'; });
+
+async function boardsAndLook(page, theme, width) {
+  for (const mode of ['light', 'dark']) {
+    const at = `${theme}: ${mode === 'dark' ? 'Dark, ' : ''}`;
+    must('board preferences', await prefsWith({ theme: mode }));
+    // The Work tab's board by status: Completed is folded at first, and unfolds in place.
+    await goFresh(page, workHash);
+    if (!(await page.$('main .board .task-box'))) throw new Error('the Work tab does not open on its board');
+    if (!(await page.$eval('main .board', (e) => e.textContent)).includes('The shelves have not arrived')) throw new Error("a Blocked box does not show its reason");
+    // Subtasks inside their parent's box show what their list rows show: Overdue, and a blocked one's reason.
+    const nested = await page.$eval(`[id="item-${nestParent}"] .task-box-subtasks`, (e) => e.textContent);
+    if (!nested.includes('Overdue') || !nested.includes('Blocked: The labels are out of stock') || !nested.includes('Due ')) throw new Error(`a subtask inside its parent's box lost its labels: ${nested}`);
+    await check(`${at}work board by status, Completed folded`, page);
+    await recordEdges(`${at}work board`, page);
+    await pickColumn(page, 'completed');
+    const fold = await page.$('main [data-column="completed"] .board-fold');
+    if (!fold || (await fold.evaluate((e) => e.getAttribute('aria-expanded'))) !== 'false') throw new Error('Completed does not start folded');
+    await fold.click();
+    await wait(300);
+    if (!(await page.$eval('main [data-column="completed"] .board-body', (e) => !e.hidden && e.textContent.includes('Label the shelves')))) throw new Error('Completed does not unfold to its boxes');
+    await check(`${at}work board, Completed unfolded`, page);
+    // A box opened in the side panel, then a form open in the panel.
+    await goFresh(page, workHash);
+    await page.click('main .task-box-title button');
+    await panelLoaded(page);
+    await check(`${at}work board with the side panel open`, page);
+    if (!(await clickButton(page, 'Propose a change', 'main .task-panel'))) throw new Error('no Propose a change in the side panel');
+    await wait(300);
+    await check(`${at}side panel with a form open`, page);
+    // The other columns and the list.
+    must('by assignee', await prefsWith({ theme: mode, views: { workBy: 'assignee' } }));
+    await goFresh(page, workHash);
+    if ((await page.$eval('main .board', (e) => e.getAttribute('aria-label'))) !== 'Tasks by assignee') throw new Error('the board is not by assignee');
+    await check(`${at}work board by assignee`, page);
+    must('list', await prefsWith({ theme: mode, views: { work: 'list' } }));
+    await goFresh(page, workHash);
+    if (await page.$('main .board')) throw new Error('the list view still shows the board');
+    await check(`${at}work tab as a list`, page);
+    // My tasks and Needs you in each of their views.
+    for (const [label, views, hash] of [
+      ['my tasks as a board', { myTasks: 'board' }, '#/my-tasks'],
+      ['my tasks by project', { myTasks: 'project' }, '#/my-tasks'],
+      ['my tasks by due date', { myTasks: 'due' }, '#/my-tasks'],
+      ['home, Needs you as a board', { needsYou: 'board' }, '#/'],
+      ['home, Needs you by project', { needsYou: 'project' }, '#/'],
+    ]) {
+      must(label, await prefsWith({ theme: mode, views }));
+      await goFresh(page, hash);
+      await check(`${at}${label}`, page);
+      if (label.includes('as a board')) await recordEdges(`${at}${label}`, page);
+    }
+  }
+  // The board's edges in another scheme (Teal), Light and Dark.
+  for (const mode of ['light', 'dark']) {
+    must('teal', await prefsWith({ theme: mode, accent: 'teal', accentChosen: true }));
+    await goFresh(page, workHash);
+    await check(`${theme}: Teal${mode === 'dark' ? ', Dark' : ''}, work board`, page);
+    await recordEdges(`${theme}: Teal${mode === 'dark' ? ', Dark' : ''}, work board`, page);
+  }
+  // The dark side menu, and compact spacing, in Light; then both together in Dark.
+  for (const [label, prefs] of [
+    ['dark side menu', { menu: 'dark' }],
+    ['compact spacing', { density: 'compact' }],
+    ['Dark, dark side menu and compact spacing', { theme: 'dark', menu: 'dark', density: 'compact' }],
+  ]) {
+    must(label, await prefsWith(prefs));
+    for (const [where, hash] of [['home', '#/'], ['work board', workHash], ['my tasks', '#/my-tasks']]) {
+      await goFresh(page, hash);
+      if (width < 900 && where === 'home') {
+        await page.click('#menu-toggle');
+        await wait(200);
+      }
+      await check(`${theme}: ${label}, ${where}${width < 900 && where === 'home' ? ' (side menu opened)' : ''}`, page);
+    }
+    await goFresh(page, workHash);
+    await page.click('main .task-box-title button');
+    await panelLoaded(page);
+    await check(`${theme}: ${label}, side panel open`, page);
+  }
+  must('reset preferences', await prefsWith({}));
+  // Keyboard only: Tab to a box, Enter opens it in the panel, Start is pressed there, Escape closes it, and focus is back on
+  // the box (now in the In progress column).
+  const taskId = keyboardTasks[theme];
+  const title = theme === 'wide' ? 'Keyboard check, wide' : 'Keyboard check, narrow';
+  await goFresh(page, workHash);
+  await pickColumn(page, 'not_started');
+  await page.evaluate(() => document.activeElement?.blur());
+  let found = false;
+  for (let i = 0; i < 400 && !found; i++) {
+    await page.keyboard.press('Tab');
+    found = await page.evaluate((t) => document.activeElement?.closest('.task-box-title') && document.activeElement.textContent.trim() === t, title);
+  }
+  if (!found) throw new Error(`keyboard: Tab never reached the box "${title}"`);
+  await page.keyboard.press('Enter');
+  await panelLoaded(page);
+  if (!(await page.evaluate(() => document.activeElement?.matches('.task-panel h3')))) throw new Error(`keyboard: opening the box did not put focus on the panel's heading (${await focusText(page)})`);
+  found = false;
+  for (let i = 0; i < 80 && !found; i++) {
+    await page.keyboard.press('Tab');
+    found = await page.evaluate(() => document.activeElement?.closest('.task-panel') && document.activeElement.tagName === 'BUTTON' && document.activeElement.textContent.trim() === 'Start');
+  }
+  if (!found) throw new Error('keyboard: Tab never reached Start in the side panel');
+  await page.keyboard.press('Enter');
+  await page.waitForFunction(() => document.querySelector('main .task-panel')?.innerText.includes('Start: done.'), { timeout: 8000 });
+  await wait(400);
+  await check(`${theme}: keyboard only, a task started in the side panel`, page);
+  await page.keyboard.press('Escape');
+  await wait(800);
+  if (await page.$('main .task-panel')) throw new Error('keyboard: Escape did not close the side panel');
+  const back = await page.evaluate((id) => document.activeElement === document.querySelector(`[id="item-${id}"] .task-box-title button`) && document.activeElement.closest('[data-column]')?.getAttribute('data-column'), taskId);
+  if (back !== 'in_progress') throw new Error(`keyboard: after closing, focus is not on the box in In progress (${await focusText(page)})`);
+  await check(`${theme}: keyboard only, panel closed, focus back on the box`, page);
+}
+
 for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
   const open = async (ctx, expected) => {
     const page = watch(await ctx.newPage(), expected);
@@ -441,7 +617,7 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
     ['projects', '#/projects'],
     ['settings hub', '#/settings'],
     ...SETTING_PAGES.map(([label, hash]) => [`setting page: ${label}`, hash]),
-    ['work tab (tasks, questions, decisions, risks)', `#/projects/${recordsId}/work`],
+    ['work tab (its task board by status, questions, decisions, risks)', `#/projects/${recordsId}/work`],
     ['proposals tab with proposals from people', `#/projects/${recordsId}/proposals`],
     ['closed project overview (archive panel)', `#/projects/${closedId}`],
     ['project overview (header and binder tabs)', `#/projects/${projectId}`],
@@ -482,6 +658,7 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
     await check(`${theme}: ${label}`, page);
   }
   must('reset preferences', await api('PUT', '/me/preferences', { theme: 'light', accent: 'red', accentChosen: false }));
+  await boardsAndLook(page, theme, width);
   // The review's correction panel open (on the proposal that has not been corrected yet).
   await goFresh(page, `#/runs/${runId}`);
   if (!(await clickButton(page, 'Correct…'))) throw new Error('no Correct… button on the review');
@@ -540,7 +717,9 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
   }
   await wait(300);
   await check(`${theme}: defer form open`, page);
-  // Forms on the People tab: handover, grant request; and the department move on the Overview.
+  // Forms on the People tab: handover, grant request; and the department move on the Overview. The task forms open on the
+  // rows of the Work tab's list (the board's side panel is checked above).
+  must('list view', await prefsWith({ views: { work: 'list' } }));
   for (const [label, hash, button] of [
     ['handover form open', `#/projects/${projectId}/people`, 'Hand over the project'],
     ['grant request form open', `#/projects/${projectId}/people`, 'Record a request'],
@@ -565,6 +744,7 @@ for (const [theme, width] of [['wide', 1200], ['narrow', 375]]) {
     await wait(400);
     await check(`${theme}: ${label}`, page);
   }
+  must('reset preferences', await prefsWith({}));
   await page.close();
 }
 // The organisation's branding after setup, then with only one logo of each shape.

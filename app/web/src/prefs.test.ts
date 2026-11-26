@@ -10,6 +10,7 @@ import {
   THEME_TOKENS,
   applyAppearance,
   expansionDefault,
+  followHint,
   moveItem,
   moveSection,
   schemeChoices,
@@ -216,7 +217,7 @@ test('styles.css agrees with the token values in prefs.ts', () => {
   const baseKeys: Record<string, string> = {
     paper: '--paper', surface: '--surface', ink: '--ink', muted: '--muted', rust: '--rust', rustWash: '--rust-wash', rustInk: '--rust-ink',
     rustContrast: '--rust-contrast', controlBorder: '--control-border', marker: '--marker', markerWash: '--marker-wash',
-    accentWashStrong: '--accent-wash-strong', mutedWash: '--muted-wash', markerInk: '--marker-ink',
+    accentWashStrong: '--accent-wash-strong', mutedWash: '--muted-wash', markerInk: '--marker-ink', well: '--well',
   };
   const same = (a: string | undefined, b: string) => assert.equal(a?.toLowerCase(), b.toLowerCase());
   for (const theme of ['light', 'dark'] as const) {
@@ -395,4 +396,134 @@ test('tab styles: the open tab differs by weight and by size or edge, not colour
   assert.equal(tabRule('tinted', '.tab.open')['border-top-width'], '6px', 'tinted: a thick top edge');
   assert.equal(tabRule('boxes', '.tab')['border-radius'], '8px');
   assert.match(css, /@media \(forced-colors: active\) \{[^@]*\.tab\.open/, 'forced colours mark the open tab');
+});
+
+test('menu, spacing and view choices have the server defaults and read an older document', async () => {
+  const { menuOf, densityOf, viewsOf } = await import('./prefs.ts');
+  assert.equal(DEFAULT_PREFS.menu, 'light');
+  assert.equal(DEFAULT_PREFS.density, 'comfortable');
+  assert.deepEqual(DEFAULT_PREFS.views, { work: 'board', workBy: 'status', myTasks: 'board', needsYou: 'board' });
+  assert.equal(menuOf({}), 'light');
+  assert.equal(menuOf({ menu: 'dark' }), 'dark');
+  assert.equal(densityOf({}), 'comfortable');
+  assert.equal(densityOf({ density: 'compact' }), 'compact');
+  assert.deepEqual(viewsOf({}), DEFAULT_PREFS.views);
+  assert.deepEqual(viewsOf({ views: { work: 'list' } }), { ...DEFAULT_PREFS.views, work: 'list' });
+  assert.deepEqual(viewsOf({ views: { myTasks: 'nonsense' as never, needsYou: 'project' } }), { ...DEFAULT_PREFS.views, needsYou: 'project' });
+});
+
+// ---- The light side menu, spacing and following the organisation (11a.2 spec 7, 8) ----
+
+test('the light menu reads in every scheme, Light and Dark, including the organisation colour', async () => {
+  const { LIGHT_MENUS, lightMenuFor } = await import('./prefs.ts');
+  for (const theme of ['light', 'dark'] as const) {
+    const t = THEME_TOKENS[theme];
+    const all: [string, string, SchemeTokens][] = FIXED.map((k) => [k, LIGHT_MENUS[k][theme], ACCENTS[k][theme]]);
+    for (const c of ['#1f55a8', '#b0182e', '#0c6a6e', '#2a1a6a', '#5a3a00']) {
+      const prefs = { ...DEFAULT_PREFS, theme };
+      all.push([`organisation ${c}`, lightMenuFor(prefs, c), schemeFor(prefs, c).tokens]);
+    }
+    all.push(['no organisation colour', lightMenuFor({ ...DEFAULT_PREFS, theme }, null), ACCENTS.red[theme]]);
+    for (const [name, menu, a] of all) {
+      const where = `${name} ${theme}`;
+      assert.ok(contrastRatio(t.ink, menu) >= 4.5, `${where}: item text`);
+      assert.ok(contrastRatio(t.muted, menu) >= 4.5, `${where}: group headings`);
+      assert.ok(contrastRatio(a.accentDeep, a.accentWash) >= 4.5, `${where}: the current item's text on its fill`);
+      assert.ok(contrastRatio(a.accent, menu) >= 3, `${where}: the current item's edge and the focus ring`);
+      assert.ok(contrastRatio(a.accent, a.accentWash) >= 3, `${where}: the current item's edge beside its fill`);
+      assert.ok(contrastRatio(MEANINGS.review.strong[theme], MEANINGS.review.wash[theme]) >= 4.5, `${where}: the Reviews badge`);
+    }
+  }
+});
+
+test('styles.css carries the light menu of each scheme and the well behind board columns', async () => {
+  const { LIGHT_MENUS } = await import('./prefs.ts');
+  for (const theme of ['light', 'dark'] as const) {
+    for (const key of FIXED) {
+      const r = rule(theme === 'light' ? `[data-accent="${key}"]` : `[data-theme="dark"][data-accent="${key}"]`);
+      assert.equal(r['--menu-light']?.toLowerCase(), LIGHT_MENUS[key][theme], `${key} ${theme}`);
+    }
+    assert.equal(rule(theme === 'light' ? ':root' : '[data-theme="dark"]')['--well']?.toLowerCase(), THEME_TOKENS[theme].well);
+  }
+  assert.equal(rule(':root')['--menu-light'], LIGHT_MENUS.red.light);
+  assert.equal(THEME_TOKENS.light.paper, '#ffffff', 'white pages in Light');
+  for (const theme of ['light', 'dark'] as const) {
+    const t = THEME_TOKENS[theme];
+    assert.ok(contrastRatio(t.ink, t.well) >= 4.5 && contrastRatio(t.muted, t.well) >= 4.5, `${theme}: text in a board column`);
+  }
+});
+
+test('board columns and task boxes have edges of at least 3:1 against what is beside them (D143)', () => {
+  // The edges use the theme's control border; the colour scheme does not change it, so Light and Dark cover every scheme.
+  assert.equal(rule('.task-box')['border'], '1px solid var(--control-border)');
+  assert.equal(rule('.board-col')['border'], '1px solid var(--control-border)');
+  for (const theme of ['light', 'dark'] as const) {
+    const t = THEME_TOKENS[theme];
+    // A column edge against the page and its own shading; a box edge against the column and the box.
+    for (const bg of [t.paper, t.surface, t.well]) assert.ok(contrastRatio(t.controlBorder, bg) >= 3, `${theme}: board edge on ${bg}`);
+  }
+});
+
+test('Follow the organisation saves accentChosen false: the organisation colour, or Red when it has none', async () => {
+  const { followOrganisation } = await import('./prefs.ts');
+  const teal: Prefs = { ...DEFAULT_PREFS, accent: 'teal', accentChosen: true };
+  const back = followOrganisation(teal);
+  assert.equal(back.accentChosen, false);
+  assert.deepEqual({ ...back, accentChosen: true }, teal, 'nothing else changes');
+  assert.equal(schemeFor(back, '#1f55a8').key, 'organisation');
+  assert.equal(schemeFor(back, null).key, 'red');
+  assert.equal(schemeFor(back, '#ffd84a').key, 'red', 'an unusable organisation colour gives Red');
+});
+
+test('resetting appearance resets the side menu and spacing too, and its wording names them', async () => {
+  const { resetLabel } = await import('./prefs.ts');
+  const mine: Prefs = { ...DEFAULT_PREFS, theme: 'dark', accent: 'plum', accentChosen: true, tabStyle: 'grey', menu: 'dark', density: 'compact', views: { ...DEFAULT_PREFS.views, work: 'list' } };
+  const looks = resetPrefs(mine, ['appearance']);
+  assert.deepEqual([looks.theme, looks.accent, looks.accentChosen, looks.tabStyle, looks.menu, looks.density], ['light', 'red', false, 'boxes', 'light', 'comfortable']);
+  assert.deepEqual(looks.views, mine.views, 'view choices are not appearance');
+  const other = resetPrefs(mine, ['home', 'leadership']);
+  assert.deepEqual([other.menu, other.density], ['dark', 'compact']);
+  const label = resetLabel(['appearance']);
+  for (const word of ['colour scheme', 'light or dark', 'tab style', 'side menu', 'spacing']) assert.match(label.toLowerCase(), new RegExp(word), word);
+  assert.equal(resetLabel(['home', 'leadership']), 'Reset to defaults');
+});
+
+test('applyAppearance puts the menu and spacing on the root, and the organisation light menu', async () => {
+  const { lightMenuFor } = await import('./prefs.ts');
+  const props = new Map<string, string>();
+  const attrs = new Map<string, string>();
+  const root = {
+    setAttribute: (k: string, v: string) => attrs.set(k, v),
+    style: { setProperty: (k: string, v: string) => props.set(k, v), removeProperty: (k: string) => props.delete(k) },
+  } as unknown as HTMLElement;
+  applyAppearance({ ...DEFAULT_PREFS }, '#1f55a8', root);
+  assert.deepEqual([attrs.get('data-menu'), attrs.get('data-density')], ['light', 'comfortable']);
+  assert.equal(props.get('--menu-light'), lightMenuFor(DEFAULT_PREFS, '#1f55a8'));
+  const { menu: _m, density: _d, ...older } = DEFAULT_PREFS;
+  applyAppearance({ ...older, menu: 'dark', density: 'compact', accent: 'teal', accentChosen: true }, '#1f55a8', root);
+  assert.deepEqual([attrs.get('data-menu'), attrs.get('data-density')], ['dark', 'compact']);
+  assert.equal(props.size, 0);
+  applyAppearance(older, null, root);
+  assert.deepEqual([attrs.get('data-menu'), attrs.get('data-density')], ['light', 'comfortable'], 'an older document');
+});
+
+test('views stay reachable when preferences failed to load: this visit\'s choice, not saved', async () => {
+  const { shownViews } = await import('./prefs.ts');
+  const saved = { ...DEFAULT_PREFS, views: { ...DEFAULT_PREFS.views, myTasks: 'project' as const } };
+  assert.deepEqual(shownViews(saved, true, { myTasks: 'due' }), saved.views, 'once loaded, the saved choice');
+  assert.deepEqual(shownViews(DEFAULT_PREFS, false, { myTasks: 'due', work: 'list' }), { ...DEFAULT_PREFS.views, myTasks: 'due', work: 'list' });
+  assert.deepEqual(shownViews(DEFAULT_PREFS, false, {}), DEFAULT_PREFS.views);
+  const read = (f: string) => readFileSync(new URL(f, import.meta.url), 'utf8');
+  for (const f of ['./views/MyTasks.tsx', './views/Work.tsx', './views/Home.tsx']) {
+    assert.doesNotMatch(read(f), /<select value=\{[\w.]+\} disabled=\{!(ready|prefsReady)\} /, `${f}: the View select opens when preferences failed`);
+  }
+});
+
+test('the Follow the organisation hint gives the true reason for Red (C117)', () => {
+  for (const theme of ['light', 'dark'] as const) {
+    assert.equal(followHint({ theme }, '#1f55a8'), "The organisation's colour.");
+    assert.equal(followHint({ theme }, null), 'Red, as the organisation has no colour of its own.');
+    // A colour Kainow refuses (it cannot carry white text, as the organisation form says).
+    assert.equal(followHint({ theme }, '#ffee58'), "Red, as the organisation's colour cannot be used here.");
+  }
 });

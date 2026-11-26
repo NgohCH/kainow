@@ -6,7 +6,7 @@ import { isManager as preparesDeadlineReview } from '../changes/deadline-handler
 import type { RequestRow } from '../changes/handlers';
 import type { ChangeKind } from '../changes/rules';
 import { PG_POOL } from '../db/database.module';
-import { liveRecordSql, liveSourceSql } from '../history/deleted-sql';
+import { liveRecordSql, liveSourceSql, unheldRecordSql } from '../history/deleted-sql';
 import { type ProjectContext, ProjectAccess, canReadContent } from '../projects/access.service';
 import { archiveState } from '../projects/archive';
 import type { GrantRow } from '../projects/grants';
@@ -19,6 +19,7 @@ import { loadAccessSettings } from '../organisation/access-settings';
 import { POSSIBLE_COPY_TEXT, possibleCopySql } from '../quarantine/labels';
 import { type TaskStatus, taskIndicators } from '../records/tasks';
 import { taskLink } from '../records/task-link';
+import { isDueSoon, latestBlockNotes } from '../records/board-fields';
 import { type ProjectMeasures, loadProjectMeasures } from './measures';
 import { archivedAmong, groupBy, loadProjectContexts } from './project-contexts';
 import { shown } from './project-dashboard.service';
@@ -48,6 +49,14 @@ export interface MyTask {
   dueOn: string;
   status: TaskStatus;
   overdueDays?: number;
+  /** The UTC+8 day it was finished, or null. */
+  completedOn: string | null;
+  /** The latest block's note while Blocked; null when it is not Blocked or the task is held or under review. */
+  blockedReason: string | null;
+  /** The parent task, left out (null) when it is held, under review or Deleted. */
+  parent: { id: string; title: string } | null;
+  /** Direct subtasks that are live and not cancelled or held. */
+  subtasks: { done: number; total: number };
 }
 
 export interface PersonalProject {
@@ -203,15 +212,21 @@ export class PersonalDashboardService {
     const taskRows = (
       await this.pool.query(
         `SELECT t.id, ${shown('t', 'task', 'title')} AS title, t.project_id AS "projectId", to_char(t.due_on, 'YYYY-MM-DD') AS "dueOn", t.status,
-                t.deadline_review_required AS "deadlineReviewRequired", to_char(t.completed_at AT TIME ZONE 'Asia/Kuala_Lumpur', 'YYYY-MM-DD') AS "completedOn"
+                t.deadline_review_required AS "deadlineReviewRequired", to_char(t.completed_at AT TIME ZONE 'Asia/Kuala_Lumpur', 'YYYY-MM-DD') AS "completedOn",
+                (t.held_case_id IS NOT NULL OR ${possibleCopySql('task', 't.id')}) AS "underReview",
+                pt.id AS "parentId", pt.title AS "parentTitle",
+                (SELECT count(*)::int FROM tasks s WHERE s.parent_id = t.id AND ${unheldRecordSql('s')} AND s.status <> 'cancelled' AND NOT ${possibleCopySql('task', 's.id')}) AS "subtaskTotal",
+                (SELECT count(*)::int FROM tasks s WHERE s.parent_id = t.id AND ${unheldRecordSql('s')} AND s.status = 'completed' AND NOT ${possibleCopySql('task', 's.id')}) AS "subtaskDone"
            FROM tasks t
+           LEFT JOIN tasks pt ON pt.id = t.parent_id AND ${unheldRecordSql('pt')} AND NOT ${possibleCopySql('task', 'pt.id')}
           WHERE t.project_id = ANY($1::uuid[]) AND t.assignee_id = $2 AND ${liveRecordSql('t')}
             AND (t.status NOT IN ('completed', 'cancelled')
                  OR ($3::boolean AND t.status = 'completed' AND (t.completed_at AT TIME ZONE 'Asia/Kuala_Lumpur')::date >= $4::date))
           ORDER BY t.due_on, t.id`,
         [readableIds, user.id, opts.showCompleted, addDays(today, -COMPLETED_DAYS)],
       )
-    ).rows as Array<{ id: string; title: string; projectId: string; dueOn: string; status: TaskStatus; deadlineReviewRequired: boolean; completedOn: string | null }>;
+    ).rows as Array<{ id: string; title: string; projectId: string; dueOn: string; status: TaskStatus; deadlineReviewRequired: boolean; completedOn: string | null; underReview: boolean; parentId: string | null; parentTitle: string | null; subtaskTotal: number; subtaskDone: number }>;
+    const blockNotes = await latestBlockNotes(this.pool, taskRows.filter((r) => r.status === 'blocked' && !r.underReview).map((r) => r.id));
     // The last day of "due soon" in each project: seven days on by the project's calendar (working or calendar days).
     const calendars = await loadEffectiveMany(this.pool, readableIds);
     const soonEnds = new Map(readableIds.map((id) => [id, dueSoonEnd(today, (calendars.get(id) as Effective).cal)]));
@@ -225,14 +240,25 @@ export class PersonalDashboardService {
       link: taskLink(r.projectId, r.id),
     });
     for (const r of taskRows) {
-      const row: MyTask = { id: r.id, title: r.title, projectId: r.projectId, projectName: nameOf(r.projectId), dueOn: r.dueOn, status: r.status };
+      const row: MyTask = {
+        id: r.id,
+        title: r.title,
+        projectId: r.projectId,
+        projectName: nameOf(r.projectId),
+        dueOn: r.dueOn,
+        status: r.status,
+        completedOn: r.status === 'completed' ? r.completedOn : null,
+        blockedReason: r.status === 'blocked' && !r.underReview ? (blockNotes.get(r.id) ?? null) : null,
+        parent: r.parentId && r.parentTitle !== null ? { id: r.parentId, title: r.parentTitle } : null,
+        subtasks: { done: r.subtaskDone, total: r.subtaskTotal },
+      };
       if (r.status === 'completed') {
         myTasks.completed?.push(row);
         continue;
       }
       const ind = taskIndicators({ status: r.status, dueOn: r.dueOn, parentDueOn: null, assigneeActive: true, invitationStatus: null, today, deadlineReviewRequired: r.deadlineReviewRequired });
       if (ind.overdue) taskNeeds.push(taskItem('overdue', r));
-      else if (!ind.deadlineReviewRequired && r.dueOn >= today && r.dueOn <= (soonEnds.get(r.projectId) as string)) taskNeeds.push(taskItem('due_soon', r));
+      else if (isDueSoon(r, today, soonEnds.get(r.projectId) as string)) taskNeeds.push(taskItem('due_soon', r));
       if (ind.deadlineReviewRequired) myTasks.awaitingReview.push(row);
       else if (ind.overdue) myTasks.overdue.push({ ...row, overdueDays: daysBetween(r.dueOn, today) });
       else if (r.dueOn <= (soonEnds.get(r.projectId) as string)) myTasks.dueSoon.push(row);

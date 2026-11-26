@@ -113,18 +113,63 @@ const STEPS = [
   ['Projects', async (page) => {
     await menuLink(page, 'Projects');
     await page.getByRole('heading', { name: 'Projects', level: 1 }).waitFor();
-    await page.getByRole('link', { name: new RegExp('^' + escape(WORK_PROJECT)) }).first().waitFor();
+    await page.locator('main').getByRole('link', { name: new RegExp('^' + escape(WORK_PROJECT)) }).first().waitFor();
   }],
   ['Open a project', async (page) => {
-    await page.getByRole('link', { name: new RegExp('^' + escape(WORK_PROJECT)) }).first().click();
+    await page.locator('main').getByRole('link', { name: new RegExp('^' + escape(WORK_PROJECT)) }).first().click();
     await page.getByRole('heading', { name: WORK_PROJECT, level: 1 }).waitFor();
     await page.getByRole('heading', { name: 'About', level: 2 }).waitFor();
   }],
   ['Work tab', async (page) => {
     await projectTab(page, 'Work');
     await page.getByRole('heading', { name: 'Tasks', level: 2 }).waitFor();
+    // The board by status (D142); an earlier run may have left the person's view on the list or by assignee.
+    await chooseView(page, 'View', 'board');
+    await chooseView(page, 'Columns', 'status');
+    await page.getByRole('group', { name: 'Tasks by status' }).waitFor();
+    await page.locator('main .task-box:visible').first().waitFor();
+  }],
+  ['Work board by assignee', async (page) => {
+    await chooseView(page, 'Columns', 'assignee');
+    await page.getByRole('group', { name: 'Tasks by assignee' }).locator('.task-box:visible').first().waitFor();
+    await notSideways(page);
+    await chooseView(page, 'Columns', 'status');
+    await page.getByRole('group', { name: 'Tasks by status' }).waitFor();
+  }],
+  ['Completed folded, then unfolded', async (page) => {
+    // Below 700 px one column shows at a time, chosen in its Column list.
+    const picker = page.locator('main .board-picker select');
+    if (await picker.isVisible()) await picker.selectOption('completed');
+    const fold = page.locator('main [data-column="completed"] .board-fold');
+    if ((await fold.getAttribute('aria-expanded')) !== 'false') throw new Error('Completed does not start folded');
+    await fold.click();
+    await page.locator('main [data-column="completed"] .board-fold[aria-expanded="true"]').waitFor();
+    await page.locator('main [data-column="completed"] .board-body').waitFor();
+  }],
+  ['Open a box in the side panel and close it', async (page) => {
+    const picker = page.locator('main .board-picker select');
+    if (await picker.isVisible()) {
+      // The first open column with boxes: its option reads "Not started (3)".
+      const key = await picker.evaluate((s) => [...s.options].find((o) => o.value !== 'completed' && !/\(0\)$/.test(o.textContent))?.value);
+      if (!key) throw new Error('the board has no open column with a box');
+      await picker.selectOption(key);
+    }
+    const box = page.locator('main .task-box-title button:visible').first();
+    const title = (await box.textContent()).trim();
+    await box.click();
+    const panel = page.locator('main section.task-panel');
+    await panel.getByRole('heading', { name: title, level: 3, exact: true }).waitFor();
+    await panel.getByRole('link', { name: /^Open full page/ }).waitFor();
+    await panel.getByRole('heading', { name: 'Actions', level: 4 }).or(panel.getByRole('heading', { name: 'Status and dates', level: 4 })).first().waitFor();
+    await notSideways(page);
+    await panel.getByRole('button', { name: /^Close/ }).click();
+    await panel.waitFor({ state: 'detached' });
+    // Focus goes back to the box.
+    const back = await page.evaluate(() => document.activeElement?.closest('.task-box-title')?.textContent.trim() ?? '');
+    if (back !== title) throw new Error(`after Close, focus is not on the box "${title}" (it is on "${back}")`);
   }],
   ['Save a task progress change from the Work list', async (page) => {
+    await chooseView(page, 'View', 'list');
     // A task the signed-in person may act on: block an In progress one with a reason, or (when none is left) unblock a
     // Blocked one with how it was resolved. Either is a saved progress change. Tasks are rows of the Tasks table.
     const rows = page.getByRole('table', { name: /^Tasks/ }).locator('tbody tr');
@@ -132,7 +177,7 @@ const STEPS = [
     const withButton = (label) => rows.filter({ has: page.getByRole('button', { name: label, exact: true }) });
     const [action, prompt, note, after] = (await withButton('Block').count()) > 0
       ? ['Block', 'Why is it blocked?', 'Waiting for the browser smoke run', 'Blocked']
-      : ['Unblock', 'How was it resolved?', 'Resolved during the browser smoke run', 'In Progress'];
+      : ['Unblock', 'How was it resolved?', 'Resolved during the browser smoke run', 'In progress'];
     const id = await withButton(action).first().getAttribute('id');
     const task = page.locator(`tr[id="${id}"]`);
     await task.scrollIntoViewIfNeeded();
@@ -152,6 +197,8 @@ const STEPS = [
     await page.getByText(/^(Not started: nobody|In progress: the work|Blocked: the work|Completed: the work|Cancelled: the work)/).waitFor();
     await page.getByRole('link', { name: 'Back to Work' }).click();
     await page.getByRole('heading', { name: 'Tasks', level: 2 }).waitFor();
+    await chooseView(page, 'View', 'board');
+    await page.getByRole('group', { name: 'Tasks by status' }).waitFor();
   }],
   ['Post a discussion comment', async (page, run) => {
     await projectTab(page, 'Discussion');
@@ -233,8 +280,33 @@ const STEPS = [
     await page.getByRole('heading', { name: 'Needs you', level: 2 }).waitFor();
     await page.getByRole('heading', { name: 'My tasks', level: 2 }).waitFor();
   }],
+  ['Needs you as a board and by project', async (page) => {
+    // Home's Needs you: columns of boxes (D142), and by project (D141).
+    await chooseView(page, 'View', 'board');
+    await page.getByRole('group', { name: 'Needs you' }).locator('.task-box:visible').first().waitFor();
+    await notSideways(page);
+    // Only inside the Needs you box: Home's My tasks section is always by project.
+    const needsYou = page.locator('main section.box').filter({ has: page.getByRole('heading', { name: 'Needs you', level: 2, exact: true }) });
+    if ((await needsYou.locator('.project-group').count()) > 0) throw new Error('Needs you as a board also shows project groups');
+    await chooseView(page, 'View', 'project');
+    await needsYou.locator('.project-group').first().waitFor();
+    if ((await needsYou.locator('.board, .task-box').count()) > 0) throw new Error('Needs you by project still shows a board');
+    await notSideways(page);
+    await chooseView(page, 'View', 'board');
+    await needsYou.locator('.board').first().waitFor();
+  }],
+  ['My tasks: board, by project and by due date', async (page) => {
+    await menuLink(page, 'My tasks');
+    await page.getByRole('heading', { name: 'My tasks', level: 1 }).waitFor();
+    for (const [view, shows] of [['board', 'main .board .task-box:visible'], ['project', 'main .project-group'], ['due', 'main table']]) {
+      await chooseView(page, 'View', view);
+      await page.locator(shows).first().waitFor();
+      await notSideways(page);
+    }
+    await chooseView(page, 'View', 'board');
+  }],
   ['My profile', async (page) => {
-    await page.locator('#person-menu-button').click();
+    await openPersonMenu(page);
     await page.getByRole('link', { name: 'My profile' }).click();
     await page.getByRole('heading', { name: 'My profile', level: 1 }).waitFor();
     await page.getByRole('table', { name: 'Projects and roles' }).getByRole('link', { name: WORK_PROJECT, exact: true }).first().waitFor();
@@ -243,7 +315,7 @@ const STEPS = [
   ['Each tab style', async (page) => {
     // Chosen on My profile, then looked at on a project: the open tab is marked, and every tab is inside the page (D135).
     for (const [label, style] of [['Grey dividers', 'grey'], ['Tinted dividers', 'tinted'], ['Boxes', 'boxes']]) {
-      await page.locator('#person-menu-button').click();
+      await openPersonMenu(page);
       await page.getByRole('link', { name: 'My profile' }).click();
       const saved = page.waitForResponse((r) => r.url().endsWith('/me/preferences') && r.request().method() === 'PUT');
       const choice = page.getByRole('group', { name: 'Tab style' }).getByRole('radio', { name: new RegExp('^' + label) });
@@ -261,10 +333,42 @@ const STEPS = [
       await page.getByRole('heading', { name: 'Tasks', level: 2 }).waitFor();
     }
   }],
+  ['Dark, dark side menu and compact spacing', async (page) => {
+    // Chosen on My profile (D143), looked at on Home and the Work board, then put back to Light, light menu and comfortable.
+    const choose = async (legend, label) => {
+      const radio = page.getByRole('group', { name: legend }).getByRole('radio', { name: label, exact: true });
+      if (await radio.isChecked()) return;
+      const saved = page.waitForResponse((r) => r.url().endsWith('/me/preferences') && r.request().method() === 'PUT');
+      await radio.check();
+      await saved;
+    };
+    const profile = async () => {
+      await openPersonMenu(page);
+      await page.getByRole('link', { name: 'My profile' }).click();
+      await page.getByRole('heading', { name: 'My profile', level: 1 }).waitFor();
+    };
+    await profile();
+    await choose('Light or dark', 'Dark');
+    await choose('Side menu', 'Dark, in the scheme colour');
+    await choose('Spacing', 'Compact');
+    await page.locator('html[data-theme="dark"][data-menu="dark"][data-density="compact"]').waitFor({ state: 'attached' });
+    await menuLink(page, 'Home');
+    await page.getByRole('heading', { name: 'Needs you', level: 2 }).waitFor();
+    await notSideways(page);
+    await openProject(page, WORK_PROJECT);
+    await projectTab(page, 'Work');
+    await page.getByRole('group', { name: 'Tasks by status' }).locator('.task-box:visible').first().waitFor();
+    await notSideways(page);
+    await profile();
+    await choose('Light or dark', 'Light');
+    await choose('Side menu', 'Light');
+    await choose('Spacing', 'Comfortable');
+    await page.locator('html[data-theme="light"][data-menu="light"][data-density="comfortable"]').waitFor({ state: 'attached' });
+  }],
   ['Project dashboard', async (page) => {
     await menuLink(page, 'Projects');
     await page.getByRole('heading', { name: 'Projects', level: 1 }).waitFor();
-    await page.getByRole('link', { name: new RegExp('^' + escape(WORK_PROJECT)) }).first().click();
+    await page.locator('main').getByRole('link', { name: new RegExp('^' + escape(WORK_PROJECT)) }).first().click();
     await page.getByRole('heading', { name: 'Figures', level: 2 }).waitFor();
     await page.locator('section[aria-labelledby="figures-heading"] a').first().waitFor();
   }],
@@ -280,7 +384,7 @@ const STEPS = [
   }],
   ['Sign out', async (page) => {
     // Sign out is in the person menu (the button with the person's name).
-    await page.locator('#person-menu-button').click();
+    await openPersonMenu(page);
     await page.getByRole('button', { name: 'Sign out', exact: true }).click();
     await page.getByText('Sign in to Kainow').waitFor();
     await page.getByLabel('Work email').waitFor();
@@ -295,23 +399,52 @@ async function notSideways(page) {
 
 /** A side-menu link. Below 900 px the side menu is closed behind the top bar's Menu button, so that is opened first. */
 async function menuLink(page, name) {
+  await toTop(page);
   const toggle = page.locator('#menu-toggle');
+  const link = page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: new RegExp('^' + escape(name)) });
   if (await toggle.isVisible()) {
-    if ((await toggle.getAttribute('aria-expanded')) !== 'true') await toggle.click();
+    // The menu closes when the page changes; in WebKit that can land just after the last step, so let it settle, then
+    // open the menu unless its link is already showing.
+    await wait(300);
+    if (!(await link.isVisible())) await toggle.click();
   }
-  await page.getByRole('navigation', { name: 'Main' }).getByRole('link', { name: new RegExp('^' + escape(name)) }).click();
+  await link.click();
+}
+
+/**
+ * Chooses a view in the select labelled `label` (View or Columns) inside main, and waits for the choice to be saved when it
+ * changes. The selects sit inside their labels, so they are found by the label's first words, not by Playwright's getByLabel.
+ */
+async function chooseView(page, label, value) {
+  const select = page.locator('main label').filter({ has: page.locator('select') }).filter({ hasText: new RegExp('^\\s*' + escape(label)) }).locator('select').first();
+  await select.waitFor();
+  await page.waitForFunction((el) => !el.disabled, await select.elementHandle());
+  if ((await select.inputValue()) === value) return;
+  const saved = page.waitForResponse((r) => r.url().endsWith('/me/preferences') && r.request().method() === 'PUT');
+  await select.selectOption(value);
+  await saved;
+}
+
+/** Back to the top of the page, where the top bar is: WebKit does not always scroll it back into view for a click. */
+async function toTop(page) {
+  await page.evaluate(() => window.scrollTo(0, 0));
+}
+
+/** The person menu (the button with the person's name in the top bar). */
+async function openPersonMenu(page) {
+  await toTop(page);
+  await page.locator('#person-menu-button').click();
 }
 
 /** A project's binder tab (the project's section navigation). */
 async function projectTab(page, name) {
   await page.locator('nav.binder-tabs').getByRole('link', { name: new RegExp('^' + escape(name) + '(\\s*\\d|$)') }).click();
 }
-
-/** From any page: Projects in the side menu, then the project. Each click waits for the page it opens. */
+/** From any page: Projects in the side menu, then the project in the page (the side menu also lists it, D143). Each click waits for the page it opens. */
 async function openProject(page, project) {
   await menuLink(page, 'Projects');
   await page.getByRole('heading', { name: 'Projects', level: 1 }).waitFor();
-  await page.getByRole('link', { name: new RegExp('^' + escape(project)) }).first().click();
+  await page.locator('main').getByRole('link', { name: new RegExp('^' + escape(project)) }).first().click();
   await page.getByRole('heading', { name: project, level: 1 }).waitFor();
 }
 

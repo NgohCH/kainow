@@ -24,6 +24,7 @@ import { GRANT_READ_ONLY } from '../projects/matrix';
 import { checkNewAppointment } from '../projects/memberships.service';
 import { membershipState, todayUtc8 } from '../projects/membership';
 import { dueSoonEnd } from '../dashboards/due-soon';
+import { isDueSoon, latestBlockNotes } from './board-fields';
 import { loadEffective } from '../notifications/settings';
 import { DELETED_LINK, liveRecordRefSql, liveRecordSql, notHeldSql, refuseHeld } from '../history/deleted-sql';
 import { QUOTE_CHANGED_TEXT, quoteChangedItems } from '../quarantine/clean';
@@ -656,12 +657,10 @@ export class RecordsService {
     const parent = tasks.find((t) => t.id === view.parentId);
     // A parent this viewer's lists do not show (held or Deleted) is not shown through its subtask either.
     const ownOnly = parent ? {} : { parentId: null, dueAfterParent: false, parentCancelled: false };
-    // "Due soon" by the one rule (D135); a task that is overdue or waits for a deadline review shows that instead.
-    const open = view.status !== 'completed' && view.status !== 'cancelled' && !view.deadlineReviewRequired && view.dueOn >= ctx.today;
-    const dueSoon = open && view.dueOn <= dueSoonEnd(ctx.today, (await loadEffective(this.pool, ctx.project.id)).cal);
+    // Due soon comes with the view: the same code as the list (D139). The page keeps showing the block's reason even under a label.
     const block = view.status === 'blocked' ? history.filter((h) => h.kind === 'blocked').at(-1) : undefined;
     return {
-      task: { ...view, ...ownOnly, description: more.description as string | null, dueSoon },
+      task: { ...view, ...ownOnly, description: more.description as string | null },
       history,
       parent: parent ? { id: parent.id, title: parent.title } : null,
       subtasks: tasks.filter((t) => t.parentId === view.id).map((t) => ({ id: t.id, title: t.title, status: t.status, dueOn: t.dueOn })),
@@ -708,6 +707,7 @@ export class RecordsService {
                    FROM tasks n WHERE n.follows_task_id = t.id ORDER BY n.authorised_at, n.id LIMIT 1) AS "followedBy",
                 EXISTS (SELECT 1 FROM change_requests r WHERE r.target_kind = 'task' AND r.target_id = t.id AND r.status = 'pending') AS "changeWaiting",
                 t.deadline_review_required AS "deadlineReviewRequired",
+                to_char(t.completed_at AT TIME ZONE 'Asia/Kuala_Lumpur', 'YYYY-MM-DD') AS "completedOn",
                 ${UNDER_REVIEW_SQL('t', 'task')}
            FROM tasks t JOIN users u ON u.id = t.assignee_id
            LEFT JOIN tasks p ON p.id = t.parent_id
@@ -724,7 +724,14 @@ export class RecordsService {
       )
     ).rows;
     const itemIds = tasks.filter((t) => t.itemId).map((t) => t.itemId as string);
-    const [flags, evidence, quoteChanged] = await Promise.all([itemSourceFlags(this.pool, itemIds), itemDiscussionEvidence(this.pool, itemIds), quoteChangedItems(this.pool, itemIds)]);
+    const [flags, evidence, quoteChanged, blockNotes, calendar] = await Promise.all([
+      itemSourceFlags(this.pool, itemIds),
+      itemDiscussionEvidence(this.pool, itemIds),
+      quoteChangedItems(this.pool, itemIds),
+      latestBlockNotes(this.pool, tasks.filter((t) => t.status === 'blocked' && !t.quarantineLabel).map((t) => t.id as string)),
+      loadEffective(this.pool, ctx.project.id),
+    ]);
+    const soonEnd = dueSoonEnd(ctx.today, calendar.cal);
     return tasks.map((t) => ({
       id: t.id,
       parentId: t.parentId,
@@ -734,6 +741,10 @@ export class RecordsService {
       ownerAsWritten: t.ownerAsWritten,
       dueOn: t.dueOn,
       status: t.status as TaskStatus,
+      dueSoon: isDueSoon(t, ctx.today, soonEnd),
+      completedOn: t.status === 'completed' ? (t.completedOn as string | null) : null,
+      // The latest block's note while Blocked; never one that sits under an under-review label.
+      blockedReason: t.status === 'blocked' && !t.quarantineLabel ? (blockNotes.get(t.id) ?? null) : null,
       ...taskIndicators({
         status: t.status,
         dueOn: t.dueOn,

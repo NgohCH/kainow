@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { describe, test } from 'node:test';
-import { csvCell, toCsv } from './csv';
+import { csvCell, panelTable, toCsv } from './csv';
+import type { ProgressRow } from './panels.service';
 
 describe('analytics CSV', () => {
   test('csvCell guards = + - @ and quotes commas, quotes and newlines', () => {
@@ -49,4 +50,23 @@ describe('analytics CSV', () => {
 test('a cell starting with a tab or carriage return is also kept from being read as a formula', () => {
   assert.equal(csvCell('\t=HYPERLINK("x")'), `"'\t=HYPERLINK(""x"")"`);
   assert.equal(csvCell('\r=1+1'), `"'\r=1+1"`);
+});
+
+test('the progress table marks a stage stopped by a deferral or closure, with its days to the stop (D138)', () => {
+  const row = (name: string, status: 'active' | 'deferred' | 'closed', stopped: 'deferred' | 'closed' | null, substage: string | null): ProgressRow => ({
+    id: name, name, departmentId: 'd', owningDepartment: 'Operations', status, stageTemplate: 'Standard',
+    stage: { stage: 'Build', substage, days: 12, stopped },
+    completion: { state: 'not_measurable', cancelled: 0 }, onTime: { state: 'nothing_due', awaitingReview: 0 }, plannedEnd: { state: 'none' }, overdue: 0, blocked: 0,
+  });
+  const t = panelTable({
+    panel: 'progress',
+    data: { departments: [], nothingDue: [], computedAt: '2026-11-26T02:00:00Z', projects: [row('Running', 'active', null, null), row('Paused', 'deferred', 'deferred', 'Testing'), row('Ended', 'closed', 'closed', null)] },
+  });
+  const stage = t.columns.indexOf('Stage');
+  const daysCol = t.columns.indexOf('Days in stage');
+  assert.deepEqual(t.rows.map((r) => [r[stage], r[daysCol]]), [
+    ['Build', 12],
+    ['Build: Testing (stopped)', 12],
+    ['Build (stopped)', 12],
+  ]);
 });

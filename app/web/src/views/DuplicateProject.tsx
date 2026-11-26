@@ -6,6 +6,7 @@ import { plural } from '../format.ts';
 import { PROPOSALS_START } from '../projects.ts';
 import { type DupState, type Loaded, type Offer, type Page, type Refusal, allTasks, buildBody, fieldOf, loadedAgain, problemsOf, blockedReason, purposeUnchanged, readRefusal, replacedOf, startPage, termsOf, withServerTerms } from '../duplicate.ts';
 import { Box } from '../ui/Box.tsx';
+import { projectsChanged } from '../ui/menu.ts';
 import { PageHeader } from '../ui/PageHeader.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
 import { leaveGuard } from '../ui/leaveGuard.ts';
@@ -122,6 +123,7 @@ function Review({ first, meId }: { first: Loaded; meId: string }) {
     change((p) => ({ ...p, notice: null }));
     try {
       const r = await post();
+      projectsChanged();
       if (!mounted.current) return;
       leaveGuard.release();
       go(`#/projects/${r.project.id}`);

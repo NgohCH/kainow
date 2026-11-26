@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
+import type { PoolClient } from 'pg';
+import { cleanItem, restoreOriginals } from '../quarantine/clean';
+import { MARKER } from '../quarantine/clean-text';
+import { unhold } from '../quarantine/cases.service';
+import { type ProtectedKey, loadProtectedKey, newKeyBytes } from '../quarantine/protected-key';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
@@ -380,22 +388,179 @@ describe('the task page', { skip: SKIP_NO_DB }, () => {
     }
   });
 
-  test('the list reads every proposal in a fixed number of queries', async () => {
-    const count = async (read: () => Promise<unknown>) => {
-      let n = 0;
-      const pool = t.app.get(PG_POOL);
-      const original = pool.query;
-      pool.query = function (...args: unknown[]) {
-        n += 1;
-        return original.apply(pool, args);
-      };
-      try {
-        await read();
-      } finally {
-        pool.query = original;
-      }
-      return n;
+  /** How many queries the pool sees while `read` runs. */
+  const count = async (read: () => Promise<unknown>) => {
+    let n = 0;
+    const pool = t.app.get(PG_POOL);
+    const original = pool.query;
+    pool.query = function (...args: unknown[]) {
+      n += 1;
+      return original.apply(pool, args);
     };
+    try {
+      await read();
+    } finally {
+      pool.query = original;
+    }
+    return n;
+  };
+
+  // ---- Board fields on the list (11a.2) ---------------------------------------------------------------------------
+
+  const inList = async (c: Client, id: string) => (await records(c)).tasks.find((x: { id: string }) => x.id === id);
+
+  test('the list says due soon as the task page does, on both calendars, and never for overdue, marked or finished work', async () => {
+    // Today is Monday 9 November 2026: seven working days on is 18 November, seven plain days on is 16 November.
+    const due = async (over: Parameters<typeof task>[0]) => await task(over);
+    const marked = await due({ due: '2026-11-18' });
+    await t.pool.query(`UPDATE tasks SET deadline_review_required = true WHERE id = $1`, [marked]);
+    const all = [
+      await due({ due: '2026-11-09' }),
+      await due({ due: '2026-11-16' }),
+      await due({ due: '2026-11-18' }),
+      await due({ due: '2026-11-19' }),
+      await due({ due: '2026-11-06' }),
+      await due({ due: '2026-11-18', status: 'completed' }),
+      await due({ due: '2026-11-18', status: 'cancelled' }),
+      marked,
+    ];
+    const agree = async () => {
+      const out: boolean[] = [];
+      for (const id of all) {
+        const onList = (await inList(ben, id)).dueSoon;
+        assert.equal(onList, (await get(ben, id)).body.task.dueSoon, id);
+        out.push(onList);
+      }
+      return out;
+    };
+    assert.deepEqual(await agree(), [true, true, true, false, false, false, false, false], 'working days');
+    await t.pool.query(`INSERT INTO project_notification_settings (project_id, day_counting) VALUES ($1, 'calendar')`, [projectId]);
+    assert.deepEqual(await agree(), [true, true, false, false, false, false, false, false], 'plain days');
+  });
+
+  test('the list gives the UTC+8 day a task was finished, and null for the rest', async () => {
+    const id = await task({ status: 'completed' });
+    await t.pool.query(`UPDATE tasks SET completed_at = '2026-11-05T23:30:00Z' WHERE id = $1`, [id]);
+    assert.equal((await inList(ben, id)).completedOn, '2026-11-06');
+    assert.equal((await inList(ben, await task())).completedOn, null);
+  });
+
+  test('the list gives the latest block while Blocked; the cleaned text after cleaning; nothing while held', async () => {
+    const id = await task();
+    const act = async (c: Client, action: string, note?: string) => {
+      t.clock.advanceSeconds(60);
+      assert.equal((await c.request('POST', `/records/tasks/${id}/${action}`, { note })).status, 200, action);
+    };
+    const reason = async () => (await inList(ben, id)).blockedReason;
+    assert.equal(await reason(), null, 'not started');
+    await act(ann, 'start');
+    await act(ann, 'block', 'First reason');
+    await act(ann, 'unblock', 'Fixed');
+    assert.equal(await reason(), null, 'unblocked');
+    await act(ann, 'block', 'Second reason');
+    assert.equal(await reason(), 'Second reason');
+    assert.equal((await get(ben, id)).body.blocked.reason, 'Second reason', 'the page says the same');
+    // Cleaning rewrites the note in place, inside the case that holds the task.
+    const caseId = await addCase('task', id);
+    const c = await t.pool.connect();
+    try {
+      await c.query('BEGIN');
+      await c.query(`SELECT set_config('kainow.quarantine_write', $1, true)`, [caseId]);
+      await c.query(`UPDATE task_events SET note = 'Cleaned [removed]' WHERE task_id = $1 AND note = 'Second reason'`, [id]);
+      await c.query('COMMIT');
+    } finally {
+      c.release();
+    }
+    assert.equal(await reason(), 'Cleaned [removed]', 'the cleaned text');
+    await t.pool.query(`UPDATE quarantine_cases SET state = 'cleaned', cleaned_at = now() WHERE id = $1`, [caseId]);
+    await t.pool.query(`UPDATE tasks SET held_case_id = $2 WHERE id = $1`, [id, caseId]);
+    assert.equal((await inList(ben, id)).quarantineLabel !== null, true);
+    assert.equal(await reason(), null, 'under review');
+    const page = await get(ben, id);
+    assert.equal(page.body.blocked.reason, 'Cleaned [removed]', 'the page still shows it, as before');
+    assert.ok(!JSON.stringify(await records(ben)).includes('Cleaned [removed]'), 'the list holds no reason');
+  });
+
+  test('a reason follows cleaning and release: none while under review, the cleaned text after release, the original after release unchanged', async () => {
+    const SECRET = 'Xy7!pass';
+    const dir = mkdtempSync(join(tmpdir(), 'kainow-board-'));
+    writeFileSync(join(dir, 'key'), newKeyBytes().bytes);
+    const key = loadProtectedKey(join(dir, 'key')) as ProtectedKey;
+    const inTx = async (fn: (c: PoolClient) => Promise<unknown>) => {
+      const c = await t.pool.connect();
+      try {
+        await c.query('BEGIN');
+        await fn(c);
+        await c.query('COMMIT');
+      } catch (err) {
+        await c.query('ROLLBACK').catch(() => undefined);
+        throw err;
+      } finally {
+        c.release();
+      }
+    };
+    const original = `Waiting on ${SECRET}`;
+    const cleanedText = `Waiting on ${MARKER}`;
+    const blockedTask = async () => {
+      const id = await task({ status: 'blocked' });
+      await t.pool.query(
+        `INSERT INTO task_events (id, task_id, kind, from_status, to_status, note, actor_id, at) VALUES ($1, $2, 'blocked', 'in_progress', 'blocked', $3, $4, now())`,
+        [uuidv7(), id, original, ids.ann],
+      );
+      const caseId = await addCase('task', id);
+      await t.pool.query(`UPDATE tasks SET held_case_id = $2 WHERE id = $1`, [id, caseId]);
+      assert.equal(await inList(ben, id), undefined, 'held and not yet cleaned: not listed at all');
+      await inTx((c) => cleanItem(c, key, caseId, 'task', id, [SECRET]));
+      await t.pool.query(`UPDATE quarantine_cases SET state = 'cleaned', cleaned_at = now() WHERE id = $1`, [caseId]);
+      return { id, caseId };
+    };
+    const close = (c: PoolClient, caseId: string, state: 'released' | 'released_unchanged') =>
+      c.query(`UPDATE quarantine_cases SET state = $2, closed_at = now(), closed_by = $3, close_reason = 'Checked' WHERE id = $1`, [caseId, state, ids.pm]);
+
+    const cleaned = await blockedTask();
+    assert.equal((await inList(ben, cleaned.id)).blockedReason, null, 'cleaned and under review');
+    assert.equal((await get(ben, cleaned.id)).body.blocked.reason, cleanedText, 'the page still shows the cleaned text');
+    await inTx(async (c) => {
+      await close(c, cleaned.caseId, 'released');
+      await unhold(c, 'task', cleaned.id, cleaned.caseId, t.clock.now());
+    });
+    assert.equal((await inList(ben, cleaned.id)).blockedReason, cleanedText, 'after release');
+
+    const unchanged = await blockedTask();
+    assert.equal((await inList(ben, unchanged.id)).blockedReason, null);
+    await inTx(async (c) => {
+      await close(c, unchanged.caseId, 'released_unchanged');
+      await restoreOriginals(c, key, unchanged.caseId);
+      await unhold(c, 'task', unchanged.id, unchanged.caseId, t.clock.now());
+    });
+    assert.equal((await inList(ben, unchanged.id)).blockedReason, original, 'after release unchanged');
+    assert.equal((await get(ben, unchanged.id)).body.blocked.reason, original);
+  });
+
+  test('the number of queries for the list does not grow with the tasks', async () => {
+    let made = 0;
+    const make = async (n: number) => {
+      for (let i = made; i < made + n; i += 1) {
+        const id = await task({ status: i % 2 === 0 ? 'blocked' : 'in_progress', due: `2026-11-${10 + (i % 15)}` });
+        if (i % 2 === 0) {
+          await t.pool.query(
+            `INSERT INTO task_events (id, task_id, kind, from_status, to_status, note, actor_id, at) VALUES ($1, $2, 'blocked', 'in_progress', 'blocked', 'Waiting', $3, now())`,
+            [uuidv7(), id, ids.ann],
+          );
+        }
+      }
+      made += n;
+    };
+    await make(1);
+    await records(ben);
+    const one = await count(() => records(ben));
+    await make(19);
+    assert.equal((await records(ben)).tasks.length, 20);
+    assert.equal(await count(() => records(ben)), one);
+    assert.equal((await records(ben)).tasks.filter((x: { blockedReason: string | null }) => x.blockedReason === 'Waiting').length, 10);
+  });
+
+  test('the list reads every proposal in a fixed number of queries', async () => {
     await authoriseHuman((await propose()).body.proposal.id);
     const proposals = () => ben.request('GET', `/projects/${projectId}/proposals`);
     const few = [await count(() => records(ben)), await count(proposals)];

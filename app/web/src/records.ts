@@ -13,8 +13,8 @@ export type RiskAction = 'mitigate' | 'update' | 'accept' | 'resolve' | 'reopen'
 export type Severity = 'low' | 'medium' | 'high' | 'critical';
 
 export const TASK_STATUS_LABEL: Record<TaskStatus, string> = {
-  not_started: 'Not Started',
-  in_progress: 'In Progress',
+  not_started: 'Not started',
+  in_progress: 'In progress',
   blocked: 'Blocked',
   completed: 'Completed',
   cancelled: 'Cancelled',

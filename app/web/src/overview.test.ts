@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import type { NeedsYouItem } from './dashboard.ts';
-import { addDays, dueWithin, projectAttention, taskStatusParts } from './overview.ts';
+import { addDays, copiedDraftWait, dueWithin, projectAttention, taskStatusParts } from './overview.ts';
 import { QUESTION_STATUS_MEANING, RISK_STATUS_MEANING, TASK_STATUS_MEANING, decisionMeaning } from './records.ts';
 
 test('task status parts count each status, leave cancelled tasks out, and keep a fixed order', () => {
@@ -47,4 +47,16 @@ test('the attention queue keeps only this project\'s items, in order', () => {
   const item = (projectId: string, label: string): NeedsYouItem => ({ kind: 'overdue', projectId, projectName: projectId, label, since: null, link: '#/' });
   const items = [item('p1', 'a'), item('p2', 'b'), item('p1', 'c')];
   assert.deepEqual(projectAttention(items, 'p1').map((i) => i.label), ['a', 'c']);
+});
+
+test('a copied Draft with waiting proposals says that copied tasks and risks wait on Proposals', () => {
+  const copied = { copiedFrom: { id: 'p0', name: 'Harbour' }, status: 'draft' as const };
+  assert.equal(copiedDraftWait(copied, 1, 3), 'Copied tasks and risks wait on');
+  assert.equal(copiedDraftWait({ ...copied, copiedFrom: { hidden: true as const } }, 1, 1), 'Copied tasks and risks wait on');
+  // Only stages, settings or resources copied: nothing waits on Proposals, so nothing is said.
+  assert.equal(copiedDraftWait(copied, 1, 0), null);
+  // Not copied, no longer a Draft, or not a member: nothing either.
+  assert.equal(copiedDraftWait({ copiedFrom: null, status: 'draft' }, 1, 3), null);
+  assert.equal(copiedDraftWait({ ...copied, status: 'planned' }, 1, 3), null);
+  assert.equal(copiedDraftWait(copied, 0, 3), null);
 });

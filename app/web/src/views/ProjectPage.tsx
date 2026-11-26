@@ -24,10 +24,11 @@ import { type NeedsYouItem, type PersonalDashboard, type ProjectDashboard, dayLa
 import { todayUtc8 } from '../changes.ts';
 import { taskHref } from '../taskPage.ts';
 import { TASK_STATUS_LABEL, TASK_STATUS_MEANING, type TaskStatus } from '../records.ts';
-import { addDays, dueWithin, projectAttention, taskStatusParts } from '../overview.ts';
+import { addDays, copiedDraftWait, dueWithin, projectAttention, taskStatusParts } from '../overview.ts';
 import { stageFlowFrom, stageTiming, type ProjectStage } from '../ui/stages.ts';
 import { AttentionQueue } from '../ui/AttentionQueue.tsx';
 import { BinderTabs } from '../ui/BinderTabs.tsx';
+import { projectsChanged } from '../ui/menu.ts';
 import { Box } from '../ui/Box.tsx';
 import { DataTable, type Column } from '../ui/DataTable.tsx';
 import { StackedBar } from '../ui/StackedBar.tsx';
@@ -77,7 +78,7 @@ const NO_COUNTS: TabCounts = { waiting: 0, overdue: 0, mayPrepare: false, deadli
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
-export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsReady, onPrefs }: { projectId: string; tab: ProjectView; meId: string; itemId?: string; runId?: string; prefs: Prefs; prefsReady: boolean; onPrefs: (next: Prefs) => Promise<void> }) {
+export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsReady, prefsFailed = false, onPrefs }: { projectId: string; tab: ProjectView; meId: string; itemId?: string; runId?: string; prefs: Prefs; prefsReady: boolean; prefsFailed?: boolean; onPrefs: (next: Prefs) => Promise<void> }) {
   const [project, setProject] = useState<Project | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [asking, setAsking] = useState(false);
@@ -134,7 +135,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
     };
   }, [projectId, status, myRoles, tab]);
 
-  /** Runs one change; shows the server's reason if it is refused, otherwise reloads the project. */
+  /** Runs one change; shows the server's reason if it is refused, otherwise reloads the project (and the menu's list of projects). */
   const act = useCallback(
     async (work: () => Promise<unknown>, done: string | ((result: unknown) => string)) => {
       setError(null);
@@ -143,6 +144,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
         const result = await work();
         setNotice(typeof done === 'function' ? done(result) : done);
         load();
+        projectsChanged();
         return true;
       } catch (e) {
         setError(errText(e, 'That did not work. Try again.'));
@@ -191,6 +193,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
   ];
   const open = ['draft', 'planned', 'active'].includes(project.status);
   const base = `#/projects/${project.id}`;
+  const copiedWait = copiedDraftWait(project, roles.length, counts.waiting);
   // Notes are imported straight away by the managing roles; a Member submits them for one of those to publish.
   const canAddNotes = roles.some((r) => r !== 'member') && open;
   const canSubmitNotes = roles.length > 0 && !roles.some((r) => r !== 'member') && open;
@@ -276,8 +279,10 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
       )}
       {error && <p role="alert" className="error">{error}</p>}
       {notice && <p role="status" className="meta">{notice}</p>}
-      {view === 'overview' && project.copiedFrom && project.status === 'draft' && roles.length > 0 && (
-        <p className="warn">What was copied waits on <a href={`${base}/proposals`}>Proposals</a>. {PROPOSALS_START}</p>
+      {/* The Overview keeps its boxes; the other tabs are divided by thin rules (11a.2 spec 7). */}
+      <div className={view === 'overview' ? 'project-tab' : 'project-tab ruled'}>
+      {view === 'overview' && copiedWait && (
+        <p className="warn">{copiedWait} <a href={`${base}/proposals`}>Proposals</a>. {PROPOSALS_START}</p>
       )}
       {view === 'overview' && <Overview project={project} act={act} contentAllowed={contentAllowed} />}
       {view === 'timeline' && contentAllowed && <Timeline projectId={project.id} prefs={prefs} ready={prefsReady} onChange={onPrefs} />}
@@ -342,6 +347,11 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
       {view === 'work' && contentAllowed && (
         <Work
           projectId={project.id}
+          projectName={project.name}
+          prefs={prefs}
+          prefsReady={prefsReady}
+          prefsFailed={prefsFailed}
+          onPrefs={onPrefs}
           people={people}
           canPropose={roles.length > 0}
           canClear={roles.some((r) => r === 'pm' || r === 'deputy_pm')}
@@ -351,6 +361,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
           delegated={Boolean(project.recordDeletionDelegation)}
         />
       )}
+      </div>
     </main>
     </ProjectCalendarProvider>
   );
@@ -360,7 +371,7 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
  * `#/runs/<id>` (email links point at it): the run's review inside its project, under the Proposals tab. The run says
  * which project it belongs to; a run the person may not see shows the server's reason.
  */
-export function RunInProject({ runId, itemId, meId, prefs, prefsReady, onPrefs }: { runId: string; itemId?: string; meId: string; prefs: Prefs; prefsReady: boolean; onPrefs: (next: Prefs) => Promise<void> }) {
+export function RunInProject({ runId, itemId, meId, prefs, prefsReady, prefsFailed = false, onPrefs }: { runId: string; itemId?: string; meId: string; prefs: Prefs; prefsReady: boolean; prefsFailed?: boolean; onPrefs: (next: Prefs) => Promise<void> }) {
   const [projectId, setProjectId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   useEffect(() => {
@@ -381,7 +392,7 @@ export function RunInProject({ runId, itemId, meId, prefs, prefsReady, onPrefs }
       </main>
     );
   }
-  return <ProjectPage key={projectId} projectId={projectId} tab="run" runId={runId} itemId={itemId} meId={meId} prefs={prefs} prefsReady={prefsReady} onPrefs={onPrefs} />;
+  return <ProjectPage key={projectId} projectId={projectId} tab="run" runId={runId} itemId={itemId} meId={meId} prefs={prefs} prefsReady={prefsReady} prefsFailed={prefsFailed} onPrefs={onPrefs} />;
 }
 
 function Overview({ project, act, contentAllowed }: { project: Project; act: Act; contentAllowed: boolean }) {

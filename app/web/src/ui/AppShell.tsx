@@ -7,33 +7,41 @@ import { DEFAULT_PREFS, type Prefs } from '../prefs.ts';
 import { Customise } from '../views/Customise.tsx';
 import { OpsBanner } from '../views/OpsBanner.tsx';
 import { reviewItems } from './home.ts';
-import { currentMenuHref, sideMenuGroups, type MenuContext } from './menu.ts';
+import { PROJECTS_CHANGED, currentMenuHref, menuProjects, sideMenuGroups, type MenuContext, type MenuItem } from './menu.ts';
 import { PERSON_BUTTON_ID, PersonMenu } from './PersonMenu.tsx';
 import { SideMenu } from './SideMenu.tsx';
 import { SpendMeter, TopBar, useSpend } from './TopBar.tsx';
 
 const MENU_ID = 'side-menu';
 
+type MenuData = { reviewCount: number; projects: { items: MenuItem[]; more: boolean } };
+
 /**
- * Reviews' badge: the Review and decisions items in Needs you, read on load and again on each arrival at Home or Reviews
- * (where the person acts on them). A failed read leaves the badge as it was.
+ * Reviews' badge and the menu's projects, from one read of the personal dashboard: on load, again on each arrival at Home
+ * or Reviews (where the person acts on review items), and when a project is created, duplicated or changes
+ * (PROJECTS_CHANGED). A failed read leaves the menu as it was.
  */
-function useReviewCount(hash: string): number {
-  const [count, setCount] = useState(0);
-  const read = useRef(false);
+function useMenuData(hash: string): MenuData {
+  const [data, setData] = useState<MenuData>({ reviewCount: 0, projects: { items: [], more: false } });
+  const [changes, setChanges] = useState(0);
+  const readFor = useRef(-1);
+  const latest = useRef(0);
   useEffect(() => {
-    if (read.current && hash !== '#/' && hash !== '#/reviews') return;
-    read.current = true;
-    let stale = false;
+    const bump = () => setChanges((n) => n + 1);
+    window.addEventListener(PROJECTS_CHANGED, bump);
+    return () => window.removeEventListener(PROJECTS_CHANGED, bump);
+  }, []);
+  useEffect(() => {
+    if (readFor.current === changes && hash !== '#/' && hash !== '#/reviews') return;
+    readFor.current = changes;
+    // Only the latest read is shown. A read is not dropped when the page changes meanwhile (a new project opens at once).
+    const mine = ++latest.current;
     api.get<PersonalDashboard>(`/dashboard/me?${homeQuery(DEFAULT_PREFS.home, false)}`).then(
-      (d) => !stale && setCount(reviewItems(d.needsYou).length),
+      (d) => mine === latest.current && setData({ reviewCount: reviewItems(d.needsYou).length, projects: menuProjects(d.projects) }),
       () => undefined,
     );
-    return () => {
-      stale = true;
-    };
-  }, [hash]);
-  return count;
+  }, [hash, changes]);
+  return data;
 }
 
 /**
@@ -68,7 +76,8 @@ export function AppShell({
   const [menuOpen, setMenuOpen] = useState(false);
   const [customising, setCustomising] = useState(false);
   const customiseHeading = useRef<HTMLHeadingElement>(null);
-  const count = useReviewCount(hash);
+  const menu = useMenuData(hash);
+  const projectHrefs = menu.projects.items.flatMap((i) => (i.href ? [i.href] : []));
   const spend = useSpend(hash, access.isAdmin);
   const orgColour = branding?.colour ?? null;
 
@@ -118,7 +127,12 @@ export function AppShell({
           />
         }
       />
-      <SideMenu id={MENU_ID} groups={sideMenuGroups({ ...access, reviewCount: count })} current={currentMenuHref(hash)} open={menuOpen} />
+      <SideMenu
+        id={MENU_ID}
+        groups={sideMenuGroups({ ...access, reviewCount: menu.reviewCount, projects: menu.projects })}
+        current={currentMenuHref(hash, projectHrefs)}
+        open={menuOpen}
+      />
       <div className="shell-body">
         <OpsBanner hash={hash} isAdmin={access.isAdmin} />
         {customising && (

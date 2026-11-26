@@ -26,7 +26,7 @@ function perProject<T extends { projectId: string; projectName: string }>(list: 
 const countOf = (p: ProjectBox, group: CountGroup): number => p.counts.find((c) => c.group === group)?.count ?? 0;
 
 /** Most overdue, then most to review, then most due soon, then by name. */
-function byUrgency(a: ProjectBox, b: ProjectBox): number {
+export function byUrgency(a: ProjectBox, b: ProjectBox): number {
   const more = (g: CountGroup) => countOf(b, g) - countOf(a, g);
   return more('overdue') || more('review') || more('dueSoon') || a.projectName.localeCompare(b.projectName) || a.projectId.localeCompare(b.projectId);
 }

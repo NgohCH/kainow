@@ -8,21 +8,27 @@
 | 2 | Sign in with a code | the code step, then Home (its heading is a greeting) after the code from the API log is entered |
 | 3 | Projects | Projects from the side menu (below 900 px the Menu button opens it first): the projects table with Load Project 01 |
 | 4 | Open a project | the project's heading and About |
-| 5 | Work tab | the Work binder tab: Tasks |
-| 6 | Save a task progress change from the Work list | in the Tasks table, blocks an In progress task with a reason ("Block: done.", the task shows Blocked); when none is left, unblocks a Blocked one ("Unblock: done.", In Progress) |
-| 7 | Follow a task link to its page | the first task of the Work list: its page with the title, what its status means and its description, and Back to Work |
-| 8 | Post a discussion comment | the Discussion tab, a thread: the comment appears under Messages |
-| 9 | Open a note | back to the project, the Notes tab, a note: the note's heading |
-| 10 | Review screen with a proposal | the run inserts a finished AI run (`review-run.mjs`) on Meeting notes 6.1 in Load Project 06 (the Administrator is its Owner); the Notes tab, the note, its Review button, then Review proposals (inside the project) with the decision waiting and the source text (below 900 px, through "Show in the notes" and back) |
-| 11 | Approve a proposal | Authorise on that decision: its link "Authorised: open the decision" opens the decision's row in Work |
-| 12 | Authorise a person's proposal | Load Project 06 (or the next project the Administrator owns once 06 has none waiting): the Proposals tab, Proposals from people, Authorise a decision: "Authorised: it is now on the Work tab.", and the proposal links to the decision |
-| 13 | Personal dashboard | Home from the side menu: Needs you and My tasks |
-| 14 | My profile | My profile in the person menu: Projects and roles with Load Project 01, and Past roles |
-| 15 | Each tab style | Grey dividers, Tinted dividers and Boxes, each chosen on My profile and looked at on the project: the open tab is marked and nothing scrolls sideways |
-| 16 | Project dashboard | the project's Figures |
-| 17 | Analytics as Administrator | Analytics from the side menu, and Saved views |
-| 18 | Operations page | Operations from the side menu, and its Backups box |
-| 19 | Sign out | Sign out in the person menu (the button with the person's name): the sign-in page again |
+| 5 | Work tab | the Work binder tab: Tasks, as the board by status (View Board and Columns By status are chosen if an earlier run left another view) with its boxes |
+| 6 | Work board by assignee | Columns By assignee: one column per person, then By status again |
+| 7 | Completed folded, then unfolded | the Completed column starts folded and opens in place (below 700 px it is chosen in the board's Column list first) |
+| 8 | Open a box in the side panel and close it | a box's title opens the side panel with the task's name, Open full page and its parts; Close removes it and focus is back on the box |
+| 9 | Save a task progress change from the Work list | View List; in the Tasks table, blocks an In progress task with a reason ("Block: done.", the task shows Blocked); when none is left, unblocks a Blocked one ("Unblock: done.", In progress) |
+| 10 | Follow a task link to its page | the first task of the Work list: its page with the title, what its status means and its description, and Back to Work; then View Board again |
+| 11 | Post a discussion comment | the Discussion tab, a thread: the comment appears under Messages |
+| 12 | Open a note | back to the project, the Notes tab, a note: the note's heading |
+| 13 | Review screen with a proposal | the run inserts a finished AI run (`review-run.mjs`) on Meeting notes 6.1 in Load Project 06 (the Administrator is its Owner); the Notes tab, the note, its Review button, then Review proposals (inside the project) with the decision waiting and the source text (below 900 px, through "Show in the notes" and back) |
+| 14 | Approve a proposal | Authorise on that decision: its link "Authorised: open the decision" opens the decision's row in Work |
+| 15 | Authorise a person's proposal | Load Project 06 (or the next project the Administrator owns once 06 has none waiting): the Proposals tab, Proposals from people, Authorise a decision: "Authorised: it is now on the Work tab.", and the proposal links to the decision |
+| 16 | Personal dashboard | Home from the side menu: Needs you and My tasks |
+| 17 | Needs you as a board and by project | Home's Needs you, View Board (boxes in columns) and By project (one box per project), then Board again |
+| 18 | My tasks: board, by project and by due date | My tasks from the side menu in each of its three views, then Board again |
+| 19 | My profile | My profile in the person menu: Projects and roles with Load Project 01, and Past roles |
+| 20 | Each tab style | Grey dividers, Tinted dividers and Boxes, each chosen on My profile and looked at on the project: the open tab is marked and nothing scrolls sideways |
+| 21 | Dark, dark side menu and compact spacing | chosen on My profile, then Home and the Work board looked at; then Light, the light menu and Comfortable chosen again |
+| 22 | Project dashboard | the project's Figures |
+| 23 | Analytics as Administrator | Analytics from the side menu, and Saved views |
+| 24 | Operations page | Operations from the side menu, and its Backups box |
+| 25 | Sign out | Sign out in the person menu (the button with the person's name): the sign-in page again |
 
 **Browsers** (`BROWSERS`, a comma list; the default is all of them):
 
@@ -53,7 +59,7 @@ node node_modules/playwright-previous/cli.js install firefox                    
 DATABASE_URL=postgres://.../kainow_browsers KAINOW_API_LOG=/tmp/browsers/api.log node smoke.mjs
 ```
 
-Settings: `DATABASE_URL` (the same scratch database: steps 10 and 11 need a finished AI run there to review; without it they are recorded "not checked"), `KAINOW_URL` (default `http://localhost:3312`), `KAINOW_EMAIL` (default `load-001@example.org`), `KAINOW_API_LOG`, `BROWSERS`, `KAINOW_PROJECT` (default Load Project 01), `KAINOW_REVIEW_PROJECTS` (default Load Project 06, 16, 26, 36: the first with a decision waiting; each journey authorises one, and each project has 20), `CHROME_PREVIOUS`, `MSEDGE_PREVIOUS`.
+Settings: `DATABASE_URL` (the same scratch database: steps 13 and 14 need a finished AI run there to review; without it they are recorded "not checked"), `KAINOW_URL` (default `http://localhost:3312`), `KAINOW_EMAIL` (default `load-001@example.org`), `KAINOW_API_LOG`, `BROWSERS`, `KAINOW_PROJECT` (default Load Project 01), `KAINOW_REVIEW_PROJECTS` (default Load Project 06, 16, 26, 36: the first with a decision waiting; each journey authorises one, and each project has 20), `CHROME_PREVIOUS`, `MSEDGE_PREVIOUS`.
 
 Afterwards stop the API and drop the database. A run changes the data (it blocks one task, posts a comment and authorises one proposal per browser and size); the seed has enough for many runs.
 

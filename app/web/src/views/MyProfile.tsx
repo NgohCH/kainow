@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { ApiError, api } from '../api.ts';
 import { todayUtc8 } from '../changes.ts';
-import type { Prefs } from '../prefs.ts';
+import { resetLabel, resetPrefs, type Prefs } from '../prefs.ts';
 import { departmentName, endedText, sinceText, untilText, type PastRole, type PersonDepartment, type Profile, type ProfileRole } from '../profile.ts';
 import { roleLabel } from '../projects.ts';
 import { Box } from '../ui/Box.tsx';
@@ -95,6 +95,9 @@ export function MyProfile({ prefs, ready, failed, onPrefs, orgColour }: {
           <fieldset className="plain-fieldset" disabled={!ready}>
             <div className="stack">
               <AppearanceChoice prefs={prefs} orgColour={orgColour} save={save} name="my-profile" />
+              <div className="actions">
+                <button type="button" onClick={() => save(resetPrefs(prefs, ['appearance']))}>{resetLabel(['appearance'])}</button>
+              </div>
             </div>
           </fieldset>
           <p role={saveFailed ? 'alert' : 'status'} className={saveFailed ? 'error' : 'meta'}>{status}</p>

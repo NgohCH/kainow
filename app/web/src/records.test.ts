@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { QUESTION_STATUS_LABEL, RISK_STATUS_LABEL, SEVERITY_LABEL, TASK_STATUS_LABEL, defaultDueOn, historyLine, likelyAssignee, splitNames } from './records.ts';
 
 test('record states and severities read as words', () => {
-  assert.deepEqual(Object.values(TASK_STATUS_LABEL), ['Not Started', 'In Progress', 'Blocked', 'Completed', 'Cancelled']);
+  assert.deepEqual(Object.values(TASK_STATUS_LABEL), ['Not started', 'In progress', 'Blocked', 'Completed', 'Cancelled']);
   assert.deepEqual(Object.values(QUESTION_STATUS_LABEL), ['Open', 'Answered', 'Resolved', 'Withdrawn']);
   assert.deepEqual(Object.values(RISK_STATUS_LABEL), ['Open', 'Mitigating', 'Resolved', 'Accepted']);
   assert.deepEqual(Object.values(SEVERITY_LABEL), ['Low', 'Medium', 'High', 'Critical']);

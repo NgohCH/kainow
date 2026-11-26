@@ -599,6 +599,35 @@ describe('dashboard leak suites', { skip: SKIP_NO_DB }, () => {
     });
   });
 
+  describe('My tasks: the parent and the block reason', () => {
+    test('a Deleted, held or cleaned parent is not named, and a held task gives no block reason', async () => {
+      const child = async (parent: string) => {
+        const id = await addTask(p, `Child ${MARK.task}`, { dueOn: '2026-11-30' });
+        await t.pool.query(`UPDATE tasks SET parent_id = $1, depth = 1 WHERE id = $2`, [parent, id]);
+        return id;
+      };
+      const readable = async () => json(await ok(mem.request('GET', '/dashboard/me')));
+      const live = await addTask(p, `Parent ${MARK.task}`, { dueOn: '2026-11-30' });
+      await child(live);
+      assert.ok((await readable()).includes(`Parent ${MARK.task}`), 'a live parent is named');
+      for (const how of ['deleted', 'held', 'cleaned'] as const) {
+        const parent = await addTask(p, `Gone ${how} ${MARK.risk}`, { dueOn: '2026-11-30' });
+        await child(parent);
+        if (how === 'deleted') await remove('task', parent);
+        else await hold('task', parent, p, how === 'held' ? 'held' : 'cleaned');
+        assert.ok(!(await readable()).includes(`Gone ${how}`), `a ${how} parent is not named`);
+      }
+      const stuck = await addTask(p, `Stuck ${MARK.task}`, { status: 'blocked', dueOn: '2026-11-30' });
+      await t.pool.query(
+        `INSERT INTO task_events (id, task_id, kind, from_status, to_status, note, actor_id, at) VALUES ($1, $2, 'blocked', 'in_progress', 'blocked', $3, $4, now())`,
+        [uuidv7(), stuck, `Waiting on ${CONTENT.credentialCleaned}`, memId],
+      );
+      assert.ok((await readable()).includes(CONTENT.credentialCleaned), 'the reason of an ordinary task is given');
+      await hold('task', stuck, p, 'cleaned');
+      assert.ok(!(await readable()).includes(CONTENT.credentialCleaned), 'a held task gives none');
+    });
+  });
+
   describe('leadership access', () => {
     const summary = () => leader.request('GET', '/dashboard/leadership');
     /** The leader sees Harbour works with its risk, so losing access below means something. */
