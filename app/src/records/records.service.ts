@@ -657,7 +657,7 @@ export class RecordsService {
     const parent = tasks.find((t) => t.id === view.parentId);
     // A parent this viewer's lists do not show (held or Deleted) is not shown through its subtask either.
     const ownOnly = parent ? {} : { parentId: null, dueAfterParent: false, parentCancelled: false };
-    // Due soon and the block's reason come with the view: the same code as the list (D139).
+    // Due soon comes with the view: the same code as the list (D139). The page keeps showing the block's reason even under a label.
     const block = view.status === 'blocked' ? history.filter((h) => h.kind === 'blocked').at(-1) : undefined;
     return {
       task: { ...view, ...ownOnly, description: more.description as string | null },
@@ -665,7 +665,7 @@ export class RecordsService {
       parent: parent ? { id: parent.id, title: parent.title } : null,
       subtasks: tasks.filter((t) => t.parentId === view.id).map((t) => ({ id: t.id, title: t.title, status: t.status, dueOn: t.dueOn })),
       authorised: { by: more.authorisedBy as string, at: more.authorisedAt as Date },
-      blocked: block ? { reason: view.blockedReason, by: block.actor as string, at: block.at as Date } : null,
+      blocked: block ? { reason: block.note as string | null, by: block.actor as string, at: block.at as Date } : null,
       proposal: view.proposal,
     };
   }

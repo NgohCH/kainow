@@ -1,7 +1,15 @@
 import assert from 'node:assert/strict';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import { uuidv7 } from '../common/uuid7';
 import { PG_POOL } from '../db/database.module';
+import type { PoolClient } from 'pg';
+import { cleanItem, restoreOriginals } from '../quarantine/clean';
+import { MARKER } from '../quarantine/clean-text';
+import { unhold } from '../quarantine/cases.service';
+import { type ProtectedKey, loadProtectedKey, newKeyBytes } from '../quarantine/protected-key';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
 import { seedProject, seedUser } from '../testing/projects';
@@ -469,8 +477,64 @@ describe('the task page', { skip: SKIP_NO_DB }, () => {
     assert.equal((await inList(ben, id)).quarantineLabel !== null, true);
     assert.equal(await reason(), null, 'under review');
     const page = await get(ben, id);
-    assert.equal(page.body.blocked.reason, null, 'the page too');
+    assert.equal(page.body.blocked.reason, 'Cleaned [removed]', 'the page still shows it, as before');
     assert.ok(!JSON.stringify(await records(ben)).includes('Cleaned [removed]'), 'the list holds no reason');
+  });
+
+  test('a reason follows cleaning and release: none while under review, the cleaned text after release, the original after release unchanged', async () => {
+    const SECRET = 'Xy7!pass';
+    const dir = mkdtempSync(join(tmpdir(), 'kainow-board-'));
+    writeFileSync(join(dir, 'key'), newKeyBytes().bytes);
+    const key = loadProtectedKey(join(dir, 'key')) as ProtectedKey;
+    const inTx = async (fn: (c: PoolClient) => Promise<unknown>) => {
+      const c = await t.pool.connect();
+      try {
+        await c.query('BEGIN');
+        await fn(c);
+        await c.query('COMMIT');
+      } catch (err) {
+        await c.query('ROLLBACK').catch(() => undefined);
+        throw err;
+      } finally {
+        c.release();
+      }
+    };
+    const original = `Waiting on ${SECRET}`;
+    const cleanedText = `Waiting on ${MARKER}`;
+    const blockedTask = async () => {
+      const id = await task({ status: 'blocked' });
+      await t.pool.query(
+        `INSERT INTO task_events (id, task_id, kind, from_status, to_status, note, actor_id, at) VALUES ($1, $2, 'blocked', 'in_progress', 'blocked', $3, $4, now())`,
+        [uuidv7(), id, original, ids.ann],
+      );
+      const caseId = await addCase('task', id);
+      await t.pool.query(`UPDATE tasks SET held_case_id = $2 WHERE id = $1`, [id, caseId]);
+      assert.equal(await inList(ben, id), undefined, 'held and not yet cleaned: not listed at all');
+      await inTx((c) => cleanItem(c, key, caseId, 'task', id, [SECRET]));
+      await t.pool.query(`UPDATE quarantine_cases SET state = 'cleaned', cleaned_at = now() WHERE id = $1`, [caseId]);
+      return { id, caseId };
+    };
+    const close = (c: PoolClient, caseId: string, state: 'released' | 'released_unchanged') =>
+      c.query(`UPDATE quarantine_cases SET state = $2, closed_at = now(), closed_by = $3, close_reason = 'Checked' WHERE id = $1`, [caseId, state, ids.pm]);
+
+    const cleaned = await blockedTask();
+    assert.equal((await inList(ben, cleaned.id)).blockedReason, null, 'cleaned and under review');
+    assert.equal((await get(ben, cleaned.id)).body.blocked.reason, cleanedText, 'the page still shows the cleaned text');
+    await inTx(async (c) => {
+      await close(c, cleaned.caseId, 'released');
+      await unhold(c, 'task', cleaned.id, cleaned.caseId, t.clock.now());
+    });
+    assert.equal((await inList(ben, cleaned.id)).blockedReason, cleanedText, 'after release');
+
+    const unchanged = await blockedTask();
+    assert.equal((await inList(ben, unchanged.id)).blockedReason, null);
+    await inTx(async (c) => {
+      await close(c, unchanged.caseId, 'released_unchanged');
+      await restoreOriginals(c, key, unchanged.caseId);
+      await unhold(c, 'task', unchanged.id, unchanged.caseId, t.clock.now());
+    });
+    assert.equal((await inList(ben, unchanged.id)).blockedReason, original, 'after release unchanged');
+    assert.equal((await get(ben, unchanged.id)).body.blocked.reason, original);
   });
 
   test('the number of queries for the list does not grow with the tasks', async () => {

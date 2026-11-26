@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, describe, test } from 'node:test';
 import { uuidv7 } from '../common/uuid7';
+import { PG_POOL } from '../db/database.module';
 import { POSSIBLE_COPY_TEXT, UNDER_REVIEW_TEXT } from '../quarantine/labels';
 import { SKIP_NO_DB } from '../testing/db';
 import { type Client, type TestApp, startTestApp } from '../testing/http';
@@ -433,6 +434,39 @@ describe('personal dashboard endpoint', { skip: SKIP_NO_DB }, () => {
     assert.equal(rows.Free.parent, null);
     assert.deepEqual(rows['Has subtasks'].subtasks, { done: 1, total: 2 }, 'A and B: not cancelled, Deleted or held');
     assert.deepEqual(rows.Free.subtasks, { done: 0, total: 0 });
+  });
+
+  test('the number of queries does not grow with the tasks', async () => {
+    const count = async () => {
+      let n = 0;
+      const pool = t.app.get(PG_POOL);
+      const original = pool.query;
+      pool.query = function (...args: unknown[]) {
+        n += 1;
+        return original.apply(pool, args);
+      };
+      try {
+        await me('mem');
+      } finally {
+        pool.query = original;
+      }
+      return n;
+    };
+    let made = 0;
+    const make = async (n: number) => {
+      for (let i = made; i < made + n; i += 1) {
+        const parent = await task({ title: `Parent ${i}`, status: i % 2 === 0 ? 'blocked' : 'in_progress', dueOn: `2026-11-${10 + (i % 15)}` });
+        if (i % 2 === 0) await block(parent, 'Waiting', '2026-11-04T02:00:00Z');
+        await task({ title: `Child ${i}`, parent });
+      }
+      made += n;
+    };
+    await make(1);
+    await me('mem');
+    const one = await count();
+    await make(19);
+    assert.equal(Object.keys(await mineByTitle()).length, 40);
+    assert.equal(await count(), one);
   });
 
   test('a held or Deleted parent is not named; a held task gives no reason', async () => {
