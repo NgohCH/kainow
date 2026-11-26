@@ -92,13 +92,12 @@ export function Board<I>({ label, columns, reveal, ...rest }: Props<I>) {
   const id = useId();
   const holds = (c: ItemColumn<I>) => reveal !== undefined && c.items.some((i) => rest.itemKey(i) === reveal);
   const first = (columns.find((c) => c.items.length > 0) ?? columns[0])?.key ?? null;
-  const [picked, setPicked] = useState<string | null>(() => columns.find(holds)?.key ?? null);
+  const holding = columns.find(holds)?.key;
+  const [picked, setPicked] = useState<string | null>(() => holding ?? null);
   useEffect(() => {
-    const c = columns.find(holds);
-    if (c) setPicked(c.key);
-    // Only a new target selects its column; later choices in the select stand.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [reveal]);
+    if (holding !== undefined) setPicked(holding);
+    // Only a new target, or the target moving to another column, selects its column; later choices in the select stand.
+  }, [reveal, holding]);
   const selected = columns.some((c) => c.key === picked) ? picked : first;
   if (columns.length === 0) return <p className="board-none">None</p>;
   return (

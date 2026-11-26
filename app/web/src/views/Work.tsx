@@ -162,14 +162,20 @@ export function Work({
   // Goes up when a change made outside the panel needs the panel (and with it the board) read again.
   const [panelReload, setPanelReload] = useState(0);
   const panelOpen = useRef(false);
+  // The column the open panel's box was last seen in: where focus goes on closing when the box has left the board.
+  const lastColumn = useRef<string | null>(null);
+  // Board updates in the order their reads were made: a read overtaken by a newer one (Work's or the panel's) is dropped.
+  const boardRead = useRef(0);
   const load = useCallback(() => {
     // With the panel open, its one reload refreshes the board too.
     if (panelOpen.current) {
       setPanelReload((n) => n + 1);
       return;
     }
+    const mine = ++boardRead.current;
     api.get<Records>(`/projects/${projectId}/records`).then(
       (r) => {
+        if (mine !== boardRead.current) return;
         setRecords(r);
         setLoadError(null);
       },
@@ -198,15 +204,23 @@ export function Work({
 
   // An address naming a task on the board opens its panel and puts focus on its box; any other record, on its row.
   useFocusItem(addressBox ?? focusId, records !== null);
+  // The list shown for an address has no panel: what the panel held goes with it (the leave guard asked on the way here).
   useEffect(() => {
-    if (addressBox && focusId) setSelected({ id: focusId, focusHeading: false });
+    if (!listForAddress) return;
+    setSelected(null);
+    setPanelTyped(false);
+  }, [listForAddress]);
+  useEffect(() => {
+    if (addressBox && focusId) {
+      lastColumn.current = null;
+      setSelected({ id: focusId, focusHeading: false });
+    }
     // Only a new address or the first read opens it; closing it later stands.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [focusId, records !== null]);
 
   // Closing: focus back on the box, or on the heading of the column it was in when it has left the board. The box's
   // column is revealed first (selected on a narrow screen, unfolded, all shown), since it may have moved into Completed.
-  const lastColumn = useRef<string | null>(null);
   if (selected) {
     const box = boxFor(selected.id, drawn);
     const col = box === null ? undefined : columns.find((c) => c.boxes.some((b) => b.task.id === box));
@@ -220,6 +234,8 @@ export function Work({
     const back = returnTo.current;
     if (selected !== null || back === null) return;
     if (!back.fresh && (Date.now() > back.until || (document.activeElement !== null && document.activeElement !== document.body))) return;
+    // A late read may have moved the box: reveal it where it is now.
+    if (!back.fresh) setReturnBox(boxFor(back.id, drawn) ?? undefined);
     back.fresh = false;
     let frame = 0;
     let tries = 0;
@@ -234,6 +250,8 @@ export function Work({
       }
       if (focusAfterClose(shown) === 'box') el?.focus();
       else if (lastColumn.current) document.querySelector<HTMLElement>(`[data-column="${CSS.escape(lastColumn.current)}"] .board-heading`)?.focus();
+      // Placed: the column is no longer held open for it, so a later move into a folded column stays folded.
+      setReturnBox(undefined);
     };
     attempt();
     return () => cancelAnimationFrame(frame);
@@ -247,6 +265,9 @@ export function Work({
     setReturnBox(boxFor(selected.id, drawn) ?? undefined);
     setPanelTyped(false);
     setSelected(null);
+    // A read the panel had under way is dropped with it; the board is read once more instead.
+    panelOpen.current = false;
+    load();
   };
   const openBox = (id: string) => {
     if (selected?.id === id) {
@@ -256,6 +277,7 @@ export function Work({
     if (!mayDropPanel()) return;
     setPanelTyped(false);
     setReturnBox(undefined);
+    lastColumn.current = null;
     setSelected({ id, focusHeading: true });
   };
   const choose = (next: Partial<Views>) => {
@@ -268,6 +290,7 @@ export function Work({
   };
   const panelChanged = useCallback(
     (r: Records, q: RequestView[]) => {
+      boardRead.current += 1;
       setRecords(r);
       setRequests(q);
       setLoadError(null);

@@ -1209,9 +1209,17 @@ button.stat-tile[aria-pressed="true"] { border-color: var(--accent); box-shadow:
 
 /* Work tab (11a.2, D142): the board with the side panel beside it from 1100 px, below it under that. */
 .work-board { display: grid; gap: 1rem; min-width: 0; }
-.work-board-main { min-width: 0; }
+.work-board-main { min-width: 0; container-type: inline-size; }
+/* The board area decides, not the window: too narrow for two columns (the panel beside it), one column at a time with the picker. */
+@container (max-width: 33rem) {
+  .work-board-main .board-picker { display: flex; }
+  .work-board-main .board-col:not(.is-current) { display: none; }
+  .work-board-main .board-cols { grid-template-columns: minmax(0, 1fr); }
+}
 @media (min-width: 1100px) {
-  .work-board.has-panel { grid-template-columns: minmax(0, 1fr) minmax(18rem, 26rem); align-items: start; }
+  .work-board.has-panel { grid-template-columns: minmax(0, 1fr) minmax(18rem, 24rem); align-items: start; }
+  /* The panel stays in view beside the column being worked in; it scrolls on its own when longer than the window. */
+  .work-board.has-panel .task-panel { position: sticky; top: 1rem; max-height: calc(100vh - 2rem); overflow-y: auto; }
 }
 .work-off-board { margin: 0.6rem 0 0; }
 .task-panel { min-width: 0; overflow-wrap: anywhere; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 0.7rem 0.9rem; }

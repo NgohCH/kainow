@@ -108,7 +108,7 @@ export function TaskDetailParts({
       </Box>
       {waiting.length > 0 && (
         <Box title="Waiting for authorisation" headingLevel={level}>
-          {waiting.map((r) => <ChangeRequestPanel key={`${r.id}:${r.version}`} request={r} work={work} onChanged={changed} projectId={projectId} />)}
+          {waiting.map((r) => <ChangeRequestPanel key={`${r.id}:${r.version}`} request={r} work={work} onChanged={changed} projectId={projectId} level={level === 4 ? 5 : 3} />)}
         </Box>
       )}
       <section className="box" aria-labelledby={actionsHeadingId}>

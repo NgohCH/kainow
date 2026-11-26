@@ -74,9 +74,14 @@ export function useTaskDetail(projectId: string, taskId: string, onReloaded?: (r
       },
     );
   }, [projectId, taskId]);
-  // A newer read replaces an older one. A read still under way when the panel closes is kept: `onReloaded` then still
-  // refreshes the board after an action taken just before closing.
-  useEffect(load, [load]);
+  // A newer read replaces an older one; a read still under way when the page or panel goes is dropped (the Work tab reads
+  // its board again when the panel closes).
+  useEffect(() => {
+    load();
+    return () => {
+      latest.current += 1;
+    };
+  }, [load]);
 
   const { error, notice, act, propose, changed } = useRecordChanges(projectId, load);
 

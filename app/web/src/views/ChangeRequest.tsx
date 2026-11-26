@@ -55,7 +55,8 @@ const errText = (e: unknown) => (e instanceof ApiError ? e.message : 'That did n
  * One change request: current and proposed terms side by side, the approvals so far, the reason, and the actions
  * the server says this viewer may take (or why there are none). `onChanged` gets a short message to show.
  */
-export function ChangeRequestPanel({ request, work, onChanged, projectId }: { request: RequestView; work?: WorkContext; onChanged: (message: string) => void; projectId?: string }) {
+export function ChangeRequestPanel({ request, work, onChanged, projectId, level = 3 }: { request: RequestView; work?: WorkContext; onChanged: (message: string) => void; projectId?: string; level?: 3 | 5 }) {
+  const Title = `h${level}` as 'h3';
   const [mode, setMode] = useState<'reject' | 'withdraw' | 'revise' | 'accept' | null>(null);
   const [reason, setReason] = useState('');
   const [responsible, setResponsible] = useState('');
@@ -122,7 +123,7 @@ export function ChangeRequestPanel({ request, work, onChanged, projectId }: { re
       aria-label={`${kindLabel(request.kind)}, proposed by ${request.submittedBy}`}
     >
       <div className="settings-box-head">
-        <h3 className="box-title">{kindLabel(request.kind)}</h3>
+        <Title className="box-title">{kindLabel(request.kind)}</Title>
         {STATE[request.status] && <StatusLabel meaning={STATE[request.status].meaning} word={STATE[request.status].word} />}
       </div>
       <p className="meta">
