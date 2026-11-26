@@ -28,7 +28,7 @@ type Props<I> = {
   headingLevel?: number;
 };
 
-const Heading = ({ level, ...rest }: { level: number; className?: string; id?: string; children: ReactNode }) => {
+const Heading = ({ level, ...rest }: { level: number; className?: string; id?: string; tabIndex?: number; children: ReactNode }) => {
   const H = `h${Math.min(Math.max(level, 1), 6)}` as 'h3';
   return <H {...rest} />;
 };
@@ -55,8 +55,9 @@ function Column<I>({ column, current, prefix, revealed, itemKey, renderItem, nou
     <li key={itemKey(i)} id={itemId?.(i)} tabIndex={-1}>{renderItem(i, level)}</li>
   );
   return (
-    <section className={`board-col edge-top${column.meaning ? ` m-${meaningVar(column.meaning)}` : ' board-plain'}${current ? ' is-current' : ''}`} aria-labelledby={headingId}>
-      <Heading level={headingLevel} className="board-heading" id={headingId}>
+    <section className={`board-col edge-top${column.meaning ? ` m-${meaningVar(column.meaning)}` : ' board-plain'}${current ? ' is-current' : ''}`} aria-labelledby={headingId} data-column={column.key}>
+      {/* Focusable from code only: focus lands here when the item it held has left the column. */}
+      <Heading level={headingLevel} className="board-heading" id={headingId} tabIndex={-1}>
         {folded ? (
           <button type="button" className="board-fold" aria-expanded={open} aria-controls={bodyId} onClick={() => setOpen(!open)}>
             <span aria-hidden="true">{open ? '▾' : '▸'}</span> {label}

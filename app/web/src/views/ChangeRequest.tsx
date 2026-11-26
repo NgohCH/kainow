@@ -10,7 +10,7 @@ import { useTaskDescription } from './useTaskDescription.ts';
 import { AddSubtaskForm, AmendForm, CancelForm, SupersedeForm, type WorkContext, WithdrawForm } from './ChangeForms.tsx';
 
 /** A project's waiting change requests (newest first), reloaded on demand. Failing to load them leaves the list empty. */
-export function useRequests(projectId: string | undefined): { requests: RequestView[]; reload: () => void } {
+export function useRequests(projectId: string | undefined): { requests: RequestView[]; reload: () => void; setRequests: (requests: RequestView[]) => void } {
   const [requests, setRequests] = useState<RequestView[]>([]);
   const reload = useCallback(() => {
     if (!projectId) return;
@@ -20,7 +20,7 @@ export function useRequests(projectId: string | undefined): { requests: RequestV
     );
   }, [projectId]);
   useEffect(reload, [reload]);
-  return { requests, reload };
+  return { requests, reload, setRequests };
 }
 
 /** The pending request to authorise a given proposal, if there is one. */

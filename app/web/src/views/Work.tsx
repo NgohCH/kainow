@@ -1,4 +1,11 @@
 import { type FormEvent, useCallback, useEffect, useRef, useState } from 'react';
+import { todayUtc8 } from '../changes.ts';
+import { type Prefs, type Views, viewsOf } from '../prefs.ts';
+import { boardTasks, byAssignee, byStatus } from '../ui/board.ts';
+import { TaskBoxView } from '../ui/BoardBoxes.tsx';
+import { leaveGuard } from '../ui/leaveGuard.ts';
+import { TaskBoard } from '../ui/TaskBoard.tsx';
+import { boxFor, focusAfterClose, offBoardText, panelTarget, withProject } from '../ui/workBoard.ts';
 import { ApiError, api } from '../api.ts';
 import { type EvidenceSource, evidenceView } from '../discussion.ts';
 import { formatWhen } from '../format.ts';
@@ -41,6 +48,7 @@ import { useReturnFocus } from './useReturnFocus.ts';
 import { DataTable, type Column } from '../ui/DataTable.tsx';
 import { StatusLabel } from '../ui/StatusLabel.tsx';
 import { AddSubtaskForm, AmendForm, CancelForm, FollowUpForm, SupersedeForm, WithdrawForm, type WorkContext } from './ChangeForms.tsx';
+import { PANEL_UNSAVED, TaskPanel } from './TaskPanel.tsx';
 
 interface ReviewFlag {
   id: string;
@@ -129,20 +137,37 @@ export interface Records {
 
 const errText = (e: unknown, fallback: string) => (e instanceof ApiError ? e.message : fallback);
 
-/** The project's authorised work: tasks (with subtasks), questions, decisions and risks. */
+/** The task open in the side panel; `focusHeading` is false when an address opened it (focus is then on its box). */
+type Selected = { id: string; focusHeading: boolean };
+
+/**
+ * The project's authorised work: tasks as a board with a side panel, or as a list (the person's saved choice), then
+ * questions, decisions and risks.
+ */
 export function Work({
-  projectId, people, canPropose, canClear, focusId, roles, status, delegated,
+  projectId, projectName, people, canPropose, canClear, focusId, roles, status, delegated, prefs, prefsReady, onPrefs,
 }: {
-  projectId: string; people: Person[]; canPropose: boolean; canClear: boolean; focusId?: string;
+  projectId: string; projectName: string; people: Person[]; canPropose: boolean; canClear: boolean; focusId?: string;
   roles: ProjectRole[]; status: ProjectStatus; delegated: boolean;
+  prefs: Prefs; prefsReady: boolean; onPrefs: (next: Prefs) => Promise<void>;
 }) {
   const [records, setRecords] = useState<Records | null>(null);
   const mayDelete = mayDeleteRecord(roles, status, delegated);
-  const { requests, reload: reloadRequests } = useRequests(projectId);
+  const { requests, reload: reloadRequests, setRequests } = useRequests(projectId);
   // Whether "Export CSV" and "Save as output" are shown: the server says (D106); hidden otherwise.
   const { policy } = useOutputPolicy(projectId);
   const [loadError, setLoadError] = useState<string | null>(null);
+  const [selected, setSelected] = useState<Selected | null>(null);
+  const [panelTyped, setPanelTyped] = useState(false);
+  // Goes up when a change made outside the panel needs the panel (and with it the board) read again.
+  const [panelReload, setPanelReload] = useState(0);
+  const panelOpen = useRef(false);
   const load = useCallback(() => {
+    // With the panel open, its one reload refreshes the board too.
+    if (panelOpen.current) {
+      setPanelReload((n) => n + 1);
+      return;
+    }
     api.get<Records>(`/projects/${projectId}/records`).then(
       (r) => {
         setRecords(r);
@@ -153,9 +178,102 @@ export function Work({
     reloadRequests();
   }, [projectId, reloadRequests]);
   useEffect(load, [load]);
-  useFocusItem(focusId, records !== null);
   const { error: changeError, setError, notice, setNotice, act, propose, changed } = useRecordChanges(projectId, load);
   const error = changeError ?? loadError;
+
+  // The view: saved per person; an address naming a task that only the list shows opens the list until the person chooses.
+  const views = viewsOf(prefs);
+  const [leftAddress, setLeftAddress] = useState<string | undefined>(undefined);
+  const today = todayUtc8();
+  const tasks = records ? withProject(records.tasks, projectId, projectName) : [];
+  const split = boardTasks(tasks, today);
+  const columns = views.workBy === 'assignee' ? byAssignee(tasks, today) : byStatus(split.boxes);
+  const drawn = columns.flatMap((c) => c.boxes);
+  const target = records ? panelTarget(focusId, records, drawn) : 'none';
+  const listForAddress = target === 'list' && focusId !== leftAddress && tasks.some((t) => t.id === focusId);
+  const view = views.work === 'board' && !listForAddress ? 'board' : 'list';
+  const onBoard = view === 'board' && tasks.length > 0;
+  const addressBox = onBoard && target === 'panel' && focusId ? boxFor(focusId, drawn) ?? undefined : undefined;
+  panelOpen.current = onBoard && selected !== null;
+
+  // An address naming a task on the board opens its panel and puts focus on its box; any other record, on its row.
+  useFocusItem(addressBox ?? focusId, records !== null);
+  useEffect(() => {
+    if (addressBox && focusId) setSelected({ id: focusId, focusHeading: false });
+    // Only a new address or the first read opens it; closing it later stands.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [focusId, records !== null]);
+
+  // Closing: focus back on the box, or on the heading of the column it was in when it has left the board. The box's
+  // column is revealed first (selected on a narrow screen, unfolded, all shown), since it may have moved into Completed.
+  const lastColumn = useRef<string | null>(null);
+  if (selected) {
+    const box = boxFor(selected.id, drawn);
+    const col = box === null ? undefined : columns.find((c) => c.boxes.some((b) => b.task.id === box));
+    if (col) lastColumn.current = col.key;
+  }
+  const [returnBox, setReturnBox] = useState<string | undefined>(undefined);
+  // The task whose panel just closed. A read the panel started just before closing may still move its box a moment
+  // later; if focus is then lost, it is put back on the box once more.
+  const returnTo = useRef<{ id: string; fresh: boolean; until: number } | null>(null);
+  useEffect(() => {
+    const back = returnTo.current;
+    if (selected !== null || back === null) return;
+    if (!back.fresh && (Date.now() > back.until || (document.activeElement !== null && document.activeElement !== document.body))) return;
+    back.fresh = false;
+    let frame = 0;
+    let tries = 0;
+    // The column opens in the frames after this one; wait for the box to show before moving focus to it.
+    const attempt = () => {
+      const box = boxFor(back.id, drawn);
+      const el = box === null ? null : document.getElementById(`item-${box}`)?.querySelector<HTMLElement>('.task-box-title button, .task-box-title a');
+      const shown = el != null && el.getClientRects().length > 0;
+      if (!shown && box !== null && tries++ < 10) {
+        frame = requestAnimationFrame(attempt);
+        return;
+      }
+      if (focusAfterClose(shown) === 'box') el?.focus();
+      else if (lastColumn.current) document.querySelector<HTMLElement>(`[data-column="${CSS.escape(lastColumn.current)}"] .board-heading`)?.focus();
+    };
+    attempt();
+    return () => cancelAnimationFrame(frame);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [selected, records]);
+  /** False when the person chose to keep what they typed in the panel. */
+  const mayDropPanel = () => !panelTyped || leaveGuard.mayDiscard(PANEL_UNSAVED);
+  const closePanel = () => {
+    if (!selected) return;
+    returnTo.current = { id: selected.id, fresh: true, until: Date.now() + 3000 };
+    setReturnBox(boxFor(selected.id, drawn) ?? undefined);
+    setPanelTyped(false);
+    setSelected(null);
+  };
+  const openBox = (id: string) => {
+    if (selected?.id === id) {
+      if (mayDropPanel()) closePanel();
+      return;
+    }
+    if (!mayDropPanel()) return;
+    setPanelTyped(false);
+    setReturnBox(undefined);
+    setSelected({ id, focusHeading: true });
+  };
+  const choose = (next: Partial<Views>) => {
+    if (selected && !mayDropPanel()) return false;
+    setSelected(null);
+    setPanelTyped(false);
+    setLeftAddress(focusId);
+    void onPrefs({ ...prefs, views: { ...views, ...next } }).catch(() => setError('Your choice of view could not be saved. Try again.'));
+    return true;
+  };
+  const panelChanged = useCallback(
+    (r: Records, q: RequestView[]) => {
+      setRecords(r);
+      setRequests(q);
+      setLoadError(null);
+    },
+    [setRequests],
+  );
 
   if (!records) return error ? <p role="alert" className="error">{error}</p> : <p className="loading">Loading</p>;
   const hasChildren = new Set(records.tasks.map((t) => t.parentId).filter(Boolean));
@@ -168,6 +286,7 @@ export function Work({
     setNotice(m);
   };
   const titles = new Map(records.tasks.map((t) => [t.id, t.title]));
+  const offBoard = offBoardText(split.offBoard.length);
 
   const taskColumns: Column<TaskView>[] = [
     {
@@ -265,10 +384,68 @@ export function Work({
       <section aria-labelledby="tasks-heading" className="box">
         <h2 id="tasks-heading" className="box-title">Tasks</h2>
         <ExportControls projectId={projectId} kind="tasks" policy={policy} onSaved={exported} />
+        {records.tasks.length > 0 && (
+          <div className="table-filters work-view">
+            <label>
+              View
+              <select value={view} disabled={!prefsReady} onChange={(e) => choose({ work: e.target.value === 'list' ? 'list' : 'board' })}>
+                <option value="board">Board</option>
+                <option value="list">List</option>
+              </select>
+            </label>
+            {view === 'board' && (
+              <label>
+                Columns
+                <select value={views.workBy} disabled={!prefsReady} onChange={(e) => choose({ workBy: e.target.value === 'assignee' ? 'assignee' : 'status' })}>
+                  <option value="status">By status</option>
+                  <option value="assignee">By assignee</option>
+                </select>
+              </label>
+            )}
+          </div>
+        )}
         {records.tasks.length === 0 ? (
           <p className="empty">No tasks yet. Authorise an action on the review screen to create one.</p>
-        ) : (
+        ) : view === 'list' ? (
           <DataTable caption="Tasks, each subtask under its parent task" columns={taskColumns} rows={records.tasks} rowKey={(t) => t.id} rowId={itemId} empty="No tasks yet." />
+        ) : (
+          <div className={`work-board${selected ? ' has-panel' : ''}`}>
+            <div className="work-board-main">
+              <TaskBoard
+                label={views.workBy === 'assignee' ? 'Tasks by assignee' : 'Tasks by status'}
+                columns={columns}
+                boxId={(b) => `item-${b.task.id}`}
+                reveal={returnBox ?? addressBox}
+                renderBox={(b, level) => (
+                  <TaskBoxView box={b} level={level} action={{ onOpen: () => openBox(b.task.id), expanded: selected?.id === b.task.id }} />
+                )}
+              />
+              {offBoard && (
+                <p className="meta work-off-board">
+                  {offBoard}.{' '}
+                  <button type="button" className="link-button" onClick={() => choose({ work: 'list' })}>Open the list view</button>
+                </p>
+              )}
+            </div>
+            {selected && (
+              <TaskPanel
+                key={selected.id}
+                projectId={projectId}
+                taskId={selected.id}
+                people={people}
+                canPropose={canPropose}
+                canClear={canClear}
+                roles={roles}
+                status={status}
+                delegated={delegated}
+                focusHeading={selected.focusHeading}
+                reloadKey={panelReload}
+                onClose={closePanel}
+                onChanged={panelChanged}
+                onTyped={setPanelTyped}
+              />
+            )}
+          </div>
         )}
       </section>
       <section aria-labelledby="questions-heading" className="box">

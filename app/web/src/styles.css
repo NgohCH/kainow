@@ -1206,3 +1206,18 @@ button.stat-tile[aria-pressed="true"] { border-color: var(--accent); box-shadow:
   .board-col:not(.is-current) { display: none; }
   .board-cols { grid-template-columns: minmax(0, 1fr); }
 }
+
+/* Work tab (11a.2, D142): the board with the side panel beside it from 1100 px, below it under that. */
+.work-board { display: grid; gap: 1rem; min-width: 0; }
+.work-board-main { min-width: 0; }
+@media (min-width: 1100px) {
+  .work-board.has-panel { grid-template-columns: minmax(0, 1fr) minmax(18rem, 26rem); align-items: start; }
+}
+.work-off-board { margin: 0.6rem 0 0; }
+.task-panel { min-width: 0; overflow-wrap: anywhere; background: var(--surface); border: 1px solid var(--rule); border-radius: 6px; padding: 0.7rem 0.9rem; }
+.task-panel-head { display: flex; flex-wrap: wrap; gap: 0.4rem 0.8rem; align-items: baseline; justify-content: space-between; margin: 0 0 0.4rem; }
+.task-panel-head h3 { margin: 0; min-width: 0; flex: 1 1 12rem; }
+.task-panel-links { display: flex; flex-wrap: wrap; gap: 0.4rem 0.8rem; align-items: center; }
+.task-panel .box { margin: 0.7rem 0 0; }
+.task-panel .box-title { margin-top: 0; }
+.task-panel .facts { margin: 0.4rem 0 0; }

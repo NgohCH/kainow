@@ -342,6 +342,10 @@ export function ProjectPage({ projectId, tab, meId, itemId, runId, prefs, prefsR
       {view === 'work' && contentAllowed && (
         <Work
           projectId={project.id}
+          projectName={project.name}
+          prefs={prefs}
+          prefsReady={prefsReady}
+          onPrefs={onPrefs}
           people={people}
           canPropose={roles.length > 0}
           canClear={roles.some((r) => r === 'pm' || r === 'deputy_pm')}
