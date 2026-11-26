@@ -372,11 +372,12 @@ export async function walkthrough({ base, db, api, must, check, wide, narrow, si
   await both('project tab bar and Stages of a closed project', `#/projects/${lifeId}/settings`);
 
   // --- D141: Home and My tasks by project ---------------------------------------------------------------------------------------
-  await both('home, Needs you and My tasks by project', '#/');
+  await both('home, Needs you by project and My tasks by project', '#/', (page) => fill(page, 'View', 'project'));
   say((await wide.$$('main .project-group')).length > 1, 'Home is not grouped by project');
-  await both('my tasks by project, every row of a box shown', '#/my-tasks', (page) => press(page, /^Show all \d+$/));
-  await both('my tasks by project, a box closed', '#/my-tasks', (page) => page.click('main .project-group-toggle'));
-  await both('my tasks by due date', '#/my-tasks', (page) => fill(page, 'Group by', 'due'));
+  await both('my tasks as a board', '#/my-tasks', (page) => fill(page, 'View', 'board'));
+  await both('my tasks by project, every row of a box shown', '#/my-tasks', async (page) => { await fill(page, 'View', 'project'); await press(page, /^Show all \d+$/); });
+  await both('my tasks by project, a box closed', '#/my-tasks', async (page) => { await fill(page, 'View', 'project'); await page.click('main .project-group-toggle'); });
+  await both('my tasks by due date', '#/my-tasks', (page) => fill(page, 'View', 'due'));
   say(!(await wide.$('main .project-group')) && (await wide.$('main table')), 'My tasks by due date is still grouped');
 
   // --- D134: My profile, with a past role and a retired department -------------------------------------------------------------

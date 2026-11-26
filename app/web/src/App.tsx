@@ -379,7 +379,7 @@ export function App() {
   else if (duplicating) page = <DuplicateProject key={duplicating} projectId={duplicating} meId={user.id} />;
   else if (project) page = <ProjectPage key={project.projectId} projectId={project.projectId} meId={user.id} tab={project.tab as ProjectView} itemId={project.itemId} prefs={prefs} prefsReady={prefsLoaded} onPrefs={savePrefs} />;
   else if (hash === '#/projects' || parseHistoryHash(hash)) page = <Projects isAdmin={isAdmin} history={parseHistoryHash(hash)} />;
-  else if (hash === '#/my-tasks') page = <MyTasks />;
+  else if (hash === '#/my-tasks') page = <MyTasks meId={user.id} meName={user.displayName} prefs={prefs} ready={prefsLoaded} failed={prefsFailed} onPrefs={savePrefs} />;
   else if (hash === '#/reviews') page = <Reviews />;
   else page = <Home userName={user.displayName} prefs={prefs} ready={prefsLoaded} failed={prefsFailed} onChange={savePrefs} />;
 
